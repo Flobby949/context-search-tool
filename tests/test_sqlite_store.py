@@ -106,8 +106,10 @@ def test_store_exposes_source_file_and_active_indexed_paths(tmp_path: Path) -> N
 
     assert store.source_file_for_path(Path("src/App.java")) == source
     assert store.source_file_for_path(Path("src/Missing.java")) is None
+    assert store.source_file_paths() == {Path("src/App.java")}
     assert store.indexed_file_paths() == {Path("src/App.java")}
 
     store.mark_file_deleted(Path("src/App.java"))
 
+    assert store.source_file_paths() == set()
     assert store.indexed_file_paths() == set()

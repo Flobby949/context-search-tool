@@ -33,10 +33,15 @@ class IndexSummary:
     chunks_indexed: int
 
 
+@dataclass(frozen=True)
+class _PreparedFile:
+    source_file: SourceFile
+    chunks: list[DocumentChunk]
+
+
 def index_repository(repo: Path, config: ToolConfig) -> IndexSummary:
     repo = repo.resolve()
     index_dir = ensure_index_layout(repo)
-    _ensure_config_file(index_dir, config)
     try:
         assert_manifest_compatible(repo, config)
     except ValueError as exc:
@@ -47,29 +52,23 @@ def index_repository(repo: Path, config: ToolConfig) -> IndexSummary:
 
     scanned_files = scan_workspace(repo, config)
     scanned_paths = {scanned_file.path for scanned_file in scanned_files}
-    indexed_paths = store.indexed_file_paths()
+    indexed_paths = store.source_file_paths()
     deleted_paths = indexed_paths - scanned_paths
-    for path in sorted(deleted_paths, key=lambda item: item.as_posix()):
-        store.mark_file_deleted(path)
 
     plugins = default_plugins()
+    prepared_files: list[_PreparedFile] = []
     changed_chunks: list[DocumentChunk] = []
-    files_indexed = 0
     files_skipped = 0
 
     for scanned_file in scanned_files:
         existing = store.source_file_for_path(scanned_file.path)
-        if (
-            scanned_file.path in indexed_paths
-            and existing is not None
-            and existing.sha256 == scanned_file.sha256
-        ):
+        if existing is not None and existing.sha256 == scanned_file.sha256:
             files_skipped += 1
             continue
 
-        chunks = _index_file(store, scanned_file, plugins)
-        changed_chunks.extend(chunks)
-        files_indexed += 1
+        prepared_file = _prepare_file(scanned_file, plugins)
+        prepared_files.append(prepared_file)
+        changed_chunks.extend(prepared_file.chunks)
 
     if changed_chunks:
         provider = provider_from_config(config.embedding)
@@ -84,6 +83,15 @@ def index_repository(repo: Path, config: ToolConfig) -> IndexSummary:
             ]
         )
         vector_store.persist()
+
+    for path in sorted(deleted_paths, key=lambda item: item.as_posix()):
+        store.mark_file_deleted(path)
+
+    for prepared_file in prepared_files:
+        store.upsert_source_file(prepared_file.source_file)
+        store.replace_chunks(prepared_file.source_file.path, prepared_file.chunks)
+
+    _ensure_config_file(index_dir, config)
 
     stats = store.stats()
     write_manifest(
@@ -100,7 +108,7 @@ def index_repository(repo: Path, config: ToolConfig) -> IndexSummary:
 
     return IndexSummary(
         files_seen=len(scanned_files),
-        files_indexed=files_indexed,
+        files_indexed=len(prepared_files),
         files_skipped=files_skipped,
         files_deleted=len(deleted_paths),
         chunks_indexed=len(changed_chunks),
@@ -115,28 +123,25 @@ def _ensure_config_file(index_dir: Path, config: ToolConfig) -> None:
         )
 
 
-def _index_file(
-    store: SQLiteStore,
+def _prepare_file(
     scanned_file: ScannedFile,
     plugins: list[LanguagePlugin],
-) -> list[DocumentChunk]:
+) -> _PreparedFile:
     content = scanned_file.absolute_path.read_text(encoding="utf-8", errors="replace")
     extraction = _extract(scanned_file, content, plugins)
     metadata = dict(scanned_file.metadata)
     if extraction.metadata:
         metadata["plugin"] = extraction.metadata
 
-    store.upsert_source_file(
-        SourceFile(
-            path=scanned_file.path,
-            language=scanned_file.language,
-            sha256=scanned_file.sha256,
-            size=scanned_file.size,
-            mtime_ns=scanned_file.mtime_ns,
-            is_generated=scanned_file.is_generated,
-            is_test=scanned_file.is_test,
-            metadata=metadata,
-        )
+    source_file = SourceFile(
+        path=scanned_file.path,
+        language=scanned_file.language,
+        sha256=scanned_file.sha256,
+        size=scanned_file.size,
+        mtime_ns=scanned_file.mtime_ns,
+        is_generated=scanned_file.is_generated,
+        is_test=scanned_file.is_test,
+        metadata=metadata,
     )
 
     chunks = [
@@ -154,8 +159,7 @@ def _index_file(
             extraction.symbols,
         )
     ]
-    store.replace_chunks(scanned_file.path, chunks)
-    return chunks
+    return _PreparedFile(source_file=source_file, chunks=chunks)
 
 
 def _extract(

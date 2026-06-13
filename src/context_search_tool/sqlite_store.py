@@ -125,6 +125,11 @@ class SQLiteStore:
             return None
         return _source_file_from_row(row)
 
+    def source_file_paths(self) -> set[Path]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT path FROM source_files").fetchall()
+        return {Path(row["path"]) for row in rows}
+
     def indexed_file_paths(self) -> set[Path]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -165,6 +170,7 @@ class SQLiteStore:
                     "UPDATE chunks SET deleted_at = ? WHERE chunk_id = ?",
                     [(deleted_at, chunk_id) for chunk_id in active_ids],
                 )
+            connection.execute("DELETE FROM source_files WHERE path = ?", (path,))
 
     def deleted_chunk_ids(self) -> set[str]:
         with self._connect() as connection:

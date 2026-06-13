@@ -72,3 +72,33 @@ def test_index_repository_persists_passed_config_when_creating_config_file(
     assert loaded.embedding.dimensions == 128
     summary = index_repository(repo, loaded)
     assert summary.files_indexed == 0
+
+
+def test_index_repository_retries_file_when_previous_vector_write_failed(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    bad_config = ToolConfig(embedding=EmbeddingConfig(provider="unsupported"))
+
+    with pytest.raises(ValueError):
+        index_repository(repo, bad_config)
+
+    summary = index_repository(repo, DEFAULT_CONFIG)
+
+    assert summary.files_indexed == 1
+    assert (repo / ".context-search" / "vectors.npy").exists()
+    assert (repo / ".context-search" / "vector_ids.json").exists()
+
+
+def test_index_repository_skips_unchanged_empty_file(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "Empty.java").write_text("", encoding="utf-8")
+
+    first = index_repository(repo, DEFAULT_CONFIG)
+    second = index_repository(repo, DEFAULT_CONFIG)
+
+    assert first.files_indexed == 1
+    assert second.files_indexed == 0
