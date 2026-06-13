@@ -34,6 +34,16 @@ _HTTP_BY_MAPPING = {
     "PatchMapping": "PATCH",
 }
 _STATIC_FINAL_RE = re.compile(r"\bstatic\s+final\s+[\w<>\[\], ?]+\s+(\w+)\s*[=;]")
+_STATEMENT_PREFIXES = (
+    "return ",
+    "if ",
+    "for ",
+    "while ",
+    "switch ",
+    "catch ",
+    "throw ",
+    "new ",
+)
 
 
 class JavaPlugin:
@@ -86,7 +96,11 @@ class JavaPlugin:
                 _add_identifier_tokens(tokens, name)
 
             method_match = _METHOD_RE.search(line)
-            if method_match and not _TYPE_RE.search(line):
+            if (
+                method_match
+                and not _TYPE_RE.search(line)
+                and not _is_statement_line(line)
+            ):
                 name = method_match.group(1)
                 if line_number in enum_constant_lines or _is_enum_constructor(
                     name, line_number, enum_ranges, enum_names
@@ -358,6 +372,11 @@ def _is_enum_constructor(
         if start_line <= line_number <= end_line and enum_names.get(start_line) == name:
             return True
     return False
+
+
+def _is_statement_line(line: str) -> bool:
+    stripped = line.strip()
+    return stripped in {"return", "throw"} or stripped.startswith(_STATEMENT_PREFIXES)
 
 
 def _add_identifier_tokens(tokens: list[str], value: str) -> None:

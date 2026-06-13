@@ -146,3 +146,21 @@ class ApiController {
     assert "/api" in extraction.lexical_tokens
     assert "api" in extraction.lexical_tokens
     assert "/api/api" not in extraction.lexical_tokens
+
+
+def test_java_plugin_does_not_extract_method_body_calls_as_methods() -> None:
+    source = """
+class Example {
+    String actualMethod() {
+        return helper(value);
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("Example.java"), source)
+    method_names = {
+        symbol.name for symbol in extraction.symbols if symbol.kind == "method"
+    }
+
+    assert "actualMethod" in method_names
+    assert "helper" not in method_names
