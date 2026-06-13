@@ -44,3 +44,30 @@ def test_java_fixture_indexes_spring_endpoint_signals(tmp_path: Path) -> None:
         "ApplyAuditController"
     )
     assert signals["POST /apply/audit/stats"].metadata["method"] == "auditStats"
+
+
+def test_java_fixture_indexes_short_chain_relations(tmp_path: Path) -> None:
+    source_fixture = Path(__file__).parent / "fixtures" / "java-spring-mini"
+    repo = tmp_path / "java-spring-mini"
+    shutil.copytree(source_fixture, repo)
+
+    index_repository(repo, DEFAULT_CONFIG)
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+
+    controller_relations = store.relations_targeting("ResourceAuditService.statsWait")
+    assert any(
+        relation.kind == "calls" and relation.confidence == 0.8
+        for relation in controller_relations
+    )
+
+    implements_relations = store.relations_targeting("ResourceAuditService")
+    assert any(
+        relation.kind == "implements" and relation.confidence == 1.0
+        for relation in implements_relations
+    )
+
+    executable_relations = store.relations_targeting("EsApplyAuditPageQryExe.statsWait")
+    assert any(
+        relation.kind == "uses" and relation.confidence == 0.8
+        for relation in executable_relations
+    )

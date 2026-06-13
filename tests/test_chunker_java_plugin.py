@@ -17,6 +17,12 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/apply/audit")
 public class ApplyAuditController {
+    private final ResourceAuditService resourceAuditService;
+
+    public ApplyAuditController(ResourceAuditService resourceAuditService) {
+        this.resourceAuditService = resourceAuditService;
+    }
+
     @PostMapping("/pageEs")
     public String pageEs(String applyType) {
         return "ok";
@@ -47,6 +53,28 @@ enum AuditStatus {
 interface ApplyAuditMapper {
     @Select("SELECT * FROM audit WHERE status = #{status}")
     String findByStatus(String status);
+}
+
+interface ResourceAuditService {
+    Map<String, Long> statsWait();
+
+    WorkbenchResourceAuditStatsDTO auditStats(ApplyAuditEsSearchQry qry);
+}
+
+class ResourceAuditServiceImpl implements ResourceAuditService {
+    private final EsApplyAuditPageQryExe esApplyAuditPageQryExe;
+
+    public ResourceAuditServiceImpl(EsApplyAuditPageQryExe esApplyAuditPageQryExe) {
+        this.esApplyAuditPageQryExe = esApplyAuditPageQryExe;
+    }
+
+    public Map<String, Long> statsWait() {
+        return esApplyAuditPageQryExe.statsWait();
+    }
+
+    public WorkbenchResourceAuditStatsDTO auditStats(ApplyAuditEsSearchQry qry) {
+        return esApplyAuditPageQryExe.auditStats(qry);
+    }
 }
 """.strip()
 
@@ -79,7 +107,6 @@ def test_java_plugin_extracts_routes_sql_and_enum_values() -> None:
     assert "select" in extraction.lexical_tokens
     assert "audit" in extraction.lexical_tokens
     assert "status" in extraction.lexical_tokens
-    assert extraction.relations == []
     assert extraction.metadata["package"] == "com.example.audit"
 
 
@@ -156,6 +183,132 @@ def test_java_plugin_emits_usage_signals_for_receiver_method_calls() -> None:
     assert usage_signal.metadata["receiver"] == "resourceAuditService"
     assert usage_signal.metadata["method"] == "statsWait"
     assert usage_signal.metadata["owner_method"] == "statsWait"
+
+
+def test_java_plugin_emits_short_chain_relations_with_stable_sources() -> None:
+    extraction = JavaPlugin().extract(Path("ApplyAuditController.java"), JAVA_SOURCE)
+    endpoint_signals = {
+        signal.name: signal for signal in extraction.signals if signal.kind == "endpoint"
+    }
+    type_signals = {
+        signal.name: signal for signal in extraction.signals if signal.kind == "type"
+    }
+    method_signals = {
+        signal.name: signal for signal in extraction.signals if signal.kind == "method"
+    }
+    relations = {
+        (relation.kind, relation.target_name): relation
+        for relation in extraction.relations
+    }
+
+    calls_relation = relations[("calls", "ResourceAuditService.statsWait")]
+    assert calls_relation.source_signal_id == endpoint_signals[
+        "GET /apply/audit/stats/wait"
+    ].signal_id
+    assert calls_relation.confidence == 0.8
+    assert calls_relation.metadata["receiver"] == "resourceAuditService"
+
+    implements_relation = relations[("implements", "ResourceAuditService")]
+    assert implements_relation.source_signal_id == type_signals[
+        "ResourceAuditServiceImpl"
+    ].signal_id
+    assert implements_relation.confidence == 1.0
+
+    uses_relation = relations[("uses", "EsApplyAuditPageQryExe.statsWait")]
+    assert uses_relation.source_signal_id == method_signals[
+        "ResourceAuditServiceImpl.statsWait"
+    ].signal_id
+    assert uses_relation.confidence == 0.8
+    assert uses_relation.metadata["receiver"] == "esApplyAuditPageQryExe"
+
+
+def test_java_plugin_uses_confidence_scale_for_inferred_and_name_only_relations() -> None:
+    source = """
+import org.springframework.web.bind.annotation.GetMapping;
+
+class AuditController {
+    @GetMapping("/stats")
+    Object stats() {
+        return unknown.statsWait();
+    }
+}
+
+interface ResourceAuditService {
+    Object statsWait();
+}
+
+class Worker {
+    Object run() {
+        return orphan.noCandidate();
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("AuditController.java"), source)
+    endpoint_signals = {
+        signal.name: signal for signal in extraction.signals if signal.kind == "endpoint"
+    }
+    method_signals = {
+        signal.name: signal for signal in extraction.signals if signal.kind == "method"
+    }
+    relations = {
+        (relation.kind, relation.target_name): relation
+        for relation in extraction.relations
+    }
+
+    inferred_relation = relations[("calls", "ResourceAuditService.statsWait")]
+    assert inferred_relation.source_signal_id == endpoint_signals["GET /stats"].signal_id
+    assert inferred_relation.confidence == 0.6
+
+    name_only_relation = relations[("uses", "noCandidate")]
+    assert name_only_relation.source_signal_id == method_signals["Worker.run"].signal_id
+    assert name_only_relation.confidence == 0.4
+
+
+def test_java_plugin_uses_constructor_assignment_to_refine_receiver_type() -> None:
+    source = """
+import org.springframework.web.bind.annotation.GetMapping;
+
+class AuditController {
+    private final Object resourceAuditService;
+
+    AuditController(ResourceAuditService resourceAuditService) {
+        this.resourceAuditService = resourceAuditService;
+    }
+
+    @GetMapping("/stats/wait")
+    Object statsWait() {
+        return resourceAuditService.statsWait();
+    }
+}
+
+interface ResourceAuditService {
+    Object statsWait();
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("AuditController.java"), source)
+    relations = {
+        (relation.kind, relation.target_name): relation
+        for relation in extraction.relations
+    }
+
+    relation = relations[("calls", "ResourceAuditService.statsWait")]
+    assert relation.confidence == 0.8
+    assert relation.metadata["receiver_type"] == "ResourceAuditService"
+
+
+def test_java_plugin_splits_generic_implements_targets_at_top_level_commas() -> None:
+    source = "class Foo implements Handler<String, Long>, Closeable {}"
+
+    extraction = JavaPlugin().extract(Path("Foo.java"), source)
+    implements_targets = sorted(
+        relation.target_name
+        for relation in extraction.relations
+        if relation.kind == "implements"
+    )
+
+    assert implements_targets == ["Closeable", "Handler"]
 
 
 def test_java_plugin_dedupes_duplicate_usage_signals_on_same_line() -> None:

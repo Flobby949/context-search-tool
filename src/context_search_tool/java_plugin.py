@@ -4,7 +4,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-from context_search_tool.models import CodeSignal, SymbolRef, generate_signal_id
+from context_search_tool.models import (
+    CodeRelation,
+    CodeSignal,
+    SymbolRef,
+    generate_relation_id,
+    generate_signal_id,
+)
 from context_search_tool.plugins import PluginExtraction
 from context_search_tool.tokenizer import tokenize_identifier
 
@@ -12,11 +18,17 @@ from context_search_tool.tokenizer import tokenize_identifier
 _PACKAGE_RE = re.compile(r"package\s+([\w.]+)\s*;")
 _IMPORT_RE = re.compile(r"import\s+([\w.*]+)\s*;")
 _TYPE_RE = re.compile(r"\b(class|interface|enum)\s+(\w+)")
+_IMPLEMENTS_RE = re.compile(r"\bimplements\s+([^{]+)")
 _ANNOTATION_START_RE = re.compile(r"@(\w+)")
 _METHOD_RE = re.compile(
     r"^\s*(?:(?:public|protected|private|static|final|abstract|synchronized|native)\s+)*"
     r"[\w<>\[\], ?]+\s+(\w+)\s*\([^;{}]*\)\s*(?:throws\s+[^{;]+)?[;{]"
 )
+_FIELD_RE = re.compile(
+    r"^\s*(?:(?:public|protected|private|static|final|transient|volatile)\s+)*"
+    r"([A-Z][\w.]*\s*(?:<[^;=()]+>)?(?:\[\])?)\s+([A-Za-z_]\w*)\s*(?:[=;])"
+)
+_ASSIGNMENT_RE = re.compile(r"\bthis\s*\.\s*([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;")
 _SQL_ANNOTATIONS = {"Select", "Insert", "Update", "Delete"}
 _MAPPING_ANNOTATIONS = {
     "RequestMapping",
@@ -58,6 +70,7 @@ class JavaPlugin:
         original_lines = content.splitlines()
         symbols: list[SymbolRef] = []
         signals: list[CodeSignal] = []
+        method_contexts: list[dict[str, Any]] = []
         tokens: list[str] = []
         metadata: dict[str, Any] = {}
 
@@ -80,6 +93,8 @@ class JavaPlugin:
         enum_names = _enum_names(lines)
         enum_constant_lines = _enum_constant_lines(lines, enum_ranges)
         class_contexts = _class_contexts(annotations_by_line, lines)
+        type_contexts = _type_contexts(annotations_by_line, lines)
+        receiver_types = _receiver_types_by_owner(lines, type_contexts)
 
         for line_number, line in enumerate(lines, start=1):
             type_match = _TYPE_RE.search(line)
@@ -125,8 +140,10 @@ class JavaPlugin:
                     continue
                 symbols.append(_symbol(name, "method", line_number, line_number))
                 _add_identifier_tokens(tokens, name)
-                context = _class_context_for_line(class_contexts, line_number)
-                class_name = context["name"] if context else ""
+                type_context = _type_context_for_line(type_contexts, line_number)
+                class_context = _class_context_for_line(class_contexts, line_number)
+                type_name = type_context["name"] if type_context else ""
+                class_name = class_context["name"] if class_context else ""
                 comment = _comment_before_symbol(
                     original_lines, lines, annotations_by_line, line_number
                 )
@@ -135,50 +152,68 @@ class JavaPlugin:
                         _comment_signal(
                             path=path,
                             comment=comment,
-                            owner_type=class_name,
+                            owner_type=type_name,
                             owner_method=name,
                         )
                     )
-                signals.extend(
-                    _usage_signals(
-                        path=path,
-                        lines=lines,
-                        method_line=line_number,
-                        owner_type=class_name,
-                        owner_method=name,
-                    )
+                usage_signals = _usage_signals(
+                    path=path,
+                    lines=lines,
+                    method_line=line_number,
+                    owner_type=type_name,
+                    owner_method=name,
                 )
+                signals.extend(usage_signals)
                 route = _mapping_before_current_symbol(
                     annotations_by_line, lines, line_number
                 )
+                endpoint_signal_id = ""
                 if route:
-                    class_route = context["route"] if context else ""
+                    class_route = class_context["route"] if class_context else ""
                     full_path = _join_route(class_route, route["path"])
                     _add_route_tokens(tokens, route["path"])
                     _add_route_tokens(tokens, full_path)
                     if route["method"]:
                         _add_token(tokens, route["method"])
-                    signals.append(
-                        _endpoint_signal(
-                            path=path,
-                            controller=class_name,
-                            method=name,
-                            http_method=route["method"],
-                            endpoint_path=full_path,
-                            method_line=line_number,
-                            mapping_line=route["line"],
-                            original_lines=original_lines,
-                        )
+                    endpoint_signal = _endpoint_signal(
+                        path=path,
+                        controller=class_name,
+                        method=name,
+                        http_method=route["method"],
+                        endpoint_path=full_path,
+                        method_line=line_number,
+                        mapping_line=route["line"],
+                        original_lines=original_lines,
                     )
+                    signals.append(endpoint_signal)
+                    endpoint_signal_id = endpoint_signal.signal_id
+                method_contexts.append(
+                    {
+                        "owner_type": type_name,
+                        "method": name,
+                        "line": line_number,
+                        "usage_signals": usage_signals,
+                        "endpoint_signal_id": endpoint_signal_id,
+                    }
+                )
 
         for annotation in _iter_annotations(lines):
             name = annotation["name"]
             if name in _SQL_ANNOTATIONS:
                 _add_identifier_tokens(tokens, annotation["args"])
 
+        relation_signals, relations = _relation_signals_and_relations(
+            path=path,
+            type_contexts=type_contexts,
+            method_contexts=method_contexts,
+            receiver_types=receiver_types,
+        )
+        signals.extend(relation_signals)
+
         return PluginExtraction(
             symbols=symbols,
             signals=signals,
+            relations=relations,
             lexical_tokens=_dedupe(tokens),
             metadata=metadata,
         )
@@ -295,6 +330,77 @@ def _endpoint_signal(
             "method": method,
         },
     )
+
+
+def _type_signal(path: Path, context: dict[str, Any]) -> CodeSignal:
+    signal_name = context["name"]
+    signal_tokens: list[str] = []
+    _add_identifier_tokens(signal_tokens, signal_name)
+    return CodeSignal(
+        signal_id=generate_signal_id(path, "type", context["start_line"], signal_name),
+        chunk_id="",
+        file_path=path,
+        kind="type",
+        name=signal_name,
+        start_line=context["start_line"],
+        end_line=context["start_line"],
+        language="java",
+        tokens=_dedupe(signal_tokens),
+        metadata={"owner_type": signal_name},
+    )
+
+
+def _method_signal(path: Path, method_context: dict[str, Any]) -> CodeSignal:
+    owner_type = method_context["owner_type"]
+    method_name = method_context["method"]
+    signal_name = f"{owner_type}.{method_name}" if owner_type else method_name
+    signal_tokens: list[str] = []
+    _add_identifier_tokens(signal_tokens, owner_type)
+    _add_identifier_tokens(signal_tokens, method_name)
+    metadata = {"owner_method": method_name}
+    if owner_type:
+        metadata["owner_type"] = owner_type
+    return CodeSignal(
+        signal_id=generate_signal_id(path, "method", method_context["line"], signal_name),
+        chunk_id="",
+        file_path=path,
+        kind="method",
+        name=signal_name,
+        start_line=method_context["line"],
+        end_line=method_context["line"],
+        language="java",
+        tokens=_dedupe(signal_tokens),
+        metadata=metadata,
+    )
+
+
+def _relation(
+    source_signal_id: str,
+    target_name: str,
+    kind: str,
+    confidence_basis: str,
+    metadata: dict[str, Any],
+) -> CodeRelation:
+    relation_metadata = dict(metadata)
+    relation_metadata["confidence_basis"] = confidence_basis
+    return CodeRelation(
+        relation_id=generate_relation_id(source_signal_id, target_name, kind),
+        source_signal_id=source_signal_id,
+        target_name=target_name,
+        kind=kind,
+        confidence=_relation_confidence(kind, confidence_basis),
+        metadata=relation_metadata,
+    )
+
+
+def _relation_confidence(kind: str, confidence_basis: str) -> float:
+    if kind == "implements":
+        return 1.0
+    if confidence_basis == "known_receiver":
+        return 0.8
+    if confidence_basis == "inferred_signature":
+        return 0.6
+    return 0.4
 
 
 def _strip_comments(content: str) -> str:
@@ -427,6 +533,120 @@ def _usage_signals(
                 )
             )
     return signals
+
+
+def _relation_signals_and_relations(
+    path: Path,
+    type_contexts: list[dict[str, Any]],
+    method_contexts: list[dict[str, Any]],
+    receiver_types: dict[str, dict[str, str]],
+) -> tuple[list[CodeSignal], list[CodeRelation]]:
+    signals: list[CodeSignal] = []
+    relations: list[CodeRelation] = []
+    seen_relation_ids: set[str] = set()
+    method_targets = _method_targets_by_name(method_contexts)
+
+    for context in type_contexts:
+        interfaces = context["interfaces"]
+        if not interfaces:
+            continue
+        signal = _type_signal(path, context)
+        signals.append(signal)
+        for interface in interfaces:
+            _append_relation(
+                relations,
+                seen_relation_ids,
+                _relation(
+                    source_signal_id=signal.signal_id,
+                    target_name=interface,
+                    kind="implements",
+                    confidence_basis="implements",
+                    metadata={"source_type": context["name"]},
+                ),
+            )
+
+    for method_context in method_contexts:
+        usage_signals = method_context["usage_signals"]
+        if not usage_signals:
+            continue
+
+        source_signal_id = method_context["endpoint_signal_id"]
+        relation_kind = "calls" if source_signal_id else "uses"
+        if not source_signal_id:
+            signal = _method_signal(path, method_context)
+            signals.append(signal)
+            source_signal_id = signal.signal_id
+
+        owner_type = method_context["owner_type"]
+        owner_receiver_types = receiver_types.get(owner_type, {})
+        for usage_signal in usage_signals:
+            target_name, confidence_basis, receiver_type = _usage_relation_target(
+                usage_signal, owner_receiver_types, method_targets
+            )
+            metadata = {
+                "receiver": usage_signal.metadata["receiver"],
+                "method": usage_signal.metadata["method"],
+                "owner_method": method_context["method"],
+            }
+            if owner_type:
+                metadata["owner_type"] = owner_type
+            if receiver_type:
+                metadata["receiver_type"] = receiver_type
+            _append_relation(
+                relations,
+                seen_relation_ids,
+                _relation(
+                    source_signal_id=source_signal_id,
+                    target_name=target_name,
+                    kind=relation_kind,
+                    confidence_basis=confidence_basis,
+                    metadata=metadata,
+                ),
+            )
+
+    return signals, relations
+
+
+def _append_relation(
+    relations: list[CodeRelation],
+    seen_relation_ids: set[str],
+    relation: CodeRelation,
+) -> None:
+    if relation.relation_id in seen_relation_ids:
+        return
+    seen_relation_ids.add(relation.relation_id)
+    relations.append(relation)
+
+
+def _usage_relation_target(
+    usage_signal: CodeSignal,
+    receiver_types: dict[str, str],
+    method_targets: dict[str, set[str]],
+) -> tuple[str, str, str]:
+    receiver = usage_signal.metadata["receiver"]
+    method = usage_signal.metadata["method"]
+    receiver_type = receiver_types.get(receiver, "")
+    if receiver_type:
+        return f"{receiver_type}.{method}", "known_receiver", receiver_type
+
+    candidates = method_targets.get(method, set())
+    if len(candidates) == 1:
+        inferred_type = next(iter(candidates))
+        return f"{inferred_type}.{method}", "inferred_signature", inferred_type
+
+    return method, "name_only", ""
+
+
+def _method_targets_by_name(
+    method_contexts: list[dict[str, Any]],
+) -> dict[str, set[str]]:
+    targets: dict[str, set[str]] = {}
+    for method_context in method_contexts:
+        owner_type = method_context["owner_type"]
+        if not owner_type:
+            continue
+        targets.setdefault(method_context["method"], set()).add(owner_type)
+    return targets
 
 
 def _mask_string_literals(lines: list[str]) -> list[str]:
@@ -579,6 +799,31 @@ def _class_contexts(
     return contexts
 
 
+def _type_contexts(
+    annotations_by_line: dict[int, list[dict[str, Any]]],
+    lines: list[str],
+) -> list[dict[str, Any]]:
+    contexts: list[dict[str, Any]] = []
+    for line_number, line in enumerate(lines, start=1):
+        type_match = _TYPE_RE.search(line)
+        if not type_match:
+            continue
+        kind, name = type_match.groups()
+        contexts.append(
+            {
+                "kind": kind,
+                "name": name,
+                "interfaces": _implemented_interfaces(line),
+                "route": _class_route_before(annotations_by_line, lines, line_number)
+                if kind == "class"
+                else "",
+                "start_line": line_number,
+                "end_line": _block_end_line(lines, line_number),
+            }
+        )
+    return contexts
+
+
 def _class_context_for_line(
     contexts: list[dict[str, Any]], line_number: int
 ) -> dict[str, Any] | None:
@@ -588,6 +833,144 @@ def _class_context_for_line(
         if context["start_line"] <= line_number <= context["end_line"]
     ]
     return max(matches, key=lambda context: context["start_line"]) if matches else None
+
+
+def _type_context_for_line(
+    contexts: list[dict[str, Any]], line_number: int
+) -> dict[str, Any] | None:
+    matches = [
+        context
+        for context in contexts
+        if context["start_line"] <= line_number <= context["end_line"]
+    ]
+    return max(matches, key=lambda context: context["start_line"]) if matches else None
+
+
+def _receiver_types_by_owner(
+    lines: list[str], type_contexts: list[dict[str, Any]]
+) -> dict[str, dict[str, str]]:
+    receiver_types: dict[str, dict[str, str]] = {}
+    for context in type_contexts:
+        owner_types: dict[str, str] = {}
+        for line_number in _top_level_type_body_lines(lines, context):
+            line = lines[line_number - 1]
+            if "(" in line:
+                _add_constructor_assignment_types(lines, context, line_number, owner_types)
+                continue
+            field_match = _FIELD_RE.search(line)
+            if field_match:
+                field_type, field_name = field_match.groups()
+                owner_types[field_name] = _clean_java_type(field_type)
+        if owner_types:
+            receiver_types[context["name"]] = owner_types
+    return receiver_types
+
+
+def _add_constructor_assignment_types(
+    lines: list[str],
+    context: dict[str, Any],
+    line_number: int,
+    receiver_types: dict[str, str],
+) -> None:
+    parameters = _constructor_parameters(lines[line_number - 1], context["name"])
+    if not parameters:
+        return
+    body_range = _method_body_range(lines, line_number)
+    if not body_range:
+        return
+
+    start_line, end_line = body_range
+    for line in lines[start_line - 1 : end_line]:
+        assignment_match = _ASSIGNMENT_RE.search(line)
+        if not assignment_match:
+            continue
+        field_name, parameter_name = assignment_match.groups()
+        parameter_type = parameters.get(parameter_name)
+        if parameter_type:
+            receiver_types[field_name] = parameter_type
+
+
+def _constructor_parameters(line: str, type_name: str) -> dict[str, str]:
+    match = re.search(
+        rf"^\s*(?:(?:public|protected|private)\s+)?{re.escape(type_name)}\s*\(([^)]*)\)",
+        line,
+    )
+    if not match:
+        return {}
+    return _parameter_types(match.group(1))
+
+
+def _parameter_types(parameters: str) -> dict[str, str]:
+    parameter_types: dict[str, str] = {}
+    for parameter in _split_java_parameters(parameters):
+        cleaned = re.sub(r"@\w+(?:\([^)]*\))?\s*", "", parameter).strip()
+        cleaned = re.sub(r"\bfinal\s+", "", cleaned).strip()
+        if not cleaned:
+            continue
+        parts = cleaned.replace("...", " ").split()
+        if len(parts) < 2:
+            continue
+        parameter_name = parts[-1]
+        parameter_type = _clean_java_type(" ".join(parts[:-1]))
+        if parameter_type:
+            parameter_types[parameter_name] = parameter_type
+    return parameter_types
+
+
+def _split_java_parameters(parameters: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    angle_depth = 0
+    for char in parameters:
+        if char == "<":
+            angle_depth += 1
+        elif char == ">" and angle_depth > 0:
+            angle_depth -= 1
+        if char == "," and angle_depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+    if current:
+        parts.append("".join(current).strip())
+    return parts
+
+
+def _top_level_type_body_lines(
+    lines: list[str], context: dict[str, Any]
+) -> list[int]:
+    body_lines: list[int] = []
+    masked_lines = _mask_string_literals(
+        lines[context["start_line"] - 1 : context["end_line"]]
+    )
+    depth = 0
+    for offset, line in enumerate(masked_lines):
+        line_number = context["start_line"] + offset
+        if depth == 1 and line_number != context["start_line"]:
+            body_lines.append(line_number)
+        depth += line.count("{") - line.count("}")
+    return body_lines
+
+
+def _implemented_interfaces(line: str) -> list[str]:
+    match = _IMPLEMENTS_RE.search(line)
+    if not match:
+        return []
+    return [
+        interface
+        for interface in (
+            _clean_java_type(part) for part in _split_java_parameters(match.group(1))
+        )
+        if interface
+    ]
+
+
+def _clean_java_type(type_text: str) -> str:
+    cleaned = type_text.strip()
+    cleaned = re.sub(r"<.*>", "", cleaned).strip()
+    cleaned = cleaned.replace("[]", "").strip()
+    cleaned = cleaned.split()[-1] if cleaned.split() else ""
+    return cleaned.split(".")[-1]
 
 
 def _block_end_line(lines: list[str], start_line: int) -> int:
