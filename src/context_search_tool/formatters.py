@@ -13,6 +13,16 @@ def format_markdown(bundle: QueryBundle) -> str:
         f"Query: {bundle.query}",
         f"Expanded tokens: {_format_list(bundle.expanded_tokens)}",
         "",
+        "## Summary",
+        "### Likely Entry Points",
+        *_format_bullets(list(bundle.summary.entry_points)),
+        "### Likely Implementation",
+        *_format_bullets(list(bundle.summary.implementation)),
+        "### Related Types",
+        *_format_bullets(list(bundle.summary.related_types)),
+        "### Possibly Legacy",
+        *_format_bullets(list(bundle.summary.possibly_legacy)),
+        "",
         "## Results",
     ]
 
@@ -59,6 +69,12 @@ def format_json(bundle: QueryBundle) -> str:
         "query": bundle.query,
         "expanded_tokens": bundle.expanded_tokens,
         "followup_keywords": bundle.followup_keywords,
+        "summary": {
+            "entry_points": bundle.summary.entry_points,
+            "implementation": bundle.summary.implementation,
+            "related_types": bundle.summary.related_types,
+            "possibly_legacy": bundle.summary.possibly_legacy,
+        },
         "results": [
             {
                 "file_path": result.file_path.as_posix(),
