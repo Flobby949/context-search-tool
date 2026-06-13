@@ -46,6 +46,7 @@ class _RankedChunk:
     score: float
     score_parts: dict[str, float]
     reasons: list[str]
+    rank_tier: int
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class _ExpandedResult:
     score_parts: dict[str, float]
     reasons: list[str]
     followup_keywords: list[str]
+    rank_tier: int
 
 
 def query_repository(
@@ -461,16 +463,20 @@ def _relation_expansion_candidates(
     if source_limit <= 0:
         return []
 
-    expanded: list[RetrievalCandidate] = []
+    expanded_by_chunk: dict[str, RetrievalCandidate] = {}
     seen_chunks = {candidate.chunk_id for candidate in seed_candidates}
+    seed_scores = {
+        candidate.chunk_id: _candidate_relation_seed_score(candidate)
+        for candidate in seed_candidates
+    }
     visited_signals: set[str] = set()
     queue: deque[tuple[str, float, int]] = deque()
 
     for candidate in sorted(
         seed_candidates,
-        key=lambda item: (-_candidate_base_score(item), item.chunk_id),
+        key=lambda item: (-_candidate_relation_seed_score(item), item.chunk_id),
     )[:source_limit]:
-        current_score = _candidate_base_score(candidate)
+        current_score = _candidate_relation_seed_score(candidate)
         if current_score <= 0:
             continue
         for signal in store.signals_for_chunk(candidate.chunk_id):
@@ -490,28 +496,35 @@ def _relation_expansion_candidates(
                 continue
 
             next_score = current_score * relation.confidence * _RELATION_SCORE_DECAY
-            remaining = MAX_EXPANSION_CANDIDATES - len(expanded)
+            remaining = MAX_EXPANSION_CANDIDATES - len(expanded_by_chunk)
             if remaining <= 0:
                 _log_expansion_limit()
-                return expanded
+                return list(expanded_by_chunk.values())
 
             for chunk in store.chunks_matching_signal_or_symbol(
                 relation.target_name,
                 remaining,
             ):
-                if chunk.chunk_id not in seen_chunks:
-                    expanded.append(
-                        RetrievalCandidate(
-                            chunk_id=chunk.chunk_id,
-                            score=next_score,
-                            source="relation",
-                            score_parts={"relation": next_score},
-                        )
+                existing = expanded_by_chunk.get(chunk.chunk_id)
+                seed_score = seed_scores.get(chunk.chunk_id, 0.0)
+                should_add_relation = (
+                    chunk.chunk_id not in seed_scores or next_score > seed_score
+                )
+                if should_add_relation and (
+                    existing is None or next_score > existing.score
+                ):
+                    expanded_by_chunk[chunk.chunk_id] = RetrievalCandidate(
+                        chunk_id=chunk.chunk_id,
+                        score=next_score,
+                        source="relation",
+                        score_parts={"relation": next_score},
                     )
+
+                if chunk.chunk_id not in seen_chunks:
                     seen_chunks.add(chunk.chunk_id)
-                    if len(expanded) >= MAX_EXPANSION_CANDIDATES:
+                    if len(expanded_by_chunk) >= MAX_EXPANSION_CANDIDATES:
                         _log_expansion_limit()
-                        return expanded
+                        return list(expanded_by_chunk.values())
 
                 for signal in store.signals_for_chunk(chunk.chunk_id):
                     if signal.signal_id in visited_signals:
@@ -519,11 +532,23 @@ def _relation_expansion_candidates(
                     visited_signals.add(signal.signal_id)
                     queue.append((signal.signal_id, next_score, next_depth))
 
-    return expanded
+    return list(expanded_by_chunk.values())
 
 
 def _candidate_base_score(candidate: RetrievalCandidate) -> float:
     return _bounded_score(max(candidate.score, *candidate.score_parts.values(), 0.0))
+
+
+def _candidate_relation_seed_score(candidate: RetrievalCandidate) -> float:
+    relation_score = candidate.score_parts.get("relation", 0.0)
+    if relation_score > 0:
+        return _bounded_score(relation_score)
+
+    signal_score = candidate.score_parts.get("signal", 0.0)
+    if signal_score > 0:
+        return _bounded_score(signal_score)
+
+    return 0.0
 
 
 def _log_expansion_limit() -> None:
@@ -595,12 +620,14 @@ def _rank_chunks(
                 score=score,
                 score_parts=score_parts,
                 reasons=_reasons(score_parts, query),
+                rank_tier=_rank_tier(store, chunk, score_parts),
             )
         )
 
     return sorted(
         ranked,
         key=lambda item: (
+            item.rank_tier,
             -item.score,
             item.chunk.file_path.as_posix(),
             item.chunk.start_line,
@@ -658,6 +685,7 @@ def _expand_ranked_chunks(
                 score_parts=ranked.score_parts,
                 reasons=ranked.reasons,
                 followup_keywords=ranked.chunk.lexical_tokens,
+                rank_tier=ranked.rank_tier,
             )
         )
 
@@ -781,6 +809,7 @@ def _cap_expanded_result(
         score_parts=result.score_parts,
         reasons=result.reasons,
         followup_keywords=result.followup_keywords,
+        rank_tier=result.rank_tier,
     )
 
 
@@ -816,7 +845,12 @@ def _merge_overlapping_results(results: list[_ExpandedResult]) -> list[_Expanded
 
     return sorted(
         merged,
-        key=lambda item: (-item.score, item.file_path.as_posix(), item.start_line),
+        key=lambda item: (
+            item.rank_tier,
+            -item.score,
+            item.file_path.as_posix(),
+            item.start_line,
+        ),
     )
 
 
@@ -838,6 +872,7 @@ def _merge_expanded_result(
         score_parts=_merge_score_parts(left.score_parts, right.score_parts),
         reasons=_dedupe([*left.reasons, *right.reasons]),
         followup_keywords=_dedupe([*left.followup_keywords, *right.followup_keywords]),
+        rank_tier=min(left.rank_tier, right.rank_tier),
     )
 
 
@@ -883,6 +918,31 @@ def _combined_score(score_parts: dict[str, float]) -> float:
 
 def _bounded_score(score: float) -> float:
     return min(max(score, 0.0), 1.0)
+
+
+def _rank_tier(
+    store: SQLiteStore,
+    chunk: DocumentChunk,
+    score_parts: dict[str, float],
+) -> int:
+    if score_parts.get("signal", 0.0) > 0 and _chunk_has_signal_kind(
+        store,
+        chunk.chunk_id,
+        "endpoint",
+    ):
+        return 0
+    if score_parts.get("relation", 0.0) > 0:
+        return 1
+    if score_parts.get("signal", 0.0) > 0:
+        return 2
+    return 3
+
+
+def _chunk_has_signal_kind(store: SQLiteStore, chunk_id: str, kind: str) -> bool:
+    try:
+        return any(signal.kind == kind for signal in store.signals_for_chunk(chunk_id))
+    except sqlite3.Error:
+        return False
 
 
 def _token_coverage(tokens: list[str], chunk: DocumentChunk) -> float:

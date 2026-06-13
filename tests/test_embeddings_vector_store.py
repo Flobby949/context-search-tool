@@ -113,6 +113,28 @@ def test_vector_search_sanitizes_non_finite_values(tmp_path: Path) -> None:
     assert all(math.isfinite(result.score) for result in results)
 
 
+def test_vector_search_does_not_warn_for_finite_realistic_matrix(
+    tmp_path: Path,
+) -> None:
+    rng = np.random.default_rng(42)
+    vectors = rng.normal(size=(64, 384)).astype(np.float32)
+    vectors = vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
+    query = rng.normal(size=384).astype(np.float32)
+    query = query / np.linalg.norm(query)
+    store = NumpyVectorStore(tmp_path)
+    store.upsert_many(
+        [(f"chunk-{index:02d}", vector) for index, vector in enumerate(vectors)]
+    )
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        results = store.search(query, top_k=5, deleted_ids=set())
+
+    assert captured == []
+    assert len(results) == 5
+    assert all(math.isfinite(result.score) for result in results)
+
+
 def test_numpy_vector_store_rejects_mismatched_persisted_ids(tmp_path: Path) -> None:
     np.save(
         tmp_path / "vectors.npy",

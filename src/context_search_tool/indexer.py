@@ -26,7 +26,7 @@ class IncompatibleIndexError(RuntimeError):
     pass
 
 
-CURRENT_SIGNAL_SCHEMA_VERSION = 2
+CURRENT_SIGNAL_SCHEMA_VERSION = 3
 SIGNAL_SCHEMA_VERSION_KEY = "signal_schema_version"
 
 

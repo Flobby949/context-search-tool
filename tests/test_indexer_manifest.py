@@ -194,4 +194,4 @@ def test_index_repository_rebuilds_stale_signal_schema(
 
     assert summary.files_indexed == 1
     assert store.signal_search(["old"], limit=10) == []
-    assert store.get_metadata("signal_schema_version") == "2"
+    assert store.get_metadata("signal_schema_version") == "3"

@@ -60,7 +60,8 @@ class NumpyVectorStore:
 
         query = _normalize_vector(np.asarray(query_vector, dtype=np.float32).reshape(-1))
         vectors = _normalize_matrix(self._vectors)
-        scores = vectors @ query
+        scores = np.einsum("ij,j->i", vectors, query, optimize=True)
+        scores = np.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
         results = [
             VectorSearchResult(chunk_id=chunk_id, score=float(score))
             for chunk_id, score in zip(self._ids, scores)

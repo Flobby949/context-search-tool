@@ -398,27 +398,15 @@ class SQLiteStore:
             return []
 
         with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT DISTINCT chunks.*
-                FROM chunks
-                LEFT JOIN code_signals
-                  ON code_signals.chunk_id = chunks.chunk_id
-                 AND code_signals.deleted_at IS NULL
-                LEFT JOIN chunk_symbols
-                  ON chunk_symbols.chunk_id = chunks.chunk_id
-                LEFT JOIN symbols
-                  ON symbols.symbol_id = chunk_symbols.symbol_id
-                WHERE chunks.deleted_at IS NULL
-                  AND (
-                    code_signals.name = ?
-                    OR symbols.name = ?
-                  )
-                ORDER BY chunks.file_path, chunks.start_line, chunks.chunk_id
-                LIMIT ?
-                """,
-                (target_name, target_name, limit),
-            ).fetchall()
+            rows = _chunks_matching_name(connection, target_name, limit)
+            if not rows and "." in target_name:
+                owner_name, member_name = target_name.rsplit(".", 1)
+                rows = _chunks_matching_member_name(
+                    connection,
+                    owner_name,
+                    member_name,
+                    limit,
+                )
             return [self._chunk_from_row(connection, row) for row in rows]
 
     def get_metadata(self, key: str) -> str | None:
@@ -840,6 +828,75 @@ class SQLiteStore:
             deleted_at=row["deleted_at"],
             metadata=_from_json(row["metadata"]),
         )
+
+
+def _chunks_matching_name(
+    connection: sqlite3.Connection,
+    target_name: str,
+    limit: int,
+) -> list[sqlite3.Row]:
+    return connection.execute(
+        """
+        SELECT DISTINCT chunks.*
+        FROM chunks
+        LEFT JOIN code_signals
+          ON code_signals.chunk_id = chunks.chunk_id
+         AND code_signals.deleted_at IS NULL
+        LEFT JOIN chunk_symbols
+          ON chunk_symbols.chunk_id = chunks.chunk_id
+        LEFT JOIN symbols
+          ON symbols.symbol_id = chunk_symbols.symbol_id
+        WHERE chunks.deleted_at IS NULL
+          AND (
+            code_signals.name = ?
+            OR symbols.name = ?
+          )
+        ORDER BY chunks.file_path, chunks.start_line, chunks.chunk_id
+        LIMIT ?
+        """,
+        (target_name, target_name, limit),
+    ).fetchall()
+
+
+def _chunks_matching_member_name(
+    connection: sqlite3.Connection,
+    owner_name: str,
+    member_name: str,
+    limit: int,
+) -> list[sqlite3.Row]:
+    owner_variants = [owner_name, f"{owner_name}Impl"]
+    signal_names = [f"{owner}.{member_name}" for owner in owner_variants]
+    path_patterns = [f"%{owner}.java" for owner in owner_variants]
+    return connection.execute(
+        _in_query(
+            """
+        SELECT DISTINCT chunks.*
+        FROM chunks
+        LEFT JOIN code_signals
+          ON code_signals.chunk_id = chunks.chunk_id
+         AND code_signals.deleted_at IS NULL
+        LEFT JOIN chunk_symbols
+          ON chunk_symbols.chunk_id = chunks.chunk_id
+        LEFT JOIN symbols
+          ON symbols.symbol_id = chunk_symbols.symbol_id
+        WHERE chunks.deleted_at IS NULL
+          AND (
+            code_signals.name IN ({placeholders})
+            OR (
+              symbols.name = ?
+              AND (
+                chunks.file_path LIKE ?
+                OR chunks.file_path LIKE ?
+              )
+            )
+          )
+        ORDER BY chunks.file_path, chunks.start_line, chunks.chunk_id
+        LIMIT ?
+        """,
+            signal_names,
+        ),
+        (*signal_names, member_name, *path_patterns, limit),
+    ).fetchall()
 
 
 def _path_key(path: Path) -> str:

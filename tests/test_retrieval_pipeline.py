@@ -83,8 +83,8 @@ class WorkspaceQueryExe {
         start_line=3,
         end_line=3,
         language="java",
-        tokens=["workspace"],
-        metadata={"path": "/workspace/page", "text": "工作台相关代码"},
+        tokens=["workspace", "工作台统计", "待我审核"],
+        metadata={"path": "/workspace/page", "text": "工作台统计-待我审核"},
     )
     service_signal = CodeSignal(
         signal_id="sig-service",
@@ -119,7 +119,7 @@ class WorkspaceQueryExe {
             CodeRelation(
                 relation_id="rel-controller-service",
                 source_signal_id="sig-controller",
-                target_name="WorkspaceServiceImpl.list",
+                target_name="WorkspaceService.list",
                 kind="calls",
                 confidence=0.9,
                 metadata={},
@@ -152,6 +152,409 @@ class WorkspaceQueryExe {
     assert "relation" in bundle.results[1].score_parts
     assert "relation" in bundle.results[2].score_parts
     assert "lexical" in bundle.results[3].score_parts
+
+
+def test_workflow_alias_query_prefers_process_endpoint_over_generic_api(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "HealthCheckController.java").write_text(
+        """
+@RequestMapping("/health")
+class HealthCheckController {
+  /**
+   * 健康检查接口
+   */
+  @GetMapping("/check")
+  String healthCheck() { return "ok"; }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    (repo / "ProcessOpenController.java").write_text(
+        """
+/**
+ * 对外开放的流程处理控制器，专门用于 APAAS 系统间集成的接口
+ */
+@RequestMapping("/openapi/process")
+class ProcessOpenController {
+  /**
+   * 启动流程
+   */
+  @PostMapping("/start")
+  String start() { return processService.startProcess(); }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=10,
+            final_top_k=2,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    index_repository(repo, config)
+
+    bundle = query_repository(repo, "apaas工作流相关接口", config)
+
+    assert bundle.results[0].file_path == Path("ProcessOpenController.java")
+    assert bundle.results[1].file_path == Path("HealthCheckController.java")
+    assert "POST /openapi/process/start" in bundle.summary.entry_points
+
+
+def test_relation_expansion_scores_from_signal_strength(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    strong_controller = DocumentChunk(
+        chunk_id="strong-controller",
+        file_path=Path("StrongController.java"),
+        start_line=1,
+        end_line=5,
+        content="class StrongController {}",
+        chunk_type="symbol",
+        symbols=[],
+        lexical_tokens=["common"],
+        embedding_id="strong-controller",
+        deleted_at=None,
+        metadata={"language": "java"},
+    )
+    weak_controller = DocumentChunk(
+        chunk_id="weak-controller",
+        file_path=Path("WeakController.java"),
+        start_line=1,
+        end_line=5,
+        content="class WeakController {}",
+        chunk_type="symbol",
+        symbols=[],
+        lexical_tokens=["common"],
+        embedding_id="weak-controller",
+        deleted_at=None,
+        metadata={"language": "java"},
+    )
+    strong_service = DocumentChunk(
+        chunk_id="strong-service",
+        file_path=Path("StrongServiceImpl.java"),
+        start_line=1,
+        end_line=5,
+        content="class StrongServiceImpl {}",
+        chunk_type="symbol",
+        symbols=[],
+        lexical_tokens=["service"],
+        embedding_id="strong-service",
+        deleted_at=None,
+        metadata={"language": "java"},
+    )
+    weak_service = DocumentChunk(
+        chunk_id="weak-service",
+        file_path=Path("WeakServiceImpl.java"),
+        start_line=1,
+        end_line=5,
+        content="class WeakServiceImpl {}",
+        chunk_type="symbol",
+        symbols=[],
+        lexical_tokens=["service"],
+        embedding_id="weak-service",
+        deleted_at=None,
+        metadata={"language": "java"},
+    )
+    store.replace_chunks(
+        Path("StrongController.java"),
+        [strong_controller],
+    )
+    store.replace_chunks(Path("WeakController.java"), [weak_controller])
+    store.replace_chunks(Path("StrongServiceImpl.java"), [strong_service])
+    store.replace_chunks(Path("WeakServiceImpl.java"), [weak_service])
+    strong_signal = CodeSignal(
+        signal_id="sig-strong",
+        chunk_id="strong-controller",
+        file_path=Path("StrongController.java"),
+        kind="endpoint",
+        name="GET /strong",
+        start_line=1,
+        end_line=1,
+        language="java",
+        tokens=["strong"],
+        metadata={},
+    )
+    weak_signal = CodeSignal(
+        signal_id="sig-weak",
+        chunk_id="weak-controller",
+        file_path=Path("WeakController.java"),
+        kind="endpoint",
+        name="GET /weak",
+        start_line=1,
+        end_line=1,
+        language="java",
+        tokens=["weak"],
+        metadata={},
+    )
+    strong_target = CodeSignal(
+        signal_id="sig-strong-target",
+        chunk_id="strong-service",
+        file_path=Path("StrongServiceImpl.java"),
+        kind="method",
+        name="StrongServiceImpl.run",
+        start_line=1,
+        end_line=1,
+        language="java",
+        tokens=["strong", "run"],
+        metadata={},
+    )
+    weak_target = CodeSignal(
+        signal_id="sig-weak-target",
+        chunk_id="weak-service",
+        file_path=Path("WeakServiceImpl.java"),
+        kind="method",
+        name="WeakServiceImpl.run",
+        start_line=1,
+        end_line=1,
+        language="java",
+        tokens=["weak", "run"],
+        metadata={},
+    )
+    store.replace_signals(
+        Path("StrongController.java"),
+        [strong_signal],
+    )
+    store.replace_signals(Path("WeakController.java"), [weak_signal])
+    store.replace_signals(Path("StrongServiceImpl.java"), [strong_target])
+    store.replace_signals(Path("WeakServiceImpl.java"), [weak_target])
+    store.replace_relations(
+        Path("StrongController.java"),
+        [
+            CodeRelation(
+                relation_id="rel-strong",
+                source_signal_id="sig-strong",
+                target_name="StrongServiceImpl.run",
+                kind="calls",
+                confidence=0.8,
+                metadata={},
+            )
+        ],
+    )
+    store.replace_relations(
+        Path("WeakController.java"),
+        [
+            CodeRelation(
+                relation_id="rel-weak",
+                source_signal_id="sig-weak",
+                target_name="WeakServiceImpl.run",
+                kind="calls",
+                confidence=0.8,
+                metadata={},
+            )
+        ],
+    )
+
+    expanded = retrieval._relation_expansion_candidates(
+        store,
+        [
+            RetrievalCandidate(
+                chunk_id="strong-controller",
+                score=10.0,
+                source="signal,path_symbol",
+                score_parts={"signal": 0.5, "path_symbol": 10.0},
+            ),
+            RetrievalCandidate(
+                chunk_id="weak-controller",
+                score=10.0,
+                source="signal,path_symbol",
+                score_parts={"signal": 0.05, "path_symbol": 10.0},
+            ),
+        ],
+        DEFAULT_CONFIG,
+    )
+
+    scores = {candidate.chunk_id: candidate.score for candidate in expanded}
+    assert scores["strong-service"] > scores["weak-service"]
+
+
+def test_relation_expansion_ignores_candidates_without_signal_or_relation_score(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    source = DocumentChunk(
+        chunk_id="source",
+        file_path=Path("SourceController.java"),
+        start_line=1,
+        end_line=5,
+        content="class SourceController {}",
+        chunk_type="symbol",
+        symbols=[],
+        lexical_tokens=["source"],
+        embedding_id="source",
+        deleted_at=None,
+        metadata={"language": "java"},
+    )
+    target = DocumentChunk(
+        chunk_id="target",
+        file_path=Path("TargetServiceImpl.java"),
+        start_line=1,
+        end_line=5,
+        content="class TargetServiceImpl {}",
+        chunk_type="symbol",
+        symbols=[],
+        lexical_tokens=["target"],
+        embedding_id="target",
+        deleted_at=None,
+        metadata={"language": "java"},
+    )
+    source_signal = CodeSignal(
+        signal_id="sig-source",
+        chunk_id="source",
+        file_path=Path("SourceController.java"),
+        kind="endpoint",
+        name="GET /source",
+        start_line=1,
+        end_line=1,
+        language="java",
+        tokens=["source"],
+        metadata={},
+    )
+    target_signal = CodeSignal(
+        signal_id="sig-target",
+        chunk_id="target",
+        file_path=Path("TargetServiceImpl.java"),
+        kind="method",
+        name="TargetServiceImpl.run",
+        start_line=1,
+        end_line=1,
+        language="java",
+        tokens=["target", "run"],
+        metadata={},
+    )
+    store.replace_chunks(Path("SourceController.java"), [source])
+    store.replace_chunks(Path("TargetServiceImpl.java"), [target])
+    store.replace_signals(Path("SourceController.java"), [source_signal])
+    store.replace_signals(Path("TargetServiceImpl.java"), [target_signal])
+    store.replace_relations(
+        Path("SourceController.java"),
+        [
+            CodeRelation(
+                relation_id="rel-source-target",
+                source_signal_id="sig-source",
+                target_name="TargetServiceImpl.run",
+                kind="calls",
+                confidence=0.8,
+                metadata={},
+            )
+        ],
+    )
+
+    expanded = retrieval._relation_expansion_candidates(
+        store,
+        [
+            RetrievalCandidate(
+                chunk_id="source",
+                score=1.0,
+                source="semantic",
+                score_parts={"semantic": 1.0},
+            )
+        ],
+        DEFAULT_CONFIG,
+    )
+
+    assert expanded == []
+
+
+def test_relation_expansion_adds_relation_score_to_existing_direct_candidate(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    source = DocumentChunk(
+        chunk_id="source",
+        file_path=Path("SourceController.java"),
+        start_line=1,
+        end_line=5,
+        content="class SourceController {}",
+        chunk_type="symbol",
+        symbols=[],
+        lexical_tokens=["source"],
+        embedding_id="source",
+        deleted_at=None,
+        metadata={"language": "java"},
+    )
+    target = DocumentChunk(
+        chunk_id="target",
+        file_path=Path("TargetServiceImpl.java"),
+        start_line=1,
+        end_line=5,
+        content="class TargetServiceImpl {}",
+        chunk_type="symbol",
+        symbols=[],
+        lexical_tokens=["target"],
+        embedding_id="target",
+        deleted_at=None,
+        metadata={"language": "java"},
+    )
+    source_signal = CodeSignal(
+        signal_id="sig-source",
+        chunk_id="source",
+        file_path=Path("SourceController.java"),
+        kind="endpoint",
+        name="GET /source",
+        start_line=1,
+        end_line=1,
+        language="java",
+        tokens=["source"],
+        metadata={},
+    )
+    target_signal = CodeSignal(
+        signal_id="sig-target",
+        chunk_id="target",
+        file_path=Path("TargetServiceImpl.java"),
+        kind="method",
+        name="TargetServiceImpl.run",
+        start_line=1,
+        end_line=1,
+        language="java",
+        tokens=["target", "run"],
+        metadata={},
+    )
+    store.replace_chunks(Path("SourceController.java"), [source])
+    store.replace_chunks(Path("TargetServiceImpl.java"), [target])
+    store.replace_signals(Path("SourceController.java"), [source_signal])
+    store.replace_signals(Path("TargetServiceImpl.java"), [target_signal])
+    store.replace_relations(
+        Path("SourceController.java"),
+        [
+            CodeRelation(
+                relation_id="rel-source-target",
+                source_signal_id="sig-source",
+                target_name="TargetServiceImpl.run",
+                kind="calls",
+                confidence=0.8,
+                metadata={},
+            )
+        ],
+    )
+
+    expanded = retrieval._relation_expansion_candidates(
+        store,
+        [
+            RetrievalCandidate(
+                chunk_id="source",
+                score=1.0,
+                source="signal",
+                score_parts={"signal": 1.0},
+            ),
+            RetrievalCandidate(
+                chunk_id="target",
+                score=0.1,
+                source="signal",
+                score_parts={"signal": 0.1},
+            ),
+        ],
+        DEFAULT_CONFIG,
+    )
+
+    assert any(candidate.chunk_id == "target" for candidate in expanded)
 
 
 def test_query_bundle_summary_groups_entrypoints_implementation_related_and_legacy(
@@ -687,7 +1090,7 @@ def test_relation_expansion_logs_when_candidate_limit_is_hit(
     assert "relation expansion hit candidate limit" in caplog.text.lower()
 
 
-def test_relation_expansion_from_high_path_symbol_seed_stays_below_direct_signal(
+def test_relation_expansion_ignores_high_path_symbol_seed_without_signal(
     tmp_path: Path,
 ) -> None:
     store = _graph_store(
@@ -728,18 +1131,11 @@ def test_relation_expansion_from_high_path_symbol_seed_stays_below_direct_signal
         "workspace",
     )
     scores = {item.chunk.chunk_id: item.score for item in ranked}
-    relation_scores = {
-        candidate.chunk_id: candidate.score_parts["relation"]
-        for candidate in relation_candidates
-    }
 
-    assert scores["chunk-Direct"] > scores["chunk-Service"]
-    assert scores["chunk-Service"] > scores["chunk-Executor"]
-    assert scores["chunk-Executor"] > scores["chunk-Dto"]
-    assert relation_scores == {
-        "chunk-Service": pytest.approx(0.4),
-        "chunk-Executor": pytest.approx(0.32),
-    }
+    assert relation_candidates == []
+    assert "chunk-Service" not in scores
+    assert "chunk-Executor" not in scores
+    assert scores["chunk-Direct"] > scores["chunk-Dto"]
 
 
 def test_query_combines_route_tokens_and_ranking_reasons(tmp_path: Path) -> None:
