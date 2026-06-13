@@ -1,0 +1,28 @@
+[project]
+name = "context-search-tool"
+version = "0.1.0"
+description = "Local hybrid semantic retrieval for codebases"
+requires-python = ">=3.11"
+dependencies = [
+  "typer>=0.12.0",
+  "rich>=13.7.0",
+  "pathspec>=0.12.1",
+  "numpy>=1.26.0",
+  "httpx>=0.27.0"
+]
+
+[project.scripts]
+cst = "context_search_tool.cli:app"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0"
+]
+
+[build-system]
+requires = ["setuptools>=69.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
