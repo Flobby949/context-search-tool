@@ -103,3 +103,46 @@ class ApiController {
 
     assert "/api" in extraction.lexical_tokens
     assert "api" in extraction.lexical_tokens
+
+
+def test_java_plugin_ignores_enum_constructor_and_literal_noise() -> None:
+    source = '''
+enum Status {
+    ACTIVE("A"),
+    DISABLED("D");
+
+    Status(String code) {}
+}
+'''.strip()
+
+    extraction = JavaPlugin().extract(Path("Status.java"), source)
+    symbols_by_kind = {(symbol.name, symbol.kind) for symbol in extraction.symbols}
+
+    assert ("ACTIVE", "enum_value") in symbols_by_kind
+    assert ("DISABLED", "enum_value") in symbols_by_kind
+    assert ("A", "enum_value") not in symbols_by_kind
+    assert ("D", "enum_value") not in symbols_by_kind
+    assert ("Status", "method") not in symbols_by_kind
+    assert "active" in extraction.lexical_tokens
+    assert "disabled" in extraction.lexical_tokens
+    assert "a" not in extraction.lexical_tokens
+    assert "d" not in extraction.lexical_tokens
+
+
+def test_java_plugin_does_not_reuse_class_route_for_unannotated_method() -> None:
+    source = """
+import org.springframework.web.bind.annotation.RequestMapping;
+
+@RequestMapping("/api")
+class ApiController {
+    String index() {
+        return "ok";
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("ApiController.java"), source)
+
+    assert "/api" in extraction.lexical_tokens
+    assert "api" in extraction.lexical_tokens
+    assert "/api/api" not in extraction.lexical_tokens

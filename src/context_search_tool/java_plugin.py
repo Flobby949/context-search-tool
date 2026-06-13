@@ -34,7 +34,6 @@ _HTTP_BY_MAPPING = {
     "PatchMapping": "PATCH",
 }
 _STATIC_FINAL_RE = re.compile(r"\bstatic\s+final\s+[\w<>\[\], ?]+\s+(\w+)\s*[=;]")
-_ENUM_VALUE_RE = re.compile(r"\b([A-Z][A-Z0-9_]*)\b")
 
 
 class JavaPlugin:
@@ -63,6 +62,8 @@ class JavaPlugin:
 
         annotations_by_line = _annotations_by_line(lines, tokens)
         enum_ranges = _enum_ranges(lines)
+        enum_names = _enum_names(lines)
+        enum_constant_lines = _enum_constant_lines(lines, enum_ranges)
         class_route = ""
 
         for line_number, line in enumerate(lines, start=1):
@@ -87,9 +88,13 @@ class JavaPlugin:
             method_match = _METHOD_RE.search(line)
             if method_match and not _TYPE_RE.search(line):
                 name = method_match.group(1)
+                if line_number in enum_constant_lines or _is_enum_constructor(
+                    name, line_number, enum_ranges, enum_names
+                ):
+                    continue
                 symbols.append(_symbol(name, "method", line_number, line_number))
                 _add_identifier_tokens(tokens, name)
-                route = _nearest_mapping_before(annotations_by_line, line_number)
+                route = _nearest_mapping_before(annotations_by_line, lines, line_number)
                 if route:
                     full_path = _join_route(class_route, route["path"])
                     _add_route_tokens(tokens, route["path"])
@@ -201,9 +206,13 @@ def _nearest_route_before(
 
 
 def _nearest_mapping_before(
-    annotations_by_line: dict[int, list[dict[str, Any]]], line_number: int
+    annotations_by_line: dict[int, list[dict[str, Any]]],
+    lines: list[str],
+    line_number: int,
 ) -> dict[str, str] | None:
     for candidate_line in range(line_number - 1, 0, -1):
+        if _TYPE_RE.search(lines[candidate_line - 1]):
+            return None
         annotations = annotations_by_line.get(candidate_line, [])
         if not annotations and candidate_line < line_number - 3:
             return None
@@ -254,11 +263,56 @@ def _extract_enum_values(
     symbols: list[SymbolRef],
     tokens: list[str],
 ) -> None:
+    for name, line_number in _enum_constants(lines, start_line, end_line):
+        symbols.append(_symbol(name, "enum_value", line_number, line_number))
+        _add_token(tokens, name)
+        _add_identifier_tokens(tokens, name)
+
+
+def _enum_constants(
+    lines: list[str], start_line: int, end_line: int
+) -> list[tuple[str, int]]:
+    entries: list[tuple[str, int]] = []
+    constant_text = ""
+    constant_start_line = start_line
+    paren_depth = 0
+    seen_open_brace = False
+
     for line_number in range(start_line, end_line + 1):
-        for name in _ENUM_VALUE_RE.findall(lines[line_number - 1]):
-            symbols.append(_symbol(name, "enum_value", line_number, line_number))
-            _add_token(tokens, name)
-            _add_identifier_tokens(tokens, name)
+        line = lines[line_number - 1]
+        index = line.find("{") + 1 if not seen_open_brace else 0
+        seen_open_brace = seen_open_brace or "{" in line
+        while index < len(line):
+            char = line[index]
+            if char == "(":
+                paren_depth += 1
+            elif char == ")":
+                paren_depth = max(0, paren_depth - 1)
+            elif char in {",", ";", "}"} and paren_depth == 0:
+                _append_enum_constant(entries, constant_text, constant_start_line)
+                constant_text = ""
+                constant_start_line = line_number
+                if char in {";", "}"}:
+                    return entries
+                index += 1
+                continue
+
+            if constant_text or not char.isspace():
+                if not constant_text:
+                    constant_start_line = line_number
+                constant_text += char
+            index += 1
+
+    _append_enum_constant(entries, constant_text, constant_start_line)
+    return entries
+
+
+def _append_enum_constant(
+    entries: list[tuple[str, int]], constant_text: str, line_number: int
+) -> None:
+    match = re.match(r"\s*([A-Z][A-Z0-9_]*)\b", constant_text)
+    if match:
+        entries.append((match.group(1), line_number))
 
 
 def _enum_ranges(lines: list[str]) -> dict[int, int]:
@@ -275,6 +329,35 @@ def _enum_ranges(lines: list[str]) -> dict[int, int]:
         else:
             ranges[index + 1] = index + 1
     return ranges
+
+
+def _enum_names(lines: list[str]) -> dict[int, str]:
+    names: dict[int, str] = {}
+    for line_number, line in enumerate(lines, start=1):
+        match = re.search(r"\benum\s+(\w+)", line)
+        if match:
+            names[line_number] = match.group(1)
+    return names
+
+
+def _enum_constant_lines(lines: list[str], enum_ranges: dict[int, int]) -> set[int]:
+    return {
+        line_number
+        for start_line, end_line in enum_ranges.items()
+        for _, line_number in _enum_constants(lines, start_line, end_line)
+    }
+
+
+def _is_enum_constructor(
+    name: str,
+    line_number: int,
+    enum_ranges: dict[int, int],
+    enum_names: dict[int, str],
+) -> bool:
+    for start_line, end_line in enum_ranges.items():
+        if start_line <= line_number <= end_line and enum_names.get(start_line) == name:
+            return True
+    return False
 
 
 def _add_identifier_tokens(tokens: list[str], value: str) -> None:
