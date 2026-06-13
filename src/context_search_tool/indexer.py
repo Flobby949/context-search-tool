@@ -148,7 +148,7 @@ def _prepare_file(
         replace(
             chunk,
             lexical_tokens=_dedupe_tokens(
-                [*chunk.lexical_tokens, *extraction.lexical_tokens]
+                [*chunk.lexical_tokens, *_localized_plugin_tokens(chunk, extraction)]
             ),
             embedding_id=chunk.chunk_id,
         )
@@ -171,6 +171,28 @@ def _extract(
         if plugin.supports(scanned_file.path, scanned_file.language):
             return plugin.extract(scanned_file.path, content)
     return PluginExtraction()
+
+
+def _localized_plugin_tokens(
+    chunk: DocumentChunk,
+    extraction: PluginExtraction,
+) -> list[str]:
+    content = chunk.content.lower()
+    chunk_tokens = set(chunk.lexical_tokens)
+    return [
+        token
+        for token in extraction.lexical_tokens
+        if _is_token_evidenced(token, content, chunk_tokens)
+    ]
+
+
+def _is_token_evidenced(token: str, content: str, chunk_tokens: set[str]) -> bool:
+    normalized = token.lower()
+    if normalized in chunk_tokens:
+        return True
+    if any(not char.isalnum() for char in normalized):
+        return normalized in content
+    return False
 
 
 def _embedding_text_for_chunk(chunk: DocumentChunk) -> str:

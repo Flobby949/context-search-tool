@@ -166,3 +166,38 @@ class ApplyAuditController {
     assert bundle.results[0].file_path == Path("ApplyAuditController.java")
     assert "lexical" in bundle.results[0].score_parts
     assert any("lexical" in reason.lower() for reason in bundle.results[0].reasons)
+
+
+def test_route_reason_only_applies_to_chunks_with_route_tokens(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "ApplyAuditController.java").write_text(
+        '''
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+
+@RequestMapping("/apply/audit")
+class ApplyAuditController {
+  @PostMapping("/pageEs")
+  String pageEs() { return "ok"; }
+}
+'''.strip(),
+        encoding="utf-8",
+    )
+    (repo / "AuditStatus.java").write_text(
+        """
+enum AuditStatus {
+  INVOLVED_BY_ME,
+  TOTAL_OVERVIEW
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    index_repository(repo, DEFAULT_CONFIG)
+
+    bundle = query_repository(repo, "/apply/audit/pageEs INVOLVED_BY_ME", DEFAULT_CONFIG)
+
+    status_result = next(
+        result for result in bundle.results if result.file_path == Path("AuditStatus.java")
+    )
+    assert not any("route" in reason.lower() for reason in status_result.reasons)

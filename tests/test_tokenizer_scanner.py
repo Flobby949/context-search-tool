@@ -49,6 +49,25 @@ def test_scanner_respects_gitignore_and_context_search(tmp_path: Path) -> None:
     assert len(files[0].sha256) == 64
 
 
+def test_scanner_respects_include_patterns(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    src = repo / "src"
+    docs = repo / "docs"
+    src.mkdir()
+    docs.mkdir()
+    (src / "Service.java").write_text("class Service {}\n", encoding="utf-8")
+    (docs / "Notes.md").write_text("# Notes\n", encoding="utf-8")
+    config = replace(
+        DEFAULT_CONFIG,
+        index=replace(DEFAULT_CONFIG.index, include=["src/**/*.java"]),
+    )
+
+    files = scan_workspace(repo, config)
+
+    assert [item.path for item in files] == [Path("src/Service.java")]
+
+
 def test_scanner_returns_files_sorted_by_relative_path(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

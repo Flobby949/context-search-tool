@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 from typing import Optional, Sequence
 
+import httpx
 import typer
 
 from context_search_tool.config import load_config
@@ -36,9 +37,8 @@ def index(repo: Optional[Path] = typer.Argument(None)) -> None:
     config = load_config(resolved_repo)
     try:
         summary = index_repository(resolved_repo, config)
-    except IncompatibleIndexError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
+    except (IncompatibleIndexError, ValueError, httpx.HTTPError) as exc:
+        _exit_with_error(exc)
 
     typer.echo(
         (
@@ -82,9 +82,8 @@ def query(
             context_lines=context_lines,
             full_file=full_file,
         )
-    except ValueError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
+    except (ValueError, httpx.HTTPError) as exc:
+        _exit_with_error(exc)
 
     if json_output:
         typer.echo(format_json(bundle))
@@ -206,6 +205,11 @@ def _require_index(repo: Path) -> Path:
         )
         raise typer.Exit(code=1)
     return index_dir
+
+
+def _exit_with_error(exc: Exception) -> None:
+    typer.echo(f"Error: {exc}", err=True)
+    raise typer.Exit(code=1) from exc
 
 
 def _parse_location(location: str, repo: Path) -> tuple[Path, int]:

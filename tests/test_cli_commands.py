@@ -64,6 +64,43 @@ def test_query_missing_index_does_not_create_artifacts(tmp_path: Path) -> None:
     _assert_missing_index_error(result.output, result.exit_code, repo)
 
 
+def test_index_reports_embedding_config_errors_without_traceback(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "Service.java").write_text("class Service {}\n", encoding="utf-8")
+    config_dir = repo / ".context-search"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text(
+        """
+[index]
+include = []
+exclude = []
+max_file_bytes = 500000
+max_full_file_bytes = 200000
+
+[retrieval]
+semantic_top_k = 80
+lexical_top_k = 80
+final_top_k = 12
+context_before_lines = 8
+context_after_lines = 12
+
+[embedding]
+provider = "openai-compatible"
+model = "text-embedding"
+dimensions = 3
+""".lstrip(),
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["index", str(repo)])
+
+    assert result.exit_code == 1
+    assert "Error: base_url is required" in result.output
+    assert "Traceback" not in result.output
+
+
 def test_stats_missing_index_does_not_create_artifacts(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

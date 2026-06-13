@@ -42,7 +42,8 @@ class ScannedFile:
 def scan_workspace(repo: Path, config: ToolConfig) -> list[ScannedFile]:
     repo = repo.resolve()
     gitignore_spec = _load_gitignore(repo)
-    exclude_spec = pathspec.PathSpec.from_lines("gitwildmatch", config.index.exclude)
+    include_spec = pathspec.GitIgnoreSpec.from_lines(config.index.include)
+    exclude_spec = pathspec.GitIgnoreSpec.from_lines(config.index.exclude)
     scanned: list[ScannedFile] = []
 
     for dirpath, dirnames, filenames in os.walk(repo):
@@ -59,6 +60,8 @@ def scan_workspace(repo: Path, config: ToolConfig) -> list[ScannedFile]:
             path = current_dir / filename
             if _is_skipped_path(path, repo, gitignore_spec, exclude_spec):
                 continue
+            if not _is_included_path(path, repo, include_spec, config.index.include):
+                continue
 
             scanned_file = _scan_file(path, repo, config)
             if scanned_file is not None:
@@ -70,9 +73,9 @@ def scan_workspace(repo: Path, config: ToolConfig) -> list[ScannedFile]:
 def _load_gitignore(repo: Path) -> pathspec.PathSpec:
     gitignore = repo / ".gitignore"
     if not gitignore.exists():
-        return pathspec.PathSpec.from_lines("gitwildmatch", [])
-    return pathspec.PathSpec.from_lines(
-        "gitwildmatch", gitignore.read_text(encoding="utf-8").splitlines()
+        return pathspec.GitIgnoreSpec.from_lines([])
+    return pathspec.GitIgnoreSpec.from_lines(
+        gitignore.read_text(encoding="utf-8").splitlines()
     )
 
 
@@ -96,6 +99,17 @@ def _is_skipped_path(
         or exclude_spec.match_file(relative_posix)
         or exclude_spec.match_file(directory_posix)
     )
+
+
+def _is_included_path(
+    path: Path,
+    repo: Path,
+    include_spec: pathspec.PathSpec,
+    include_patterns: list[str],
+) -> bool:
+    if not include_patterns:
+        return True
+    return include_spec.match_file(path.relative_to(repo).as_posix())
 
 
 def _scan_file(path: Path, repo: Path, config: ToolConfig) -> ScannedFile | None:

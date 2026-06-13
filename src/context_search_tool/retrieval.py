@@ -179,9 +179,13 @@ def _rank_chunks(
         if coverage:
             score_parts["token_coverage"] = coverage
 
-        plugin_boost = _plugin_boost(chunk, query, coverage)
+        plugin_boost = _plugin_boost(chunk)
+        route_boost = _route_boost(chunk, query, tokens)
+        plugin_boost += route_boost
         if plugin_boost:
             score_parts["plugin_boost"] = plugin_boost
+        if route_boost:
+            score_parts["route_boost"] = route_boost
 
         penalty = _generated_or_test_penalty(chunk)
         if penalty:
@@ -436,13 +440,22 @@ def _token_coverage(tokens: list[str], chunk: DocumentChunk) -> float:
     return matches / len(tokens)
 
 
-def _plugin_boost(chunk: DocumentChunk, query: str, coverage: float) -> float:
-    boost = 0.0
+def _plugin_boost(chunk: DocumentChunk) -> float:
     if chunk.metadata.get("language") == "java":
-        boost += 0.03
-    if "/" in query and coverage > 0:
-        boost += 0.12
-    return boost
+        return 0.03
+    return 0.0
+
+
+def _route_boost(chunk: DocumentChunk, query: str, tokens: list[str]) -> float:
+    if "/" not in query or not tokens:
+        return 0.0
+    query_tokens = set(tokens)
+    for token in chunk.lexical_tokens:
+        if not token.startswith("/"):
+            continue
+        if query_tokens.intersection(tokenize_query(token)):
+            return 0.12
+    return 0.0
 
 
 def _generated_or_test_penalty(chunk: DocumentChunk) -> float:
@@ -465,7 +478,7 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("path/symbol match")
     if score_parts.get("token_coverage", 0.0) > 0:
         reasons.append("token coverage")
-    if "/" in query and score_parts.get("plugin_boost", 0.0) >= 0.12:
+    if "/" in query and score_parts.get("route_boost", 0.0) > 0:
         reasons.append("route token match")
     elif score_parts.get("plugin_boost", 0.0) > 0:
         reasons.append("java plugin boost")
