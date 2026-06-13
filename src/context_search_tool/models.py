@@ -101,3 +101,11 @@ class RetrievalResult:
     score_parts: dict[str, float]
     reasons: list[str]
     followup_keywords: list[str]
+
+
+@dataclass
+class RetrievalSummary:
+    entry_points: list[str] = field(default_factory=list)
+    implementation: list[str] = field(default_factory=list)
+    related_types: list[str] = field(default_factory=list)
+    possibly_legacy: list[str] = field(default_factory=list)

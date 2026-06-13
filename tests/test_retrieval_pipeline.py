@@ -17,6 +17,7 @@ from context_search_tool.models import (
     CodeSignal,
     DocumentChunk,
     RetrievalCandidate,
+    RetrievalSummary,
     SymbolRef,
 )
 from context_search_tool.paths import index_dir_for
@@ -151,6 +152,463 @@ class WorkspaceQueryExe {
     assert "relation" in bundle.results[1].score_parts
     assert "relation" in bundle.results[2].score_parts
     assert "lexical" in bundle.results[3].score_parts
+
+
+def test_query_bundle_summary_groups_entrypoints_implementation_related_and_legacy(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "WorkspaceController.java").write_text(
+        """
+@RequestMapping("/workspace")
+class WorkspaceController {
+  @GetMapping("/page")
+  String page() { return "ok"; }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    (repo / "WorkspaceServiceImpl.java").write_text(
+        """
+class WorkspaceServiceImpl {
+  String list() { return "ok"; }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    (repo / "WorkspaceExecutor.java").write_text(
+        """
+class WorkspaceExecutor {
+  String execute() { return "ok"; }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    (repo / "WorkspaceDto.java").write_text(
+        """
+class WorkspaceDto {
+  String name;
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    (repo / "WorkspaceLegacyType.java").write_text(
+        """
+class WorkspaceLegacyType {
+  String old;
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=20,
+            final_top_k=5,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    index_repository(repo, config)
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+
+    controller_chunk = store.chunk_for_line(Path("WorkspaceController.java"), 3)
+    service_chunk = store.chunk_for_line(Path("WorkspaceServiceImpl.java"), 2)
+    executor_chunk = store.chunk_for_line(Path("WorkspaceExecutor.java"), 2)
+    dto_chunk = store.chunk_for_line(Path("WorkspaceDto.java"), 2)
+    legacy_chunk = store.chunk_for_line(Path("WorkspaceLegacyType.java"), 2)
+
+    store.replace_signals(
+        Path("WorkspaceController.java"),
+        [
+            CodeSignal(
+                signal_id="sig-endpoint",
+                chunk_id=controller_chunk.chunk_id,
+                file_path=Path("WorkspaceController.java"),
+                kind="endpoint",
+                name="GET /workspace/page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["workspace", "page"],
+                metadata={},
+            ),
+            CodeSignal(
+                signal_id="sig-controller-comment",
+                chunk_id=controller_chunk.chunk_id,
+                file_path=Path("WorkspaceController.java"),
+                kind="comment",
+                name="WorkspaceController comment",
+                start_line=1,
+                end_line=1,
+                language="java",
+                tokens=["workspace"],
+                metadata={},
+            ),
+        ],
+    )
+    store.replace_signals(
+        Path("WorkspaceServiceImpl.java"),
+        [
+            CodeSignal(
+                signal_id="sig-service",
+                chunk_id=service_chunk.chunk_id,
+                file_path=Path("WorkspaceServiceImpl.java"),
+                kind="method",
+                name="WorkspaceServiceImpl.list",
+                start_line=2,
+                end_line=2,
+                language="java",
+                tokens=["workspace", "service"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_signals(
+        Path("WorkspaceExecutor.java"),
+        [
+            CodeSignal(
+                signal_id="sig-executor",
+                chunk_id=executor_chunk.chunk_id,
+                file_path=Path("WorkspaceExecutor.java"),
+                kind="method",
+                name="WorkspaceExecutor.execute",
+                start_line=2,
+                end_line=2,
+                language="java",
+                tokens=["workspace", "executor"],
+                metadata={},
+            )
+        ],
+        )
+    store.replace_signals(
+        Path("WorkspaceDto.java"),
+        [
+            CodeSignal(
+                signal_id="sig-dto",
+                chunk_id=dto_chunk.chunk_id,
+                file_path=Path("WorkspaceDto.java"),
+                kind="type",
+                name="WorkspaceDto",
+                start_line=2,
+                end_line=2,
+                language="java",
+                tokens=["workspace", "dto"],
+                metadata={},
+            ),
+            CodeSignal(
+                signal_id="sig-dto-usage",
+                chunk_id=dto_chunk.chunk_id,
+                file_path=Path("WorkspaceDto.java"),
+                kind="usage",
+                name="WorkspaceDto.load",
+                start_line=1,
+                end_line=1,
+                language="java",
+                tokens=["workspace", "dto"],
+                metadata={},
+            ),
+        ],
+    )
+    store.replace_signals(
+        Path("WorkspaceLegacyType.java"),
+        [
+            CodeSignal(
+                signal_id="sig-legacy",
+                chunk_id=legacy_chunk.chunk_id,
+                file_path=Path("WorkspaceLegacyType.java"),
+                kind="type",
+                name="WorkspaceLegacyType",
+                start_line=2,
+                end_line=2,
+                language="java",
+                tokens=["workspace", "legacy"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_relations(
+        Path("WorkspaceController.java"),
+        [
+            CodeRelation(
+                relation_id="rel-controller-service",
+                source_signal_id="sig-endpoint",
+                target_name="WorkspaceServiceImpl.list",
+                kind="calls",
+                confidence=0.9,
+                metadata={},
+            )
+        ],
+    )
+    store.replace_relations(
+        Path("WorkspaceServiceImpl.java"),
+        [
+            CodeRelation(
+                relation_id="rel-service-executor",
+                source_signal_id="sig-service",
+                target_name="WorkspaceExecutor.execute",
+                kind="calls",
+                confidence=0.9,
+                metadata={},
+            )
+        ],
+    )
+
+    bundle = query_repository(repo, "workspace", config)
+
+    assert bundle.summary.entry_points == ["GET /workspace/page"]
+    assert bundle.summary.implementation == [
+        "WorkspaceExecutor",
+        "WorkspaceServiceImpl",
+    ]
+    assert bundle.summary.related_types == ["WorkspaceDto"]
+    assert bundle.summary.possibly_legacy == ["WorkspaceLegacyType"]
+
+
+def test_grouping_reasons_in_results(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "WorkspaceController.java").write_text(
+        """
+@RequestMapping("/workspace")
+class WorkspaceController {
+  @GetMapping("/page")
+  String page() { return "ok"; }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    (repo / "WorkspaceServiceImpl.java").write_text(
+        """
+class WorkspaceServiceImpl {
+  String list() { return "ok"; }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=20,
+            final_top_k=4,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    index_repository(repo, config)
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+
+    controller_chunk = store.chunk_for_line(Path("WorkspaceController.java"), 3)
+    service_chunk = store.chunk_for_line(Path("WorkspaceServiceImpl.java"), 2)
+
+    store.replace_signals(
+        Path("WorkspaceController.java"),
+        [
+            CodeSignal(
+                signal_id="sig-endpoint",
+                chunk_id=controller_chunk.chunk_id,
+                file_path=Path("WorkspaceController.java"),
+                kind="endpoint",
+                name="GET /workspace/page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["workspace", "page"],
+                metadata={"http_method": "GET"},
+            ),
+            CodeSignal(
+                signal_id="sig-controller-comment",
+                chunk_id=controller_chunk.chunk_id,
+                file_path=Path("WorkspaceController.java"),
+                kind="comment",
+                name="WorkspaceController comment",
+                start_line=1,
+                end_line=1,
+                language="java",
+                tokens=["workspace", "comment"],
+                metadata={},
+            ),
+        ],
+    )
+    store.replace_signals(
+        Path("WorkspaceServiceImpl.java"),
+        [
+            CodeSignal(
+                signal_id="sig-service",
+                chunk_id=service_chunk.chunk_id,
+                file_path=Path("WorkspaceServiceImpl.java"),
+                kind="method",
+                name="WorkspaceServiceImpl.list",
+                start_line=2,
+                end_line=2,
+                language="java",
+                tokens=["workspace", "service"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_relations(
+        Path("WorkspaceController.java"),
+        [
+            CodeRelation(
+                relation_id="rel-controller-service",
+                source_signal_id="sig-endpoint",
+                target_name="WorkspaceServiceImpl.list",
+                kind="calls",
+                confidence=0.9,
+                metadata={},
+            )
+        ],
+    )
+
+    bundle = query_repository(repo, "page", config)
+
+    assert any(
+        "endpoint signal match" in reason
+        for result in bundle.results
+        for reason in result.reasons
+    )
+    assert any(
+        "comment signal match" in reason
+        for result in bundle.results
+        for reason in result.reasons
+    )
+    assert any(
+        "implementation chain match" in reason
+        for result in bundle.results
+        for reason in result.reasons
+    )
+
+
+def test_legacy_classification_is_per_chunk_in_merged_results(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    content = """class LegacyWorkspaceController {
+  // GET /legacy/workspace/list
+  String page() { return \"ok\"; }
+}\n""" + "\n".join("line-%d" % i for i in range(2, 85)) + """
+
+class LegacyServiceImpl {
+  String query() { return \"ok\"; }
+}\n""" + "\n".join("line-%d" % i for i in range(86, 170)) + """
+
+class LegacyWorkspaceType {
+  String name;
+}
+"""
+    (repo / "LegacyWorkspace.java").write_text(content, encoding="utf-8")
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=30,
+            final_top_k=5,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    index_repository(repo, config)
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+
+    controller_chunk = store.chunk_for_line(Path("LegacyWorkspace.java"), 3)
+    service_chunk = store.chunk_for_line(Path("LegacyWorkspace.java"), 86)
+    legacy_chunk = store.chunk_for_line(Path("LegacyWorkspace.java"), 168)
+
+    store.replace_signals(
+        Path("LegacyWorkspace.java"),
+        [
+            CodeSignal(
+                signal_id="sig-legacy-endpoint",
+                chunk_id=controller_chunk.chunk_id,
+                file_path=Path("LegacyWorkspace.java"),
+                kind="endpoint",
+                name="GET /legacy/workspace/list",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["legacy", "workspace"],
+                metadata={"path": "/legacy/workspace/list"},
+            ),
+            CodeSignal(
+                signal_id="sig-service",
+                chunk_id=service_chunk.chunk_id,
+                file_path=Path("LegacyWorkspace.java"),
+                kind="method",
+                name="LegacyServiceImpl.query",
+                start_line=86,
+                end_line=86,
+                language="java",
+                tokens=["legacy", "service"],
+                metadata={},
+            ),
+            CodeSignal(
+                signal_id="sig-legacy-type",
+                chunk_id=legacy_chunk.chunk_id,
+                file_path=Path("LegacyWorkspace.java"),
+                kind="type",
+                name="LegacyWorkspaceType",
+                start_line=168,
+                end_line=168,
+                language="java",
+                tokens=["legacy", "workspace", "type"],
+                metadata={},
+            ),
+        ],
+    )
+    store.replace_relations(
+        Path("LegacyWorkspace.java"),
+        [
+            CodeRelation(
+                relation_id="rel-endpoint-service",
+                source_signal_id="sig-legacy-endpoint",
+                target_name="LegacyServiceImpl.query",
+                kind="calls",
+                confidence=0.9,
+                metadata={},
+            )
+        ],
+    )
+
+    bundle = query_repository(repo, "legacy workspace", config)
+
+    assert bundle.results[0].file_path == Path("LegacyWorkspace.java")
+    assert bundle.summary.possibly_legacy == ["LegacyWorkspaceType"]
+    legacy_result = next(
+        result
+        for result in bundle.results
+        if result.file_path == Path("LegacyWorkspace.java")
+    )
+    assert any(
+        "possibly legacy: no active usage signal found"
+        in reason for reason in legacy_result.reasons
+    )
+
+
+def test_query_bundle_summary_construction_defaults_and_explicit(tmp_path: Path) -> None:
+    explicit_summary = RetrievalSummary(
+        entry_points=["GET /explicit"],
+        implementation=["ExplicitService"],
+        related_types=["ExplicitDto"],
+        possibly_legacy=["ExplicitLegacy"],
+    )
+
+    bundle_with_summary = retrieval.QueryBundle(
+        query="q",
+        expanded_tokens=["q"],
+        results=[],
+        followup_keywords=["q"],
+        summary=explicit_summary,
+    )
+    assert bundle_with_summary.summary == explicit_summary
+
+    legacy_style_bundle = retrieval.QueryBundle(
+        query="q",
+        expanded_tokens=["q"],
+        results=[],
+        followup_keywords=["q"],
+    )
+    assert legacy_style_bundle.summary == RetrievalSummary()
+    assert legacy_style_bundle.results == []
 
 
 def test_relation_expansion_terminates_cyclic_relations(tmp_path: Path) -> None:

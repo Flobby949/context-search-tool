@@ -3,14 +3,20 @@ from __future__ import annotations
 import sqlite3
 import logging
 from collections import Counter, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from context_search_tool.chunker import expand_lines
 from context_search_tool.config import ToolConfig
 from context_search_tool.embeddings import provider_from_config
 from context_search_tool.manifest import assert_manifest_compatible
-from context_search_tool.models import DocumentChunk, RetrievalCandidate, RetrievalResult
+from context_search_tool.models import (
+    DocumentChunk,
+    CodeSignal,
+    RetrievalCandidate,
+    RetrievalResult,
+    RetrievalSummary,
+)
 from context_search_tool.paths import index_dir_for
 from context_search_tool.sqlite_store import SQLiteStore
 from context_search_tool.tokenizer import tokenize_query
@@ -31,6 +37,7 @@ class QueryBundle:
     expanded_tokens: list[str]
     results: list[RetrievalResult]
     followup_keywords: list[str]
+    summary: RetrievalSummary = field(default_factory=RetrievalSummary)
 
 
 @dataclass(frozen=True)
@@ -43,6 +50,7 @@ class _RankedChunk:
 
 @dataclass(frozen=True)
 class _ExpandedResult:
+    chunk_ids: list[str]
     file_path: Path
     start_line: int
     end_line: int
@@ -116,6 +124,8 @@ def query_repository(
 
     ranked_chunks = _rank_chunks(store, candidates, tokens, query)
     expanded = _expand_ranked_chunks(repo, ranked_chunks, config, context_lines, full_file)
+    visible_results = expanded[: config.retrieval.final_top_k]
+    summary, result_reasons = _summarize_results(store, visible_results)
     results = [
         RetrievalResult(
             file_path=item.file_path,
@@ -124,17 +134,236 @@ def query_repository(
             content=item.content,
             score=item.score,
             score_parts=item.score_parts,
-            reasons=item.reasons,
+            reasons=_dedupe(item.reasons + result_reasons[index]),
             followup_keywords=item.followup_keywords,
         )
-        for item in expanded[: config.retrieval.final_top_k]
+        for index, item in enumerate(visible_results)
     ]
     return QueryBundle(
         query=query,
         expanded_tokens=tokens,
         results=results,
         followup_keywords=_followup_keywords(results),
+        summary=summary,
     )
+
+
+def _summarize_results(
+    store: SQLiteStore,
+    visible_results: list[_ExpandedResult],
+) -> tuple[RetrievalSummary, list[list[str]]]:
+    summary = RetrievalSummary()
+    result_reasons: list[list[str]] = []
+
+    for item in visible_results:
+        entry_points: list[str] = []
+        impl: list[str] = []
+        related: list[str] = []
+        legacy: list[str] = []
+        chunk_reasons: list[str] = []
+
+        for chunk_id in item.chunk_ids:
+            try:
+                chunk = store.chunk_for_id(chunk_id)
+            except KeyError:
+                continue
+            try:
+                signals = store.signals_for_chunk(chunk_id)
+            except sqlite3.Error:
+                signals = []
+
+            has_endpoint_signal = any(signal.kind == "endpoint" for signal in signals)
+            has_usage_signal = any(signal.kind == "usage" for signal in signals)
+            has_relation_support = _chunk_has_relation_support(store, chunk, signals)
+
+            (
+                chunk_entry,
+                chunk_impl,
+                chunk_related,
+                chunk_legacy,
+            ) = _summarize_chunk(chunk, signals, has_relation_support)
+
+            chunk_has_support = (
+                has_endpoint_signal or has_usage_signal or has_relation_support
+            )
+            legacy_names = set(chunk_legacy)
+            entry_points.extend(chunk_entry)
+            impl.extend(chunk_impl)
+            if chunk_has_support:
+                related.extend(chunk_related)
+            else:
+                related.extend([name for name in chunk_related if name not in legacy_names])
+                legacy.extend(chunk_legacy)
+            chunk_reasons.extend(
+                _reasons_for_chunk(
+                    signals,
+                    chunk_impl,
+                    chunk_legacy,
+                    has_relation_support,
+                    has_endpoint_signal,
+                    has_usage_signal,
+                )
+            )
+
+        result_reasons.append(_dedupe(chunk_reasons))
+        summary.entry_points.extend(entry_points)
+        summary.implementation.extend(impl)
+        summary.related_types.extend(related)
+        summary.possibly_legacy.extend(legacy)
+
+    summary.entry_points = _ordered_unique(summary.entry_points)
+    summary.implementation = _ordered_unique(summary.implementation)
+    summary.related_types = _ordered_unique(summary.related_types)
+    summary.possibly_legacy = _ordered_unique(summary.possibly_legacy)
+    summary.entry_points.sort()
+    summary.implementation.sort()
+    summary.related_types.sort()
+    summary.possibly_legacy.sort()
+    return summary, result_reasons
+
+
+def _summarize_chunk(
+    chunk: DocumentChunk,
+    signals: list,
+    has_relation_support: bool,
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    symbol_names = [symbol.name for symbol in chunk.symbols]
+    endpoint: list[str] = []
+    implementation: list[str] = []
+    related_types: list[str] = []
+    legacy: list[str] = []
+
+    endpoint_signals = [signal.name for signal in signals if signal.kind == "endpoint"]
+    if endpoint_signals:
+        endpoint.extend(_ordered_unique(endpoint_signals))
+    elif _is_controller_name(chunk.file_path.stem) or any(
+        _is_controller_name(name) for name in symbol_names
+    ):
+        endpoint.append(_primary_chunk_name(chunk))
+
+    names = _ordered_unique(
+        [signal.name for signal in signals] + symbol_names + [_primary_chunk_name(chunk)]
+    )
+    implementation.extend([name for name in names if _is_implementation_name(name)])
+    related_types.extend([name for name in names if _is_related_type_name(name)])
+
+    if not endpoint and not has_relation_support and not implementation:
+        legacy.extend([name for name in related_types if name])
+    if has_relation_support and implementation:
+        implementation.extend([_primary_chunk_name(chunk)])
+
+    return (
+        _ordered_unique(endpoint),
+        _ordered_unique(implementation),
+        _ordered_unique(related_types),
+        _ordered_unique(legacy),
+    )
+
+
+def _reasons_for_chunk(
+    signals: list,
+    impl_names: list[str],
+    legacy_names: list[str],
+    has_relation_support: bool,
+    has_endpoint_signal: bool,
+    has_usage_signal: bool,
+) -> list[str]:
+    reasons: list[str] = []
+    if any(signal.kind == "endpoint" for signal in signals):
+        reasons.append("endpoint signal match")
+    if any(signal.kind == "comment" for signal in signals):
+        reasons.append("comment signal match")
+    if has_relation_support and impl_names:
+        reasons.append("implementation chain match")
+    if legacy_names and not has_relation_support and not has_usage_signal and not has_endpoint_signal:
+        reasons.append("possibly legacy: no active usage signal found")
+    return reasons
+
+
+def _chunk_has_relation_support(
+    store: SQLiteStore,
+    chunk: DocumentChunk,
+    signals: list[CodeSignal],
+) -> bool:
+    signal_ids = [signal.signal_id for signal in signals]
+    for signal_id in signal_ids:
+        try:
+            if store.relations_for_source(signal_id):
+                return True
+        except sqlite3.Error:
+            continue
+
+    relation_targets = _ordered_unique(
+        [chunk.file_path.stem] + [signal.name for signal in signals]
+    )
+    for target_name in relation_targets:
+        try:
+            if store.relations_targeting(target_name):
+                return True
+        except sqlite3.Error:
+            continue
+
+    return False
+
+
+def _ordered_unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        normalized = value.lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(value)
+    return ordered
+
+
+def _primary_chunk_name(chunk: DocumentChunk) -> str:
+    if chunk.file_path.stem:
+        return chunk.file_path.stem
+    return ""
+
+
+def _is_controller_name(value: str) -> bool:
+    return value.lower().endswith("controller")
+
+
+def _is_implementation_name(value: str) -> bool:
+    lowered = value.lower()
+    return any(
+        lowered.endswith(suffix)
+        for suffix in (
+            "service",
+            "serviceimpl",
+            "impl",
+            "executor",
+            "exe",
+            "gateway",
+            "mapper",
+            "repository",
+        )
+    )
+
+
+def _is_related_type_name(value: str) -> bool:
+    lowered = value.lower()
+    return any(
+        lowered.endswith(suffix)
+        for suffix in (
+            "dto",
+            "vo",
+            "request",
+            "response",
+            "query",
+            "querytype",
+            "domain",
+            "type",
+            "enum",
+            "entity",
+            "model",
+            "bean",
+        )
+    ) or "domain" in lowered
 
 
 def _initial_candidates(
@@ -405,6 +634,7 @@ def _expand_ranked_chunks(
 
         expanded.append(
             _ExpandedResult(
+                chunk_ids=[ranked.chunk.chunk_id],
                 file_path=ranked.chunk.file_path,
                 start_line=start_line,
                 end_line=end_line,
@@ -527,6 +757,7 @@ def _cap_expanded_result(
         max_bytes,
     )
     return _ExpandedResult(
+        chunk_ids=result.chunk_ids,
         file_path=result.file_path,
         start_line=result.start_line,
         end_line=end_line,
@@ -583,6 +814,7 @@ def _merge_expanded_result(
     overlap = max(0, left.end_line - right.start_line + 1)
     content_lines = [*left_lines, *right_lines[overlap:]]
     return _ExpandedResult(
+        chunk_ids=_dedupe([*left.chunk_ids, *right.chunk_ids]),
         file_path=left.file_path,
         start_line=min(left.start_line, right.start_line),
         end_line=max(left.end_line, right.end_line),
