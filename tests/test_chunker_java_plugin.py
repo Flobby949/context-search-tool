@@ -8,8 +8,10 @@ JAVA_SOURCE = """
 package com.example.audit;
 
 import org.apache.ibatis.annotations.Select;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -18,6 +20,22 @@ public class ApplyAuditController {
     @PostMapping("/pageEs")
     public String pageEs(String applyType) {
         return "ok";
+    }
+
+    /**
+     * 工作台统计-待我审核
+     */
+    @GetMapping("/stats/wait")
+    public Map<String, Long> statsWait() {
+        return resourceAuditService.statsWait();
+    }
+
+    /**
+     * 工作台统计-审核列表
+     */
+    @PostMapping("/stats")
+    public WorkbenchResourceAuditStatsDTO auditStats(@RequestBody ApplyAuditEsSearchQry qry) {
+        return resourceAuditService.auditStats(qry);
     }
 }
 
@@ -61,9 +79,32 @@ def test_java_plugin_extracts_routes_sql_and_enum_values() -> None:
     assert "select" in extraction.lexical_tokens
     assert "audit" in extraction.lexical_tokens
     assert "status" in extraction.lexical_tokens
-    assert extraction.signals == []
     assert extraction.relations == []
     assert extraction.metadata["package"] == "com.example.audit"
+
+
+def test_java_plugin_emits_spring_endpoint_signals_with_comment_tokens() -> None:
+    extraction = JavaPlugin().extract(Path("ApplyAuditController.java"), JAVA_SOURCE)
+    signals = {signal.name: signal for signal in extraction.signals}
+
+    wait_signal = signals["GET /apply/audit/stats/wait"]
+    stats_signal = signals["POST /apply/audit/stats"]
+
+    assert wait_signal.kind == "endpoint"
+    assert wait_signal.metadata["http_method"] == "GET"
+    assert wait_signal.metadata["path"] == "/apply/audit/stats/wait"
+    assert wait_signal.metadata["controller"] == "ApplyAuditController"
+    assert wait_signal.metadata["method"] == "statsWait"
+    assert "工作台统计" in wait_signal.tokens
+    assert "待我审核" in wait_signal.tokens
+
+    assert stats_signal.kind == "endpoint"
+    assert stats_signal.metadata["http_method"] == "POST"
+    assert stats_signal.metadata["path"] == "/apply/audit/stats"
+    assert stats_signal.metadata["controller"] == "ApplyAuditController"
+    assert stats_signal.metadata["method"] == "auditStats"
+    assert "工作台统计" in stats_signal.tokens
+    assert "审核列表" in stats_signal.tokens
 
 
 def test_java_plugin_extracts_multiline_mapping_routes_and_methods() -> None:
@@ -87,6 +128,11 @@ class ItemController {
     assert "/items" in extraction.lexical_tokens
     assert "items" in extraction.lexical_tokens
     assert "get" in extraction.lexical_tokens
+    [signal] = extraction.signals
+    assert signal.kind == "endpoint"
+    assert signal.name == "GET /items"
+    assert signal.metadata["http_method"] == "GET"
+    assert signal.metadata["path"] == "/items"
 
 
 def test_java_plugin_extracts_single_line_enum_values() -> None:
@@ -341,3 +387,108 @@ class UserController {
     assert "/users" in extraction.lexical_tokens
     assert "/api/users" in extraction.lexical_tokens
     assert "get" in extraction.lexical_tokens
+
+
+def test_java_plugin_does_not_reuse_previous_method_mapping_for_unannotated_method() -> None:
+    source = """
+import org.springframework.web.bind.annotation.GetMapping;
+
+class ItemController {
+    @GetMapping("/a")
+    String a() {
+        return "ok";
+    }
+
+    String b() {
+        return "ok";
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("ItemController.java"), source)
+
+    assert [(signal.name, signal.metadata["method"]) for signal in extraction.signals] == [
+        ("GET /a", "a")
+    ]
+
+
+def test_java_plugin_uses_outer_class_context_after_nested_class() -> None:
+    source = """
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+
+@RequestMapping("/outer")
+class OuterController {
+    @RequestMapping("/inner")
+    class InnerController {
+        @GetMapping("/inside")
+        String inside() {
+            return "ok";
+        }
+    }
+
+    @GetMapping("/after")
+    String after() {
+        return "ok";
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("OuterController.java"), source)
+    signals = {signal.name: signal for signal in extraction.signals}
+
+    assert "GET /outer/after" in signals
+    assert "GET /inner/after" not in signals
+    assert signals["GET /outer/after"].metadata["controller"] == "OuterController"
+    assert signals["GET /outer/after"].metadata["method"] == "after"
+
+
+def test_java_plugin_does_not_attach_comment_tokens_across_blank_line() -> None:
+    source = """
+import org.springframework.web.bind.annotation.GetMapping;
+
+class CommentController {
+    /**
+     * stale docs
+     */
+
+    @GetMapping("/fresh")
+    String fresh() {
+        return "ok";
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("CommentController.java"), source)
+    [signal] = extraction.signals
+
+    assert signal.name == "GET /fresh"
+    assert "stale" not in signal.tokens
+    assert "docs" not in signal.tokens
+
+
+def test_java_plugin_ignores_string_literal_braces_when_tracking_class_context() -> None:
+    source = """
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+
+@RequestMapping("/api")
+class JsonController {
+    String literalBrace() {
+        return "{";
+    }
+
+    @GetMapping("/json")
+    String json() {
+        return "{}";
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("JsonController.java"), source)
+    signals = {signal.name: signal for signal in extraction.signals}
+
+    assert "GET /api/json" in signals
+    assert "GET /json" not in signals
+    assert signals["GET /api/json"].metadata["controller"] == "JsonController"
+    assert signals["GET /api/json"].metadata["method"] == "json"

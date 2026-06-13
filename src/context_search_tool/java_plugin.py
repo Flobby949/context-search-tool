@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from context_search_tool.models import SymbolRef
+from context_search_tool.models import CodeSignal, SymbolRef, generate_signal_id
 from context_search_tool.plugins import PluginExtraction
 from context_search_tool.tokenizer import tokenize_identifier
 
@@ -53,7 +53,9 @@ class JavaPlugin:
     def extract(self, path: Path, content: str) -> PluginExtraction:
         scrubbed_content = _strip_comments(content)
         lines = scrubbed_content.splitlines()
+        original_lines = content.splitlines()
         symbols: list[SymbolRef] = []
+        signals: list[CodeSignal] = []
         tokens: list[str] = []
         metadata: dict[str, Any] = {}
 
@@ -75,7 +77,7 @@ class JavaPlugin:
         enum_ranges = _enum_ranges(lines)
         enum_names = _enum_names(lines)
         enum_constant_lines = _enum_constant_lines(lines, enum_ranges)
-        class_route = ""
+        class_contexts = _class_contexts(annotations_by_line, lines)
 
         for line_number, line in enumerate(lines, start=1):
             type_match = _TYPE_RE.search(line)
@@ -86,12 +88,9 @@ class JavaPlugin:
                 _add_identifier_tokens(tokens, name)
                 if kind == "enum":
                     _extract_enum_values(lines, line_number, end_line, symbols, tokens)
-                class_route = (
-                    _nearest_route_before(annotations_by_line, lines, line_number)
-                    if kind == "class"
-                    else ""
-                )
-                _add_route_tokens(tokens, class_route)
+                if kind == "class":
+                    context = _class_context_for_line(class_contexts, line_number)
+                    _add_route_tokens(tokens, context["route"] if context else "")
 
             constant_match = _STATIC_FINAL_RE.search(line)
             if constant_match:
@@ -112,13 +111,30 @@ class JavaPlugin:
                     continue
                 symbols.append(_symbol(name, "method", line_number, line_number))
                 _add_identifier_tokens(tokens, name)
-                route = _nearest_mapping_before(annotations_by_line, lines, line_number)
+                route = _mapping_before_current_symbol(
+                    annotations_by_line, lines, line_number
+                )
                 if route:
+                    context = _class_context_for_line(class_contexts, line_number)
+                    class_route = context["route"] if context else ""
+                    class_name = context["name"] if context else ""
                     full_path = _join_route(class_route, route["path"])
                     _add_route_tokens(tokens, route["path"])
                     _add_route_tokens(tokens, full_path)
                     if route["method"]:
                         _add_token(tokens, route["method"])
+                    signals.append(
+                        _endpoint_signal(
+                            path=path,
+                            controller=class_name,
+                            method=name,
+                            http_method=route["method"],
+                            endpoint_path=full_path,
+                            method_line=line_number,
+                            mapping_line=route["line"],
+                            original_lines=original_lines,
+                        )
+                    )
 
         for annotation in _iter_annotations(lines):
             name = annotation["name"]
@@ -127,6 +143,7 @@ class JavaPlugin:
 
         return PluginExtraction(
             symbols=symbols,
+            signals=signals,
             lexical_tokens=_dedupe(tokens),
             metadata=metadata,
         )
@@ -140,6 +157,43 @@ def _symbol(name: str, kind: str, start_line: int, end_line: int) -> SymbolRef:
         end_line=end_line,
         language="java",
         metadata={},
+    )
+
+
+def _endpoint_signal(
+    path: Path,
+    controller: str,
+    method: str,
+    http_method: str,
+    endpoint_path: str,
+    method_line: int,
+    mapping_line: int,
+    original_lines: list[str],
+) -> CodeSignal:
+    signal_name = f"{http_method} {endpoint_path}".strip()
+    signal_tokens: list[str] = []
+    _add_token(signal_tokens, http_method)
+    _add_route_tokens(signal_tokens, endpoint_path)
+    _add_identifier_tokens(signal_tokens, controller)
+    _add_identifier_tokens(signal_tokens, method)
+    for token in _nearby_comment_tokens(original_lines, mapping_line):
+        _add_token(signal_tokens, token)
+    return CodeSignal(
+        signal_id=generate_signal_id(path, "endpoint", method_line, signal_name),
+        chunk_id="",
+        file_path=path,
+        kind="endpoint",
+        name=signal_name,
+        start_line=method_line,
+        end_line=method_line,
+        language="java",
+        tokens=_dedupe(signal_tokens),
+        metadata={
+            "http_method": http_method,
+            "path": endpoint_path,
+            "controller": controller,
+            "method": method,
+        },
     )
 
 
@@ -230,6 +284,7 @@ def _iter_annotations(lines: list[str]) -> list[dict[str, Any]]:
         annotations.append(
             {
                 "line": line_number,
+                "end_line": end_line,
                 "name": match.group(1),
                 "args": args,
             }
@@ -273,37 +328,163 @@ def _annotation_args(
     return "".join(args_parts).strip(), len(lines)
 
 
-def _nearest_route_before(
+def _class_contexts(
+    annotations_by_line: dict[int, list[dict[str, Any]]],
+    lines: list[str],
+) -> list[dict[str, Any]]:
+    contexts: list[dict[str, Any]] = []
+    for line_number, line in enumerate(lines, start=1):
+        type_match = _TYPE_RE.search(line)
+        if not type_match or type_match.group(1) != "class":
+            continue
+        contexts.append(
+            {
+                "name": type_match.group(2),
+                "route": _class_route_before(annotations_by_line, lines, line_number),
+                "start_line": line_number,
+                "end_line": _block_end_line(lines, line_number),
+            }
+        )
+    return contexts
+
+
+def _class_context_for_line(
+    contexts: list[dict[str, Any]], line_number: int
+) -> dict[str, Any] | None:
+    matches = [
+        context
+        for context in contexts
+        if context["start_line"] <= line_number <= context["end_line"]
+    ]
+    return max(matches, key=lambda context: context["start_line"]) if matches else None
+
+
+def _block_end_line(lines: list[str], start_line: int) -> int:
+    depth = 0
+    started = False
+    in_string = False
+    in_char = False
+    escaped = False
+    for line_number in range(start_line, len(lines) + 1):
+        for char in lines[line_number - 1]:
+            if in_string or in_char:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif in_string and char == '"':
+                    in_string = False
+                elif in_char and char == "'":
+                    in_char = False
+                continue
+
+            if char == '"':
+                in_string = True
+                continue
+            if char == "'":
+                in_char = True
+                continue
+
+            if char == "{":
+                depth += 1
+                started = True
+            elif char == "}":
+                depth -= 1
+                if started and depth <= 0:
+                    return line_number
+    return start_line
+
+
+def _class_route_before(
     annotations_by_line: dict[int, list[dict[str, Any]]],
     lines: list[str],
     line_number: int,
 ) -> str:
-    for candidate_line in range(line_number - 1, 0, -1):
-        if _TYPE_RE.search(lines[candidate_line - 1]):
-            return ""
-        annotations = annotations_by_line.get(candidate_line, [])
-        for annotation in annotations:
-            if annotation["name"] == "RequestMapping":
-                return _annotation_path(annotation["args"])
+    for annotation in _contiguous_annotations_before(
+        annotations_by_line, lines, line_number
+    ):
+        if annotation["name"] == "RequestMapping":
+            return _annotation_path(annotation["args"])
     return ""
 
 
-def _nearest_mapping_before(
+def _mapping_before_current_symbol(
     annotations_by_line: dict[int, list[dict[str, Any]]],
     lines: list[str],
     line_number: int,
-) -> dict[str, str] | None:
-    for candidate_line in range(line_number - 1, 0, -1):
-        if _TYPE_RE.search(lines[candidate_line - 1]):
-            return None
-        annotations = annotations_by_line.get(candidate_line, [])
-        for annotation in annotations:
-            if annotation["name"] in _MAPPING_ANNOTATIONS:
-                return {
-                    "path": _annotation_path(annotation["args"]),
-                    "method": _http_method(annotation["name"], annotation["args"]),
-                }
+) -> dict[str, Any] | None:
+    for annotation in _contiguous_annotations_before(
+        annotations_by_line, lines, line_number
+    ):
+        if annotation["name"] in _MAPPING_ANNOTATIONS:
+            return {
+                "path": _annotation_path(annotation["args"]),
+                "method": _http_method(annotation["name"], annotation["args"]),
+                "line": annotation["line"],
+            }
     return None
+
+
+def _contiguous_annotations_before(
+    annotations_by_line: dict[int, list[dict[str, Any]]],
+    lines: list[str],
+    line_number: int,
+) -> list[dict[str, Any]]:
+    annotations: list[dict[str, Any]] = []
+    cursor = line_number - 1
+    while cursor > 0:
+        if not lines[cursor - 1].strip():
+            break
+        ending_here = _annotations_ending_on(annotations_by_line, cursor)
+        if not ending_here:
+            break
+        annotations.extend(ending_here)
+        cursor = min(annotation["line"] for annotation in ending_here) - 1
+    return annotations
+
+
+def _annotations_ending_on(
+    annotations_by_line: dict[int, list[dict[str, Any]]], line_number: int
+) -> list[dict[str, Any]]:
+    return [
+        annotation
+        for annotations in annotations_by_line.values()
+        for annotation in annotations
+        if annotation["end_line"] == line_number
+    ]
+
+
+def _nearby_comment_tokens(lines: list[str], line_number: int) -> list[str]:
+    index = line_number - 2
+    if index < 0 or not lines[index].strip():
+        return []
+
+    stripped = lines[index].strip()
+    comment_lines: list[str] = []
+    if stripped.endswith("*/"):
+        while index >= 0:
+            comment_lines.append(_clean_block_comment_line(lines[index]))
+            if "/*" in lines[index]:
+                break
+            index -= 1
+        comment_lines.reverse()
+    elif stripped.startswith("//"):
+        while index >= 0 and lines[index].strip().startswith("//"):
+            comment_lines.append(lines[index].strip()[2:].strip())
+            index -= 1
+        comment_lines.reverse()
+
+    comment_text = " ".join(line for line in comment_lines if line)
+    return tokenize_identifier(comment_text)
+
+
+def _clean_block_comment_line(line: str) -> str:
+    cleaned = line.strip()
+    cleaned = re.sub(r"^/\*\*?", "", cleaned)
+    cleaned = re.sub(r"\*/$", "", cleaned)
+    cleaned = cleaned.strip()
+    cleaned = re.sub(r"^\*\s?", "", cleaned)
+    return cleaned.strip()
 
 
 def _annotation_path(args: str) -> str:
