@@ -12,7 +12,7 @@ from context_search_tool.tokenizer import tokenize_identifier
 _PACKAGE_RE = re.compile(r"package\s+([\w.]+)\s*;")
 _IMPORT_RE = re.compile(r"import\s+([\w.*]+)\s*;")
 _TYPE_RE = re.compile(r"\b(class|interface|enum)\s+(\w+)")
-_ANNOTATION_RE = re.compile(r"@(\w+)(?:\((.*)\))?")
+_ANNOTATION_START_RE = re.compile(r"@(\w+)")
 _METHOD_RE = re.compile(
     r"^\s*(?:(?:public|protected|private|static|final|abstract|synchronized|native)\s+)*"
     r"[\w<>\[\], ?]+\s+(\w+)\s*\([^;{}]*\)\s*(?:throws\s+[^{;]+)?[;{]"
@@ -76,6 +76,7 @@ class JavaPlugin:
                     _extract_enum_values(lines, line_number, end_line, symbols, tokens)
                 if kind == "class":
                     class_route = _nearest_route_before(annotations_by_line, line_number)
+                    _add_route_tokens(tokens, class_route)
 
             constant_match = _STATIC_FINAL_RE.search(line)
             if constant_match:
@@ -131,16 +132,59 @@ def _annotations_by_line(
 
 def _iter_annotations(lines: list[str]) -> list[dict[str, Any]]:
     annotations: list[dict[str, Any]] = []
-    for line_number, line in enumerate(lines, start=1):
-        for match in _ANNOTATION_RE.finditer(line):
-            annotations.append(
-                {
-                    "line": line_number,
-                    "name": match.group(1),
-                    "args": (match.group(2) or "").strip(),
-                }
-            )
+    line_number = 1
+    while line_number <= len(lines):
+        line = lines[line_number - 1]
+        match = _ANNOTATION_START_RE.search(line)
+        if not match:
+            line_number += 1
+            continue
+
+        args, end_line = _annotation_args(lines, line_number, match.end())
+        annotations.append(
+            {
+                "line": line_number,
+                "name": match.group(1),
+                "args": args,
+            }
+        )
+        line_number = end_line + 1
     return annotations
+
+
+def _annotation_args(
+    lines: list[str], start_line: int, search_start: int
+) -> tuple[str, int]:
+    first_line_tail = lines[start_line - 1][search_start:]
+    open_index = first_line_tail.find("(")
+    if open_index < 0:
+        return "", start_line
+
+    args_parts: list[str] = []
+    depth = 0
+    started = False
+    for line_number in range(start_line, len(lines) + 1):
+        line = lines[line_number - 1]
+        index = search_start + open_index if line_number == start_line else 0
+        while index < len(line):
+            char = line[index]
+            if char == "(":
+                depth += 1
+                if started:
+                    args_parts.append(char)
+                started = True
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    return "".join(args_parts).strip(), line_number
+                args_parts.append(char)
+            elif started:
+                args_parts.append(char)
+            index += 1
+        if started and depth > 0:
+            args_parts.append("\n")
+
+    return "".join(args_parts).strip(), len(lines)
 
 
 def _nearest_route_before(
@@ -210,7 +254,7 @@ def _extract_enum_values(
     symbols: list[SymbolRef],
     tokens: list[str],
 ) -> None:
-    for line_number in range(start_line + 1, end_line + 1):
+    for line_number in range(start_line, end_line + 1):
         for name in _ENUM_VALUE_RE.findall(lines[line_number - 1]):
             symbols.append(_symbol(name, "enum_value", line_number, line_number))
             _add_token(tokens, name)

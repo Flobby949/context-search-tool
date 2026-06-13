@@ -55,3 +55,51 @@ def test_java_plugin_extracts_routes_sql_and_enum_values() -> None:
     assert "audit" in extraction.lexical_tokens
     assert "status" in extraction.lexical_tokens
     assert extraction.metadata["package"] == "com.example.audit"
+
+
+def test_java_plugin_extracts_multiline_mapping_routes_and_methods() -> None:
+    source = """
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
+
+class ItemController {
+    @RequestMapping(
+        value = "/items",
+        method = RequestMethod.GET
+    )
+    String items() {
+        return "ok";
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("ItemController.java"), source)
+
+    assert "/items" in extraction.lexical_tokens
+    assert "items" in extraction.lexical_tokens
+    assert "get" in extraction.lexical_tokens
+
+
+def test_java_plugin_extracts_single_line_enum_values() -> None:
+    extraction = JavaPlugin().extract(Path("Status.java"), "enum Status { ACTIVE, DISABLED }")
+    symbol_names = {symbol.name for symbol in extraction.symbols}
+
+    assert "ACTIVE" in symbol_names
+    assert "DISABLED" in symbol_names
+    assert "active" in extraction.lexical_tokens
+    assert "disabled" in extraction.lexical_tokens
+
+
+def test_java_plugin_extracts_class_level_route_without_method_mapping() -> None:
+    source = """
+import org.springframework.web.bind.annotation.RequestMapping;
+
+@RequestMapping("/api")
+class ApiController {
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("ApiController.java"), source)
+
+    assert "/api" in extraction.lexical_tokens
+    assert "api" in extraction.lexical_tokens
