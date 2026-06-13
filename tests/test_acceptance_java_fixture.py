@@ -7,7 +7,7 @@ from context_search_tool.retrieval import query_repository
 
 
 def test_java_fixture_surfaces_controller_query_mapper_and_enum(tmp_path: Path) -> None:
-    source_fixture = Path("tests/fixtures/java-spring-mini")
+    source_fixture = Path(__file__).parent / "fixtures" / "java-spring-mini"
     repo = tmp_path / "java-spring-mini"
     shutil.copytree(source_fixture, repo)
 
@@ -22,6 +22,7 @@ def test_java_fixture_surfaces_controller_query_mapper_and_enum(tmp_path: Path) 
     paths = {result.file_path.name for result in bundle.results}
 
     assert "ApplyAuditController.java" in paths
+    assert "EsApplyAuditPageQryExe.java" in paths
     assert "AuditStatus.java" in paths
     assert "ApplyAuditMapper.java" in paths
     assert bundle.results[0].score > 0
