@@ -111,6 +111,31 @@ class SQLiteStore:
                 ),
             )
 
+    def source_file_for_path(self, path: Path) -> SourceFile | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM source_files
+                WHERE path = ?
+                """,
+                (_path_key(path),),
+            ).fetchone()
+        if row is None:
+            return None
+        return _source_file_from_row(row)
+
+    def indexed_file_paths(self) -> set[Path]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT file_path
+                FROM chunks
+                WHERE deleted_at IS NULL
+                """
+            ).fetchall()
+        return {Path(row["file_path"]) for row in rows}
+
     def replace_chunks(self, file_path: Path, chunks: list[DocumentChunk]) -> None:
         path = _path_key(file_path)
         deleted_at = _now()
@@ -513,6 +538,19 @@ def _to_json(value: dict[str, Any]) -> str:
 
 def _from_json(value: str) -> dict[str, Any]:
     return json.loads(value)
+
+
+def _source_file_from_row(row: sqlite3.Row) -> SourceFile:
+    return SourceFile(
+        path=Path(row["path"]),
+        language=row["language"],
+        sha256=row["sha256"],
+        size=row["size"],
+        mtime_ns=row["mtime_ns"],
+        is_generated=bool(row["is_generated"]),
+        is_test=bool(row["is_test"]),
+        metadata=_from_json(row["metadata"]),
+    )
 
 
 def _fts_query(tokens: list[str]) -> str:
