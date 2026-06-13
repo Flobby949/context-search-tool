@@ -72,6 +72,7 @@ def query(
         repo = _resolve_repo(Path(repo_or_question))
         query_text = question
 
+    _require_index(repo)
     config = load_config(repo)
     try:
         bundle = query_repository(
@@ -111,10 +112,9 @@ def status(repo: Optional[Path] = typer.Argument(None)) -> None:
 @app.command()
 def stats(repo: Optional[Path] = typer.Argument(None)) -> None:
     resolved_repo = _resolve_repo(repo)
+    index_dir = _require_index(resolved_repo)
     config = load_config(resolved_repo)
-    index_dir = index_dir_for(resolved_repo)
     store = SQLiteStore(index_dir / "index.sqlite")
-    store.initialize()
     counts = store.stats()
     manifest = (
         load_manifest(resolved_repo)
@@ -158,9 +158,8 @@ def explain(
         resolved_repo = _resolve_repo(Path(repo_or_location))
         location_text = location
     file_path, line = _parse_location(location_text, resolved_repo)
-    index_dir = index_dir_for(resolved_repo)
+    index_dir = _require_index(resolved_repo)
     store = SQLiteStore(index_dir / "index.sqlite")
-    store.initialize()
 
     try:
         chunk = store.chunk_for_line(file_path, line)
@@ -196,6 +195,17 @@ def _resolve_repo(repo: Optional[Path]) -> Path:
     except RepositoryNotFoundError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+
+
+def _require_index(repo: Path) -> Path:
+    index_dir = index_dir_for(repo)
+    if not (index_dir / "index.sqlite").exists():
+        typer.echo(
+            f"Error: missing index for {repo}. Run 'cst index {repo}' first.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return index_dir
 
 
 def _parse_location(location: str, repo: Path) -> tuple[Path, int]:
