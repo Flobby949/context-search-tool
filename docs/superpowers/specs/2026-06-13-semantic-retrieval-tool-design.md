@@ -34,22 +34,30 @@ The design favors a strong core framework over a broad first release. The core m
 
 ## User Experience
 
-The initial CLI should expose four commands:
+The initial CLI should expose these commands:
 
 ```text
-cst index <repo>
-cst query <repo> "<question>"
-cst status <repo>
-cst clean <repo>
+cst index [<repo>]
+cst query [<repo>] "<question>"
+cst status [<repo>]
+cst stats [<repo>]
+cst explain [<repo>] <file:line>
+cst clean [<repo>]
 ```
+
+If `<repo>` is omitted, commands infer the repository by walking upward from the current working directory until they find `.context-search/` or a Git root. If inference fails, commands should print a concise error that tells the user to pass `<repo>` explicitly or run `cst index <repo>` first.
 
 `cst index` creates or updates `<repo>/.context-search/`.
 
-`cst query` returns a Markdown context bundle by default and supports JSON output for automation:
+`cst query` returns a Markdown context bundle by default and supports JSON output for automation. Query options for version 1:
 
 ```text
 cst query <repo> "<question>" --json
+cst query <repo> "<question>" --context-lines 20
+cst query <repo> "<question>" --full-file
 ```
+
+`--context-lines N` overrides the configured before/after context window with `N` lines on each side. `--full-file` returns the entire matched file when it is below the configured `max_full_file_bytes` limit. Dependency expansion, caller expansion, and multi-turn interactive sessions are not part of version 1.
 
 The output should be useful to both humans and coding agents. Each result should include:
 
@@ -70,11 +78,38 @@ The default index location is inside the target repository:
   .context-search/
     manifest.json
     index.sqlite
-    embeddings.npy
+    vectors.npy
+    vector_ids.json
     config.toml
 ```
 
 This keeps index state tied to the repository being searched, not to the retrieval tool source tree. A future `--index-dir` override can be added, but the first version should keep the default simple.
+
+`index.sqlite` owns metadata, chunks, symbols, FTS tables, manifest-derived stats, and logical deletion state. The default vector backend owns `vectors.npy` and `vector_ids.json`. Exact vector files may change if a different `VectorStore` backend is selected.
+
+## Manifest And Versioning
+
+`manifest.json` records schema and embedding compatibility information. At minimum it should include:
+
+```json
+{
+  "schema_version": "1.0",
+  "created_at": "2026-06-13T10:30:00Z",
+  "updated_at": "2026-06-13T14:22:00Z",
+  "embedding": {
+    "provider": "default",
+    "model": "default",
+    "dimensions": 768,
+    "config_hash": "sha256:..."
+  },
+  "total_files": 1234,
+  "total_chunks": 8765
+}
+```
+
+For remote embedding APIs, `config_hash` is derived from provider, model, dimensions, and relevant embedding options. For local models, the manifest may also include a local model file hash when available.
+
+On `cst index`, the tool must compare the active embedding config with the manifest. If the schema, provider, model, dimensions, or config hash are incompatible, it should refuse incremental indexing and require a full rebuild. On `cst query`, an incompatible manifest should fail clearly rather than silently returning degraded results.
 
 ## Architecture
 
@@ -149,10 +184,14 @@ Responsibilities:
 
 - Store chunk vectors.
 - Search query vectors for top-k similar chunks.
-- Delete vectors for removed chunks.
+- Ignore logically deleted chunks during search.
 - Persist and reload local vectors.
 
-Version 1 should define a `VectorStore` interface and use a simple local implementation, such as a NumPy matrix persisted to `embeddings.npy`. The interface should allow FAISS, LanceDB, Qdrant, or pgvector later.
+Version 1 should define a `VectorStore` interface and use a local NumPy-backed implementation persisted as `vectors.npy` plus `vector_ids.json`. The vector file may be memory-mapped or loaded into memory depending on implementation simplicity and measured performance.
+
+Removed or changed chunks are marked deleted in SQLite. A future `cst compact` command can rebuild the vector files without deleted rows and vacuum SQLite. Vectors should not be stored as SQLite BLOBs by default because full scans would require row-by-row BLOB decoding and are likely slower than contiguous vector arrays. A SQLite BLOB vector store may still be prototyped behind the same interface if profiling later justifies it.
+
+The interface should allow FAISS, LanceDB, Qdrant, pgvector, or another vector backend later.
 
 ### Retrieval Pipeline
 
@@ -173,6 +212,8 @@ User Query
 ```
 
 The pipeline should be explicit stages, not one large function. Each stage should receive and return typed data so future stages can be inserted without rewriting the flow.
+
+The context expansion stage must support configured before/after line windows and the `--context-lines N` override. It should merge adjacent results from the same file when their expanded ranges overlap. `--full-file` is a presentation option constrained by `max_full_file_bytes`; it should not change ranking.
 
 ### Reranker
 
@@ -198,6 +239,8 @@ Responsibilities:
 - Produce Markdown output for humans.
 - Produce JSON output for MCP and automation.
 - Keep all paths, line ranges, reasons, and score parts visible.
+
+Other output formats such as paths-only, Vim quickfix, or LSP locations are future extensions.
 
 ## Data Model
 
@@ -231,6 +274,7 @@ DocumentChunk
 - symbols
 - lexical_tokens
 - embedding_id
+- deleted_at
 - metadata
 
 SymbolRef
@@ -273,6 +317,17 @@ Capabilities:
   - `@PutMapping`
   - `@DeleteMapping`
   - `@PatchMapping`
+- Parse Spring route details from supported route annotations:
+  - class-level and method-level path fragments
+  - combined full route path when statically visible
+  - HTTP method where implied by annotation or `method = ...`
+  - route path segments as lexical tokens
+- Extract SQL strings from MyBatis annotation mappers:
+  - `@Select`
+  - `@Insert`
+  - `@Update`
+  - `@Delete`
+- Extract constants and enum values as symbols and lexical tokens.
 - Add naming signals for common backend roles:
   - Controller
   - Service
@@ -287,11 +342,16 @@ Expected improvements:
 
 - More complete method/class chunks.
 - Better endpoint queries.
+- Better route queries that include HTTP method, URL path, or path segments.
+- Better mapper queries for simple annotation-based MyBatis SQL.
+- Better lookup of enum values and static constants used as business flags.
 - Better ranking for controller, DTO, service, mapper, and query classes.
 - Better query expansion from route paths and Java identifiers.
 - More useful context bundles for Spring backend investigations.
 
 The plugin must not make the core Java-only.
+
+Java plugin version 0 remains regex/lightweight-parser based. It must not parse MyBatis XML, generate SQL-to-method relationship graphs, synthesize Lombok virtual methods, or perform validation-annotation-specific ranking in version 1.
 
 ## Configuration
 
@@ -304,6 +364,7 @@ Initial settings:
 include = []
 exclude = []
 max_file_bytes = 500000
+max_full_file_bytes = 200000
 
 [retrieval]
 semantic_top_k = 80
@@ -328,6 +389,8 @@ Version 1 should handle common local failures clearly:
 - Index does not exist for query/status.
 - Embedding provider is unavailable or misconfigured.
 - Existing index was built with an incompatible schema or embedding model.
+- Repository cannot be inferred from the current working directory.
+- `--full-file` matched a file larger than `max_full_file_bytes`.
 - File cannot be decoded as text.
 - Repository has no indexable files.
 
@@ -341,10 +404,15 @@ Tests should focus on behavior and boundaries:
 - Chunker preserves correct line ranges.
 - Tokenizer splits camelCase, snake_case, path fragments, and code identifiers.
 - SQLite FTS returns exact-token matches.
-- Vector store can persist, reload, search, and delete vectors.
+- Vector store can persist, reload, search, and ignore logically deleted chunks.
+- Manifest versioning rejects incompatible embedding configuration.
 - Retrieval pipeline merges, dedupes, reranks, and expands context.
+- Query command supports repository inference from the current working directory.
+- Query command honors `--context-lines` and `--full-file`.
 - Formatter emits stable Markdown and JSON.
-- Java plugin extracts route, class, method, package, import, and annotation signals from representative snippets.
+- `stats` reports index counts, embedding config, and disk usage.
+- `explain <file:line>` reports chunk metadata, symbols, lexical tokens, and embedding identity.
+- Java plugin extracts route, class, method, package, import, annotation, MyBatis annotation SQL, constants, and enum signals from representative snippets.
 
 Use small fixture repositories instead of mocking the entire pipeline.
 
@@ -355,25 +423,39 @@ Using a real Java repository, this flow should work:
 ```text
 cst index /path/to/java-repo
 cst query /path/to/java-repo "/apply/audit/pageEs INVOLVED_BY_ME why does it leak across regions"
+cd /path/to/java-repo
+cst query "/apply/audit/pageEs INVOLVED_BY_ME why does it leak across regions" --context-lines 20
 ```
 
 Expected behavior:
 
 - The index is created in `/path/to/java-repo/.context-search/`.
 - Re-running index skips unchanged files.
+- Query works with an explicit repository path and with current-directory repository inference.
 - Query returns 5 to 15 ranked results by default.
 - Results include file paths, line ranges, snippets, reasons, and score parts.
 - At least some controller/query/service/mapper candidates are surfaced when they exist and are textually or semantically connected to the query.
+- Spring route path and HTTP method signals participate in ranking when present.
+- MyBatis annotation SQL, enum values, and constants participate in lexical indexing when present.
 - JSON output contains the same structured data needed by a future MCP server.
+- `cst stats /path/to/java-repo` reports index statistics and embedding configuration.
+- `cst explain /path/to/java-repo <file:line>` reports the chunk and symbols covering that location.
 
 ## Future Extensions
 
 Planned extension points:
 
 - MCP server wrapping the core query API.
+- Interactive query mode.
+- Additional output formats such as paths-only, Vim quickfix, and LSP locations.
+- Config management commands.
+- `cst compact` for deleting tombstoned chunks from vector files and vacuuming SQLite.
+- `cst reindex --force` as an explicit full rebuild command.
 - Tree-sitter chunkers for multiple languages.
 - Deeper Java parsing through tree-sitter or JDT.
 - MyBatis/XML mapper relationship extraction.
+- Lombok virtual method indexing.
+- Validation annotation-specific ranking.
 - Call graph and reference graph reranking.
 - Commit history indexing.
 - LLM or cross-encoder reranker.
