@@ -49,6 +49,19 @@ def test_scanner_respects_gitignore_and_context_search(tmp_path: Path) -> None:
     assert len(files[0].sha256) == 64
 
 
+def test_scanner_returns_files_sorted_by_relative_path(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    nested = repo / "a"
+    nested.mkdir()
+    (repo / "b.java").write_text("class B {}\n", encoding="utf-8")
+    (nested / "c.java").write_text("class C {}\n", encoding="utf-8")
+
+    files = scan_workspace(repo, DEFAULT_CONFIG)
+
+    assert [item.path for item in files] == [Path("a/c.java"), Path("b.java")]
+
+
 def test_scanner_skips_unreadable_candidate_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

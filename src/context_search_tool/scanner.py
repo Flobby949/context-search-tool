@@ -64,7 +64,7 @@ def scan_workspace(repo: Path, config: ToolConfig) -> list[ScannedFile]:
             if scanned_file is not None:
                 scanned.append(scanned_file)
 
-    return scanned
+    return sorted(scanned, key=lambda item: item.path.as_posix())
 
 
 def _load_gitignore(repo: Path) -> pathspec.PathSpec:
