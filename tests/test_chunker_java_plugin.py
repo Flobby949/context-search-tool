@@ -270,3 +270,42 @@ class LiveController {}
     assert "DeadController" not in symbol_names
     assert "/old" not in extraction.lexical_tokens
     assert "/dead" not in extraction.lexical_tokens
+
+
+def test_java_plugin_preserves_comment_markers_inside_route_literals() -> None:
+    source = """
+import org.springframework.web.bind.annotation.GetMapping;
+
+class ProxyController {
+    @GetMapping("/proxy/http://target")
+    String proxy() {
+        return "ok";
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("ProxyController.java"), source)
+
+    assert "/proxy/http://target" in extraction.lexical_tokens
+    assert "proxy" in extraction.lexical_tokens
+    assert "target" in extraction.lexical_tokens
+
+
+def test_java_plugin_ignores_commented_package_and_import_lines() -> None:
+    source = """
+// package com.example.dead;
+package com.example.live;
+
+// import com.example.DeadImport;
+import com.example.LiveImport;
+
+class PackageImportController {}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("PackageImportController.java"), source)
+
+    assert extraction.metadata["package"] == "com.example.live"
+    assert extraction.metadata["imports"] == ["com.example.LiveImport"]
+    assert "liveimport" in extraction.lexical_tokens
+    assert "deadimport" not in extraction.lexical_tokens
+    assert "dead" not in extraction.lexical_tokens

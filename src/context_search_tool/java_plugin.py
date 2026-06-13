@@ -51,12 +51,13 @@ class JavaPlugin:
         return language == "java" or path.suffix.lower() == ".java"
 
     def extract(self, path: Path, content: str) -> PluginExtraction:
-        lines = _strip_comments(content).splitlines()
+        scrubbed_content = _strip_comments(content)
+        lines = scrubbed_content.splitlines()
         symbols: list[SymbolRef] = []
         tokens: list[str] = []
         metadata: dict[str, Any] = {}
 
-        package_match = _PACKAGE_RE.search(content)
+        package_match = _PACKAGE_RE.search(scrubbed_content)
         if package_match:
             package_name = package_match.group(1)
             metadata["package"] = package_name
@@ -64,7 +65,7 @@ class JavaPlugin:
             for segment in package_name.split("."):
                 _add_token(tokens, segment)
 
-        imports = _IMPORT_RE.findall(content)
+        imports = _IMPORT_RE.findall(scrubbed_content)
         if imports:
             metadata["imports"] = imports
             for imported in imports:
@@ -146,14 +147,29 @@ def _strip_comments(content: str) -> str:
     result: list[str] = []
     index = 0
     in_block_comment = False
+    in_string = False
+    in_char = False
+    escaped = False
     while index < len(content):
+        char = content[index]
         if in_block_comment:
             if content.startswith("*/", index):
                 in_block_comment = False
                 index += 2
             else:
-                result.append("\n" if content[index] == "\n" else " ")
+                result.append("\n" if char == "\n" else " ")
                 index += 1
+        elif in_string or in_char:
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif in_string and char == '"':
+                in_string = False
+            elif in_char and char == "'":
+                in_char = False
+            index += 1
         elif content.startswith("/*", index):
             in_block_comment = True
             result.append("  ")
@@ -163,7 +179,11 @@ def _strip_comments(content: str) -> str:
                 result.append(" ")
                 index += 1
         else:
-            result.append(content[index])
+            result.append(char)
+            if char == '"':
+                in_string = True
+            elif char == "'":
+                in_char = True
             index += 1
     return "".join(result)
 
