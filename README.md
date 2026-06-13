@@ -2,6 +2,14 @@
 
 Local hybrid semantic retrieval for codebases.
 
+## Capabilities
+
+- Core multi-stage retrieval across lexical, signal, and relation inputs.
+- Core signal and relation model for code context.
+- Java as the first signal producer.
+- Summary output groups for query results.
+- Current limitations: no complete Java call graph and no real semantic embedding by default.
+
 ## Install For Development
 
 ```bash
