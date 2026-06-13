@@ -244,12 +244,22 @@ def _summarize_chunk(
     names = _ordered_unique(
         [signal.name for signal in signals] + symbol_names + [_primary_chunk_name(chunk)]
     )
-    implementation.extend([name for name in names if _is_implementation_name(name)])
+    method_impl_names = [
+        name for name in names if _is_implementation_name(name) and "." in name
+    ]
+    if method_impl_names:
+        implementation.extend(method_impl_names)
+    else:
+        implementation.extend(
+            [name for name in names if _is_implementation_name(name) and "." not in name]
+        )
     related_types.extend([name for name in names if _is_related_type_name(name)])
 
     if not endpoint and not has_relation_support and not implementation:
         legacy.extend([name for name in related_types if name])
-    if has_relation_support and implementation:
+    if has_relation_support and implementation and not any(
+        "." in item for item in implementation
+    ):
         implementation.extend([_primary_chunk_name(chunk)])
 
     return (
@@ -330,6 +340,11 @@ def _is_controller_name(value: str) -> bool:
 
 def _is_implementation_name(value: str) -> bool:
     lowered = value.lower()
+    if "." in lowered:
+        owner, _ = lowered.split(".", 1)
+        if owner.endswith(("serviceimpl", "service", "impl")):
+            return True
+        return _is_implementation_name(owner)
     return any(
         lowered.endswith(suffix)
         for suffix in (

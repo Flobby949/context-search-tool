@@ -23,6 +23,7 @@ public class ApplyAuditController {
     }
 
     /**
+     * 工作台相关代码
      * 工作台统计-待我审核
      */
     @GetMapping("/stats/wait")

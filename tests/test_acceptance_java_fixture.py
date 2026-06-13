@@ -71,3 +71,55 @@ def test_java_fixture_indexes_short_chain_relations(tmp_path: Path) -> None:
         relation.kind == "uses" and relation.confidence == 0.8
         for relation in executable_relations
     )
+
+
+def test_java_fixture_workbench_query_returns_expected_summary(tmp_path: Path) -> None:
+    source_fixture = Path(__file__).parent / "fixtures" / "java-spring-mini"
+    repo = tmp_path / "java-spring-mini"
+    shutil.copytree(source_fixture, repo)
+
+    index_repository(repo, DEFAULT_CONFIG)
+    bundle = query_repository(
+        repo,
+        "工作台相关代码",
+        DEFAULT_CONFIG,
+        context_lines=20,
+    )
+
+    assert bundle.summary.entry_points
+    assert "GET /apply/audit/stats/wait" in bundle.summary.entry_points
+    assert "ResourceAuditServiceImpl.statsWait" in bundle.summary.implementation
+    assert "WorkbenchResourceAuditStatsDTO" in bundle.summary.related_types
+    assert "WorkbenchResourceStatsDTO" in bundle.summary.possibly_legacy
+
+
+def test_java_fixture_workflow_query_returns_expected_summary(tmp_path: Path) -> None:
+    source_fixture = Path(__file__).parent / "fixtures" / "java-spring-mini"
+    repo = tmp_path / "java-spring-mini"
+    shutil.copytree(source_fixture, repo)
+
+    index_repository(repo, DEFAULT_CONFIG)
+    bundle = query_repository(
+        repo,
+        "apaas工作流相关接口",
+        DEFAULT_CONFIG,
+        context_lines=20,
+    )
+
+    assert bundle.summary.entry_points
+    assert any(
+        entry.startswith("POST") and "/open/process" in entry
+        for entry in bundle.summary.entry_points
+    )
+    assert any(
+        entry.startswith("GET") and "/open/process" in entry
+        for entry in bundle.summary.entry_points
+    )
+    assert any(
+        "Gateway" in item or "Command" in item for item in bundle.summary.implementation
+    )
+    assert any(
+        "Request" in item and "DTO" in item
+        or "Response" in item and "DTO" in item
+        for item in bundle.summary.related_types
+    )

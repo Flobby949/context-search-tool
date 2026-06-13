@@ -359,8 +359,8 @@ class WorkspaceLegacyType {
 
     assert bundle.summary.entry_points == ["GET /workspace/page"]
     assert bundle.summary.implementation == [
-        "WorkspaceExecutor",
-        "WorkspaceServiceImpl",
+        "WorkspaceExecutor.execute",
+        "WorkspaceServiceImpl.list",
     ]
     assert bundle.summary.related_types == ["WorkspaceDto"]
     assert bundle.summary.possibly_legacy == ["WorkspaceLegacyType"]
