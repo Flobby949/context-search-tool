@@ -85,9 +85,12 @@ class JavaPlugin:
                 _add_identifier_tokens(tokens, name)
                 if kind == "enum":
                     _extract_enum_values(lines, line_number, end_line, symbols, tokens)
-                if kind == "class":
-                    class_route = _nearest_route_before(annotations_by_line, line_number)
-                    _add_route_tokens(tokens, class_route)
+                class_route = (
+                    _nearest_route_before(annotations_by_line, lines, line_number)
+                    if kind == "class"
+                    else ""
+                )
+                _add_route_tokens(tokens, class_route)
 
             constant_match = _STATIC_FINAL_RE.search(line)
             if constant_match:
@@ -207,9 +210,13 @@ def _annotation_args(
 
 
 def _nearest_route_before(
-    annotations_by_line: dict[int, list[dict[str, Any]]], line_number: int
+    annotations_by_line: dict[int, list[dict[str, Any]]],
+    lines: list[str],
+    line_number: int,
 ) -> str:
     for candidate_line in range(line_number - 1, 0, -1):
+        if _TYPE_RE.search(lines[candidate_line - 1]):
+            return ""
         annotations = annotations_by_line.get(candidate_line, [])
         if not annotations and candidate_line < line_number - 3:
             return ""

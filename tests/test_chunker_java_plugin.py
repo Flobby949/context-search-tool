@@ -164,3 +164,25 @@ class Example {
 
     assert "actualMethod" in method_names
     assert "helper" not in method_names
+
+
+def test_java_plugin_does_not_leak_class_route_to_later_class() -> None:
+    source = """
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+
+@RequestMapping("/api")
+class FirstController {}
+
+class SecondController {
+    @GetMapping("/health")
+    String health() {
+        return "ok";
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("Controllers.java"), source)
+
+    assert "/health" in extraction.lexical_tokens
+    assert "/api/health" not in extraction.lexical_tokens
