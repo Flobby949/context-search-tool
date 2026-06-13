@@ -282,8 +282,6 @@ def _nearest_route_before(
         if _TYPE_RE.search(lines[candidate_line - 1]):
             return ""
         annotations = annotations_by_line.get(candidate_line, [])
-        if not annotations and candidate_line < line_number - 3:
-            return ""
         for annotation in annotations:
             if annotation["name"] == "RequestMapping":
                 return _annotation_path(annotation["args"])

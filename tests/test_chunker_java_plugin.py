@@ -309,3 +309,33 @@ class PackageImportController {}
     assert "liveimport" in extraction.lexical_tokens
     assert "deadimport" not in extraction.lexical_tokens
     assert "dead" not in extraction.lexical_tokens
+
+
+def test_java_plugin_extracts_long_multiline_class_mapping_route() -> None:
+    source = """
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+
+@RequestMapping(
+    value = "/api",
+    produces = "application/json",
+    consumes = "application/json"
+)
+class UserController {
+    @GetMapping("/users")
+    String users() {
+        return "ok";
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("UserController.java"), source)
+    method_names = {
+        symbol.name for symbol in extraction.symbols if symbol.kind == "method"
+    }
+
+    assert "users" in method_names
+    assert "/api" in extraction.lexical_tokens
+    assert "/users" in extraction.lexical_tokens
+    assert "/api/users" in extraction.lexical_tokens
+    assert "get" in extraction.lexical_tokens
