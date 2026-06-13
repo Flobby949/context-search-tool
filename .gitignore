@@ -1,2 +1,4 @@
 .worktrees
 .worktrees/
+.DS_Store
+docs/superpowers/specs/2026-06-13-design-review-recommendations.md
