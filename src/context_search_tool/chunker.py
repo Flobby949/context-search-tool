@@ -10,8 +10,16 @@ from context_search_tool.tokenizer import tokenize_identifier, tokens_for_path
 def expand_lines(
     lines: list[str], start_line: int, end_line: int, before: int, after: int
 ) -> tuple[int, int, str]:
-    expanded_start = max(1, start_line - before)
-    expanded_end = min(len(lines), end_line + after)
+    if not lines:
+        return 0, 0, ""
+
+    bounded_start = min(max(1, start_line), len(lines))
+    bounded_end = min(max(1, end_line), len(lines))
+    if bounded_start > bounded_end:
+        bounded_start = bounded_end
+
+    expanded_start = max(1, bounded_start - before)
+    expanded_end = min(len(lines), bounded_end + after)
     return (
         expanded_start,
         expanded_end,

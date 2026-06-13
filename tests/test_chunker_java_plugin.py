@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from context_search_tool.chunker import chunk_text
+from context_search_tool.chunker import chunk_text, expand_lines
 from context_search_tool.java_plugin import JavaPlugin
 
 
@@ -38,6 +38,13 @@ def test_generic_chunker_preserves_line_ranges() -> None:
 
     assert [(chunk.start_line, chunk.end_line) for chunk in chunks] == [(1, 2), (3, 3)]
     assert chunks[0].content == "line1\nline2"
+
+
+def test_expand_lines_bounds_out_of_range_inputs() -> None:
+    start_line, end_line, content = expand_lines(["one", "two", "three"], 10, 12, 2, 2)
+
+    assert (start_line, end_line) == (1, 3)
+    assert content == "one\ntwo\nthree"
 
 
 def test_java_plugin_extracts_routes_sql_and_enum_values() -> None:
@@ -186,3 +193,80 @@ class SecondController {
 
     assert "/health" in extraction.lexical_tokens
     assert "/api/health" not in extraction.lexical_tokens
+
+
+def test_java_plugin_extracts_multiline_method_signature_route() -> None:
+    source = """
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+
+@RequestMapping("/foos")
+class FooController {
+    @PostMapping("/create")
+    public ResponseEntity<Foo> create(
+        @RequestBody FooRequest request
+    ) {
+        return ok();
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("FooController.java"), source)
+    method_names = {
+        symbol.name for symbol in extraction.symbols if symbol.kind == "method"
+    }
+
+    assert "create" in method_names
+    assert "/create" in extraction.lexical_tokens
+    assert "/foos/create" in extraction.lexical_tokens
+    assert "post" in extraction.lexical_tokens
+
+
+def test_java_plugin_extracts_long_multiline_mapping_annotation() -> None:
+    source = """
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
+
+class ItemController {
+    @RequestMapping(
+        value = "/items",
+        method = RequestMethod.POST,
+        produces = "application/json",
+        consumes = "application/json"
+    )
+    public String createItem() {
+        return "ok";
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("ItemController.java"), source)
+    method_names = {
+        symbol.name for symbol in extraction.symbols if symbol.kind == "method"
+    }
+
+    assert "createItem" in method_names
+    assert "/items" in extraction.lexical_tokens
+    assert "post" in extraction.lexical_tokens
+
+
+def test_java_plugin_ignores_commented_out_symbols_and_routes() -> None:
+    source = """
+// @GetMapping("/old")
+// class OldController {}
+/*
+@PostMapping("/dead")
+class DeadController {}
+*/
+class LiveController {}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("Controllers.java"), source)
+    symbol_names = {symbol.name for symbol in extraction.symbols}
+
+    assert "LiveController" in symbol_names
+    assert "OldController" not in symbol_names
+    assert "DeadController" not in symbol_names
+    assert "/old" not in extraction.lexical_tokens
+    assert "/dead" not in extraction.lexical_tokens

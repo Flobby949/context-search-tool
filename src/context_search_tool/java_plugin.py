@@ -51,7 +51,7 @@ class JavaPlugin:
         return language == "java" or path.suffix.lower() == ".java"
 
     def extract(self, path: Path, content: str) -> PluginExtraction:
-        lines = content.splitlines()
+        lines = _strip_comments(content).splitlines()
         symbols: list[SymbolRef] = []
         tokens: list[str] = []
         metadata: dict[str, Any] = {}
@@ -98,7 +98,7 @@ class JavaPlugin:
                 symbols.append(_symbol(name, "constant", line_number, line_number))
                 _add_identifier_tokens(tokens, name)
 
-            method_match = _METHOD_RE.search(line)
+            method_match = _method_match(lines, line_number)
             if (
                 method_match
                 and not _TYPE_RE.search(line)
@@ -140,6 +140,50 @@ def _symbol(name: str, kind: str, start_line: int, end_line: int) -> SymbolRef:
         language="java",
         metadata={},
     )
+
+
+def _strip_comments(content: str) -> str:
+    result: list[str] = []
+    index = 0
+    in_block_comment = False
+    while index < len(content):
+        if in_block_comment:
+            if content.startswith("*/", index):
+                in_block_comment = False
+                index += 2
+            else:
+                result.append("\n" if content[index] == "\n" else " ")
+                index += 1
+        elif content.startswith("/*", index):
+            in_block_comment = True
+            result.append("  ")
+            index += 2
+        elif content.startswith("//", index):
+            while index < len(content) and content[index] != "\n":
+                result.append(" ")
+                index += 1
+        else:
+            result.append(content[index])
+            index += 1
+    return "".join(result)
+
+
+def _method_match(lines: list[str], line_number: int) -> re.Match[str] | None:
+    line = lines[line_number - 1]
+    match = _METHOD_RE.search(line)
+    if match:
+        return match
+
+    if "(" not in line or _is_statement_line(line):
+        return None
+
+    signature = line.strip()
+    for next_line_number in range(line_number + 1, min(len(lines), line_number + 8) + 1):
+        next_line = lines[next_line_number - 1].strip()
+        signature = f"{signature} {next_line}"
+        if "{" in next_line or ";" in next_line:
+            return _METHOD_RE.search(signature)
+    return None
 
 
 def _annotations_by_line(
@@ -235,8 +279,6 @@ def _nearest_mapping_before(
         if _TYPE_RE.search(lines[candidate_line - 1]):
             return None
         annotations = annotations_by_line.get(candidate_line, [])
-        if not annotations and candidate_line < line_number - 3:
-            return None
         for annotation in annotations:
             if annotation["name"] in _MAPPING_ANNOTATIONS:
                 return {
