@@ -8,6 +8,7 @@ from pathlib import Path
 from context_search_tool.chunker import expand_lines
 from context_search_tool.config import ToolConfig
 from context_search_tool.embeddings import provider_from_config
+from context_search_tool.manifest import assert_manifest_compatible
 from context_search_tool.models import DocumentChunk, RetrievalCandidate, RetrievalResult
 from context_search_tool.paths import index_dir_for
 from context_search_tool.sqlite_store import SQLiteStore
@@ -62,6 +63,8 @@ def query_repository(
             followup_keywords=[],
         )
 
+    assert_manifest_compatible(repo, config)
+
     store = SQLiteStore(db_path)
     try:
         deleted_ids = store.deleted_chunk_ids()
@@ -76,7 +79,7 @@ def query_repository(
     candidates = _merge_candidates(
         [
             *_semantic_candidates(index_dir, query, config, deleted_ids),
-            *store.lexical_search(tokens, config.retrieval.lexical_top_k),
+            *_lexical_candidates(store, tokens, config.retrieval.lexical_top_k),
             *store.path_symbol_search(tokens, config.retrieval.lexical_top_k),
         ]
     )
@@ -236,6 +239,12 @@ def _expand_ranked_chunks(
                 before,
                 after,
             )
+        if full_file:
+            end_line, content = _cap_content_bytes(
+                content,
+                start_line,
+                config.index.max_full_file_bytes,
+            )
 
         expanded.append(
             _ExpandedResult(
@@ -251,6 +260,55 @@ def _expand_ranked_chunks(
         )
 
     return _merge_overlapping_results(expanded)
+
+
+def _lexical_candidates(
+    store: SQLiteStore,
+    tokens: list[str],
+    limit: int,
+) -> list[RetrievalCandidate]:
+    exact = store.lexical_search(tokens, limit)
+    if exact or not tokens or limit <= 0:
+        return exact
+
+    scores: dict[str, float] = {}
+    for token in tokens:
+        for candidate in store.lexical_search([token], limit):
+            scores[candidate.chunk_id] = (
+                scores.get(candidate.chunk_id, 0.0) + candidate.score
+            )
+
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    return [
+        RetrievalCandidate(
+            chunk_id=chunk_id,
+            score=score,
+            source="lexical",
+            score_parts={"lexical": score},
+        )
+        for chunk_id, score in ranked[:limit]
+    ]
+
+
+def _cap_content_bytes(
+    content: str,
+    start_line: int,
+    max_bytes: int,
+) -> tuple[int, str]:
+    encoded = content.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return _end_line_for_content(start_line, content), content
+    if max_bytes <= 0:
+        return start_line, ""
+
+    trimmed = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    return _end_line_for_content(start_line, trimmed), trimmed
+
+
+def _end_line_for_content(start_line: int, content: str) -> int:
+    if not content:
+        return start_line
+    return start_line + max(0, len(content.splitlines()) - 1)
 
 
 def _merge_overlapping_results(results: list[_ExpandedResult]) -> list[_ExpandedResult]:
