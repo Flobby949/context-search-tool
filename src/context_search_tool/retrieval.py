@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
-from collections import Counter
+import logging
+from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +15,14 @@ from context_search_tool.paths import index_dir_for
 from context_search_tool.sqlite_store import SQLiteStore
 from context_search_tool.tokenizer import tokenize_query
 from context_search_tool.vector_store import NumpyVectorStore
+
+
+logger = logging.getLogger(__name__)
+
+MAX_EXPANSION_DEPTH = 3
+MAX_EXPANSION_CANDIDATES = 1000
+_MIN_RELATION_CONFIDENCE = 0.5
+_RELATION_SCORE_DECAY = 0.8
 
 
 @dataclass(frozen=True)
@@ -76,11 +85,25 @@ def query_repository(
             followup_keywords=[],
         )
 
+    initial_candidates = _initial_candidates(
+        index_dir,
+        store,
+        query,
+        tokens,
+        config,
+        deleted_ids,
+    )
+    signal_candidates = _signal_candidates(store, tokens, config)
+    direct_candidates = _merge_candidates([*initial_candidates, *signal_candidates])
+    relation_candidates = _relation_expansion_candidates(
+        store,
+        list(direct_candidates.values()),
+        config,
+    )
     candidates = _merge_candidates(
         [
-            *_semantic_candidates(index_dir, query, config, deleted_ids),
-            *_lexical_candidates(store, tokens, config.retrieval.lexical_top_k),
-            *store.path_symbol_search(tokens, config.retrieval.lexical_top_k),
+            *direct_candidates.values(),
+            *relation_candidates,
         ]
     )
     if not candidates:
@@ -114,6 +137,21 @@ def query_repository(
     )
 
 
+def _initial_candidates(
+    index_dir: Path,
+    store: SQLiteStore,
+    query: str,
+    tokens: list[str],
+    config: ToolConfig,
+    deleted_ids: set[str],
+) -> list[RetrievalCandidate]:
+    return [
+        *_semantic_candidates(index_dir, query, config, deleted_ids),
+        *_lexical_candidates(store, tokens, config.retrieval.lexical_top_k),
+        *store.path_symbol_search(tokens, config.retrieval.lexical_top_k),
+    ]
+
+
 def _semantic_candidates(
     index_dir: Path,
     query: str,
@@ -134,6 +172,121 @@ def _semantic_candidates(
             deleted_ids,
         )
     ]
+
+
+def _signal_candidates(
+    store: SQLiteStore,
+    tokens: list[str],
+    config: ToolConfig,
+) -> list[RetrievalCandidate]:
+    limit = max(
+        config.retrieval.semantic_top_k,
+        config.retrieval.lexical_top_k,
+        config.retrieval.final_top_k,
+    )
+    candidates: list[RetrievalCandidate] = []
+    for signal in store.signal_search(tokens, limit):
+        score = _signal_score(signal.name, signal.tokens, signal.metadata, tokens)
+        if score <= 0:
+            continue
+        candidates.append(
+            RetrievalCandidate(
+                chunk_id=signal.chunk_id,
+                score=score,
+                source="signal",
+                score_parts={"signal": score},
+            )
+        )
+    return candidates
+
+
+def _relation_expansion_candidates(
+    store: SQLiteStore,
+    seed_candidates: list[RetrievalCandidate],
+    config: ToolConfig,
+) -> list[RetrievalCandidate]:
+    if not seed_candidates:
+        return []
+
+    source_limit = max(
+        config.retrieval.semantic_top_k
+        + config.retrieval.lexical_top_k
+        + config.retrieval.final_top_k,
+        config.retrieval.final_top_k,
+    )
+    if source_limit <= 0:
+        return []
+
+    expanded: list[RetrievalCandidate] = []
+    seen_chunks = {candidate.chunk_id for candidate in seed_candidates}
+    visited_signals: set[str] = set()
+    queue: deque[tuple[str, float, int]] = deque()
+
+    for candidate in sorted(
+        seed_candidates,
+        key=lambda item: (-_candidate_base_score(item), item.chunk_id),
+    )[:source_limit]:
+        current_score = _candidate_base_score(candidate)
+        if current_score <= 0:
+            continue
+        for signal in store.signals_for_chunk(candidate.chunk_id):
+            if signal.signal_id in visited_signals:
+                continue
+            visited_signals.add(signal.signal_id)
+            queue.append((signal.signal_id, current_score, 0))
+
+    while queue:
+        source_signal_id, current_score, depth = queue.popleft()
+        if depth >= MAX_EXPANSION_DEPTH:
+            continue
+
+        next_depth = depth + 1
+        for relation in store.relations_for_source(source_signal_id):
+            if relation.confidence < _MIN_RELATION_CONFIDENCE:
+                continue
+
+            next_score = current_score * relation.confidence * _RELATION_SCORE_DECAY
+            remaining = MAX_EXPANSION_CANDIDATES - len(expanded)
+            if remaining <= 0:
+                _log_expansion_limit()
+                return expanded
+
+            for chunk in store.chunks_matching_signal_or_symbol(
+                relation.target_name,
+                remaining,
+            ):
+                if chunk.chunk_id not in seen_chunks:
+                    expanded.append(
+                        RetrievalCandidate(
+                            chunk_id=chunk.chunk_id,
+                            score=next_score,
+                            source="relation",
+                            score_parts={"relation": next_score},
+                        )
+                    )
+                    seen_chunks.add(chunk.chunk_id)
+                    if len(expanded) >= MAX_EXPANSION_CANDIDATES:
+                        _log_expansion_limit()
+                        return expanded
+
+                for signal in store.signals_for_chunk(chunk.chunk_id):
+                    if signal.signal_id in visited_signals:
+                        continue
+                    visited_signals.add(signal.signal_id)
+                    queue.append((signal.signal_id, next_score, next_depth))
+
+    return expanded
+
+
+def _candidate_base_score(candidate: RetrievalCandidate) -> float:
+    return _bounded_score(max(candidate.score, *candidate.score_parts.values(), 0.0))
+
+
+def _log_expansion_limit() -> None:
+    logger.warning(
+        "relation expansion hit candidate limit (%s); returning partial candidates",
+        MAX_EXPANSION_CANDIDATES,
+    )
 
 
 def _merge_candidates(
@@ -300,6 +453,55 @@ def _lexical_candidates(
     ]
 
 
+def _signal_score(
+    name: str,
+    signal_tokens: list[str],
+    metadata: dict[str, object],
+    query_tokens: list[str],
+) -> float:
+    normalized = [token.lower() for token in query_tokens if token]
+    if not normalized:
+        return 0.0
+
+    name_text = name.lower()
+    token_set = {token.lower() for token in signal_tokens}
+    metadata_text = _metadata_text(metadata)
+    path_tokens: set[str] = set()
+    path_value = metadata.get("path")
+    if isinstance(path_value, str):
+        path_tokens = set(tokenize_query(path_value))
+        path_text = path_value.lower()
+    else:
+        path_text = ""
+
+    score = 0.0
+    for token in normalized:
+        token_score = 0.0
+        if token in name_text:
+            token_score = max(token_score, 1.0)
+        if token in token_set:
+            token_score = max(token_score, 1.0)
+        if token in metadata_text:
+            token_score = max(token_score, 1.0)
+        if token in path_tokens or token in path_text:
+            token_score = max(token_score, 0.9)
+        score += token_score
+    return score / len(normalized)
+
+
+def _metadata_text(metadata: dict[str, object]) -> str:
+    values: list[str] = []
+    for key, value in metadata.items():
+        values.append(key)
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, (int, float, bool)):
+            values.append(str(value))
+        elif value is not None:
+            values.append(str(value))
+    return " ".join(values).lower()
+
+
 def _cap_content_bytes(
     content: str,
     start_line: int,
@@ -424,10 +626,16 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         (score_parts.get("semantic", 0.0) * 0.55)
         + (score_parts.get("lexical", 0.0) * 0.25)
         + (min(score_parts.get("path_symbol", 0.0), 5.0) / 5.0 * 0.15)
+        + _bounded_score(score_parts.get("signal", 0.0))
+        + _bounded_score(score_parts.get("relation", 0.0))
         + (score_parts.get("token_coverage", 0.0) * 0.20)
         + score_parts.get("plugin_boost", 0.0)
         + score_parts.get("penalty", 0.0)
     )
+
+
+def _bounded_score(score: float) -> float:
+    return min(max(score, 0.0), 1.0)
 
 
 def _token_coverage(tokens: list[str], chunk: DocumentChunk) -> float:
@@ -476,6 +684,10 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("lexical match")
     if score_parts.get("path_symbol", 0.0) > 0:
         reasons.append("path/symbol match")
+    if score_parts.get("signal", 0.0) > 0:
+        reasons.append("signal match")
+    if score_parts.get("relation", 0.0) > 0:
+        reasons.append("relation expansion")
     if score_parts.get("token_coverage", 0.0) > 0:
         reasons.append("token coverage")
     if "/" in query and score_parts.get("route_boost", 0.0) > 0:

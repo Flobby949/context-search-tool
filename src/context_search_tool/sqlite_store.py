@@ -344,7 +344,7 @@ class SQLiteStore:
                 [
                     signal.name,
                     " ".join(signal.tokens),
-                    _to_json(signal.metadata),
+                    _metadata_search_text(signal.metadata),
                 ]
             ).lower()
             score = sum(1.0 for token in normalized if token in haystack)
@@ -390,6 +390,36 @@ class SQLiteStore:
                 (target_name,),
             ).fetchall()
         return [_relation_from_row(row) for row in rows]
+
+    def chunks_matching_signal_or_symbol(
+        self, target_name: str, limit: int
+    ) -> list[DocumentChunk]:
+        if not target_name or limit <= 0:
+            return []
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT chunks.*
+                FROM chunks
+                LEFT JOIN code_signals
+                  ON code_signals.chunk_id = chunks.chunk_id
+                 AND code_signals.deleted_at IS NULL
+                LEFT JOIN chunk_symbols
+                  ON chunk_symbols.chunk_id = chunks.chunk_id
+                LEFT JOIN symbols
+                  ON symbols.symbol_id = chunk_symbols.symbol_id
+                WHERE chunks.deleted_at IS NULL
+                  AND (
+                    code_signals.name = ?
+                    OR symbols.name = ?
+                  )
+                ORDER BY chunks.file_path, chunks.start_line, chunks.chunk_id
+                LIMIT ?
+                """,
+                (target_name, target_name, limit),
+            ).fetchall()
+            return [self._chunk_from_row(connection, row) for row in rows]
 
     def get_metadata(self, key: str) -> str | None:
         with self._connect() as connection:
@@ -834,6 +864,19 @@ def _from_json(value: str) -> dict[str, Any]:
 
 def _from_json_list(value: str) -> list[str]:
     return list(json.loads(value))
+
+
+def _metadata_search_text(metadata: dict[str, Any]) -> str:
+    values: list[str] = []
+    for key, value in metadata.items():
+        values.append(key)
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, (int, float, bool)):
+            values.append(str(value))
+        elif value is not None:
+            values.append(str(value))
+    return " ".join(values)
 
 
 def _signal_from_row(row: sqlite3.Row) -> CodeSignal:
