@@ -259,7 +259,13 @@ def _expand_ranked_chunks(
             )
         )
 
-    return _merge_overlapping_results(expanded)
+    merged = _merge_overlapping_results(expanded)
+    if not full_file:
+        return merged
+    return [
+        _cap_expanded_result(result, config.index.max_full_file_bytes)
+        for result in merged
+    ]
 
 
 def _lexical_candidates(
@@ -303,6 +309,27 @@ def _cap_content_bytes(
 
     trimmed = encoded[:max_bytes].decode("utf-8", errors="ignore")
     return _end_line_for_content(start_line, trimmed), trimmed
+
+
+def _cap_expanded_result(
+    result: _ExpandedResult,
+    max_bytes: int,
+) -> _ExpandedResult:
+    end_line, content = _cap_content_bytes(
+        result.content,
+        result.start_line,
+        max_bytes,
+    )
+    return _ExpandedResult(
+        file_path=result.file_path,
+        start_line=result.start_line,
+        end_line=end_line,
+        content=content,
+        score=result.score,
+        score_parts=result.score_parts,
+        reasons=result.reasons,
+        followup_keywords=result.followup_keywords,
+    )
 
 
 def _end_line_for_content(start_line: int, content: str) -> int:

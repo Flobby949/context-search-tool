@@ -87,6 +87,26 @@ def test_full_file_fallback_still_respects_size_limit(tmp_path: Path) -> None:
     assert bundle.results[0].content != content
 
 
+def test_full_file_merged_ranges_still_respect_size_limit(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    lines = ["x" for _ in range(200)]
+    lines[0] = "targetToken"
+    lines[80] = "targetToken"
+    lines[160] = "targetToken"
+    (repo / "Large.java").write_text("\n".join(lines), encoding="utf-8")
+    config = ToolConfig(index=IndexConfig(max_full_file_bytes=220))
+    index_repository(repo, config)
+
+    bundle = query_repository(repo, "targetToken", config, full_file=True)
+
+    assert bundle.results
+    assert all(
+        len(result.content.encode("utf-8")) <= config.index.max_full_file_bytes
+        for result in bundle.results
+    )
+
+
 def test_query_rejects_incompatible_embedding_model(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
