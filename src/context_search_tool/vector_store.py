@@ -76,8 +76,14 @@ class NumpyVectorStore:
         vectors = np.load(self._vectors_path).astype(np.float32, copy=False)
         if vectors.ndim == 1:
             vectors = vectors.reshape(1, -1)
+        ids = json.loads(self._ids_path.read_text(encoding="utf-8"))
+        if len(ids) != vectors.shape[0]:
+            raise ValueError(
+                f"vector id count {len(ids)} does not match "
+                f"vector row count {vectors.shape[0]}"
+            )
         self._vectors = vectors
-        self._ids = json.loads(self._ids_path.read_text(encoding="utf-8"))
+        self._ids = ids
 
     @property
     def _vectors_path(self) -> Path:

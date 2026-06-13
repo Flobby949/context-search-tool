@@ -83,10 +83,25 @@ class OpenAICompatibleEmbeddingProvider:
         )
         response.raise_for_status()
         payload = response.json()
-        return [
-            np.asarray(item["embedding"], dtype=np.float32)
-            for item in payload.get("data", [])
-        ]
+        data = payload.get("data")
+        if not isinstance(data, list):
+            raise ValueError("embedding response data must be a list")
+        if len(data) != len(texts):
+            raise ValueError(
+                f"embedding response count {len(data)} does not match "
+                f"input count {len(texts)}"
+            )
+
+        vectors = []
+        for index, item in enumerate(data):
+            vector = np.asarray(item["embedding"], dtype=np.float32)
+            if vector.ndim != 1 or vector.shape[0] != self.config.dimensions:
+                raise ValueError(
+                    f"embedding dimensions for response {index} do not match "
+                    f"configured dimensions {self.config.dimensions}"
+                )
+            vectors.append(vector)
+        return vectors
 
     def fingerprint(self) -> dict[str, object]:
         return {

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from context_search_tool.config import EmbeddingConfig
 from context_search_tool.embeddings import (
@@ -40,6 +41,36 @@ def test_openai_compatible_provider_uses_mock_transport() -> None:
     assert vector.tolist() == [1.0, 0.0, 0.0]
 
 
+def test_openai_compatible_provider_rejects_response_count_mismatch() -> None:
+    provider = OpenAICompatibleEmbeddingProvider.for_test(
+        config=EmbeddingConfig(
+            provider="openai-compatible",
+            model="demo-embedding",
+            dimensions=3,
+            base_url="https://example.test/v1",
+        ),
+        response_vectors=[[1.0, 0.0, 0.0]],
+    )
+
+    with pytest.raises(ValueError, match="embedding response count"):
+        provider.embed_texts(["hello", "world"])
+
+
+def test_openai_compatible_provider_rejects_dimension_mismatch() -> None:
+    provider = OpenAICompatibleEmbeddingProvider.for_test(
+        config=EmbeddingConfig(
+            provider="openai-compatible",
+            model="demo-embedding",
+            dimensions=3,
+            base_url="https://example.test/v1",
+        ),
+        response_vectors=[[1.0, 0.0]],
+    )
+
+    with pytest.raises(ValueError, match="embedding dimensions"):
+        provider.embed_texts(["hello"])
+
+
 def test_numpy_vector_store_persists_and_filters_deleted(tmp_path: Path) -> None:
     store = NumpyVectorStore(tmp_path)
     store.upsert_many(
@@ -58,3 +89,14 @@ def test_numpy_vector_store_persists_and_filters_deleted(tmp_path: Path) -> None
     )
 
     assert [item.chunk_id for item in results] == ["chunk-b"]
+
+
+def test_numpy_vector_store_rejects_mismatched_persisted_ids(tmp_path: Path) -> None:
+    np.save(
+        tmp_path / "vectors.npy",
+        np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+    )
+    (tmp_path / "vector_ids.json").write_text('["chunk-a"]\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="vector id count"):
+        NumpyVectorStore(tmp_path)
