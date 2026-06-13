@@ -34,6 +34,31 @@ def test_markdown_formatter_contains_paths_reasons_and_snippets() -> None:
     assert "```" in output
 
 
+def test_markdown_formatter_uses_longer_fence_than_snippet_backticks() -> None:
+    bundle = QueryBundle(
+        query="markdown fence",
+        expanded_tokens=["markdown", "fence"],
+        followup_keywords=[],
+        results=[
+            RetrievalResult(
+                file_path=Path("docs/example.md"),
+                start_line=1,
+                end_line=5,
+                content="intro\n```\ninner block\n```\noutro",
+                score=0.5,
+                score_parts={},
+                reasons=[],
+                followup_keywords=[],
+            )
+        ],
+    )
+
+    output = format_markdown(bundle)
+
+    assert output.count("\n````\n") == 2
+    assert "intro\n```\ninner block\n```\noutro" in output
+
+
 def test_json_formatter_is_structured() -> None:
     output = format_json(sample_bundle())
     parsed = json.loads(output)
@@ -41,3 +66,18 @@ def test_json_formatter_is_structured() -> None:
     assert parsed["query"] == "apply audit"
     assert parsed["results"][0]["file_path"] == "ApplyAuditController.java"
     assert parsed["results"][0]["score_parts"]["lexical"] == 0.8
+
+
+def test_formatters_handle_empty_results() -> None:
+    bundle = QueryBundle(
+        query="missing",
+        expanded_tokens=[],
+        followup_keywords=[],
+        results=[],
+    )
+
+    markdown = format_markdown(bundle)
+    parsed = json.loads(format_json(bundle))
+
+    assert "No results." in markdown
+    assert parsed["results"] == []

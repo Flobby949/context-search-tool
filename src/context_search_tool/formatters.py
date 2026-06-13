@@ -20,6 +20,7 @@ def format_markdown(bundle: QueryBundle) -> str:
         lines.append("No results.")
     else:
         for index, result in enumerate(bundle.results, start=1):
+            fence = _markdown_fence(result.content)
             lines.extend(
                 [
                     "",
@@ -36,9 +37,9 @@ def format_markdown(bundle: QueryBundle) -> str:
                     *_format_score_parts(result.score_parts),
                     "",
                     "Snippet:",
-                    "```",
+                    fence,
                     result.content,
-                    "```",
+                    fence,
                 ]
             )
 
@@ -81,6 +82,18 @@ def _format_list(items: list[str]) -> str:
 
 def _format_bullets(items: list[str]) -> list[str]:
     return [f"- {item}" for item in items] if items else ["- (none)"]
+
+
+def _markdown_fence(content: str) -> str:
+    longest_run = 0
+    current_run = 0
+    for char in content:
+        if char == "`":
+            current_run += 1
+            longest_run = max(longest_run, current_run)
+        else:
+            current_run = 0
+    return "`" * max(3, longest_run + 1)
 
 
 def _format_score_parts(score_parts: dict[str, float]) -> list[str]:
