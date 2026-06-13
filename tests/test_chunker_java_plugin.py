@@ -61,6 +61,8 @@ def test_java_plugin_extracts_routes_sql_and_enum_values() -> None:
     assert "select" in extraction.lexical_tokens
     assert "audit" in extraction.lexical_tokens
     assert "status" in extraction.lexical_tokens
+    assert extraction.signals == []
+    assert extraction.relations == []
     assert extraction.metadata["package"] == "com.example.audit"
 
 

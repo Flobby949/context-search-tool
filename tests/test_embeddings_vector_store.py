@@ -1,3 +1,5 @@
+import math
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -89,6 +91,26 @@ def test_numpy_vector_store_persists_and_filters_deleted(tmp_path: Path) -> None
     )
 
     assert [item.chunk_id for item in results] == ["chunk-b"]
+
+
+def test_vector_search_sanitizes_non_finite_values(tmp_path: Path) -> None:
+    store = NumpyVectorStore(tmp_path)
+    store.upsert_many(
+        [
+            ("finite", np.asarray([1.0, 0.0], dtype=np.float32)),
+            ("zero", np.asarray([0.0, 0.0], dtype=np.float32)),
+            ("nan", np.asarray([np.nan, 1.0], dtype=np.float32)),
+            ("inf", np.asarray([np.inf, 1.0], dtype=np.float32)),
+        ]
+    )
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        results = store.search(np.asarray([1.0, np.nan], dtype=np.float32), 4, set())
+
+    assert captured == []
+    assert [result.chunk_id for result in results] == ["finite", "inf", "nan", "zero"]
+    assert all(math.isfinite(result.score) for result in results)
 
 
 def test_numpy_vector_store_rejects_mismatched_persisted_ids(tmp_path: Path) -> None:

@@ -4,6 +4,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from context_search_tool.cli import app
+from context_search_tool.sqlite_store import SQLiteStore
 
 
 def test_cli_index_query_stats_explain_and_clean(
@@ -62,6 +63,22 @@ def test_query_missing_index_does_not_create_artifacts(tmp_path: Path) -> None:
     result = runner.invoke(app, ["query", str(repo), "anything"])
 
     _assert_missing_index_error(result.output, result.exit_code, repo)
+
+
+def test_query_warns_when_signal_schema_is_stale(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    runner = CliRunner()
+    index_result = runner.invoke(app, ["index", str(repo)])
+    assert index_result.exit_code == 0
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    store.set_metadata("signal_schema_version", "1")
+
+    result = runner.invoke(app, ["query", str(repo), "App"])
+
+    assert result.exit_code == 0
+    assert "Warning: index signal schema is older than this version" in result.output
 
 
 def test_index_reports_embedding_config_errors_without_traceback(tmp_path: Path) -> None:

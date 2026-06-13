@@ -9,7 +9,11 @@ import typer
 
 from context_search_tool.config import load_config
 from context_search_tool.formatters import format_json, format_markdown
-from context_search_tool.indexer import IncompatibleIndexError, index_repository
+from context_search_tool.indexer import (
+    IncompatibleIndexError,
+    index_repository,
+    signal_schema_is_current,
+)
 from context_search_tool.manifest import load_manifest
 from context_search_tool.models import SymbolRef
 from context_search_tool.paths import (
@@ -74,6 +78,7 @@ def query(
 
     _require_index(repo)
     config = load_config(repo)
+    _warn_if_signal_schema_stale(repo)
     try:
         bundle = query_repository(
             repo,
@@ -205,6 +210,18 @@ def _require_index(repo: Path) -> Path:
         )
         raise typer.Exit(code=1)
     return index_dir
+
+
+def _warn_if_signal_schema_stale(repo: Path) -> None:
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+    store.initialize()
+    if signal_schema_is_current(store):
+        return
+    typer.echo(
+        "Warning: index signal schema is older than this version. "
+        "Run index again for signal-aware retrieval.",
+        err=True,
+    )
 
 
 def _exit_with_error(exc: Exception) -> None:
