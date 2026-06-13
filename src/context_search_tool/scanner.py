@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -44,39 +45,24 @@ def scan_workspace(repo: Path, config: ToolConfig) -> list[ScannedFile]:
     exclude_spec = pathspec.PathSpec.from_lines("gitwildmatch", config.index.exclude)
     scanned: list[ScannedFile] = []
 
-    for path in sorted(repo.rglob("*")):
-        relative_path = path.relative_to(repo)
-        relative_posix = relative_path.as_posix()
-        if _is_internal_path(relative_path):
-            continue
-        if gitignore_spec.match_file(relative_posix):
-            continue
-        if exclude_spec.match_file(relative_posix):
-            continue
-        if not path.is_file():
-            continue
-
-        language = _language_for_path(path)
-        if not language:
-            continue
-
-        stat = path.stat()
-        if stat.st_size > config.index.max_file_bytes:
-            continue
-        if _looks_binary(path):
-            continue
-
-        content = path.read_bytes()
-        scanned.append(
-            ScannedFile(
-                path=relative_path,
-                absolute_path=path,
-                language=language,
-                sha256=hashlib.sha256(content).hexdigest(),
-                size=stat.st_size,
-                mtime_ns=stat.st_mtime_ns,
+    for dirpath, dirnames, filenames in os.walk(repo):
+        current_dir = Path(dirpath)
+        dirnames[:] = sorted(
+            dirname
+            for dirname in dirnames
+            if not _is_skipped_path(
+                current_dir / dirname, repo, gitignore_spec, exclude_spec
             )
         )
+
+        for filename in sorted(filenames):
+            path = current_dir / filename
+            if _is_skipped_path(path, repo, gitignore_spec, exclude_spec):
+                continue
+
+            scanned_file = _scan_file(path, repo, config)
+            if scanned_file is not None:
+                scanned.append(scanned_file)
 
     return scanned
 
@@ -92,6 +78,53 @@ def _load_gitignore(repo: Path) -> pathspec.PathSpec:
 
 def _is_internal_path(path: Path) -> bool:
     return any(part in {".git", ".context-search"} for part in path.parts)
+
+
+def _is_skipped_path(
+    path: Path,
+    repo: Path,
+    gitignore_spec: pathspec.PathSpec,
+    exclude_spec: pathspec.PathSpec,
+) -> bool:
+    relative_path = path.relative_to(repo)
+    relative_posix = relative_path.as_posix()
+    directory_posix = f"{relative_posix}/"
+    return (
+        _is_internal_path(relative_path)
+        or gitignore_spec.match_file(relative_posix)
+        or gitignore_spec.match_file(directory_posix)
+        or exclude_spec.match_file(relative_posix)
+        or exclude_spec.match_file(directory_posix)
+    )
+
+
+def _scan_file(path: Path, repo: Path, config: ToolConfig) -> ScannedFile | None:
+    try:
+        if not path.is_file():
+            return None
+
+        language = _language_for_path(path)
+        if not language:
+            return None
+
+        stat = path.stat()
+        if stat.st_size > config.index.max_file_bytes:
+            return None
+        if _looks_binary(path):
+            return None
+
+        content = path.read_bytes()
+    except OSError:
+        return None
+
+    return ScannedFile(
+        path=path.relative_to(repo),
+        absolute_path=path,
+        language=language,
+        sha256=hashlib.sha256(content).hexdigest(),
+        size=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+    )
 
 
 def _language_for_path(path: Path) -> str:
