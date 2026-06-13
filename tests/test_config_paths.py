@@ -2,7 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from context_search_tool.config import DEFAULT_CONFIG, load_config, render_default_config
+from context_search_tool.config import (
+    DEFAULT_CONFIG,
+    EmbeddingConfig,
+    ToolConfig,
+    load_config,
+    render_config,
+    render_default_config,
+)
 from context_search_tool.paths import (
     RepositoryNotFoundError,
     find_repo_root,
@@ -17,6 +24,22 @@ def test_render_default_config_contains_version_one_values() -> None:
     assert "max_full_file_bytes = 200000" in rendered
     assert "semantic_top_k = 80" in rendered
     assert DEFAULT_CONFIG.embedding.provider == "hash"
+
+
+def test_render_config_uses_passed_embedding_values() -> None:
+    rendered = render_config(
+        ToolConfig(
+            embedding=EmbeddingConfig(
+                provider="hash",
+                model="hash-v2",
+                dimensions=128,
+            )
+        )
+    )
+
+    assert 'provider = "hash"' in rendered
+    assert 'model = "hash-v2"' in rendered
+    assert "dimensions = 128" in rendered
 
 
 def test_load_config_creates_default_when_missing(tmp_path: Path) -> None:

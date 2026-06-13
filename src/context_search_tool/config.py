@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -49,24 +50,44 @@ DEFAULT_CONFIG = ToolConfig()
 
 
 def render_default_config() -> str:
-    return """[index]
-include = []
-exclude = []
-max_file_bytes = 500000
-max_full_file_bytes = 200000
+    return render_config(DEFAULT_CONFIG)
 
-[retrieval]
-semantic_top_k = 80
-lexical_top_k = 80
-final_top_k = 12
-context_before_lines = 8
-context_after_lines = 12
 
-[embedding]
-provider = "hash"
-model = "hash-v1"
-dimensions = 384
-"""
+def render_config(config: ToolConfig) -> str:
+    embedding_lines = [
+        f"provider = {_toml_string(config.embedding.provider)}",
+        f"model = {_toml_string(config.embedding.model)}",
+        f"dimensions = {config.embedding.dimensions}",
+    ]
+    if config.embedding.base_url is not None:
+        embedding_lines.append(
+            f"base_url = {_toml_string(config.embedding.base_url)}"
+        )
+    if config.embedding.api_key_env is not None:
+        embedding_lines.append(
+            f"api_key_env = {_toml_string(config.embedding.api_key_env)}"
+        )
+
+    return "\n".join(
+        [
+            "[index]",
+            f"include = {_toml_list(config.index.include)}",
+            f"exclude = {_toml_list(config.index.exclude)}",
+            f"max_file_bytes = {config.index.max_file_bytes}",
+            f"max_full_file_bytes = {config.index.max_full_file_bytes}",
+            "",
+            "[retrieval]",
+            f"semantic_top_k = {config.retrieval.semantic_top_k}",
+            f"lexical_top_k = {config.retrieval.lexical_top_k}",
+            f"final_top_k = {config.retrieval.final_top_k}",
+            f"context_before_lines = {config.retrieval.context_before_lines}",
+            f"context_after_lines = {config.retrieval.context_after_lines}",
+            "",
+            "[embedding]",
+            *embedding_lines,
+            "",
+        ]
+    )
 
 
 def load_config(repo: Path) -> ToolConfig:
@@ -123,3 +144,13 @@ def _parse_simple_toml_value(value: str) -> Any:
     if value.startswith('"') and value.endswith('"'):
         return value[1:-1]
     return int(value)
+
+
+def _toml_list(values: list[str]) -> str:
+    if not values:
+        return "[]"
+    return f"[{', '.join(_toml_string(value) for value in values)}]"
+
+
+def _toml_string(value: str) -> str:
+    return json.dumps(value)

@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from context_search_tool.chunker import chunk_text
-from context_search_tool.config import ToolConfig, load_config
+from context_search_tool.config import ToolConfig, render_config
 from context_search_tool.embeddings import provider_from_config
 from context_search_tool.manifest import (
     Manifest,
@@ -36,7 +36,7 @@ class IndexSummary:
 def index_repository(repo: Path, config: ToolConfig) -> IndexSummary:
     repo = repo.resolve()
     index_dir = ensure_index_layout(repo)
-    _ensure_config_file(repo, index_dir)
+    _ensure_config_file(index_dir, config)
     try:
         assert_manifest_compatible(repo, config)
     except ValueError as exc:
@@ -107,9 +107,12 @@ def index_repository(repo: Path, config: ToolConfig) -> IndexSummary:
     )
 
 
-def _ensure_config_file(repo: Path, index_dir: Path) -> None:
+def _ensure_config_file(index_dir: Path, config: ToolConfig) -> None:
     if not (index_dir / "config.toml").exists():
-        load_config(repo)
+        (index_dir / "config.toml").write_text(
+            render_config(config),
+            encoding="utf-8",
+        )
 
 
 def _index_file(
