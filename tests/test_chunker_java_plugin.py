@@ -107,6 +107,128 @@ def test_java_plugin_emits_spring_endpoint_signals_with_comment_tokens() -> None
     assert "审核列表" in stats_signal.tokens
 
 
+def test_java_plugin_emits_comment_signals_linked_to_owner_method() -> None:
+    extraction = JavaPlugin().extract(Path("ApplyAuditController.java"), JAVA_SOURCE)
+    comment_signals = [
+        signal
+        for signal in extraction.signals
+        if signal.kind == "comment" and signal.metadata.get("owner_method") == "statsWait"
+    ]
+
+    [comment_signal] = comment_signals
+    assert comment_signal.name == "statsWait comment"
+    assert "工作台统计" in comment_signal.metadata["text"]
+    assert "待我审核" in comment_signal.metadata["text"]
+    assert "工作台统计" in comment_signal.tokens
+    assert "待我审核" in comment_signal.tokens
+    assert comment_signal.metadata["owner_method"] == "statsWait"
+    assert comment_signal.metadata["owner_type"] == "ApplyAuditController"
+
+
+def test_java_plugin_emits_line_comment_signals_linked_to_owner_type() -> None:
+    source = """
+// 工作台入口控制器
+class WorkbenchController {
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("WorkbenchController.java"), source)
+    [comment_signal] = [
+        signal for signal in extraction.signals if signal.kind == "comment"
+    ]
+
+    assert comment_signal.name == "WorkbenchController comment"
+    assert "工作台入口控制器" in comment_signal.metadata["text"]
+    assert "工作台入口控制器" in comment_signal.tokens
+    assert comment_signal.metadata["owner_type"] == "WorkbenchController"
+    assert "owner_method" not in comment_signal.metadata
+
+
+def test_java_plugin_emits_usage_signals_for_receiver_method_calls() -> None:
+    extraction = JavaPlugin().extract(Path("ApplyAuditController.java"), JAVA_SOURCE)
+    usage_signals = [
+        signal
+        for signal in extraction.signals
+        if signal.kind == "usage" and signal.name == "resourceAuditService.statsWait"
+    ]
+
+    [usage_signal] = usage_signals
+    assert usage_signal.metadata["receiver"] == "resourceAuditService"
+    assert usage_signal.metadata["method"] == "statsWait"
+    assert usage_signal.metadata["owner_method"] == "statsWait"
+
+
+def test_java_plugin_dedupes_duplicate_usage_signals_on_same_line() -> None:
+    source = """
+class Example {
+    void run() {
+        x.y(); x.y();
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("Example.java"), source)
+    usage_signals = [
+        signal for signal in extraction.signals if signal.kind == "usage"
+    ]
+
+    assert [signal.name for signal in usage_signals] == ["x.y"]
+    assert len({signal.signal_id for signal in usage_signals}) == 1
+
+
+def test_java_plugin_ignores_usage_text_inside_string_literals() -> None:
+    source = """
+class Example {
+    String run() {
+        return "foo.bar()";
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("Example.java"), source)
+    usage_names = {
+        signal.name for signal in extraction.signals if signal.kind == "usage"
+    }
+
+    assert "foo.bar" not in usage_names
+
+
+def test_java_plugin_ignores_usage_text_inside_text_blocks() -> None:
+    source = '''
+class Example {
+    String text() {
+        return """
+            foo.bar()
+            """;
+    }
+}
+'''.strip()
+
+    extraction = JavaPlugin().extract(Path("Example.java"), source)
+    usage_names = {
+        signal.name for signal in extraction.signals if signal.kind == "usage"
+    }
+
+    assert "foo.bar" not in usage_names
+
+
+def test_java_plugin_ignores_obvious_static_usage_calls() -> None:
+    source = """
+class Example {
+    int max(int a, int b) {
+        return Math.max(a, b);
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("Example.java"), source)
+    usage_names = {
+        signal.name for signal in extraction.signals if signal.kind == "usage"
+    }
+
+    assert "Math.max" not in usage_names
+
+
 def test_java_plugin_extracts_multiline_mapping_routes_and_methods() -> None:
     source = """
 import org.springframework.web.bind.annotation.RequestMapping;

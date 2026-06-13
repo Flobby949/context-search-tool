@@ -34,6 +34,8 @@ _HTTP_BY_MAPPING = {
     "PatchMapping": "PATCH",
 }
 _STATIC_FINAL_RE = re.compile(r"\bstatic\s+final\s+[\w<>\[\], ?]+\s+(\w+)\s*[=;]")
+_USAGE_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\(")
+_USAGE_SKIP_NAMES = {"if", "for", "while", "switch", "return", "new"}
 _STATEMENT_PREFIXES = (
     "return ",
     "if ",
@@ -91,6 +93,18 @@ class JavaPlugin:
                 if kind == "class":
                     context = _class_context_for_line(class_contexts, line_number)
                     _add_route_tokens(tokens, context["route"] if context else "")
+                comment = _comment_before_symbol(
+                    original_lines, lines, annotations_by_line, line_number
+                )
+                if comment:
+                    signals.append(
+                        _comment_signal(
+                            path=path,
+                            comment=comment,
+                            owner_type=name,
+                            owner_method="",
+                        )
+                    )
 
             constant_match = _STATIC_FINAL_RE.search(line)
             if constant_match:
@@ -111,13 +125,34 @@ class JavaPlugin:
                     continue
                 symbols.append(_symbol(name, "method", line_number, line_number))
                 _add_identifier_tokens(tokens, name)
+                context = _class_context_for_line(class_contexts, line_number)
+                class_name = context["name"] if context else ""
+                comment = _comment_before_symbol(
+                    original_lines, lines, annotations_by_line, line_number
+                )
+                if comment:
+                    signals.append(
+                        _comment_signal(
+                            path=path,
+                            comment=comment,
+                            owner_type=class_name,
+                            owner_method=name,
+                        )
+                    )
+                signals.extend(
+                    _usage_signals(
+                        path=path,
+                        lines=lines,
+                        method_line=line_number,
+                        owner_type=class_name,
+                        owner_method=name,
+                    )
+                )
                 route = _mapping_before_current_symbol(
                     annotations_by_line, lines, line_number
                 )
                 if route:
-                    context = _class_context_for_line(class_contexts, line_number)
                     class_route = context["route"] if context else ""
-                    class_name = context["name"] if context else ""
                     full_path = _join_route(class_route, route["path"])
                     _add_route_tokens(tokens, route["path"])
                     _add_route_tokens(tokens, full_path)
@@ -157,6 +192,71 @@ def _symbol(name: str, kind: str, start_line: int, end_line: int) -> SymbolRef:
         end_line=end_line,
         language="java",
         metadata={},
+    )
+
+
+def _comment_signal(
+    path: Path,
+    comment: dict[str, Any],
+    owner_type: str,
+    owner_method: str,
+) -> CodeSignal:
+    signal_name = f"{owner_method or owner_type} comment"
+    signal_tokens: list[str] = []
+    _add_identifier_tokens(signal_tokens, signal_name)
+    for token in tokenize_identifier(comment["text"]):
+        _add_token(signal_tokens, token)
+    metadata = {"text": comment["text"]}
+    if owner_type:
+        metadata["owner_type"] = owner_type
+    if owner_method:
+        metadata["owner_method"] = owner_method
+    return CodeSignal(
+        signal_id=generate_signal_id(
+            path, "comment", comment["start_line"], signal_name
+        ),
+        chunk_id="",
+        file_path=path,
+        kind="comment",
+        name=signal_name,
+        start_line=comment["start_line"],
+        end_line=comment["end_line"],
+        language="java",
+        tokens=_dedupe(signal_tokens),
+        metadata=metadata,
+    )
+
+
+def _usage_signal(
+    path: Path,
+    line_number: int,
+    receiver: str,
+    method: str,
+    owner_type: str,
+    owner_method: str,
+) -> CodeSignal:
+    signal_name = f"{receiver}.{method}"
+    signal_tokens: list[str] = []
+    _add_identifier_tokens(signal_tokens, receiver)
+    _add_identifier_tokens(signal_tokens, method)
+    metadata = {
+        "receiver": receiver,
+        "method": method,
+        "owner_method": owner_method,
+    }
+    if owner_type:
+        metadata["owner_type"] = owner_type
+    return CodeSignal(
+        signal_id=generate_signal_id(path, "usage", line_number, signal_name),
+        chunk_id="",
+        file_path=path,
+        kind="usage",
+        name=signal_name,
+        start_line=line_number,
+        end_line=line_number,
+        language="java",
+        tokens=_dedupe(signal_tokens),
+        metadata=metadata,
     )
 
 
@@ -240,6 +340,137 @@ def _strip_comments(content: str) -> str:
                 in_char = True
             index += 1
     return "".join(result)
+
+
+def _comment_before_symbol(
+    original_lines: list[str],
+    lines: list[str],
+    annotations_by_line: dict[int, list[dict[str, Any]]],
+    line_number: int,
+) -> dict[str, Any] | None:
+    annotations = _contiguous_annotations_before(annotations_by_line, lines, line_number)
+    lead_line = min((annotation["line"] for annotation in annotations), default=line_number)
+    return _comment_ending_at(original_lines, lead_line - 1)
+
+
+def _comment_ending_at(lines: list[str], end_line: int) -> dict[str, Any] | None:
+    if end_line <= 0 or end_line > len(lines):
+        return None
+
+    stripped = lines[end_line - 1].strip()
+    if not stripped:
+        return None
+
+    comment_lines: list[str] = []
+    start_line = end_line
+    if stripped.endswith("*/"):
+        index = end_line - 1
+        while index >= 0:
+            comment_lines.append(_clean_block_comment_line(lines[index]))
+            if "/*" in lines[index]:
+                start_line = index + 1
+                break
+            index -= 1
+        comment_lines.reverse()
+    elif stripped.startswith("//"):
+        index = end_line - 1
+        while index >= 0 and lines[index].strip().startswith("//"):
+            comment_lines.append(lines[index].strip()[2:].strip())
+            start_line = index + 1
+            index -= 1
+        comment_lines.reverse()
+    else:
+        return None
+
+    comment_text = " ".join(line for line in comment_lines if line)
+    if not comment_text:
+        return None
+    return {"text": comment_text, "start_line": start_line, "end_line": end_line}
+
+
+def _usage_signals(
+    path: Path,
+    lines: list[str],
+    method_line: int,
+    owner_type: str,
+    owner_method: str,
+) -> list[CodeSignal]:
+    body_range = _method_body_range(lines, method_line)
+    if not body_range:
+        return []
+
+    start_line, end_line = body_range
+    signals: list[CodeSignal] = []
+    seen: set[tuple[int, str, str]] = set()
+    body_lines = _mask_string_literals(lines[start_line - 1 : end_line])
+    for line_number, line in enumerate(body_lines, start=start_line):
+        for match in _USAGE_RE.finditer(line):
+            receiver, method = match.groups()
+            if (
+                receiver in _USAGE_SKIP_NAMES
+                or method in _USAGE_SKIP_NAMES
+                or receiver[:1].isupper()
+            ):
+                continue
+            usage_key = (line_number, receiver, method)
+            if usage_key in seen:
+                continue
+            seen.add(usage_key)
+            signals.append(
+                _usage_signal(
+                    path=path,
+                    line_number=line_number,
+                    receiver=receiver,
+                    method=method,
+                    owner_type=owner_type,
+                    owner_method=owner_method,
+                )
+            )
+    return signals
+
+
+def _mask_string_literals(lines: list[str]) -> list[str]:
+    masked_lines: list[str] = []
+    in_string = False
+    in_char = False
+    escaped = False
+    for line in lines:
+        masked: list[str] = []
+        for char in line:
+            if in_string or in_char:
+                masked.append(" ")
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif in_string and char == '"':
+                    in_string = False
+                elif in_char and char == "'":
+                    in_char = False
+                continue
+
+            if char == '"':
+                in_string = True
+                masked.append(" ")
+            elif char == "'":
+                in_char = True
+                masked.append(" ")
+            else:
+                masked.append(char)
+        masked_lines.append("".join(masked))
+    return masked_lines
+
+
+def _method_body_range(lines: list[str], method_line: int) -> tuple[int, int] | None:
+    for line_number in range(method_line, len(lines) + 1):
+        line = lines[line_number - 1]
+        brace_index = line.find("{")
+        semicolon_index = line.find(";")
+        if brace_index >= 0 and (semicolon_index < 0 or brace_index < semicolon_index):
+            return line_number, _block_end_line(lines, method_line)
+        if semicolon_index >= 0:
+            return None
+    return None
 
 
 def _method_match(lines: list[str], line_number: int) -> re.Match[str] | None:
@@ -455,27 +686,8 @@ def _annotations_ending_on(
 
 
 def _nearby_comment_tokens(lines: list[str], line_number: int) -> list[str]:
-    index = line_number - 2
-    if index < 0 or not lines[index].strip():
-        return []
-
-    stripped = lines[index].strip()
-    comment_lines: list[str] = []
-    if stripped.endswith("*/"):
-        while index >= 0:
-            comment_lines.append(_clean_block_comment_line(lines[index]))
-            if "/*" in lines[index]:
-                break
-            index -= 1
-        comment_lines.reverse()
-    elif stripped.startswith("//"):
-        while index >= 0 and lines[index].strip().startswith("//"):
-            comment_lines.append(lines[index].strip()[2:].strip())
-            index -= 1
-        comment_lines.reverse()
-
-    comment_text = " ".join(line for line in comment_lines if line)
-    return tokenize_identifier(comment_text)
+    comment = _comment_ending_at(lines, line_number - 1)
+    return tokenize_identifier(comment["text"]) if comment else []
 
 
 def _clean_block_comment_line(line: str) -> str:
