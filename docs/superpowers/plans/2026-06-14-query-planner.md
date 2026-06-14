@@ -1961,6 +1961,14 @@ If no notes were added, skip this commit.
 
 ---
 
+## Manual Smoke Test Result
+
+- Date: 2026-06-14
+- Model: qwen3.5:4b-mlx available: yes
+- Test repo: `/Users/flobby/work/code/irs-portal-base`
+- Planner status: ok
+- Top result: `irs-portal-base-adapter/src/main/java/com/dtzhejiang/irs/portal/adapter/web/ProcessController.java`
+
 ## Acceptance Criteria
 
 - Existing tests pass with planner disabled.
