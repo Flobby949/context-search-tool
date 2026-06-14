@@ -162,6 +162,67 @@ cst explain /path/to/repo src/main/java/App.java:42
 cst clean /path/to/repo
 ```
 
+## MCP Server
+
+`cst-mcp` starts a local stdio MCP server for coding agents. The server wraps the same core API as the CLI; it does not shell out to `cst`.
+
+Available tools:
+
+- `context_search_index(repo)` creates or updates `.context-search/`.
+- `context_search_query(repo, query, context_lines, full_file, final_top_k)` returns summary, ranked results, score parts, reasons, and follow-up keywords.
+- `context_search_stats(repo)` returns index counts and embedding configuration.
+- `context_search_explain(repo, location)` explains the chunk covering a `file:line` location.
+
+The MCP server intentionally does not expose `clean`, because deleting index state is too destructive for an agent-facing default tool.
+
+Example local MCP config:
+
+```json
+{
+  "mcpServers": {
+    "context-search-tool": {
+      "command": "cst-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+If the package is not installed globally, use the module entry point from this repository:
+
+```json
+{
+  "mcpServers": {
+    "context-search-tool": {
+      "command": "python3",
+      "args": [
+        "-m",
+        "context_search_tool.mcp_server"
+      ]
+    }
+  }
+}
+```
+
+For stdio MCP transport, server logs must not be written to stdout. The server returns structured tool payloads and leaves stdout for JSON-RPC. Python logging is written to `/tmp/cst-mcp.log` by default; override it with `CST_MCP_LOG_FILE=/path/to/log`.
+
+### MCP Feedback Log
+
+`context_search_query` appends minimal feedback events to:
+
+```text
+<repo>/.context-search/mcp_calls.jsonl
+```
+
+The log records query text, result count, top score, score parts, summary counts, follow-up keyword count, embedding fingerprint, and error code. It does not record returned source snippets or full file content. When `mcp_calls.jsonl` exceeds 10 MiB, the server rotates it to `mcp_calls.<time_ns>.jsonl` before appending the next event.
+
+Use this log to decide embedding work:
+
+- If endpoint, class, enum, and field searches are strong but Chinese business-description searches miss, test a real embedding provider.
+- If the right files appear but ranking is weak, tune reranking before changing embedding.
+- If implementation chains are missing, improve Java/MyBatis relation signals before changing embedding.
+- Keep `hash-v1` as the default until MCP call evidence shows it is the limiting factor.
+
 ## 配置
 
 配置文件位于被索引项目的：
@@ -298,7 +359,7 @@ cst query /repo "app_org_region_code TOTAL_OVERVIEW"
 - 类型解析或跨文件符号绑定
 - LLM reranker
 - Fast Context 风格的 agentic multi-stage retrieval
-- MCP server
+- remote MCP deployment or hosted multi-user service
 
 ## 输出示例
 
@@ -426,4 +487,4 @@ src/context_search_tool/
 - 符号引用图 / 调用图
 - 更强 embedding provider
 - cross-encoder 或 LLM rerank
-- MCP server 或 agent 工具接口
+- remote MCP deployment or hosted multi-user service
