@@ -1,0 +1,360 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from context_search_tool.config import ToolConfig, load_config
+from context_search_tool.indexer import (
+    IncompatibleIndexError,
+    index_repository,
+    signal_schema_is_current,
+)
+from context_search_tool.manifest import load_manifest
+from context_search_tool.models import DocumentChunk, RetrievalResult, SymbolRef
+from context_search_tool.paths import (
+    RepositoryNotFoundError,
+    find_repo_root,
+    index_dir_for,
+)
+from context_search_tool.retrieval import QueryBundle, query_repository
+from context_search_tool.sqlite_store import SQLiteStore
+
+_FEEDBACK_LOG_MAX_BYTES = 10 * 1024 * 1024
+
+
+def context_search_index_tool(repo: str) -> dict[str, Any]:
+    try:
+        resolved_repo = find_repo_root(Path(repo))
+        config = load_config(resolved_repo)
+        summary = index_repository(resolved_repo, config)
+    except (RepositoryNotFoundError, IncompatibleIndexError, ValueError, httpx.HTTPError) as exc:
+        return _error("index_failed", str(exc))
+
+    return {
+        "ok": True,
+        "repo": str(resolved_repo),
+        "summary": {
+            "files_seen": summary.files_seen,
+            "files_indexed": summary.files_indexed,
+            "files_skipped": summary.files_skipped,
+            "files_deleted": summary.files_deleted,
+            "chunks_indexed": summary.chunks_indexed,
+        },
+    }
+
+
+def context_search_query_tool(
+    repo: str,
+    query: str,
+    context_lines: int | None = None,
+    full_file: bool = False,
+    final_top_k: int | None = None,
+) -> dict[str, Any]:
+    try:
+        resolved_repo = find_repo_root(Path(repo))
+    except RepositoryNotFoundError as exc:
+        return _error("repo_not_found", str(exc))
+
+    index_dir = index_dir_for(resolved_repo)
+    if not (index_dir / "index.sqlite").exists():
+        return _error(
+            "missing_index",
+            f"Missing index for {resolved_repo}. Run context_search_index first.",
+        )
+
+    try:
+        config = _load_query_config(resolved_repo, final_top_k)
+        bundle = query_repository(
+            resolved_repo,
+            query,
+            config,
+            context_lines=context_lines,
+            full_file=full_file,
+        )
+        payload = _query_payload(bundle)
+        payload["ok"] = True
+        payload["repo"] = str(resolved_repo)
+        payload["index"] = _index_state(resolved_repo, config)
+        _append_query_feedback(
+            resolved_repo,
+            query=query,
+            payload=payload,
+            context_lines=context_lines,
+            full_file=full_file,
+            final_top_k=final_top_k,
+        )
+        return payload
+    except (ValueError, httpx.HTTPError) as exc:
+        _append_query_feedback(
+            resolved_repo,
+            query=query,
+            payload=_error("query_failed", str(exc)),
+            context_lines=context_lines,
+            full_file=full_file,
+            final_top_k=final_top_k,
+        )
+        return _error("query_failed", str(exc))
+
+
+def context_search_stats_tool(repo: str) -> dict[str, Any]:
+    try:
+        resolved_repo = find_repo_root(Path(repo))
+    except RepositoryNotFoundError as exc:
+        return _error("repo_not_found", str(exc))
+
+    index_dir = index_dir_for(resolved_repo)
+    if not (index_dir / "index.sqlite").exists():
+        return _error(
+            "missing_index",
+            f"Missing index for {resolved_repo}. Run context_search_index first.",
+        )
+
+    config = load_config(resolved_repo)
+    store = SQLiteStore(index_dir / "index.sqlite")
+    counts = store.stats()
+    manifest = load_manifest(resolved_repo) if (index_dir / "manifest.json").exists() else None
+    provider = manifest.embedding_provider if manifest is not None else config.embedding.provider
+    model = manifest.embedding_model if manifest is not None else config.embedding.model
+    dimensions = (
+        manifest.embedding_dimensions if manifest is not None else config.embedding.dimensions
+    )
+    return {
+        "ok": True,
+        "repo": str(resolved_repo),
+        "stats": {
+            "total_files": counts["source_files"],
+            "total_chunks": counts["active_chunks"],
+            "deleted_chunks": counts["deleted_chunks"],
+            "symbols": counts["symbols"],
+            "lexical_tokens": counts["tokens"],
+            "disk_usage_bytes": _disk_usage(index_dir),
+        },
+        "embedding": {
+            "provider": provider,
+            "model": model,
+            "dimensions": dimensions,
+        },
+    }
+
+
+def context_search_explain_tool(repo: str, location: str) -> dict[str, Any]:
+    try:
+        resolved_repo = find_repo_root(Path(repo))
+    except RepositoryNotFoundError as exc:
+        return _error("repo_not_found", str(exc))
+
+    try:
+        file_path, line = _parse_location(location, resolved_repo)
+    except ValueError as exc:
+        return _error("invalid_location", str(exc))
+
+    index_dir = index_dir_for(resolved_repo)
+    if not (index_dir / "index.sqlite").exists():
+        return _error(
+            "missing_index",
+            f"Missing index for {resolved_repo}. Run context_search_index first.",
+        )
+
+    store = SQLiteStore(index_dir / "index.sqlite")
+    try:
+        chunk = store.chunk_for_line(file_path, line)
+    except KeyError:
+        return _error(
+            "chunk_not_found",
+            f"No indexed chunk covers {file_path.as_posix()}:{line}.",
+        )
+
+    return {
+        "ok": True,
+        "repo": str(resolved_repo),
+        "chunk": _chunk_payload(chunk),
+    }
+
+
+def _load_query_config(repo: Path, final_top_k: int | None) -> ToolConfig:
+    config = load_config(repo)
+    if final_top_k is None:
+        return config
+    if final_top_k < 1:
+        raise ValueError("final_top_k must be greater than zero")
+    return replace(
+        config,
+        retrieval=replace(config.retrieval, final_top_k=final_top_k),
+    )
+
+
+def _query_payload(bundle: QueryBundle) -> dict[str, Any]:
+    return {
+        "query": bundle.query,
+        "expanded_tokens": bundle.expanded_tokens,
+        "followup_keywords": bundle.followup_keywords,
+        "summary": {
+            "entry_points": bundle.summary.entry_points,
+            "implementation": bundle.summary.implementation,
+            "related_types": bundle.summary.related_types,
+            "possibly_legacy": bundle.summary.possibly_legacy,
+        },
+        "results": [_result_payload(result) for result in bundle.results],
+    }
+
+
+def _result_payload(result: RetrievalResult) -> dict[str, Any]:
+    return {
+        "file_path": result.file_path.as_posix(),
+        "start_line": result.start_line,
+        "end_line": result.end_line,
+        "content": result.content,
+        "score": result.score,
+        "score_parts": result.score_parts,
+        "reasons": result.reasons,
+        "followup_keywords": result.followup_keywords,
+    }
+
+
+def _chunk_payload(chunk: DocumentChunk) -> dict[str, Any]:
+    return {
+        "chunk_id": chunk.chunk_id,
+        "file_path": chunk.file_path.as_posix(),
+        "start_line": chunk.start_line,
+        "end_line": chunk.end_line,
+        "chunk_type": chunk.chunk_type,
+        "symbols": [_symbol_payload(symbol) for symbol in chunk.symbols],
+        "lexical_tokens": chunk.lexical_tokens,
+        "embedding_id": chunk.embedding_id,
+        "metadata": chunk.metadata,
+    }
+
+
+def _symbol_payload(symbol: SymbolRef) -> dict[str, Any]:
+    return {
+        "name": symbol.name,
+        "kind": symbol.kind,
+        "start_line": symbol.start_line,
+        "end_line": symbol.end_line,
+        "language": symbol.language,
+        "metadata": symbol.metadata,
+    }
+
+
+def _index_state(repo: Path, config: ToolConfig) -> dict[str, Any]:
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+    store.initialize()
+    return {
+        "signal_schema_current": signal_schema_is_current(store),
+        "embedding": {
+            "provider": config.embedding.provider,
+            "model": config.embedding.model,
+            "dimensions": config.embedding.dimensions,
+        },
+    }
+
+
+def _append_query_feedback(
+    repo: Path,
+    query: str,
+    payload: dict[str, Any],
+    context_lines: int | None,
+    full_file: bool,
+    final_top_k: int | None,
+) -> None:
+    index_dir = index_dir_for(repo)
+    if not index_dir.exists():
+        return
+    event = {
+        "timestamp": int(time.time()),
+        "tool": "context_search_query",
+        "ok": bool(payload.get("ok")),
+        "repo_hash": _short_hash(str(repo)),
+        "query": query,
+        "context_lines": context_lines,
+        "full_file": full_file,
+        "final_top_k": final_top_k,
+        "result_count": len(payload.get("results", [])),
+        "top_score": _top_score(payload),
+        "top_score_parts": _top_score_parts(payload),
+        "summary_counts": _summary_counts(payload),
+        "followup_keyword_count": len(payload.get("followup_keywords", [])),
+        "embedding": payload.get("index", {}).get("embedding", {}),
+        "error_code": payload.get("error", {}).get("code"),
+    }
+    log_path = index_dir / "mcp_calls.jsonl"
+    _rotate_feedback_log(log_path)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, ensure_ascii=True, sort_keys=True) + "\n")
+
+
+def _rotate_feedback_log(log_path: Path) -> None:
+    if not log_path.exists() or log_path.stat().st_size <= _FEEDBACK_LOG_MAX_BYTES:
+        return
+    rotated_path = log_path.with_name(f"mcp_calls.{time.time_ns()}.jsonl")
+    log_path.replace(rotated_path)
+
+
+def _top_score(payload: dict[str, Any]) -> float | None:
+    results = payload.get("results", [])
+    if not results:
+        return None
+    return results[0].get("score")
+
+
+def _top_score_parts(payload: dict[str, Any]) -> dict[str, Any]:
+    results = payload.get("results", [])
+    if not results:
+        return {}
+    return dict(results[0].get("score_parts", {}))
+
+
+def _summary_counts(payload: dict[str, Any]) -> dict[str, int]:
+    summary = payload.get("summary", {})
+    return {
+        "entry_points": len(summary.get("entry_points", [])),
+        "implementation": len(summary.get("implementation", [])),
+        "related_types": len(summary.get("related_types", [])),
+        "possibly_legacy": len(summary.get("possibly_legacy", [])),
+    }
+
+
+def _parse_location(location: str, repo: Path) -> tuple[Path, int]:
+    if ":" not in location:
+        raise ValueError("location must be file:line")
+    raw_path, raw_line = location.rsplit(":", 1)
+    try:
+        line = int(raw_line)
+    except ValueError as exc:
+        raise ValueError("line must be an integer") from exc
+    if line < 1:
+        raise ValueError("line must be greater than zero")
+
+    path = Path(raw_path)
+    if path.is_absolute():
+        try:
+            path = path.resolve().relative_to(repo)
+        except ValueError:
+            raise ValueError("absolute path must be inside repo") from None
+    return path, line
+
+
+def _disk_usage(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+
+def _short_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _error(code: str, message: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": message,
+        },
+    }
