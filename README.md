@@ -188,13 +188,13 @@ Example local MCP config:
 }
 ```
 
-If the package is not installed globally, use the module entry point from this repository:
+If the package is installed in a project venv but not globally, point your agent at that venv's Python and use the module entry point:
 
 ```json
 {
   "mcpServers": {
     "context-search-tool": {
-      "command": "python3",
+      "command": "/absolute/path/to/venv/bin/python",
       "args": [
         "-m",
         "context_search_tool.mcp_server"
@@ -203,6 +203,8 @@ If the package is not installed globally, use the module entry point from this r
   }
 }
 ```
+
+For a raw checkout without installation, set the server environment so `PYTHONPATH` includes `<repo>/src`.
 
 For stdio MCP transport, server logs must not be written to stdout. The server returns structured tool payloads and leaves stdout for JSON-RPC. Python logging is written to `/tmp/cst-mcp.log` by default; override it with `CST_MCP_LOG_FILE=/path/to/log`.
 
