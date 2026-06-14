@@ -11,13 +11,20 @@ from context_search_tool.config import ToolConfig
 from context_search_tool.embeddings import provider_from_config
 from context_search_tool.manifest import assert_manifest_compatible
 from context_search_tool.models import (
-    DocumentChunk,
     CodeSignal,
+    DocumentChunk,
+    QueryPlan,
     RetrievalCandidate,
     RetrievalResult,
     RetrievalSummary,
 )
 from context_search_tool.paths import index_dir_for
+from context_search_tool.query_planner import (
+    QueryPlanner,
+    expand_query_plan_tokens,
+    planner_from_config,
+    planner_hint_tokens,
+)
 from context_search_tool.sqlite_store import SQLiteStore
 from context_search_tool.tokenizer import tokenize_query
 from context_search_tool.vector_store import NumpyVectorStore
@@ -38,6 +45,7 @@ class QueryBundle:
     results: list[RetrievalResult]
     followup_keywords: list[str]
     summary: RetrievalSummary = field(default_factory=RetrievalSummary)
+    planner: QueryPlan = field(default_factory=QueryPlan.disabled_default)
 
 
 @dataclass(frozen=True)
@@ -69,9 +77,22 @@ def query_repository(
     config: ToolConfig,
     context_lines: int | None = None,
     full_file: bool = False,
+    planner: QueryPlanner | None = None,
 ) -> QueryBundle:
     repo = repo.resolve()
-    tokens = _dedupe(tokenize_query(query))
+    original_tokens = _dedupe(tokenize_query(query))
+    query_planner = planner or planner_from_config(config.query_planner)
+    plan = query_planner.plan(query)
+    tokens = expand_query_plan_tokens(query, plan)
+    original_plan_tokens = expand_query_plan_tokens(
+        query,
+        QueryPlan(original_query=query),
+    )
+    hint_tokens = (
+        planner_hint_tokens(_dedupe([*original_tokens, *original_plan_tokens]), tokens)
+        if plan.status == "ok"
+        else []
+    )
     index_dir = index_dir_for(repo)
     db_path = index_dir / "index.sqlite"
     if not db_path.exists():
@@ -80,6 +101,7 @@ def query_repository(
             expanded_tokens=tokens,
             results=[],
             followup_keywords=[],
+            planner=plan,
         )
 
     assert_manifest_compatible(repo, config)
@@ -93,18 +115,22 @@ def query_repository(
             expanded_tokens=tokens,
             results=[],
             followup_keywords=[],
+            planner=plan,
         )
 
     initial_candidates = _initial_candidates(
         index_dir,
         store,
         query,
-        tokens,
+        original_tokens,
         config,
         deleted_ids,
     )
-    signal_candidates = _signal_candidates(store, tokens, config)
-    direct_candidates = _merge_candidates([*initial_candidates, *signal_candidates])
+    signal_candidates = _signal_candidates(store, original_tokens, config)
+    planner_candidates = _planner_hint_candidates(store, hint_tokens, config)
+    direct_candidates = _merge_candidates(
+        [*initial_candidates, *signal_candidates, *planner_candidates]
+    )
     relation_candidates = _relation_expansion_candidates(
         store,
         list(direct_candidates.values()),
@@ -122,9 +148,10 @@ def query_repository(
             expanded_tokens=tokens,
             results=[],
             followup_keywords=[],
+            planner=plan,
         )
 
-    ranked_chunks = _rank_chunks(store, candidates, tokens, query)
+    ranked_chunks = _rank_chunks(store, candidates, original_tokens, query)
     expanded = _expand_ranked_chunks(repo, ranked_chunks, config, context_lines, full_file)
     visible_results = expanded[: config.retrieval.final_top_k]
     summary, result_reasons = _summarize_results(store, visible_results)
@@ -147,6 +174,7 @@ def query_repository(
         results=results,
         followup_keywords=_followup_keywords(results),
         summary=summary,
+        planner=plan,
     )
 
 
@@ -387,14 +415,14 @@ def _initial_candidates(
     index_dir: Path,
     store: SQLiteStore,
     query: str,
-    tokens: list[str],
+    original_tokens: list[str],
     config: ToolConfig,
     deleted_ids: set[str],
 ) -> list[RetrievalCandidate]:
     return [
         *_semantic_candidates(index_dir, query, config, deleted_ids),
-        *_lexical_candidates(store, tokens, config.retrieval.lexical_top_k),
-        *store.path_symbol_search(tokens, config.retrieval.lexical_top_k),
+        *_lexical_candidates(store, original_tokens, config.retrieval.lexical_top_k),
+        *store.path_symbol_search(original_tokens, config.retrieval.lexical_top_k),
     ]
 
 
@@ -424,12 +452,15 @@ def _signal_candidates(
     store: SQLiteStore,
     tokens: list[str],
     config: ToolConfig,
+    planner_hint: bool = False,
 ) -> list[RetrievalCandidate]:
     limit = max(
         config.retrieval.semantic_top_k,
         config.retrieval.lexical_top_k,
         config.retrieval.final_top_k,
     )
+    source = "planner_signal" if planner_hint else "signal"
+    score_key = "planner_signal" if planner_hint else "signal"
     candidates: list[RetrievalCandidate] = []
     for signal in store.signal_search(tokens, limit):
         score = _signal_score(signal.name, signal.tokens, signal.metadata, tokens)
@@ -439,11 +470,47 @@ def _signal_candidates(
             RetrievalCandidate(
                 chunk_id=signal.chunk_id,
                 score=score,
-                source="signal",
-                score_parts={"signal": score},
+                source=source,
+                score_parts={score_key: score},
             )
         )
     return candidates
+
+
+def _planner_hint_candidates(
+    store: SQLiteStore,
+    hint_tokens: list[str],
+    config: ToolConfig,
+) -> list[RetrievalCandidate]:
+    if not hint_tokens:
+        return []
+    path_symbol = [
+        RetrievalCandidate(
+            chunk_id=item.chunk_id,
+            score=item.score,
+            source="planner_path_symbol",
+            score_parts={"planner_path_symbol": item.score},
+        )
+        for item in store.path_symbol_search(
+            hint_tokens,
+            config.retrieval.lexical_top_k,
+        )
+    ]
+    lexical = [
+        RetrievalCandidate(
+            chunk_id=item.chunk_id,
+            score=item.score,
+            source="planner_lexical",
+            score_parts={"planner_lexical": item.score},
+        )
+        for item in _lexical_candidates(
+            store,
+            hint_tokens,
+            config.retrieval.lexical_top_k,
+        )
+    ]
+    signals = _signal_candidates(store, hint_tokens, config, planner_hint=True)
+    return [*lexical, *path_symbol, *signals]
 
 
 def _relation_expansion_candidates(
@@ -547,6 +614,10 @@ def _candidate_relation_seed_score(candidate: RetrievalCandidate) -> float:
     signal_score = candidate.score_parts.get("signal", 0.0)
     if signal_score > 0:
         return _bounded_score(signal_score)
+
+    planner_signal_score = candidate.score_parts.get("planner_signal", 0.0)
+    if planner_signal_score > 0:
+        return _bounded_score(planner_signal_score) * 0.65
 
     return 0.0
 
@@ -908,7 +979,14 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         (score_parts.get("semantic", 0.0) * 0.55)
         + (score_parts.get("lexical", 0.0) * 0.25)
         + (min(score_parts.get("path_symbol", 0.0), 5.0) / 5.0 * 0.15)
+        + (score_parts.get("planner_lexical", 0.0) * 0.12)
+        + (
+            min(score_parts.get("planner_path_symbol", 0.0), 5.0)
+            / 5.0
+            * 0.07
+        )
         + _bounded_score(score_parts.get("signal", 0.0))
+        + (_bounded_score(score_parts.get("planner_signal", 0.0)) * 0.65)
         + _bounded_score(score_parts.get("relation", 0.0))
         + (score_parts.get("token_coverage", 0.0) * 0.20)
         + score_parts.get("plugin_boost", 0.0)
@@ -930,12 +1008,37 @@ def _rank_tier(
         chunk.chunk_id,
         "endpoint",
     ):
-        return 0
-    if score_parts.get("relation", 0.0) > 0:
-        return 1
-    if score_parts.get("signal", 0.0) > 0:
-        return 2
-    return 3
+        base_tier = 0
+    elif score_parts.get("relation", 0.0) > 0:
+        base_tier = 1
+    elif score_parts.get("signal", 0.0) > 0:
+        base_tier = 2
+    else:
+        base_tier = 3
+
+    if _is_planner_hint_only(score_parts):
+        return base_tier + 1
+    return base_tier
+
+
+def _has_planner_hint(score_parts: dict[str, float]) -> bool:
+    return any(
+        score_parts.get(key, 0.0) > 0
+        for key in ("planner_lexical", "planner_path_symbol", "planner_signal")
+    )
+
+
+def _has_original_query_evidence(score_parts: dict[str, float]) -> bool:
+    return any(
+        score_parts.get(key, 0.0) > 0
+        for key in ("semantic", "lexical", "path_symbol", "signal", "token_coverage")
+    )
+
+
+def _is_planner_hint_only(score_parts: dict[str, float]) -> bool:
+    return _has_planner_hint(score_parts) and not _has_original_query_evidence(
+        score_parts
+    )
 
 
 def _chunk_has_signal_kind(store: SQLiteStore, chunk_id: str, kind: str) -> bool:
@@ -995,6 +1098,8 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("signal match")
     if score_parts.get("relation", 0.0) > 0:
         reasons.append("relation expansion")
+    if _is_planner_hint_only(score_parts):
+        reasons.append("planner hint match")
     if score_parts.get("token_coverage", 0.0) > 0:
         reasons.append("token coverage")
     if "/" in query and score_parts.get("route_boost", 0.0) > 0:

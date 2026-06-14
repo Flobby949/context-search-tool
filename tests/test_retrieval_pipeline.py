@@ -16,6 +16,7 @@ from context_search_tool.models import (
     CodeRelation,
     CodeSignal,
     DocumentChunk,
+    QueryPlan,
     RetrievalCandidate,
     RetrievalSummary,
     SymbolRef,
@@ -23,6 +24,20 @@ from context_search_tool.models import (
 from context_search_tool.paths import index_dir_for
 from context_search_tool.retrieval import query_repository
 from context_search_tool.sqlite_store import SQLiteStore
+
+
+class FakePlanner:
+    def __init__(self, plan: QueryPlan) -> None:
+        self.query_plan = plan
+        self.calls: list[str] = []
+
+    def plan_query(self, query: str) -> QueryPlan:
+        self.calls.append(query)
+        return self.query_plan
+
+    def plan(self, query: str) -> QueryPlan:
+        self.calls.append(query)
+        return self.query_plan
 
 
 def test_query_expands_signal_relations_before_weak_lexical_matches(
@@ -1327,6 +1342,149 @@ enum AuditStatus {
         result for result in bundle.results if result.file_path == Path("AuditStatus.java")
     )
     assert not any("route" in reason.lower() for reason in status_result.reasons)
+
+
+def test_query_planner_hints_surface_dashboard_code_for_chinese_query(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "DashboardController.java").write_text(
+        """
+class DashboardController {
+  String chart() { return dashboardService.statistics(); }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    (repo / "UnrelatedController.java").write_text(
+        """
+class UnrelatedController {
+  String query() { return "数据看板统计图表功能"; }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=10,
+            final_top_k=2,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    index_repository(repo, config)
+    planner = FakePlanner(
+        QueryPlan(
+            original_query="数据看板统计图表功能",
+            grep_keywords=["Dashboard", "Statistics", "Chart"],
+            symbol_hints=["DashboardController"],
+            intent="feature_lookup",
+            status="ok",
+            provider="ollama",
+            model="qwen3.5:4b-mlx",
+            prompt_version="qwen-query-planner-v1",
+            prompt_hash="sha256:test",
+            latency_ms=1,
+        )
+    )
+
+    bundle = query_repository(repo, "数据看板统计图表功能", config, planner=planner)
+
+    assert bundle.planner.status == "ok"
+    assert "dashboard" in bundle.expanded_tokens
+    assert any(
+        result.file_path == Path("DashboardController.java")
+        for result in bundle.results
+    )
+    dashboard = next(
+        result
+        for result in bundle.results
+        if result.file_path == Path("DashboardController.java")
+    )
+    assert "planner hint match" in dashboard.reasons
+
+
+def test_query_planner_fallback_returns_original_query_results(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "OriginalMatch.java").write_text(
+        'class OriginalMatch { String value = "targetToken"; }\n',
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=10,
+            final_top_k=1,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    index_repository(repo, config)
+    planner = FakePlanner(
+        QueryPlan(
+            original_query="targetToken",
+            status="fallback",
+            provider="ollama",
+            model="qwen3.5:4b-mlx",
+            latency_ms=8,
+            error="planner timed out after 8 seconds",
+        )
+    )
+
+    bundle = query_repository(repo, "targetToken", config, planner=planner)
+
+    assert bundle.planner.status == "fallback"
+    assert bundle.expanded_tokens == ["targettoken"]
+    assert bundle.results[0].file_path == Path("OriginalMatch.java")
+
+
+def test_planner_only_match_ranks_below_comparable_original_match(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "OriginalDashboard.java").write_text(
+        'class OriginalDashboard { String value = "targetToken"; }\n',
+        encoding="utf-8",
+    )
+    (repo / "PlannerDashboard.java").write_text(
+        "class PlannerDashboard { String dashboard() { return \"ok\"; } }\n",
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=10,
+            final_top_k=2,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    index_repository(repo, config)
+    planner = FakePlanner(
+        QueryPlan(
+            original_query="targetToken",
+            grep_keywords=["dashboard"],
+            status="ok",
+            provider="ollama",
+            model="qwen3.5:4b-mlx",
+            prompt_version="qwen-query-planner-v1",
+            prompt_hash="sha256:test",
+            latency_ms=1,
+        )
+    )
+
+    bundle = query_repository(repo, "targetToken", config, planner=planner)
+
+    assert [result.file_path for result in bundle.results] == [
+        Path("OriginalDashboard.java"),
+        Path("PlannerDashboard.java"),
+    ]
+    assert "planner hint match" not in bundle.results[0].reasons
+    assert "planner hint match" in bundle.results[1].reasons
 
 
 def _graph_store(

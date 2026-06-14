@@ -9,7 +9,9 @@ from context_search_tool.query_planner import (
     PROMPT_VERSION,
     clean_planner_payload,
     disabled_plan,
+    expand_query_plan_tokens,
     fallback_plan,
+    planner_hint_tokens,
     planner_from_config,
     prompt_hash,
 )
@@ -34,6 +36,23 @@ def test_query_plan_disabled_default_uses_empty_disabled_plan() -> None:
     assert plan.grep_keywords == []
     assert plan.symbol_hints == []
     assert plan.intent == "unknown"
+
+
+def test_expand_query_plan_tokens_keeps_original_tokens_first() -> None:
+    plan = QueryPlan(
+        original_query="数据看板统计图表功能",
+        rewritten_queries=["数据看板 dashboard statistics chart"],
+        grep_keywords=["Dashboard", "Chart"],
+        symbol_hints=["DashboardController"],
+        status="ok",
+    )
+
+    tokens = expand_query_plan_tokens("数据看板统计图表功能", plan)
+
+    assert tokens[:1] == ["数据看板统计图表功能"]
+    assert "dashboard" in tokens
+    assert "dashboardcontroller" in tokens
+    assert planner_hint_tokens(["数据看板统计图表功能"], tokens)
 
 
 def test_clean_planner_payload_strips_dedupes_truncates_and_validates_intent() -> None:

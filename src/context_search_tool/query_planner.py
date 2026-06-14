@@ -9,6 +9,7 @@ import requests
 
 from context_search_tool.config import QueryPlannerConfig
 from context_search_tool.models import QueryPlan
+from context_search_tool.tokenizer import tokenize_query
 
 PROMPT_VERSION = "qwen-query-planner-v1"
 
@@ -225,6 +226,40 @@ def planner_from_config(config: QueryPlannerConfig) -> QueryPlanner:
     return OllamaQueryPlanner(config)
 
 
+def expand_query_plan_tokens(query: str, plan: QueryPlan) -> list[str]:
+    original_tokens = _original_query_tokens(query)
+    if plan.status != "ok":
+        return original_tokens
+    expanded: list[str] = []
+    for rewritten_query in plan.rewritten_queries:
+        expanded.extend(tokenize_query(rewritten_query))
+    expanded.extend(plan.grep_keywords)
+    expanded.extend(plan.symbol_hints)
+    return _dedupe([*original_tokens, *expanded])
+
+
+def planner_hint_tokens(
+    original_tokens: list[str],
+    expanded_tokens: list[str],
+) -> list[str]:
+    original = {token.lower() for token in original_tokens}
+    return [token for token in expanded_tokens if token.lower() not in original]
+
+
+def _original_query_tokens(query: str) -> list[str]:
+    compact = _compact_ascii_query_token(query)
+    if compact:
+        return [compact]
+    return _dedupe(tokenize_query(query))
+
+
+def _compact_ascii_query_token(query: str) -> str:
+    stripped = query.strip()
+    if stripped.isascii() and stripped.isalnum():
+        return stripped.lower()
+    return ""
+
+
 def _user_payload(query: str, config: QueryPlannerConfig) -> dict[str, object]:
     return {
         "query": query,
@@ -259,3 +294,14 @@ def _clean_string_list(payload: dict[str, Any], key: str, limit: int) -> list[st
         if len(cleaned) >= limit:
             break
     return cleaned
+
+
+def _dedupe(tokens: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for token in tokens:
+        normalized = token.lower()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            deduped.append(normalized)
+    return deduped
