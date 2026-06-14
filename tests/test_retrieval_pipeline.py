@@ -1615,8 +1615,8 @@ def test_planner_only_match_ranks_below_comparable_original_match(
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / "OriginalDashboard.java").write_text(
-        'class OriginalDashboard { String value = "targetToken"; }\n',
+    (repo / "OriginalMatch.java").write_text(
+        'class OriginalMatch { String value = "targetToken"; }\n',
         encoding="utf-8",
     )
     (repo / "PlannerDashboard.java").write_text(
@@ -1649,11 +1649,12 @@ def test_planner_only_match_ranks_below_comparable_original_match(
     bundle = query_repository(repo, "targetToken", config, planner=planner)
 
     assert [result.file_path for result in bundle.results] == [
-        Path("OriginalDashboard.java"),
+        Path("OriginalMatch.java"),
         Path("PlannerDashboard.java"),
     ]
     assert "lexical match" in bundle.results[0].reasons
-    assert "planner hint match" in bundle.results[0].reasons
+    assert "token coverage" in bundle.results[0].reasons
+    assert "planner hint match" not in bundle.results[0].reasons
     assert "planner hint match" in bundle.results[1].reasons
 
 
