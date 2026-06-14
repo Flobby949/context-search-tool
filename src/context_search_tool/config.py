@@ -40,10 +40,24 @@ class EmbeddingConfig:
 
 
 @dataclass(frozen=True)
+class QueryPlannerConfig:
+    enabled: bool = False
+    provider: str = "ollama"
+    model: str = "qwen3.5:4b-mlx"
+    base_url: str = "http://localhost:11434"
+    use_system_proxy: bool = False
+    timeout_seconds: float = 8.0
+    max_rewritten_queries: int = 4
+    max_keywords: int = 12
+    max_symbol_hints: int = 8
+
+
+@dataclass(frozen=True)
 class ToolConfig:
     index: IndexConfig = field(default_factory=IndexConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    query_planner: QueryPlannerConfig = field(default_factory=QueryPlannerConfig)
 
 
 DEFAULT_CONFIG = ToolConfig()
@@ -86,6 +100,17 @@ def render_config(config: ToolConfig) -> str:
             "[embedding]",
             *embedding_lines,
             "",
+            "[query_planner]",
+            f"enabled = {_toml_bool(config.query_planner.enabled)}",
+            f"provider = {_toml_string(config.query_planner.provider)}",
+            f"model = {_toml_string(config.query_planner.model)}",
+            f"base_url = {_toml_string(config.query_planner.base_url)}",
+            f"use_system_proxy = {_toml_bool(config.query_planner.use_system_proxy)}",
+            f"timeout_seconds = {config.query_planner.timeout_seconds}",
+            f"max_rewritten_queries = {config.query_planner.max_rewritten_queries}",
+            f"max_keywords = {config.query_planner.max_keywords}",
+            f"max_symbol_hints = {config.query_planner.max_symbol_hints}",
+            "",
         ]
     )
 
@@ -101,6 +126,10 @@ def load_config(repo: Path) -> ToolConfig:
         index=_build_section(IndexConfig, data.get("index", {})),
         retrieval=_build_section(RetrievalConfig, data.get("retrieval", {})),
         embedding=_build_section(EmbeddingConfig, data.get("embedding", {})),
+        query_planner=_build_section(
+            QueryPlannerConfig,
+            data.get("query_planner", {}),
+        ),
     )
 
 
@@ -143,7 +172,16 @@ def _parse_simple_toml_value(value: str) -> Any:
         return [_parse_simple_toml_value(item.strip()) for item in inner.split(",")]
     if value.startswith('"') and value.endswith('"'):
         return value[1:-1]
-    return int(value)
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    try:
+        if "." in value:
+            return float(value)
+        return int(value)
+    except ValueError:
+        return value
 
 
 def _toml_list(values: list[str]) -> str:
@@ -154,3 +192,7 @@ def _toml_list(values: list[str]) -> str:
 
 def _toml_string(value: str) -> str:
     return json.dumps(value)
+
+
+def _toml_bool(value: bool) -> str:
+    return "true" if value else "false"

@@ -5,6 +5,7 @@ import pytest
 from context_search_tool.config import (
     DEFAULT_CONFIG,
     EmbeddingConfig,
+    QueryPlannerConfig,
     ToolConfig,
     load_config,
     render_config,
@@ -26,6 +27,22 @@ def test_render_default_config_contains_version_one_values() -> None:
     assert DEFAULT_CONFIG.embedding.provider == "hash"
 
 
+def test_render_default_config_contains_query_planner_defaults() -> None:
+    rendered = render_default_config()
+
+    assert "[query_planner]" in rendered
+    assert "enabled = false" in rendered
+    assert 'provider = "ollama"' in rendered
+    assert 'model = "qwen3.5:4b-mlx"' in rendered
+    assert 'base_url = "http://localhost:11434"' in rendered
+    assert "use_system_proxy = false" in rendered
+    assert "timeout_seconds = 8.0" in rendered
+    assert "max_rewritten_queries = 4" in rendered
+    assert "max_keywords = 12" in rendered
+    assert "max_symbol_hints = 8" in rendered
+    assert DEFAULT_CONFIG.query_planner.enabled is False
+
+
 def test_render_config_uses_passed_embedding_values() -> None:
     rendered = render_config(
         ToolConfig(
@@ -40,6 +57,66 @@ def test_render_config_uses_passed_embedding_values() -> None:
     assert 'provider = "hash"' in rendered
     assert 'model = "hash-v2"' in rendered
     assert "dimensions = 128" in rendered
+
+
+def test_load_config_reads_query_planner_section(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    ensure_index_layout(repo)
+    (repo / ".context-search" / "config.toml").write_text(
+        """
+[query_planner]
+enabled = true
+provider = "ollama"
+model = "qwen3.5:4b-mlx"
+base_url = "http://localhost:11434"
+use_system_proxy = true
+timeout_seconds = 2.5
+max_rewritten_queries = 3
+max_keywords = 9
+max_symbol_hints = 5
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    config = load_config(repo)
+
+    assert config.query_planner.enabled is True
+    assert config.query_planner.provider == "ollama"
+    assert config.query_planner.model == "qwen3.5:4b-mlx"
+    assert config.query_planner.base_url == "http://localhost:11434"
+    assert config.query_planner.use_system_proxy is True
+    assert config.query_planner.timeout_seconds == 2.5
+    assert config.query_planner.max_rewritten_queries == 3
+    assert config.query_planner.max_keywords == 9
+    assert config.query_planner.max_symbol_hints == 5
+
+
+def test_render_config_uses_passed_query_planner_values() -> None:
+    rendered = render_config(
+        ToolConfig(
+            query_planner=QueryPlannerConfig(
+                enabled=True,
+                provider="ollama",
+                model="custom-model",
+                base_url="http://127.0.0.1:11434",
+                use_system_proxy=True,
+                timeout_seconds=1.5,
+                max_rewritten_queries=2,
+                max_keywords=6,
+                max_symbol_hints=4,
+            )
+        )
+    )
+
+    assert "enabled = true" in rendered
+    assert 'model = "custom-model"' in rendered
+    assert 'base_url = "http://127.0.0.1:11434"' in rendered
+    assert "use_system_proxy = true" in rendered
+    assert "timeout_seconds = 1.5" in rendered
+    assert "max_rewritten_queries = 2" in rendered
+    assert "max_keywords = 6" in rendered
+    assert "max_symbol_hints = 4" in rendered
 
 
 def test_load_config_creates_default_when_missing(tmp_path: Path) -> None:
