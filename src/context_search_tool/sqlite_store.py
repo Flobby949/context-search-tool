@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from context_search_tool.models import (
+    CodeRelation,
+    CodeSignal,
     DocumentChunk,
     RetrievalCandidate,
     SourceFile,
@@ -78,6 +80,50 @@ class SQLiteStore:
 
                 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
                 USING fts5(chunk_id UNINDEXED, file_path, content, tokens);
+
+                CREATE TABLE IF NOT EXISTS index_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS code_signals (
+                    signal_id TEXT PRIMARY KEY,
+                    chunk_id TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    start_line INTEGER NOT NULL,
+                    end_line INTEGER NOT NULL,
+                    language TEXT NOT NULL,
+                    tokens TEXT NOT NULL,
+                    metadata TEXT NOT NULL,
+                    deleted_at INTEGER
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_code_signals_chunk_active
+                ON code_signals(chunk_id, deleted_at);
+
+                CREATE INDEX IF NOT EXISTS idx_code_signals_file_active
+                ON code_signals(file_path, deleted_at);
+
+                CREATE TABLE IF NOT EXISTS code_relations (
+                    relation_id TEXT PRIMARY KEY,
+                    source_signal_id TEXT NOT NULL,
+                    source_chunk_id TEXT NOT NULL,
+                    source_file_path TEXT NOT NULL,
+                    target_name TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    metadata TEXT NOT NULL,
+                    deleted_at INTEGER
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_code_relations_source_active
+                ON code_relations(source_signal_id, deleted_at);
+
+                CREATE INDEX IF NOT EXISTS idx_code_relations_target_active
+                ON code_relations(target_name, deleted_at);
                 """
             )
 
@@ -159,10 +205,264 @@ class SQLiteStore:
             for chunk in chunks:
                 self._insert_chunk(connection, chunk)
 
+    def replace_signals(self, file_path: Path, signals: list[CodeSignal]) -> None:
+        path = _path_key(file_path)
+        deleted_at = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE code_signals
+                SET deleted_at = ?
+                WHERE file_path = ?
+                  AND deleted_at IS NULL
+                """,
+                (deleted_at, path),
+            )
+            for signal in signals:
+                connection.execute(
+                    """
+                    INSERT INTO code_signals (
+                        signal_id, chunk_id, file_path, kind, name,
+                        start_line, end_line, language, tokens, metadata, deleted_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    ON CONFLICT(signal_id) DO UPDATE SET
+                        chunk_id = excluded.chunk_id,
+                        file_path = excluded.file_path,
+                        kind = excluded.kind,
+                        name = excluded.name,
+                        start_line = excluded.start_line,
+                        end_line = excluded.end_line,
+                        language = excluded.language,
+                        tokens = excluded.tokens,
+                        metadata = excluded.metadata,
+                        deleted_at = excluded.deleted_at
+                    """,
+                    (
+                        signal.signal_id,
+                        signal.chunk_id,
+                        _path_key(signal.file_path),
+                        signal.kind,
+                        signal.name,
+                        signal.start_line,
+                        signal.end_line,
+                        signal.language,
+                        _to_json_list(signal.tokens),
+                        _to_json(signal.metadata),
+                    ),
+                )
+
+    def replace_relations(
+        self, file_path: Path, relations: list[CodeRelation]
+    ) -> None:
+        path = _path_key(file_path)
+        deleted_at = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE code_relations
+                SET deleted_at = ?
+                WHERE source_file_path = ?
+                  AND deleted_at IS NULL
+                """,
+                (deleted_at, path),
+            )
+            for relation in relations:
+                source = connection.execute(
+                    """
+                    SELECT chunk_id, file_path
+                    FROM code_signals
+                    WHERE signal_id = ?
+                      AND deleted_at IS NULL
+                    """,
+                    (relation.source_signal_id,),
+                ).fetchone()
+                if source is None:
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO code_relations (
+                        relation_id, source_signal_id, source_chunk_id,
+                        source_file_path, target_name, kind, confidence,
+                        metadata, deleted_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    ON CONFLICT(relation_id) DO UPDATE SET
+                        source_signal_id = excluded.source_signal_id,
+                        source_chunk_id = excluded.source_chunk_id,
+                        source_file_path = excluded.source_file_path,
+                        target_name = excluded.target_name,
+                        kind = excluded.kind,
+                        confidence = excluded.confidence,
+                        metadata = excluded.metadata,
+                        deleted_at = excluded.deleted_at
+                    """,
+                    (
+                        relation.relation_id,
+                        relation.source_signal_id,
+                        source["chunk_id"],
+                        source["file_path"],
+                        relation.target_name,
+                        relation.kind,
+                        relation.confidence,
+                        _to_json(relation.metadata),
+                    ),
+                )
+
+    def signals_for_chunk(self, chunk_id: str) -> list[CodeSignal]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM code_signals
+                WHERE chunk_id = ?
+                  AND deleted_at IS NULL
+                ORDER BY start_line, end_line, kind, name, signal_id
+                """,
+                (chunk_id,),
+            ).fetchall()
+        return [_signal_from_row(row) for row in rows]
+
+    def signal_search(self, tokens: list[str], limit: int) -> list[CodeSignal]:
+        normalized = [token.lower() for token in tokens if token]
+        if not normalized or limit <= 0:
+            return []
+
+        matches: list[tuple[CodeSignal, float]] = []
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM code_signals
+                WHERE deleted_at IS NULL
+                """
+            ).fetchall()
+
+        for row in rows:
+            signal = _signal_from_row(row)
+            haystack = " ".join(
+                [
+                    signal.name,
+                    " ".join(signal.tokens),
+                    _metadata_search_text(signal.metadata),
+                ]
+            ).lower()
+            score = sum(1.0 for token in normalized if token in haystack)
+            if score > 0:
+                matches.append((signal, score))
+
+        matches.sort(
+            key=lambda item: (
+                -item[1],
+                item[0].start_line,
+                item[0].end_line,
+                item[0].kind,
+                item[0].name,
+                item[0].signal_id,
+            )
+        )
+        return [signal for signal, _score in matches[:limit]]
+
+    def relations_for_source(self, source_signal_id: str) -> list[CodeRelation]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM code_relations
+                WHERE source_signal_id = ?
+                  AND deleted_at IS NULL
+                ORDER BY kind, target_name, relation_id
+                """,
+                (source_signal_id,),
+            ).fetchall()
+        return [_relation_from_row(row) for row in rows]
+
+    def relations_targeting(self, target_name: str) -> list[CodeRelation]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM code_relations
+                WHERE target_name = ?
+                  AND deleted_at IS NULL
+                ORDER BY kind, source_signal_id, relation_id
+                """,
+                (target_name,),
+            ).fetchall()
+        return [_relation_from_row(row) for row in rows]
+
+    def chunks_matching_signal_or_symbol(
+        self, target_name: str, limit: int
+    ) -> list[DocumentChunk]:
+        if not target_name or limit <= 0:
+            return []
+
+        with self._connect() as connection:
+            rows = _chunks_matching_name(connection, target_name, limit)
+            if not rows and "." in target_name:
+                owner_name, member_name = target_name.rsplit(".", 1)
+                rows = _chunks_matching_member_name(
+                    connection,
+                    owner_name,
+                    member_name,
+                    limit,
+                )
+            return [self._chunk_from_row(connection, row) for row in rows]
+
+    def get_metadata(self, key: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT value
+                FROM index_metadata
+                WHERE key = ?
+                """,
+                (key,),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row["value"])
+
+    def set_metadata(self, key: str, value: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO index_metadata (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (key, value, _now()),
+            )
+
+    def clear_signal_data(self) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM code_relations")
+            connection.execute("DELETE FROM code_signals")
+
     def mark_file_deleted(self, file_path: Path) -> None:
         path = _path_key(file_path)
         deleted_at = _now()
         with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE code_relations
+                SET deleted_at = ?
+                WHERE source_file_path = ?
+                  AND deleted_at IS NULL
+                """,
+                (deleted_at, path),
+            )
+            connection.execute(
+                """
+                UPDATE code_signals
+                SET deleted_at = ?
+                WHERE file_path = ?
+                  AND deleted_at IS NULL
+                """,
+                (deleted_at, path),
+            )
             active_ids = self._active_chunk_ids_for_file(connection, path)
             self._delete_search_payloads(connection, active_ids)
             if active_ids:
@@ -530,6 +830,75 @@ class SQLiteStore:
         )
 
 
+def _chunks_matching_name(
+    connection: sqlite3.Connection,
+    target_name: str,
+    limit: int,
+) -> list[sqlite3.Row]:
+    return connection.execute(
+        """
+        SELECT DISTINCT chunks.*
+        FROM chunks
+        LEFT JOIN code_signals
+          ON code_signals.chunk_id = chunks.chunk_id
+         AND code_signals.deleted_at IS NULL
+        LEFT JOIN chunk_symbols
+          ON chunk_symbols.chunk_id = chunks.chunk_id
+        LEFT JOIN symbols
+          ON symbols.symbol_id = chunk_symbols.symbol_id
+        WHERE chunks.deleted_at IS NULL
+          AND (
+            code_signals.name = ?
+            OR symbols.name = ?
+          )
+        ORDER BY chunks.file_path, chunks.start_line, chunks.chunk_id
+        LIMIT ?
+        """,
+        (target_name, target_name, limit),
+    ).fetchall()
+
+
+def _chunks_matching_member_name(
+    connection: sqlite3.Connection,
+    owner_name: str,
+    member_name: str,
+    limit: int,
+) -> list[sqlite3.Row]:
+    owner_variants = [owner_name, f"{owner_name}Impl"]
+    signal_names = [f"{owner}.{member_name}" for owner in owner_variants]
+    path_patterns = [f"%{owner}.java" for owner in owner_variants]
+    return connection.execute(
+        _in_query(
+            """
+        SELECT DISTINCT chunks.*
+        FROM chunks
+        LEFT JOIN code_signals
+          ON code_signals.chunk_id = chunks.chunk_id
+         AND code_signals.deleted_at IS NULL
+        LEFT JOIN chunk_symbols
+          ON chunk_symbols.chunk_id = chunks.chunk_id
+        LEFT JOIN symbols
+          ON symbols.symbol_id = chunk_symbols.symbol_id
+        WHERE chunks.deleted_at IS NULL
+          AND (
+            code_signals.name IN ({placeholders})
+            OR (
+              symbols.name = ?
+              AND (
+                chunks.file_path LIKE ?
+                OR chunks.file_path LIKE ?
+              )
+            )
+          )
+        ORDER BY chunks.file_path, chunks.start_line, chunks.chunk_id
+        LIMIT ?
+        """,
+            signal_names,
+        ),
+        (*signal_names, member_name, *path_patterns, limit),
+    ).fetchall()
+
+
 def _path_key(path: Path) -> str:
     return path.as_posix()
 
@@ -542,8 +911,55 @@ def _to_json(value: dict[str, Any]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def _to_json_list(value: list[str]) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
 def _from_json(value: str) -> dict[str, Any]:
     return json.loads(value)
+
+
+def _from_json_list(value: str) -> list[str]:
+    return list(json.loads(value))
+
+
+def _metadata_search_text(metadata: dict[str, Any]) -> str:
+    values: list[str] = []
+    for key, value in metadata.items():
+        values.append(key)
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, (int, float, bool)):
+            values.append(str(value))
+        elif value is not None:
+            values.append(str(value))
+    return " ".join(values)
+
+
+def _signal_from_row(row: sqlite3.Row) -> CodeSignal:
+    return CodeSignal(
+        signal_id=row["signal_id"],
+        chunk_id=row["chunk_id"],
+        file_path=Path(row["file_path"]),
+        kind=row["kind"],
+        name=row["name"],
+        start_line=row["start_line"],
+        end_line=row["end_line"],
+        language=row["language"],
+        tokens=_from_json_list(row["tokens"]),
+        metadata=_from_json(row["metadata"]),
+    )
+
+
+def _relation_from_row(row: sqlite3.Row) -> CodeRelation:
+    return CodeRelation(
+        relation_id=row["relation_id"],
+        source_signal_id=row["source_signal_id"],
+        target_name=row["target_name"],
+        kind=row["kind"],
+        confidence=float(row["confidence"]),
+        metadata=_from_json(row["metadata"]),
+    )
 
 
 def _source_file_from_row(row: sqlite3.Row) -> SourceFile:

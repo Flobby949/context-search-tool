@@ -4,12 +4,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from context_search_tool.models import SymbolRef
+from context_search_tool.models import CodeRelation, CodeSignal, SymbolRef
 
 
 @dataclass(frozen=True)
 class PluginExtraction:
     symbols: list[SymbolRef] = field(default_factory=list)
+    signals: list[CodeSignal] = field(default_factory=list)
+    relations: list[CodeRelation] = field(default_factory=list)
     lexical_tokens: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from context_search_tool.models import RetrievalResult
+from context_search_tool.models import RetrievalResult, RetrievalSummary
 from context_search_tool.retrieval import QueryBundle
 from context_search_tool.formatters import format_json, format_markdown
 
@@ -59,6 +59,38 @@ def test_markdown_formatter_uses_longer_fence_than_snippet_backticks() -> None:
     assert "intro\n```\ninner block\n```\noutro" in output
 
 
+def test_markdown_formatter_includes_summary_before_results() -> None:
+    bundle = sample_bundle()
+    bundle = QueryBundle(
+        query=bundle.query,
+        expanded_tokens=bundle.expanded_tokens,
+        followup_keywords=bundle.followup_keywords,
+        results=bundle.results,
+        summary=RetrievalSummary(
+            entry_points=["GET /apply/audit/stats/wait -> ResourceAuditController.statsWait"],
+            implementation=["ResourceAuditServiceImpl.statsWait"],
+            related_types=["WorkbenchResourceAuditStatsDTO"],
+            possibly_legacy=["WorkbenchResourceStatsDTO"],
+        ),
+    )
+
+    output = format_markdown(bundle)
+
+    expected_summary = """## Summary
+### Likely Entry Points
+- GET /apply/audit/stats/wait -> ResourceAuditController.statsWait
+### Likely Implementation
+- ResourceAuditServiceImpl.statsWait
+### Related Types
+- WorkbenchResourceAuditStatsDTO
+### Possibly Legacy
+- WorkbenchResourceStatsDTO"""
+
+    assert expected_summary in output
+    assert output.index("## Summary") < output.index("## Results")
+    assert "## Results" in output
+
+
 def test_json_formatter_is_structured() -> None:
     output = format_json(sample_bundle())
     parsed = json.loads(output)
@@ -66,6 +98,25 @@ def test_json_formatter_is_structured() -> None:
     assert parsed["query"] == "apply audit"
     assert parsed["results"][0]["file_path"] == "ApplyAuditController.java"
     assert parsed["results"][0]["score_parts"]["lexical"] == 0.8
+
+
+def test_json_formatter_includes_summary_sections() -> None:
+    bundle = QueryBundle(
+        query="summary",
+        expanded_tokens=["summary"],
+        results=[],
+        followup_keywords=[],
+    )
+    output = format_json(bundle)
+    parsed = json.loads(output)
+
+    assert parsed["summary"] == {
+        "entry_points": [],
+        "implementation": [],
+        "related_types": [],
+        "possibly_legacy": [],
+    }
+    assert parsed["results"] == []
 
 
 def test_formatters_handle_empty_results() -> None:

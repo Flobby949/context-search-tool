@@ -60,7 +60,8 @@ class NumpyVectorStore:
 
         query = _normalize_vector(np.asarray(query_vector, dtype=np.float32).reshape(-1))
         vectors = _normalize_matrix(self._vectors)
-        scores = vectors @ query
+        scores = np.einsum("ij,j->i", vectors, query, optimize=True)
+        scores = np.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
         results = [
             VectorSearchResult(chunk_id=chunk_id, score=float(score))
             for chunk_id, score in zip(self._ids, scores)
@@ -95,6 +96,10 @@ class NumpyVectorStore:
 
 
 def _normalize_vector(vector: np.ndarray) -> np.ndarray:
+    vector = np.nan_to_num(vector, nan=0.0, posinf=0.0, neginf=0.0).astype(
+        np.float32,
+        copy=False,
+    )
     norm = float(np.linalg.norm(vector))
     if norm == 0.0:
         return vector.astype(np.float32, copy=False)
@@ -102,6 +107,10 @@ def _normalize_vector(vector: np.ndarray) -> np.ndarray:
 
 
 def _normalize_matrix(vectors: np.ndarray) -> np.ndarray:
+    vectors = np.nan_to_num(vectors, nan=0.0, posinf=0.0, neginf=0.0).astype(
+        np.float32,
+        copy=False,
+    )
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     return np.divide(
         vectors,

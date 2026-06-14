@@ -1,19 +1,34 @@
 from __future__ import annotations
 
 import sqlite3
-from collections import Counter
-from dataclasses import dataclass
+import logging
+from collections import Counter, deque
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from context_search_tool.chunker import expand_lines
 from context_search_tool.config import ToolConfig
 from context_search_tool.embeddings import provider_from_config
 from context_search_tool.manifest import assert_manifest_compatible
-from context_search_tool.models import DocumentChunk, RetrievalCandidate, RetrievalResult
+from context_search_tool.models import (
+    DocumentChunk,
+    CodeSignal,
+    RetrievalCandidate,
+    RetrievalResult,
+    RetrievalSummary,
+)
 from context_search_tool.paths import index_dir_for
 from context_search_tool.sqlite_store import SQLiteStore
 from context_search_tool.tokenizer import tokenize_query
 from context_search_tool.vector_store import NumpyVectorStore
+
+
+logger = logging.getLogger(__name__)
+
+MAX_EXPANSION_DEPTH = 3
+MAX_EXPANSION_CANDIDATES = 1000
+_MIN_RELATION_CONFIDENCE = 0.5
+_RELATION_SCORE_DECAY = 0.8
 
 
 @dataclass(frozen=True)
@@ -22,6 +37,7 @@ class QueryBundle:
     expanded_tokens: list[str]
     results: list[RetrievalResult]
     followup_keywords: list[str]
+    summary: RetrievalSummary = field(default_factory=RetrievalSummary)
 
 
 @dataclass(frozen=True)
@@ -30,10 +46,12 @@ class _RankedChunk:
     score: float
     score_parts: dict[str, float]
     reasons: list[str]
+    rank_tier: int
 
 
 @dataclass(frozen=True)
 class _ExpandedResult:
+    chunk_ids: list[str]
     file_path: Path
     start_line: int
     end_line: int
@@ -42,6 +60,7 @@ class _ExpandedResult:
     score_parts: dict[str, float]
     reasons: list[str]
     followup_keywords: list[str]
+    rank_tier: int
 
 
 def query_repository(
@@ -76,11 +95,25 @@ def query_repository(
             followup_keywords=[],
         )
 
+    initial_candidates = _initial_candidates(
+        index_dir,
+        store,
+        query,
+        tokens,
+        config,
+        deleted_ids,
+    )
+    signal_candidates = _signal_candidates(store, tokens, config)
+    direct_candidates = _merge_candidates([*initial_candidates, *signal_candidates])
+    relation_candidates = _relation_expansion_candidates(
+        store,
+        list(direct_candidates.values()),
+        config,
+    )
     candidates = _merge_candidates(
         [
-            *_semantic_candidates(index_dir, query, config, deleted_ids),
-            *_lexical_candidates(store, tokens, config.retrieval.lexical_top_k),
-            *store.path_symbol_search(tokens, config.retrieval.lexical_top_k),
+            *direct_candidates.values(),
+            *relation_candidates,
         ]
     )
     if not candidates:
@@ -93,6 +126,8 @@ def query_repository(
 
     ranked_chunks = _rank_chunks(store, candidates, tokens, query)
     expanded = _expand_ranked_chunks(repo, ranked_chunks, config, context_lines, full_file)
+    visible_results = expanded[: config.retrieval.final_top_k]
+    summary, result_reasons = _summarize_results(store, visible_results)
     results = [
         RetrievalResult(
             file_path=item.file_path,
@@ -101,17 +136,266 @@ def query_repository(
             content=item.content,
             score=item.score,
             score_parts=item.score_parts,
-            reasons=item.reasons,
+            reasons=_dedupe(item.reasons + result_reasons[index]),
             followup_keywords=item.followup_keywords,
         )
-        for item in expanded[: config.retrieval.final_top_k]
+        for index, item in enumerate(visible_results)
     ]
     return QueryBundle(
         query=query,
         expanded_tokens=tokens,
         results=results,
         followup_keywords=_followup_keywords(results),
+        summary=summary,
     )
+
+
+def _summarize_results(
+    store: SQLiteStore,
+    visible_results: list[_ExpandedResult],
+) -> tuple[RetrievalSummary, list[list[str]]]:
+    summary = RetrievalSummary()
+    result_reasons: list[list[str]] = []
+
+    for item in visible_results:
+        entry_points: list[str] = []
+        impl: list[str] = []
+        related: list[str] = []
+        legacy: list[str] = []
+        chunk_reasons: list[str] = []
+
+        for chunk_id in item.chunk_ids:
+            try:
+                chunk = store.chunk_for_id(chunk_id)
+            except KeyError:
+                continue
+            try:
+                signals = store.signals_for_chunk(chunk_id)
+            except sqlite3.Error:
+                signals = []
+
+            has_endpoint_signal = any(signal.kind == "endpoint" for signal in signals)
+            has_usage_signal = any(signal.kind == "usage" for signal in signals)
+            has_relation_support = _chunk_has_relation_support(store, chunk, signals)
+
+            (
+                chunk_entry,
+                chunk_impl,
+                chunk_related,
+                chunk_legacy,
+            ) = _summarize_chunk(chunk, signals, has_relation_support)
+
+            chunk_has_support = (
+                has_endpoint_signal or has_usage_signal or has_relation_support
+            )
+            legacy_names = set(chunk_legacy)
+            entry_points.extend(chunk_entry)
+            impl.extend(chunk_impl)
+            if chunk_has_support:
+                related.extend(chunk_related)
+            else:
+                related.extend([name for name in chunk_related if name not in legacy_names])
+                legacy.extend(chunk_legacy)
+            chunk_reasons.extend(
+                _reasons_for_chunk(
+                    signals,
+                    chunk_impl,
+                    chunk_legacy,
+                    has_relation_support,
+                    has_endpoint_signal,
+                    has_usage_signal,
+                )
+            )
+
+        result_reasons.append(_dedupe(chunk_reasons))
+        summary.entry_points.extend(entry_points)
+        summary.implementation.extend(impl)
+        summary.related_types.extend(related)
+        summary.possibly_legacy.extend(legacy)
+
+    summary.entry_points = _ordered_unique(summary.entry_points)
+    summary.implementation = _ordered_unique(summary.implementation)
+    summary.related_types = _ordered_unique(summary.related_types)
+    summary.possibly_legacy = _ordered_unique(summary.possibly_legacy)
+    summary.entry_points.sort()
+    summary.implementation.sort()
+    summary.related_types.sort()
+    summary.possibly_legacy.sort()
+    return summary, result_reasons
+
+
+def _summarize_chunk(
+    chunk: DocumentChunk,
+    signals: list,
+    has_relation_support: bool,
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    symbol_names = [symbol.name for symbol in chunk.symbols]
+    endpoint: list[str] = []
+    implementation: list[str] = []
+    related_types: list[str] = []
+    legacy: list[str] = []
+
+    endpoint_signals = [signal.name for signal in signals if signal.kind == "endpoint"]
+    if endpoint_signals:
+        endpoint.extend(_ordered_unique(endpoint_signals))
+    elif _is_controller_name(chunk.file_path.stem) or any(
+        _is_controller_name(name) for name in symbol_names
+    ):
+        endpoint.append(_primary_chunk_name(chunk))
+
+    names = _ordered_unique(
+        [signal.name for signal in signals] + symbol_names + [_primary_chunk_name(chunk)]
+    )
+    method_impl_names = [
+        name for name in names if _is_implementation_name(name) and "." in name
+    ]
+    if method_impl_names:
+        implementation.extend(method_impl_names)
+    else:
+        implementation.extend(
+            [name for name in names if _is_implementation_name(name) and "." not in name]
+        )
+    related_types.extend([name for name in names if _is_related_type_name(name)])
+
+    if not endpoint and not has_relation_support and not implementation:
+        legacy.extend([name for name in related_types if name])
+    if has_relation_support and implementation and not any(
+        "." in item for item in implementation
+    ):
+        implementation.extend([_primary_chunk_name(chunk)])
+
+    return (
+        _ordered_unique(endpoint),
+        _ordered_unique(implementation),
+        _ordered_unique(related_types),
+        _ordered_unique(legacy),
+    )
+
+
+def _reasons_for_chunk(
+    signals: list,
+    impl_names: list[str],
+    legacy_names: list[str],
+    has_relation_support: bool,
+    has_endpoint_signal: bool,
+    has_usage_signal: bool,
+) -> list[str]:
+    reasons: list[str] = []
+    if any(signal.kind == "endpoint" for signal in signals):
+        reasons.append("endpoint signal match")
+    if any(signal.kind == "comment" for signal in signals):
+        reasons.append("comment signal match")
+    if has_relation_support and impl_names:
+        reasons.append("implementation chain match")
+    if legacy_names and not has_relation_support and not has_usage_signal and not has_endpoint_signal:
+        reasons.append("possibly legacy: no active usage signal found")
+    return reasons
+
+
+def _chunk_has_relation_support(
+    store: SQLiteStore,
+    chunk: DocumentChunk,
+    signals: list[CodeSignal],
+) -> bool:
+    signal_ids = [signal.signal_id for signal in signals]
+    for signal_id in signal_ids:
+        try:
+            if store.relations_for_source(signal_id):
+                return True
+        except sqlite3.Error:
+            continue
+
+    relation_targets = _ordered_unique(
+        [chunk.file_path.stem] + [signal.name for signal in signals]
+    )
+    for target_name in relation_targets:
+        try:
+            if store.relations_targeting(target_name):
+                return True
+        except sqlite3.Error:
+            continue
+
+    return False
+
+
+def _ordered_unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        normalized = value.lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(value)
+    return ordered
+
+
+def _primary_chunk_name(chunk: DocumentChunk) -> str:
+    if chunk.file_path.stem:
+        return chunk.file_path.stem
+    return ""
+
+
+def _is_controller_name(value: str) -> bool:
+    return value.lower().endswith("controller")
+
+
+def _is_implementation_name(value: str) -> bool:
+    lowered = value.lower()
+    if "." in lowered:
+        owner, _ = lowered.split(".", 1)
+        if owner.endswith(("serviceimpl", "service", "impl")):
+            return True
+        return _is_implementation_name(owner)
+    return any(
+        lowered.endswith(suffix)
+        for suffix in (
+            "service",
+            "serviceimpl",
+            "impl",
+            "executor",
+            "exe",
+            "gateway",
+            "mapper",
+            "repository",
+        )
+    )
+
+
+def _is_related_type_name(value: str) -> bool:
+    lowered = value.lower()
+    return any(
+        lowered.endswith(suffix)
+        for suffix in (
+            "dto",
+            "vo",
+            "request",
+            "response",
+            "query",
+            "querytype",
+            "domain",
+            "type",
+            "enum",
+            "entity",
+            "model",
+            "bean",
+        )
+    ) or "domain" in lowered
+
+
+def _initial_candidates(
+    index_dir: Path,
+    store: SQLiteStore,
+    query: str,
+    tokens: list[str],
+    config: ToolConfig,
+    deleted_ids: set[str],
+) -> list[RetrievalCandidate]:
+    return [
+        *_semantic_candidates(index_dir, query, config, deleted_ids),
+        *_lexical_candidates(store, tokens, config.retrieval.lexical_top_k),
+        *store.path_symbol_search(tokens, config.retrieval.lexical_top_k),
+    ]
 
 
 def _semantic_candidates(
@@ -134,6 +418,144 @@ def _semantic_candidates(
             deleted_ids,
         )
     ]
+
+
+def _signal_candidates(
+    store: SQLiteStore,
+    tokens: list[str],
+    config: ToolConfig,
+) -> list[RetrievalCandidate]:
+    limit = max(
+        config.retrieval.semantic_top_k,
+        config.retrieval.lexical_top_k,
+        config.retrieval.final_top_k,
+    )
+    candidates: list[RetrievalCandidate] = []
+    for signal in store.signal_search(tokens, limit):
+        score = _signal_score(signal.name, signal.tokens, signal.metadata, tokens)
+        if score <= 0:
+            continue
+        candidates.append(
+            RetrievalCandidate(
+                chunk_id=signal.chunk_id,
+                score=score,
+                source="signal",
+                score_parts={"signal": score},
+            )
+        )
+    return candidates
+
+
+def _relation_expansion_candidates(
+    store: SQLiteStore,
+    seed_candidates: list[RetrievalCandidate],
+    config: ToolConfig,
+) -> list[RetrievalCandidate]:
+    if not seed_candidates:
+        return []
+
+    source_limit = max(
+        config.retrieval.semantic_top_k
+        + config.retrieval.lexical_top_k
+        + config.retrieval.final_top_k,
+        config.retrieval.final_top_k,
+    )
+    if source_limit <= 0:
+        return []
+
+    expanded_by_chunk: dict[str, RetrievalCandidate] = {}
+    seen_chunks = {candidate.chunk_id for candidate in seed_candidates}
+    seed_scores = {
+        candidate.chunk_id: _candidate_relation_seed_score(candidate)
+        for candidate in seed_candidates
+    }
+    visited_signals: set[str] = set()
+    queue: deque[tuple[str, float, int]] = deque()
+
+    for candidate in sorted(
+        seed_candidates,
+        key=lambda item: (-_candidate_relation_seed_score(item), item.chunk_id),
+    )[:source_limit]:
+        current_score = _candidate_relation_seed_score(candidate)
+        if current_score <= 0:
+            continue
+        for signal in store.signals_for_chunk(candidate.chunk_id):
+            if signal.signal_id in visited_signals:
+                continue
+            visited_signals.add(signal.signal_id)
+            queue.append((signal.signal_id, current_score, 0))
+
+    while queue:
+        source_signal_id, current_score, depth = queue.popleft()
+        if depth >= MAX_EXPANSION_DEPTH:
+            continue
+
+        next_depth = depth + 1
+        for relation in store.relations_for_source(source_signal_id):
+            if relation.confidence < _MIN_RELATION_CONFIDENCE:
+                continue
+
+            next_score = current_score * relation.confidence * _RELATION_SCORE_DECAY
+            remaining = MAX_EXPANSION_CANDIDATES - len(expanded_by_chunk)
+            if remaining <= 0:
+                _log_expansion_limit()
+                return list(expanded_by_chunk.values())
+
+            for chunk in store.chunks_matching_signal_or_symbol(
+                relation.target_name,
+                remaining,
+            ):
+                existing = expanded_by_chunk.get(chunk.chunk_id)
+                seed_score = seed_scores.get(chunk.chunk_id, 0.0)
+                should_add_relation = (
+                    chunk.chunk_id not in seed_scores or next_score > seed_score
+                )
+                if should_add_relation and (
+                    existing is None or next_score > existing.score
+                ):
+                    expanded_by_chunk[chunk.chunk_id] = RetrievalCandidate(
+                        chunk_id=chunk.chunk_id,
+                        score=next_score,
+                        source="relation",
+                        score_parts={"relation": next_score},
+                    )
+
+                if chunk.chunk_id not in seen_chunks:
+                    seen_chunks.add(chunk.chunk_id)
+                    if len(expanded_by_chunk) >= MAX_EXPANSION_CANDIDATES:
+                        _log_expansion_limit()
+                        return list(expanded_by_chunk.values())
+
+                for signal in store.signals_for_chunk(chunk.chunk_id):
+                    if signal.signal_id in visited_signals:
+                        continue
+                    visited_signals.add(signal.signal_id)
+                    queue.append((signal.signal_id, next_score, next_depth))
+
+    return list(expanded_by_chunk.values())
+
+
+def _candidate_base_score(candidate: RetrievalCandidate) -> float:
+    return _bounded_score(max(candidate.score, *candidate.score_parts.values(), 0.0))
+
+
+def _candidate_relation_seed_score(candidate: RetrievalCandidate) -> float:
+    relation_score = candidate.score_parts.get("relation", 0.0)
+    if relation_score > 0:
+        return _bounded_score(relation_score)
+
+    signal_score = candidate.score_parts.get("signal", 0.0)
+    if signal_score > 0:
+        return _bounded_score(signal_score)
+
+    return 0.0
+
+
+def _log_expansion_limit() -> None:
+    logger.warning(
+        "relation expansion hit candidate limit (%s); returning partial candidates",
+        MAX_EXPANSION_CANDIDATES,
+    )
 
 
 def _merge_candidates(
@@ -198,12 +620,14 @@ def _rank_chunks(
                 score=score,
                 score_parts=score_parts,
                 reasons=_reasons(score_parts, query),
+                rank_tier=_rank_tier(store, chunk, score_parts),
             )
         )
 
     return sorted(
         ranked,
         key=lambda item: (
+            item.rank_tier,
             -item.score,
             item.chunk.file_path.as_posix(),
             item.chunk.start_line,
@@ -252,6 +676,7 @@ def _expand_ranked_chunks(
 
         expanded.append(
             _ExpandedResult(
+                chunk_ids=[ranked.chunk.chunk_id],
                 file_path=ranked.chunk.file_path,
                 start_line=start_line,
                 end_line=end_line,
@@ -260,6 +685,7 @@ def _expand_ranked_chunks(
                 score_parts=ranked.score_parts,
                 reasons=ranked.reasons,
                 followup_keywords=ranked.chunk.lexical_tokens,
+                rank_tier=ranked.rank_tier,
             )
         )
 
@@ -300,6 +726,55 @@ def _lexical_candidates(
     ]
 
 
+def _signal_score(
+    name: str,
+    signal_tokens: list[str],
+    metadata: dict[str, object],
+    query_tokens: list[str],
+) -> float:
+    normalized = [token.lower() for token in query_tokens if token]
+    if not normalized:
+        return 0.0
+
+    name_text = name.lower()
+    token_set = {token.lower() for token in signal_tokens}
+    metadata_text = _metadata_text(metadata)
+    path_tokens: set[str] = set()
+    path_value = metadata.get("path")
+    if isinstance(path_value, str):
+        path_tokens = set(tokenize_query(path_value))
+        path_text = path_value.lower()
+    else:
+        path_text = ""
+
+    score = 0.0
+    for token in normalized:
+        token_score = 0.0
+        if token in name_text:
+            token_score = max(token_score, 1.0)
+        if token in token_set:
+            token_score = max(token_score, 1.0)
+        if token in metadata_text:
+            token_score = max(token_score, 1.0)
+        if token in path_tokens or token in path_text:
+            token_score = max(token_score, 0.9)
+        score += token_score
+    return score / len(normalized)
+
+
+def _metadata_text(metadata: dict[str, object]) -> str:
+    values: list[str] = []
+    for key, value in metadata.items():
+        values.append(key)
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, (int, float, bool)):
+            values.append(str(value))
+        elif value is not None:
+            values.append(str(value))
+    return " ".join(values).lower()
+
+
 def _cap_content_bytes(
     content: str,
     start_line: int,
@@ -325,6 +800,7 @@ def _cap_expanded_result(
         max_bytes,
     )
     return _ExpandedResult(
+        chunk_ids=result.chunk_ids,
         file_path=result.file_path,
         start_line=result.start_line,
         end_line=end_line,
@@ -333,6 +809,7 @@ def _cap_expanded_result(
         score_parts=result.score_parts,
         reasons=result.reasons,
         followup_keywords=result.followup_keywords,
+        rank_tier=result.rank_tier,
     )
 
 
@@ -368,7 +845,12 @@ def _merge_overlapping_results(results: list[_ExpandedResult]) -> list[_Expanded
 
     return sorted(
         merged,
-        key=lambda item: (-item.score, item.file_path.as_posix(), item.start_line),
+        key=lambda item: (
+            item.rank_tier,
+            -item.score,
+            item.file_path.as_posix(),
+            item.start_line,
+        ),
     )
 
 
@@ -381,6 +863,7 @@ def _merge_expanded_result(
     overlap = max(0, left.end_line - right.start_line + 1)
     content_lines = [*left_lines, *right_lines[overlap:]]
     return _ExpandedResult(
+        chunk_ids=_dedupe([*left.chunk_ids, *right.chunk_ids]),
         file_path=left.file_path,
         start_line=min(left.start_line, right.start_line),
         end_line=max(left.end_line, right.end_line),
@@ -389,6 +872,7 @@ def _merge_expanded_result(
         score_parts=_merge_score_parts(left.score_parts, right.score_parts),
         reasons=_dedupe([*left.reasons, *right.reasons]),
         followup_keywords=_dedupe([*left.followup_keywords, *right.followup_keywords]),
+        rank_tier=min(left.rank_tier, right.rank_tier),
     )
 
 
@@ -424,10 +908,41 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         (score_parts.get("semantic", 0.0) * 0.55)
         + (score_parts.get("lexical", 0.0) * 0.25)
         + (min(score_parts.get("path_symbol", 0.0), 5.0) / 5.0 * 0.15)
+        + _bounded_score(score_parts.get("signal", 0.0))
+        + _bounded_score(score_parts.get("relation", 0.0))
         + (score_parts.get("token_coverage", 0.0) * 0.20)
         + score_parts.get("plugin_boost", 0.0)
         + score_parts.get("penalty", 0.0)
     )
+
+
+def _bounded_score(score: float) -> float:
+    return min(max(score, 0.0), 1.0)
+
+
+def _rank_tier(
+    store: SQLiteStore,
+    chunk: DocumentChunk,
+    score_parts: dict[str, float],
+) -> int:
+    if score_parts.get("signal", 0.0) > 0 and _chunk_has_signal_kind(
+        store,
+        chunk.chunk_id,
+        "endpoint",
+    ):
+        return 0
+    if score_parts.get("relation", 0.0) > 0:
+        return 1
+    if score_parts.get("signal", 0.0) > 0:
+        return 2
+    return 3
+
+
+def _chunk_has_signal_kind(store: SQLiteStore, chunk_id: str, kind: str) -> bool:
+    try:
+        return any(signal.kind == kind for signal in store.signals_for_chunk(chunk_id))
+    except sqlite3.Error:
+        return False
 
 
 def _token_coverage(tokens: list[str], chunk: DocumentChunk) -> float:
@@ -476,6 +991,10 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("lexical match")
     if score_parts.get("path_symbol", 0.0) > 0:
         reasons.append("path/symbol match")
+    if score_parts.get("signal", 0.0) > 0:
+        reasons.append("signal match")
+    if score_parts.get("relation", 0.0) > 0:
+        reasons.append("relation expansion")
     if score_parts.get("token_coverage", 0.0) > 0:
         reasons.append("token coverage")
     if "/" in query and score_parts.get("route_boost", 0.0) > 0:

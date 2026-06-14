@@ -4,6 +4,7 @@ from pathlib import Path
 from context_search_tool.config import DEFAULT_CONFIG
 from context_search_tool.indexer import index_repository
 from context_search_tool.retrieval import query_repository
+from context_search_tool.sqlite_store import SQLiteStore
 
 
 def test_java_fixture_surfaces_controller_query_mapper_and_enum(tmp_path: Path) -> None:
@@ -26,3 +27,99 @@ def test_java_fixture_surfaces_controller_query_mapper_and_enum(tmp_path: Path) 
     assert "AuditStatus.java" in paths
     assert "ApplyAuditMapper.java" in paths
     assert bundle.results[0].score > 0
+
+
+def test_java_fixture_indexes_spring_endpoint_signals(tmp_path: Path) -> None:
+    source_fixture = Path(__file__).parent / "fixtures" / "java-spring-mini"
+    repo = tmp_path / "java-spring-mini"
+    shutil.copytree(source_fixture, repo)
+
+    index_repository(repo, DEFAULT_CONFIG)
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    signals = {signal.name: signal for signal in store.signal_search(["stats"], limit=10)}
+
+    assert "GET /apply/audit/stats/wait" in signals
+    assert "POST /apply/audit/stats" in signals
+    assert signals["GET /apply/audit/stats/wait"].metadata["controller"] == (
+        "ApplyAuditController"
+    )
+    assert signals["POST /apply/audit/stats"].metadata["method"] == "auditStats"
+
+
+def test_java_fixture_indexes_short_chain_relations(tmp_path: Path) -> None:
+    source_fixture = Path(__file__).parent / "fixtures" / "java-spring-mini"
+    repo = tmp_path / "java-spring-mini"
+    shutil.copytree(source_fixture, repo)
+
+    index_repository(repo, DEFAULT_CONFIG)
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+
+    controller_relations = store.relations_targeting("ResourceAuditService.statsWait")
+    assert any(
+        relation.kind == "calls" and relation.confidence == 0.8
+        for relation in controller_relations
+    )
+
+    implements_relations = store.relations_targeting("ResourceAuditService")
+    assert any(
+        relation.kind == "implements" and relation.confidence == 1.0
+        for relation in implements_relations
+    )
+
+    executable_relations = store.relations_targeting("EsApplyAuditPageQryExe.statsWait")
+    assert any(
+        relation.kind == "uses" and relation.confidence == 0.8
+        for relation in executable_relations
+    )
+
+
+def test_java_fixture_workbench_query_returns_expected_summary(tmp_path: Path) -> None:
+    source_fixture = Path(__file__).parent / "fixtures" / "java-spring-mini"
+    repo = tmp_path / "java-spring-mini"
+    shutil.copytree(source_fixture, repo)
+
+    index_repository(repo, DEFAULT_CONFIG)
+    bundle = query_repository(
+        repo,
+        "工作台相关代码",
+        DEFAULT_CONFIG,
+        context_lines=20,
+    )
+
+    assert bundle.summary.entry_points
+    assert "GET /apply/audit/stats/wait" in bundle.summary.entry_points
+    assert "ResourceAuditServiceImpl.statsWait" in bundle.summary.implementation
+    assert "WorkbenchResourceAuditStatsDTO" in bundle.summary.related_types
+    assert "WorkbenchResourceStatsDTO" in bundle.summary.possibly_legacy
+
+
+def test_java_fixture_workflow_query_returns_expected_summary(tmp_path: Path) -> None:
+    source_fixture = Path(__file__).parent / "fixtures" / "java-spring-mini"
+    repo = tmp_path / "java-spring-mini"
+    shutil.copytree(source_fixture, repo)
+
+    index_repository(repo, DEFAULT_CONFIG)
+    bundle = query_repository(
+        repo,
+        "apaas工作流相关接口",
+        DEFAULT_CONFIG,
+        context_lines=20,
+    )
+
+    assert bundle.summary.entry_points
+    assert any(
+        entry.startswith("POST") and "/open/process" in entry
+        for entry in bundle.summary.entry_points
+    )
+    assert any(
+        entry.startswith("GET") and "/open/process" in entry
+        for entry in bundle.summary.entry_points
+    )
+    assert any(
+        "Gateway" in item or "Command" in item for item in bundle.summary.implementation
+    )
+    assert any(
+        "Request" in item and "DTO" in item
+        or "Response" in item and "DTO" in item
+        for item in bundle.summary.related_types
+    )

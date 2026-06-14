@@ -1,7 +1,220 @@
 from pathlib import Path
 
-from context_search_tool.models import DocumentChunk, SourceFile, SymbolRef
+from context_search_tool.models import (
+    CodeRelation,
+    CodeSignal,
+    DocumentChunk,
+    SourceFile,
+    SymbolRef,
+    generate_relation_id,
+    generate_signal_id,
+)
 from context_search_tool.sqlite_store import SQLiteStore
+
+
+def test_code_signal_and_relation_models_are_language_neutral() -> None:
+    signal = CodeSignal(
+        signal_id="sig-1",
+        chunk_id="chunk-1",
+        file_path=Path("src/App.java"),
+        kind="endpoint",
+        name="GET /apply/audit/stats/wait",
+        start_line=10,
+        end_line=15,
+        language="java",
+        tokens=["apply", "audit", "stats", "wait"],
+        metadata={"http_method": "GET", "path": "/apply/audit/stats/wait"},
+    )
+    relation = CodeRelation(
+        relation_id="rel-1",
+        source_signal_id="sig-controller",
+        target_name="ResourceAuditService.statsWait",
+        kind="calls",
+        confidence=0.8,
+        metadata={"reason": "controller method body call"},
+    )
+
+    assert signal.kind == "endpoint"
+    assert signal.tokens == ["apply", "audit", "stats", "wait"]
+    assert signal.metadata["path"] == "/apply/audit/stats/wait"
+    assert relation.kind == "calls"
+    assert relation.confidence == 0.8
+    assert relation.metadata["reason"] == "controller method body call"
+
+
+def test_signal_and_relation_ids_are_deterministic_and_distinct() -> None:
+    first = generate_signal_id(
+        file_path=Path("src/App.java"),
+        kind="endpoint",
+        start_line=10,
+        name="GET /apply/audit/stats/wait",
+    )
+    second = generate_signal_id(
+        file_path=Path("src/App.java"),
+        kind="endpoint",
+        start_line=10,
+        name="GET /apply/audit/stats/wait",
+    )
+    different_line = generate_signal_id(
+        file_path=Path("src/App.java"),
+        kind="endpoint",
+        start_line=11,
+        name="GET /apply/audit/stats/wait",
+    )
+    different_file = generate_signal_id(
+        file_path=Path("src/Other.java"),
+        kind="endpoint",
+        start_line=10,
+        name="GET /apply/audit/stats/wait",
+    )
+
+    assert first == second
+    assert first != different_line
+    assert first != different_file
+
+    relation_id = generate_relation_id(
+        source_signal_id="sig-controller",
+        target_name="ResourceAuditService.statsWait",
+        kind="calls",
+    )
+
+    assert relation_id == generate_relation_id(
+        source_signal_id="sig-controller",
+        target_name="ResourceAuditService.statsWait",
+        kind="calls",
+    )
+    assert relation_id != generate_relation_id(
+        source_signal_id="sig-controller",
+        target_name="ResourceAuditService.auditStats",
+        kind="calls",
+    )
+    assert ":" in relation_id
+
+
+def test_store_round_trips_signals_by_chunk_and_token(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    chunk = DocumentChunk(
+        chunk_id="chunk-1",
+        file_path=Path("src/App.java"),
+        start_line=1,
+        end_line=20,
+        content="class App {}",
+        chunk_type="symbol",
+        symbols=[],
+        lexical_tokens=["app"],
+        embedding_id="chunk-1",
+        deleted_at=None,
+        metadata={},
+    )
+    endpoint = CodeSignal(
+        signal_id="sig-endpoint",
+        chunk_id="chunk-1",
+        file_path=Path("src/App.java"),
+        kind="endpoint",
+        name="GET /apply/audit/stats/wait",
+        start_line=10,
+        end_line=15,
+        language="java",
+        tokens=["apply", "audit", "stats", "wait"],
+        metadata={"http_method": "GET"},
+    )
+    comment = CodeSignal(
+        signal_id="sig-comment",
+        chunk_id="chunk-1",
+        file_path=Path("src/App.java"),
+        kind="comment",
+        name="工作台统计",
+        start_line=8,
+        end_line=9,
+        language="java",
+        tokens=["工作台", "统计"],
+        metadata={"text": "工作台统计-待我审核"},
+    )
+
+    store.replace_chunks(Path("src/App.java"), [chunk])
+    store.replace_signals(Path("src/App.java"), [endpoint, comment])
+
+    assert store.signals_for_chunk("chunk-1") == [comment, endpoint]
+    assert store.signal_search(["stats", "wait"], limit=10) == [endpoint]
+    assert store.signal_search(["工作台"], limit=10) == [comment]
+
+
+def test_store_replaces_active_signals_for_file(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    old_signal = CodeSignal(
+        signal_id="sig-old",
+        chunk_id="chunk-old",
+        file_path=Path("src/App.java"),
+        kind="endpoint",
+        name="old",
+        start_line=1,
+        end_line=1,
+        language="java",
+        tokens=["old"],
+        metadata={},
+    )
+    new_signal = CodeSignal(
+        signal_id="sig-new",
+        chunk_id="chunk-new",
+        file_path=Path("src/App.java"),
+        kind="endpoint",
+        name="new",
+        start_line=2,
+        end_line=2,
+        language="java",
+        tokens=["new"],
+        metadata={},
+    )
+
+    store.replace_signals(Path("src/App.java"), [old_signal])
+    store.replace_signals(Path("src/App.java"), [new_signal])
+
+    assert store.signal_search(["old"], limit=10) == []
+    assert store.signal_search(["new"], limit=10) == [new_signal]
+
+
+def test_store_round_trips_relations_by_source_and_target(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    source_signal = CodeSignal(
+        signal_id="sig-controller",
+        chunk_id="chunk-controller",
+        file_path=Path("src/App.java"),
+        kind="endpoint",
+        name="GET /apply/audit/stats/wait",
+        start_line=10,
+        end_line=15,
+        language="java",
+        tokens=["apply", "audit", "stats", "wait"],
+        metadata={},
+    )
+    relation = CodeRelation(
+        relation_id="rel-controller-service",
+        source_signal_id="sig-controller",
+        target_name="ResourceAuditService.statsWait",
+        kind="calls",
+        confidence=0.8,
+        metadata={"reason": "controller method body call"},
+    )
+
+    store.replace_signals(Path("src/App.java"), [source_signal])
+    store.replace_relations(Path("src/App.java"), [relation])
+
+    assert store.relations_for_source("sig-controller") == [relation]
+    assert store.relations_targeting("ResourceAuditService.statsWait") == [relation]
+
+
+def test_store_round_trips_index_metadata(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+
+    assert store.get_metadata("signal_schema_version") is None
+
+    store.set_metadata("signal_schema_version", "2")
+
+    assert store.get_metadata("signal_schema_version") == "2"
 
 
 def test_store_round_trips_files_chunks_symbols_and_fts(tmp_path: Path) -> None:

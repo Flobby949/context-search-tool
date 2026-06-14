@@ -32,6 +32,35 @@ def test_query_tokenizer_keeps_code_like_terms() -> None:
     assert "region" not in tokens
 
 
+def test_query_tokenizer_adds_cjk_search_ngrams() -> None:
+    tokens = tokenize_query("工作台相关代码")
+
+    assert "工作台相关代码" in tokens
+    assert "工作台" in tokens
+    assert "相关" in tokens
+    assert "代码" in tokens
+
+
+def test_query_tokenizer_adds_common_cjk_code_aliases() -> None:
+    tokens = tokenize_query("apaas工作流相关接口")
+
+    assert "apaas" in tokens
+    assert "工作流" in tokens
+    assert "process" in tokens
+    assert "workflow" in tokens
+    assert "流程" in tokens
+    assert "api" in tokens
+    assert "endpoint" in tokens
+
+
+def test_query_tokenizer_aliases_approval_to_audit_terms() -> None:
+    tokens = tokenize_query("待我审批")
+
+    assert "审批" in tokens
+    assert "审核" in tokens
+    assert "audit" in tokens
+
+
 def test_scanner_respects_gitignore_and_context_search(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
