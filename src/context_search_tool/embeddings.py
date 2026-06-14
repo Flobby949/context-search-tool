@@ -4,8 +4,8 @@ import hashlib
 import os
 from typing import Protocol
 
-import httpx
 import numpy as np
+import requests
 
 from context_search_tool.config import EmbeddingConfig
 
@@ -48,38 +48,23 @@ class OpenAICompatibleEmbeddingProvider:
     def __init__(
         self,
         config: EmbeddingConfig,
-        client: httpx.Client | None = None,
+        session: requests.Session | None = None,
     ) -> None:
         if not config.base_url:
             raise ValueError("base_url is required for openai-compatible embeddings")
         self.config = config
-        self._client = client or httpx.Client()
-
-    @classmethod
-    def for_test(
-        cls,
-        config: EmbeddingConfig,
-        response_vectors: list[list[float]],
-    ) -> OpenAICompatibleEmbeddingProvider:
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                json={
-                    "data": [
-                        {"index": index, "embedding": vector}
-                        for index, vector in enumerate(response_vectors)
-                    ]
-                },
-                request=request,
-            )
-
-        return cls(config, client=httpx.Client(transport=httpx.MockTransport(handler)))
+        self._session = session or requests.Session()
 
     def embed_texts(self, texts: list[str]) -> list[np.ndarray]:
-        response = self._client.post(
-            f"{self.config.base_url.rstrip('/')}/embeddings",
-            headers=self._headers(),
-            json={"model": self.config.model, "input": texts},
+        kwargs: dict[str, object] = {
+            "json": {"model": self.config.model, "input": texts},
+            "timeout": 30.0,
+        }
+        headers = self._headers()
+        if headers:
+            kwargs["headers"] = headers
+        response = self._session.post(
+            f"{self.config.base_url.rstrip('/')}/embeddings", **kwargs
         )
         response.raise_for_status()
         payload = response.json()

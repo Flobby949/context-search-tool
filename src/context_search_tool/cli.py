@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 from typing import Optional, Sequence
 
-import httpx
+import requests
 import typer
 
 from context_search_tool.config import load_config
@@ -41,7 +41,7 @@ def index(repo: Optional[Path] = typer.Argument(None)) -> None:
     config = load_config(resolved_repo)
     try:
         summary = index_repository(resolved_repo, config)
-    except (IncompatibleIndexError, ValueError, httpx.HTTPError) as exc:
+    except (IncompatibleIndexError, ValueError, requests.HTTPError) as exc:
         _exit_with_error(exc)
 
     typer.echo(
@@ -87,7 +87,7 @@ def query(
             context_lines=context_lines,
             full_file=full_file,
         )
-    except (ValueError, httpx.HTTPError) as exc:
+    except (ValueError, requests.HTTPError) as exc:
         _exit_with_error(exc)
 
     if json_output:

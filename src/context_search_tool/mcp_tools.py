@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-import httpx
+import requests
 
 from context_search_tool.config import ToolConfig, load_config
 from context_search_tool.indexer import (
@@ -33,7 +33,12 @@ def context_search_index_tool(repo: str) -> dict[str, Any]:
         resolved_repo = find_repo_root(Path(repo))
         config = load_config(resolved_repo)
         summary = index_repository(resolved_repo, config)
-    except (RepositoryNotFoundError, IncompatibleIndexError, ValueError, httpx.HTTPError) as exc:
+    except (
+        RepositoryNotFoundError,
+        IncompatibleIndexError,
+        ValueError,
+        requests.HTTPError,
+    ) as exc:
         return _error("index_failed", str(exc))
 
     return {
@@ -90,7 +95,7 @@ def context_search_query_tool(
             final_top_k=final_top_k,
         )
         return payload
-    except (ValueError, httpx.HTTPError) as exc:
+    except (ValueError, requests.HTTPError) as exc:
         error_payload = _error("query_failed", str(exc))
         _try_append_query_feedback(
             resolved_repo,

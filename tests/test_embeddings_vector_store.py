@@ -1,6 +1,7 @@
 import math
 import warnings
 from pathlib import Path
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -27,7 +28,15 @@ def test_hash_embedding_provider_is_deterministic_and_normalized() -> None:
 
 
 def test_openai_compatible_provider_uses_mock_transport() -> None:
-    provider = OpenAICompatibleEmbeddingProvider.for_test(
+    mock_session = Mock()
+    mock_session.headers = {}
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "data": [{"index": 0, "embedding": [1.0, 0.0, 0.0]}]
+    }
+    mock_response.raise_for_status = Mock()
+    mock_session.post.return_value = mock_response
+    provider = OpenAICompatibleEmbeddingProvider(
         config=EmbeddingConfig(
             provider="openai-compatible",
             model="demo-embedding",
@@ -35,23 +44,36 @@ def test_openai_compatible_provider_uses_mock_transport() -> None:
             base_url="https://example.test/v1",
             api_key_env="CST_TEST_KEY",
         ),
-        response_vectors=[[1.0, 0.0, 0.0]],
+        session=mock_session,
     )
 
     vector = provider.embed_texts(["hello"])[0]
 
     assert vector.tolist() == [1.0, 0.0, 0.0]
+    mock_session.post.assert_called_once_with(
+        "https://example.test/v1/embeddings",
+        json={"model": "demo-embedding", "input": ["hello"]},
+        timeout=30.0,
+    )
 
 
 def test_openai_compatible_provider_rejects_response_count_mismatch() -> None:
-    provider = OpenAICompatibleEmbeddingProvider.for_test(
+    mock_session = Mock()
+    mock_session.headers = {}
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "data": [{"index": 0, "embedding": [1.0, 0.0, 0.0]}]
+    }
+    mock_response.raise_for_status = Mock()
+    mock_session.post.return_value = mock_response
+    provider = OpenAICompatibleEmbeddingProvider(
         config=EmbeddingConfig(
             provider="openai-compatible",
             model="demo-embedding",
             dimensions=3,
             base_url="https://example.test/v1",
         ),
-        response_vectors=[[1.0, 0.0, 0.0]],
+        session=mock_session,
     )
 
     with pytest.raises(ValueError, match="embedding response count"):
@@ -59,14 +81,22 @@ def test_openai_compatible_provider_rejects_response_count_mismatch() -> None:
 
 
 def test_openai_compatible_provider_rejects_dimension_mismatch() -> None:
-    provider = OpenAICompatibleEmbeddingProvider.for_test(
+    mock_session = Mock()
+    mock_session.headers = {}
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "data": [{"index": 0, "embedding": [1.0, 0.0]}]
+    }
+    mock_response.raise_for_status = Mock()
+    mock_session.post.return_value = mock_response
+    provider = OpenAICompatibleEmbeddingProvider(
         config=EmbeddingConfig(
             provider="openai-compatible",
             model="demo-embedding",
             dimensions=3,
             base_url="https://example.test/v1",
         ),
-        response_vectors=[[1.0, 0.0]],
+        session=mock_session,
     )
 
     with pytest.raises(ValueError, match="embedding dimensions"):
