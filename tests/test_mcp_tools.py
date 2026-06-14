@@ -104,6 +104,26 @@ def test_mcp_query_writes_feedback_without_source_content(tmp_path: Path) -> Non
     assert "class ApplyAuditController" not in json.dumps(event)
 
 
+def test_mcp_query_returns_results_when_feedback_logging_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    context_search_index_tool(str(repo))
+
+    def fail_feedback(*args, **kwargs) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(mcp_tools, "_append_query_feedback", fail_feedback)
+
+    result = context_search_query_tool(str(repo), "/apply/audit/pageEs")
+
+    assert result["ok"] is True
+    assert result["results"]
+    assert result["results"][0]["file_path"] == "ApplyAuditController.java"
+
+
 def test_mcp_query_rotates_large_feedback_log(
     tmp_path: Path,
     monkeypatch,

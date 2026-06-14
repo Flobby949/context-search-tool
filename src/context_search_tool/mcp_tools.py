@@ -81,14 +81,17 @@ def context_search_query_tool(
         payload["ok"] = True
         payload["repo"] = str(resolved_repo)
         payload["index"] = _index_state(resolved_repo, config)
-        _append_query_feedback(
-            resolved_repo,
-            query=query,
-            payload=payload,
-            context_lines=context_lines,
-            full_file=full_file,
-            final_top_k=final_top_k,
-        )
+        try:
+            _append_query_feedback(
+                resolved_repo,
+                query=query,
+                payload=payload,
+                context_lines=context_lines,
+                full_file=full_file,
+                final_top_k=final_top_k,
+            )
+        except OSError:
+            pass
         return payload
     except (ValueError, httpx.HTTPError) as exc:
         _append_query_feedback(
