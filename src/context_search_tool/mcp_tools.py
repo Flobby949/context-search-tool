@@ -206,8 +206,34 @@ def _query_payload(bundle: QueryBundle) -> dict[str, Any]:
             "related_types": bundle.summary.related_types,
             "possibly_legacy": bundle.summary.possibly_legacy,
         },
+        "planner": _planner_payload(bundle),
         "results": [_result_payload(result) for result in bundle.results],
     }
+
+
+def _planner_payload(bundle: QueryBundle) -> dict[str, Any]:
+    plan = bundle.planner
+    payload: dict[str, Any] = {
+        "enabled": plan.status != "disabled",
+        "provider": plan.provider,
+        "model": plan.model,
+        "prompt_version": plan.prompt_version,
+        "prompt_hash": plan.prompt_hash,
+        "status": plan.status,
+        "latency_ms": plan.latency_ms,
+    }
+    if plan.status == "ok":
+        payload.update(
+            {
+                "rewritten_queries": plan.rewritten_queries,
+                "grep_keywords": plan.grep_keywords,
+                "symbol_hints": plan.symbol_hints,
+                "intent": plan.intent,
+            }
+        )
+    if plan.status == "fallback":
+        payload["error"] = plan.error
+    return payload
 
 
 def _result_payload(result: RetrievalResult) -> dict[str, Any]:
@@ -309,12 +335,30 @@ def _append_query_feedback(
         "summary_counts": _summary_counts(payload),
         "followup_keyword_count": len(payload.get("followup_keywords", [])),
         "embedding": payload.get("index", {}).get("embedding", {}),
+        "planner": _feedback_planner_payload(payload),
         "error_code": payload.get("error", {}).get("code"),
     }
     log_path = index_dir / "mcp_calls.jsonl"
     _rotate_feedback_log(log_path)
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, ensure_ascii=True, sort_keys=True) + "\n")
+
+
+def _feedback_planner_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    planner = dict(payload.get("planner", {}))
+    return {
+        key: planner.get(key)
+        for key in (
+            "enabled",
+            "provider",
+            "model",
+            "status",
+            "latency_ms",
+            "intent",
+            "error",
+        )
+        if key in planner
+    }
 
 
 def _rotate_feedback_log(log_path: Path) -> None:

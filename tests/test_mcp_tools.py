@@ -196,6 +196,35 @@ def test_mcp_query_writes_feedback_without_source_content(tmp_path: Path) -> Non
     assert "class ApplyAuditController" not in json.dumps(event)
 
 
+def test_mcp_query_payload_includes_planner_status(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    context_search_index_tool(str(repo))
+
+    result = context_search_query_tool(str(repo), "/apply/audit/pageEs")
+
+    assert result["ok"] is True
+    assert result["planner"]["status"] == "disabled"
+    assert result["planner"]["enabled"] is False
+
+
+def test_mcp_query_feedback_includes_planner_metadata_without_prompt_text(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    context_search_index_tool(str(repo))
+
+    result = context_search_query_tool(str(repo), "/apply/audit/pageEs")
+
+    assert result["ok"] is True
+    log_path = repo / ".context-search" / "mcp_calls.jsonl"
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    event = events[0]
+    assert event["planner"]["status"] == "disabled"
+    assert "prompt" not in json.dumps(event).lower()
+
+
 def test_mcp_query_feedback_includes_embedding_config_hash(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _write_java_repo(repo)
