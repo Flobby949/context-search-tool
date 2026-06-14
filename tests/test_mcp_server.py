@@ -4,3 +4,7 @@ def test_mcp_server_imports() -> None:
     assert mcp_server.SERVER_NAME == "context-search-tool"
     assert mcp_server.mcp is not None
     assert callable(mcp_server.main)
+    assert callable(mcp_server.context_search_index)
+    assert callable(mcp_server.context_search_query)
+    assert callable(mcp_server.context_search_stats)
+    assert callable(mcp_server.context_search_explain)
