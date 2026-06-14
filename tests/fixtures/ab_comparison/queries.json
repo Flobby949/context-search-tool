@@ -1,0 +1,20 @@
+[
+  {
+    "query": "开门校验场景",
+    "description": "Access control validation scenario",
+    "expected_relevant": ["whitelist", "blacklist", "access", "validation"],
+    "expected_noise": ["region", "role", "announcement"]
+  },
+  {
+    "query": "黑白名单管理",
+    "description": "Whitelist/blacklist management",
+    "expected_relevant": ["whitelist", "blacklist", "manage", "add", "remove"],
+    "expected_noise": ["region", "user", "notification"]
+  },
+  {
+    "query": "OrderService cancel method",
+    "description": "Code token dense query",
+    "expected_relevant": ["OrderService", "cancel", "order"],
+    "expected_noise": ["payment", "user", "notification"]
+  }
+]
