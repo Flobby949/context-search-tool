@@ -216,7 +216,7 @@ For stdio MCP transport, server logs must not be written to stdout. The server r
 <repo>/.context-search/mcp_calls.jsonl
 ```
 
-The log records query text, result count, top score, score parts, summary counts, follow-up keyword count, embedding fingerprint, and error code. It does not record returned source snippets or full file content. When `mcp_calls.jsonl` exceeds 10 MiB, the server rotates it to `mcp_calls.<time_ns>.jsonl` before appending the next event.
+The log records query text, result count, top score, score parts, summary counts, follow-up keyword count, embedding fingerprint (provider, model, dimensions, and config hash), and error code. It does not record returned source snippets or full file content. When `mcp_calls.jsonl` exceeds 10 MiB, the server rotates it to `mcp_calls.<time_ns>.jsonl` before appending the next event.
 
 Use this log to decide embedding work:
 

@@ -99,6 +99,30 @@ def test_mcp_query_rejects_invalid_final_top_k(tmp_path: Path) -> None:
     }
 
 
+def test_mcp_query_returns_structured_error_when_error_feedback_logging_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    context_search_index_tool(str(repo))
+
+    def fail_feedback(*args, **kwargs) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(mcp_tools, "_append_query_feedback", fail_feedback)
+
+    result = context_search_query_tool(str(repo), "audit", final_top_k=0)
+
+    assert result == {
+        "ok": False,
+        "error": {
+            "code": "query_failed",
+            "message": "final_top_k must be greater than zero",
+        },
+    }
+
+
 def test_mcp_explain_rejects_invalid_location(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _write_java_repo(repo)
@@ -170,6 +194,22 @@ def test_mcp_query_writes_feedback_without_source_content(tmp_path: Path) -> Non
     assert event["embedding"]["provider"] == "hash"
     assert "ApplyAuditController" not in json.dumps(event)
     assert "class ApplyAuditController" not in json.dumps(event)
+
+
+def test_mcp_query_feedback_includes_embedding_config_hash(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    context_search_index_tool(str(repo))
+
+    result = context_search_query_tool(str(repo), "/apply/audit/pageEs")
+
+    assert result["ok"] is True
+    log_path = repo / ".context-search" / "mcp_calls.jsonl"
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert len(events) == 1
+    event = events[0]
+    assert isinstance(event["embedding"]["config_hash"], str)
+    assert event["embedding"]["config_hash"]
 
 
 def test_mcp_query_returns_results_when_feedback_logging_fails(

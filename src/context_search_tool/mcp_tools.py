@@ -15,7 +15,7 @@ from context_search_tool.indexer import (
     index_repository,
     signal_schema_is_current,
 )
-from context_search_tool.manifest import load_manifest
+from context_search_tool.manifest import embedding_config_hash, load_manifest
 from context_search_tool.models import DocumentChunk, RetrievalResult, SymbolRef
 from context_search_tool.paths import (
     RepositoryNotFoundError,
@@ -81,28 +81,26 @@ def context_search_query_tool(
         payload["ok"] = True
         payload["repo"] = str(resolved_repo)
         payload["index"] = _index_state(resolved_repo, config)
-        try:
-            _append_query_feedback(
-                resolved_repo,
-                query=query,
-                payload=payload,
-                context_lines=context_lines,
-                full_file=full_file,
-                final_top_k=final_top_k,
-            )
-        except OSError:
-            pass
-        return payload
-    except (ValueError, httpx.HTTPError) as exc:
-        _append_query_feedback(
+        _try_append_query_feedback(
             resolved_repo,
             query=query,
-            payload=_error("query_failed", str(exc)),
+            payload=payload,
             context_lines=context_lines,
             full_file=full_file,
             final_top_k=final_top_k,
         )
-        return _error("query_failed", str(exc))
+        return payload
+    except (ValueError, httpx.HTTPError) as exc:
+        error_payload = _error("query_failed", str(exc))
+        _try_append_query_feedback(
+            resolved_repo,
+            query=query,
+            payload=error_payload,
+            context_lines=context_lines,
+            full_file=full_file,
+            final_top_k=final_top_k,
+        )
+        return error_payload
 
 
 def context_search_stats_tool(repo: str) -> dict[str, Any]:
@@ -254,8 +252,30 @@ def _index_state(repo: Path, config: ToolConfig) -> dict[str, Any]:
             "provider": config.embedding.provider,
             "model": config.embedding.model,
             "dimensions": config.embedding.dimensions,
+            "config_hash": embedding_config_hash(config.embedding),
         },
     }
+
+
+def _try_append_query_feedback(
+    repo: Path,
+    query: str,
+    payload: dict[str, Any],
+    context_lines: int | None,
+    full_file: bool,
+    final_top_k: int | None,
+) -> None:
+    try:
+        _append_query_feedback(
+            repo,
+            query=query,
+            payload=payload,
+            context_lines=context_lines,
+            full_file=full_file,
+            final_top_k=final_top_k,
+        )
+    except OSError:
+        pass
 
 
 def _append_query_feedback(
