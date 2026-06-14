@@ -1,10 +1,16 @@
+import json
+
+import requests
+
 from context_search_tool.config import QueryPlannerConfig
 from context_search_tool.models import QueryPlan
 from context_search_tool.query_planner import (
+    OllamaQueryPlanner,
     PROMPT_VERSION,
     clean_planner_payload,
     disabled_plan,
     fallback_plan,
+    planner_from_config,
     prompt_hash,
 )
 
@@ -161,3 +167,114 @@ def test_disabled_and_fallback_helpers_include_diagnostics() -> None:
     assert fallback.status == "fallback"
     assert fallback.latency_ms == 8
     assert fallback.error == "planner timed out after 8 seconds"
+
+
+class FakeResponse:
+    def __init__(self, status_code: int, payload: dict[str, object]) -> None:
+        self.status_code = status_code
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+
+    def json(self) -> dict[str, object]:
+        return self._payload
+
+
+class FakeSession:
+    def __init__(self, response: FakeResponse | Exception) -> None:
+        self.response = response
+        self.trust_env = True
+        self.calls: list[dict[str, object]] = []
+
+    def post(self, url: str, **kwargs: object) -> FakeResponse:
+        self.calls.append({"url": url, **kwargs})
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
+def test_ollama_planner_parses_valid_json_and_bypasses_proxy() -> None:
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "rewritten_queries": ["数据看板 dashboard statistics chart"],
+                            "grep_keywords": ["Dashboard", "Statistics", "Chart"],
+                            "symbol_hints": ["DashboardController"],
+                            "intent": "feature_lookup",
+                        }
+                    )
+                }
+            },
+        )
+    )
+    config = QueryPlannerConfig(enabled=True, timeout_seconds=1.5)
+    planner = OllamaQueryPlanner(config, session=session)
+
+    plan = planner.plan("数据看板统计图表功能")
+
+    assert plan.status == "ok"
+    assert plan.grep_keywords == ["Dashboard", "Statistics", "Chart"]
+    assert plan.symbol_hints == ["DashboardController"]
+    assert session.trust_env is False
+    assert len(session.calls) == 1
+    call = session.calls[0]
+    assert call["url"] == "http://localhost:11434/api/chat"
+    assert call["timeout"] == 1.5
+    assert call["json"]["model"] == "qwen3.5:4b-mlx"
+    assert call["json"]["stream"] is False
+
+
+def test_ollama_planner_honors_use_system_proxy() -> None:
+    session = FakeSession(FakeResponse(200, {"message": {"content": "{}"}}))
+    config = QueryPlannerConfig(enabled=True, use_system_proxy=True)
+    planner = OllamaQueryPlanner(config, session=session)
+
+    plan = planner.plan("query")
+
+    assert plan.status == "ok"
+    assert session.trust_env is True
+
+
+def test_ollama_planner_falls_back_on_timeout_without_retry() -> None:
+    session = FakeSession(requests.Timeout("slow"))
+    config = QueryPlannerConfig(enabled=True, timeout_seconds=0.01)
+    planner = OllamaQueryPlanner(config, session=session)
+
+    plan = planner.plan("query")
+
+    assert plan.status == "fallback"
+    assert "planner timed out" in (plan.error or "")
+    assert len(session.calls) == 1
+
+
+def test_ollama_planner_falls_back_on_invalid_json_content() -> None:
+    session = FakeSession(FakeResponse(200, {"message": {"content": "not json"}}))
+    planner = OllamaQueryPlanner(QueryPlannerConfig(enabled=True), session=session)
+
+    plan = planner.plan("query")
+
+    assert plan.status == "fallback"
+    assert "invalid planner JSON" in (plan.error or "")
+
+
+def test_ollama_planner_falls_back_on_http_error_without_retry() -> None:
+    session = FakeSession(FakeResponse(500, {"message": {"content": "{}"}}))
+    planner = OllamaQueryPlanner(QueryPlannerConfig(enabled=True), session=session)
+
+    plan = planner.plan("query")
+
+    assert plan.status == "fallback"
+    assert "planner HTTP error" in (plan.error or "")
+    assert len(session.calls) == 1
+
+
+def test_planner_from_config_returns_disabled_planner_when_disabled() -> None:
+    planner = planner_from_config(QueryPlannerConfig(enabled=False))
+
+    assert planner.plan("query").status == "disabled"

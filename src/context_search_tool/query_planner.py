@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import time
 from typing import Any, Protocol
+
+import requests
 
 from context_search_tool.config import QueryPlannerConfig
 from context_search_tool.models import QueryPlan
@@ -36,6 +40,85 @@ DO:
 class QueryPlanner(Protocol):
     def plan(self, query: str) -> QueryPlan:
         ...
+
+
+class DisabledQueryPlanner:
+    def plan(self, query: str) -> QueryPlan:
+        return disabled_plan(query)
+
+
+class OllamaQueryPlanner:
+    def __init__(
+        self,
+        config: QueryPlannerConfig,
+        session: requests.Session | None = None,
+    ) -> None:
+        self.config = config
+        self.session = session or requests.Session()
+        self.session.trust_env = config.use_system_proxy
+
+    def plan(self, query: str) -> QueryPlan:
+        start = time.perf_counter()
+        try:
+            response = self.session.post(
+                f"{self.config.base_url.rstrip('/')}/api/chat",
+                json={
+                    "model": self.config.model,
+                    "stream": False,
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": json.dumps(
+                                _user_payload(query, self.config),
+                                ensure_ascii=False,
+                            ),
+                        },
+                    ],
+                },
+                timeout=self.config.timeout_seconds,
+            )
+            response.raise_for_status()
+            raw_content = response.json().get("message", {}).get("content", "")
+            if not isinstance(raw_content, str):
+                return self._fallback(
+                    query,
+                    start,
+                    "planner response content must be a string",
+                )
+            try:
+                payload = json.loads(raw_content)
+            except json.JSONDecodeError:
+                return self._fallback(query, start, "invalid planner JSON")
+            if not isinstance(payload, dict):
+                return self._fallback(query, start, "planner JSON must be an object")
+            return clean_planner_payload(
+                original_query=query,
+                payload=payload,
+                config=self.config,
+                provider=self.config.provider,
+                model=self.config.model,
+                latency_ms=_elapsed_ms(start),
+            )
+        except requests.Timeout:
+            return self._fallback(
+                query,
+                start,
+                f"planner timed out after {self.config.timeout_seconds:g} seconds",
+            )
+        except requests.HTTPError as exc:
+            return self._fallback(query, start, f"planner HTTP error: {exc}")
+        except requests.RequestException as exc:
+            return self._fallback(query, start, f"planner request failed: {exc}")
+
+    def _fallback(self, query: str, start: float, error: str) -> QueryPlan:
+        return fallback_plan(
+            query,
+            provider=self.config.provider,
+            model=self.config.model,
+            latency_ms=_elapsed_ms(start),
+            error=error,
+        )
 
 
 def prompt_hash() -> str:
@@ -118,6 +201,28 @@ def clean_planner_payload(
         prompt_hash=prompt_hash(),
         latency_ms=latency_ms,
     )
+
+
+def planner_from_config(config: QueryPlannerConfig) -> QueryPlanner:
+    if not config.enabled:
+        return DisabledQueryPlanner()
+    if config.provider != "ollama":
+        return DisabledQueryPlanner()
+    return OllamaQueryPlanner(config)
+
+
+def _user_payload(query: str, config: QueryPlannerConfig) -> dict[str, object]:
+    return {
+        "query": query,
+        "language_hints": ["Java", "Spring"],
+        "max_rewritten_queries": config.max_rewritten_queries,
+        "max_keywords": config.max_keywords,
+        "max_symbol_hints": config.max_symbol_hints,
+    }
+
+
+def _elapsed_ms(start: float) -> int:
+    return int((time.perf_counter() - start) * 1000)
 
 
 def _clean_string_list(payload: dict[str, Any], key: str, limit: int) -> list[str]:
