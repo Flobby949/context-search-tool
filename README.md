@@ -300,6 +300,35 @@ api_key_env = "EMBEDDING_API_KEY"
 
 服务需要暴露 `/v1/embeddings` 风格接口。修改 embedding provider、model、dimensions 或 base_url 后，需要重新索引；旧索引会通过 manifest 兼容性检查阻止误用。
 
+### BGE Provider (Local via Ollama)
+
+For local semantic embeddings without external API calls:
+
+```toml
+[embedding]
+provider = "bge"
+model = "bge-m3"
+dimensions = 1024
+```
+
+BGE-M3 runs locally via Ollama service. Requires:
+- Ollama installed and running
+- BGE-M3 model: `ollama pull bge-m3`
+
+Advantages:
+- No API costs
+- Works offline
+- Strong multilingual support (English + Chinese)
+- 1024-dimensional embeddings
+- Fast inference via Ollama
+
+Disadvantages:
+- Requires Ollama service running
+- HTTP API overhead (minimal)
+- ~1.2GB model storage
+
+Best for: Semantic searches on business descriptions, cross-language queries, or when API access is unavailable.
+
 ## 检索流程
 
 当前检索 pipeline 大致是：
