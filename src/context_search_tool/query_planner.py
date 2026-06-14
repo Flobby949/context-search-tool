@@ -11,7 +11,7 @@ from context_search_tool.config import QueryPlannerConfig
 from context_search_tool.models import QueryPlan
 from context_search_tool.tokenizer import tokenize_query
 
-PROMPT_VERSION = "qwen-query-planner-v1"
+PROMPT_VERSION = "qwen-query-planner-v2"
 
 ALLOWED_INTENTS = {
     "feature_lookup",
@@ -22,8 +22,22 @@ ALLOWED_INTENTS = {
     "unknown",
 }
 
-SYSTEM_PROMPT = """You rewrite code-search queries. Return only compact JSON matching the schema.
+PLANNER_JSON_FIELDS = {
+    "rewritten_queries",
+    "grep_keywords",
+    "symbol_hints",
+    "intent",
+}
+
+SYSTEM_PROMPT = """You rewrite code-search queries. Return only one compact JSON object, no Markdown.
+Required fields:
+- rewritten_queries: string[]
+- grep_keywords: string[]
+- symbol_hints: string[]
+- intent: feature_lookup | endpoint_lookup | bug_trace | data_flow | symbol_lookup | unknown
+
 Do not explain. Do not guess file paths. Prefer identifiers and English code terms.
+Use an empty array when a list has no useful values.
 
 DO NOT:
 - Add file paths such as src/main/java/com/example/Foo.java.
@@ -66,6 +80,8 @@ class OllamaQueryPlanner:
                 json={
                     "model": self.config.model,
                     "stream": False,
+                    "think": False,
+                    "format": "json",
                     "messages": [
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {
@@ -101,12 +117,9 @@ class OllamaQueryPlanner:
                     start,
                     "planner response content must be a string",
                 )
-            try:
-                payload = json.loads(raw_content)
-            except json.JSONDecodeError:
+            payload = _decode_planner_json(raw_content)
+            if payload is None:
                 return self._fallback(query, start, "invalid planner JSON")
-            if not isinstance(payload, dict):
-                return self._fallback(query, start, "planner JSON must be an object")
             return clean_planner_payload(
                 original_query=query,
                 payload=payload,
@@ -258,6 +271,39 @@ def _user_payload(query: str, config: QueryPlannerConfig) -> dict[str, object]:
 
 def _elapsed_ms(start: float) -> int:
     return int((time.perf_counter() - start) * 1000)
+
+
+def _decode_planner_json(raw_content: str) -> dict[str, Any] | None:
+    for candidate in _whole_json_candidates(raw_content):
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        return payload if isinstance(payload, dict) else None
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(raw_content):
+        if char != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(raw_content[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and PLANNER_JSON_FIELDS.intersection(payload):
+            return payload
+    return None
+
+
+def _whole_json_candidates(raw_content: str) -> list[str]:
+    stripped = raw_content.strip()
+    candidates = [stripped]
+    if not stripped.startswith("```"):
+        return candidates
+
+    lines = stripped.splitlines()
+    if len(lines) >= 3 and lines[-1].strip() == "```":
+        candidates.append("\n".join(lines[1:-1]).strip())
+    return candidates
 
 
 def _clean_string_list(payload: dict[str, Any], key: str, limit: int) -> list[str]:

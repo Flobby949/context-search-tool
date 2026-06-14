@@ -13,6 +13,4 @@ def pytest_addoption(parser):
     )
 
 
-# Note: pytest_configure is also defined in test_ab_comparison.py
-# for creating shared AB_RESULTS_DIR. This is intentional - each test
-# module can have its own pytest hooks for module-specific setup.
+# A/B comparison result cache is created by the test_ab_comparison fixture.

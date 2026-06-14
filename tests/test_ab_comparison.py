@@ -15,26 +15,16 @@ from context_search_tool.retrieval import query_repository
 from context_search_tool.metrics import precision_at_k, mean_reciprocal_rank, count_noise_files
 
 
-# Shared output directory for A/B results (session-scoped)
-AB_RESULTS_DIR = None
-
-
-def pytest_configure(config):
-    """Create shared output directory for A/B results."""
-    global AB_RESULTS_DIR
-    AB_RESULTS_DIR = Path(config.cache.mkdir("ab_results"))
-
-
 @pytest.fixture
 def ab_queries():
     fixture_path = Path(__file__).parent / "fixtures" / "ab_comparison" / "queries.json"
     return json.loads(fixture_path.read_text(encoding="utf-8"))
 
 
-@pytest.fixture
-def ab_results_dir():
+@pytest.fixture(scope="session")
+def ab_results_dir(request):
     """Shared directory for A/B results across parameterized runs."""
-    return AB_RESULTS_DIR
+    return Path(request.config.cache.mkdir("ab_results"))
 
 
 def test_ab_comparison_queries_load(ab_queries):
@@ -134,6 +124,9 @@ def test_ab_comparison_summary(ab_results_dir, request):
     Run after test_ab_comparison_end_to_end completes for both providers.
     Depends on: both hash and bge results existing in ab_results_dir.
     """
+    if not request.config.getoption("--ab-test-repo", None):
+        pytest.skip("--ab-test-repo not provided")
+
     hash_file = ab_results_dir / "ab_results_hash.json"
     bge_file = ab_results_dir / "ab_results_bge.json"
 
@@ -206,4 +199,3 @@ def test_ab_comparison_summary(ab_results_dir, request):
     # Uncomment to enforce improvement thresholds
     # assert avg_noise_reduction >= 0, f"Regression: BGE increased noise by {-avg_noise_reduction}"
     # assert avg_precision_gain >= 0, f"Regression: BGE decreased precision by {-avg_precision_gain}"
-

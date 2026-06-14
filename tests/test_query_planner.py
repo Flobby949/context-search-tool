@@ -284,6 +284,13 @@ def test_ollama_planner_parses_valid_json_and_bypasses_proxy() -> None:
     assert call["timeout"] == 1.5
     assert call["json"]["model"] == "qwen3.5:4b-mlx"
     assert call["json"]["stream"] is False
+    assert call["json"]["think"] is False
+    assert call["json"]["format"] == "json"
+    system_prompt = call["json"]["messages"][0]["content"]
+    assert "rewritten_queries" in system_prompt
+    assert "grep_keywords" in system_prompt
+    assert "symbol_hints" in system_prompt
+    assert "intent" in system_prompt
 
 
 def test_ollama_planner_honors_use_system_proxy() -> None:
@@ -314,6 +321,87 @@ def test_ollama_planner_falls_back_on_invalid_json_content() -> None:
     planner = OllamaQueryPlanner(QueryPlannerConfig(enabled=True), session=session)
 
     plan = planner.plan("query")
+
+    assert plan.status == "fallback"
+    assert "invalid planner JSON" in (plan.error or "")
+
+
+def test_ollama_planner_parses_fenced_json_content() -> None:
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {
+                "message": {
+                    "content": """```json
+{
+  "rewritten_queries": ["station device list"],
+  "grep_keywords": ["StationDevice"],
+  "symbol_hints": [],
+  "intent": "feature_lookup"
+}
+```"""
+                }
+            },
+        )
+    )
+    planner = OllamaQueryPlanner(QueryPlannerConfig(enabled=True), session=session)
+
+    plan = planner.plan("驿站设备列表")
+
+    assert plan.status == "ok"
+    assert plan.rewritten_queries == ["station device list"]
+    assert plan.grep_keywords == ["StationDevice"]
+    assert plan.intent == "feature_lookup"
+
+
+def test_ollama_planner_prefers_embedded_planner_json_over_example_json() -> None:
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {
+                "message": {
+                    "content": """example: {"foo": "bar"}
+{
+  "rewritten_queries": ["station device list"],
+  "grep_keywords": ["StationDevice"],
+  "symbol_hints": [],
+  "intent": "feature_lookup"
+}"""
+                }
+            },
+        )
+    )
+    planner = OllamaQueryPlanner(QueryPlannerConfig(enabled=True), session=session)
+
+    plan = planner.plan("驿站设备列表")
+
+    assert plan.status == "ok"
+    assert plan.rewritten_queries == ["station device list"]
+
+
+def test_ollama_planner_falls_back_on_top_level_array_json() -> None:
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {
+                "message": {
+                    "content": json.dumps(
+                        [
+                            {
+                                "rewritten_queries": ["station device list"],
+                                "grep_keywords": ["StationDevice"],
+                                "symbol_hints": [],
+                                "intent": "feature_lookup",
+                            }
+                        ]
+                    )
+                }
+            },
+        )
+    )
+    planner = OllamaQueryPlanner(QueryPlannerConfig(enabled=True), session=session)
+
+    plan = planner.plan("驿站设备列表")
 
     assert plan.status == "fallback"
     assert "invalid planner JSON" in (plan.error or "")
