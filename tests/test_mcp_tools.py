@@ -83,6 +83,74 @@ def test_mcp_query_missing_index_does_not_create_artifacts(tmp_path: Path) -> No
     assert not (repo / ".context-search").exists()
 
 
+def test_mcp_query_rejects_invalid_final_top_k(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    context_search_index_tool(str(repo))
+
+    result = context_search_query_tool(str(repo), "audit", final_top_k=0)
+
+    assert result == {
+        "ok": False,
+        "error": {
+            "code": "query_failed",
+            "message": "final_top_k must be greater than zero",
+        },
+    }
+
+
+def test_mcp_explain_rejects_invalid_location(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    context_search_index_tool(str(repo))
+
+    result = context_search_explain_tool(str(repo), "ApplyAuditController.java")
+
+    assert result == {
+        "ok": False,
+        "error": {
+            "code": "invalid_location",
+            "message": "location must be file:line",
+        },
+    }
+
+
+def test_mcp_explain_reports_missing_chunk(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    context_search_index_tool(str(repo))
+
+    result = context_search_explain_tool(str(repo), "Missing.java:99")
+
+    assert result == {
+        "ok": False,
+        "error": {
+            "code": "chunk_not_found",
+            "message": "No indexed chunk covers Missing.java:99.",
+        },
+    }
+
+
+def test_mcp_explain_rejects_absolute_path_outside_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    other = tmp_path / "other"
+    _write_java_repo(repo)
+    other.mkdir()
+    outside_file = other / "Outside.java"
+    outside_file.write_text("class Outside {}\n", encoding="utf-8")
+    context_search_index_tool(str(repo))
+
+    result = context_search_explain_tool(str(repo), f"{outside_file}:1")
+
+    assert result == {
+        "ok": False,
+        "error": {
+            "code": "invalid_location",
+            "message": "absolute path must be inside repo",
+        },
+    }
+
+
 def test_mcp_query_writes_feedback_without_source_content(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _write_java_repo(repo)
