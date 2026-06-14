@@ -1,7 +1,8 @@
 # tests/test_embeddings_bge.py
 import pytest
 import numpy as np
-import httpx
+import requests
+from unittest.mock import Mock, patch
 
 from context_search_tool.config import EmbeddingConfig
 from context_search_tool.embeddings_bge import BGEEmbeddingProvider
@@ -33,21 +34,16 @@ def test_bge_provider_embeds_text_with_mock_response() -> None:
         dimensions=3
     )
 
-    # Mock Ollama API
-    def mock_handler(request: httpx.Request) -> httpx.Response:
-        assert str(request.url) == "http://mock/api/embeddings"
-        assert request.method == "POST"
-        return httpx.Response(
-            200,
-            json={"embedding": [0.6, 0.0, 0.8]},  # Will be normalized to unit vector
-        )
+    # Mock requests.Session
+    mock_session = Mock(spec=requests.Session)
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"embedding": [0.6, 0.0, 0.8]}
+    mock_response.raise_for_status = Mock()
+    mock_session.post.return_value = mock_response
+    mock_session.headers = {}
 
-    mock_client = httpx.Client(
-        transport=httpx.MockTransport(mock_handler),
-        base_url="http://mock"
-    )
-    provider = BGEEmbeddingProvider(config, client=mock_client)
-
+    provider = BGEEmbeddingProvider(config, session=mock_session)
     vectors = provider.embed_texts(["hello"])
 
     assert len(vectors) == 1
@@ -63,17 +59,14 @@ def test_bge_provider_rejects_invalid_dimensions() -> None:
         dimensions=512  # Wrong dimension
     )
 
-    def mock_handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={"embedding": [0.5] * 1024},  # Returns 1024 dims
-        )
+    mock_session = Mock(spec=requests.Session)
+    mock_response = Mock()
+    mock_response.json.return_value = {"embedding": [0.5] * 1024}
+    mock_response.raise_for_status = Mock()
+    mock_session.post.return_value = mock_response
+    mock_session.headers = {}
 
-    mock_client = httpx.Client(
-        transport=httpx.MockTransport(mock_handler),
-        base_url="http://mock"
-    )
-    provider = BGEEmbeddingProvider(config, client=mock_client)
+    provider = BGEEmbeddingProvider(config, session=mock_session)
 
     with pytest.raises(ValueError, match="model produced .* dimensions"):
         provider.embed_texts(["test"])
@@ -83,14 +76,14 @@ def test_bge_provider_handles_missing_embedding_field() -> None:
     """Unit test - malformed response handling."""
     config = EmbeddingConfig(provider="bge", model="bge-m3", dimensions=3)
 
-    def mock_handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={})  # Missing 'embedding'
+    mock_session = Mock(spec=requests.Session)
+    mock_response = Mock()
+    mock_response.json.return_value = {}  # Missing 'embedding'
+    mock_response.raise_for_status = Mock()
+    mock_session.post.return_value = mock_response
+    mock_session.headers = {}
 
-    mock_client = httpx.Client(
-        transport=httpx.MockTransport(mock_handler),
-        base_url="http://mock"
-    )
-    provider = BGEEmbeddingProvider(config, client=mock_client)
+    provider = BGEEmbeddingProvider(config, session=mock_session)
 
     with pytest.raises(ValueError, match="missing 'embedding' field"):
         provider.embed_texts(["test"])

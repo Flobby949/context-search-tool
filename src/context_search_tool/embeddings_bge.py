@@ -1,8 +1,8 @@
 # src/context_search_tool/embeddings_bge.py
 from __future__ import annotations
 
-import httpx
 import numpy as np
+import requests
 
 from context_search_tool.config import EmbeddingConfig
 
@@ -18,27 +18,21 @@ class BGEEmbeddingProvider:
     def __init__(
         self,
         config: EmbeddingConfig,
-        client: httpx.Client | None = None,
+        session: requests.Session | None = None,
     ) -> None:
         if config.dimensions <= 0:
             raise ValueError("embedding dimensions must be positive")
         self.config = config
-        if client is not None:
-            # Use provided client (e.g., for testing with mocks)
-            self._client = client
-        else:
-            # Create real client for Ollama
-            self._client = httpx.Client(
-                base_url="http://localhost:11434",
-                timeout=30.0
-            )
+        self._session = session or requests.Session()
+        self._session.headers.update({"Content-Type": "application/json"})
 
     def embed_texts(self, texts: list[str]) -> list[np.ndarray]:
         vectors = []
         for text in texts:
-            response = self._client.post(
-                "/api/embeddings",
-                json={"model": self.config.model, "prompt": text}
+            response = self._session.post(
+                "http://localhost:11434/api/embeddings",
+                json={"model": self.config.model, "prompt": text},
+                timeout=30.0
             )
             response.raise_for_status()
 
