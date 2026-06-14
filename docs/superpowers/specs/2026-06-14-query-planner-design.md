@@ -61,6 +61,7 @@ enabled = false
 provider = "ollama"
 model = "qwen3.5:4b-mlx"
 base_url = "http://localhost:11434"
+use_system_proxy = false
 timeout_seconds = 8
 max_rewritten_queries = 4
 max_keywords = 12
@@ -72,9 +73,24 @@ When enabled, `cst query` still accepts the same arguments:
 ```text
 cst query <repo> "数据看板统计图表功能"
 cst query <repo> "数据看板统计图表功能" --json
+cst query <repo> "数据看板统计图表功能" --planner
+cst query <repo> "数据看板统计图表功能" --no-planner
 ```
 
-The Markdown output should remain focused on ranked code results. Planner details should not dominate human output. JSON output and MCP output should expose planner diagnostics so agents can explain why a query expanded.
+The config controls the default. CLI flags override config for one query:
+
+```text
+--planner     force planner on for this query
+--no-planner  force planner off for this query
+```
+
+The Markdown output should remain focused on ranked code results. When the planner succeeds, Markdown may include one concise line before results:
+
+```text
+Query expanded by qwen3.5:4b-mlx: Dashboard, Statistics, Chart
+```
+
+Fallback status should not add a Markdown line. JSON output and MCP output should expose planner diagnostics so agents can explain why a query expanded.
 
 Example JSON planner section:
 
@@ -84,7 +100,10 @@ Example JSON planner section:
     "enabled": true,
     "provider": "ollama",
     "model": "qwen3.5:4b-mlx",
+    "prompt_version": "qwen-query-planner-v1",
+    "prompt_hash": "sha256:...",
     "status": "ok",
+    "latency_ms": 1200,
     "rewritten_queries": [
       "数据看板 dashboard statistics chart",
       "DashboardController DashboardService StatisticsService"
@@ -105,6 +124,7 @@ If the planner fails, output should still return normal retrieval results with p
     "provider": "ollama",
     "model": "qwen3.5:4b-mlx",
     "status": "fallback",
+    "latency_ms": 8000,
     "error": "planner timed out after 8 seconds"
   }
 }
@@ -160,6 +180,9 @@ class QueryPlan:
     status: str = "disabled"
     provider: str = ""
     model: str = ""
+    prompt_version: str = ""
+    prompt_hash: str = ""
+    latency_ms: int | None = None
     error: str | None = None
 ```
 
@@ -178,7 +201,7 @@ Initial allowed `intent` values:
 - `symbol_lookup`
 - `unknown`
 
-The retrieval pipeline should treat all planner fields as hints, not facts.
+The retrieval pipeline should treat all planner fields as hints, not facts. In the first implementation, `intent` is reserved for observability only. It should be recorded in JSON and MCP feedback but must not affect filtering, candidate retrieval, ranking, or output grouping. Intent-based ranking can be considered in a later milestone after planner quality is measured.
 
 ## Planner Prompt Contract
 
@@ -199,6 +222,18 @@ Example system instruction:
 ```text
 You rewrite code-search queries. Return only compact JSON matching the schema.
 Do not explain. Do not guess file paths. Prefer identifiers and English code terms.
+
+DO NOT:
+- Add file paths such as src/main/java/com/example/Foo.java.
+- Add framework annotations such as @Autowired, @Service, or @RequestMapping.
+- Add implementation details such as extends BaseController.
+- Repeat the original query verbatim in rewritten_queries.
+- Return prose or Markdown.
+
+DO:
+- Add English code terms for Chinese business words.
+- Use likely class or method names only when strongly implied.
+- Keep keywords concise.
 ```
 
 Example user payload:
@@ -235,18 +270,48 @@ The planner should affect recall in three ways:
    - Tokenize the original query.
    - Tokenize each rewritten query.
    - Tokenize grep keywords and symbol hints.
-   - Dedupe while preserving original query tokens first.
+   - Merge tokens with original-query priority.
+
+Token expansion should follow this strategy:
+
+```python
+def expand_tokens(original_query: str, plan: QueryPlan) -> list[str]:
+    tokens_original = tokenize_query(original_query)
+    tokens_expanded: list[str] = []
+    for rewritten_query in plan.rewritten_queries:
+        tokens_expanded.extend(tokenize_query(rewritten_query))
+    tokens_expanded.extend(plan.grep_keywords)
+    tokens_expanded.extend(plan.symbol_hints)
+
+    seen = {token.lower() for token in tokens_original}
+    unique_expanded = []
+    for token in tokens_expanded:
+        normalized = token.lower()
+        if normalized in seen:
+            continue
+        unique_expanded.append(token)
+        seen.add(normalized)
+
+    return tokens_original + unique_expanded
+```
 
 2. Candidate retrieval:
    - Run the existing semantic/vector search for the original query.
    - Run lexical/path/symbol/signal retrieval with expanded tokens.
-   - Optionally run semantic retrieval for each rewritten query in a bounded loop.
+   - Do not run semantic/vector search for rewritten queries in the first implementation.
 
 3. Ranking reasons:
    - Add a reason such as `planner hint match` when a result is supported only by planner-expanded terms.
    - Keep existing reasons such as `lexical match`, `path/symbol match`, `signal match`, and `relation expansion`.
 
-The original query must keep priority. Planner hints should improve recall without drowning exact matches.
+Ranking priority should be:
+
+1. Original query exact matches.
+2. Original query partial matches.
+3. Planner hint matches.
+4. Relation expansion from the above.
+
+If a result is supported by both original-query evidence and planner hints, it should use the original-query ranking path. If a result is supported only by planner hints, it should be marked with a planner-only reason and ranked below comparable original-query evidence. Exact numeric weighting belongs in the implementation plan and tests.
 
 ## Configuration
 
@@ -259,6 +324,7 @@ class QueryPlannerConfig:
     provider: str = "ollama"
     model: str = "qwen3.5:4b-mlx"
     base_url: str = "http://localhost:11434"
+    use_system_proxy: bool = False
     timeout_seconds: float = 8.0
     max_rewritten_queries: int = 4
     max_keywords: int = 12
@@ -292,10 +358,18 @@ Request traits:
 - Use `stream = false`.
 - Use a short timeout from config.
 - Use `requests.Session`.
-- Set `trust_env = False` for default sessions so local requests do not route through system proxies.
+- Set `session.trust_env` from `use_system_proxy`.
+- Default `use_system_proxy = false` so local Ollama requests do not route through system proxies.
 - Parse only JSON content from the model response.
 
 If the response is not valid JSON, the planner returns `QueryPlan(status="fallback", error=...)`.
+
+Timeout and retry policy:
+
+- Do not retry after a timeout or HTTP error.
+- Reuse a `requests.Session` for the planner client.
+- Do not implement planner warmup in this milestone.
+- A cold-start timeout should fallback for the current query; later queries should still attempt planning normally.
 
 ## Fallback And Safety
 
@@ -336,7 +410,10 @@ MCP query feedback should include planner metadata:
     "enabled": true,
     "provider": "ollama",
     "model": "qwen3.5:4b-mlx",
+    "prompt_version": "qwen-query-planner-v1",
+    "prompt_hash": "sha256:a1b2c3d4...",
     "status": "ok",
+    "latency_ms": 1200,
     "rewritten_queries": ["..."],
     "grep_keywords": ["..."],
     "symbol_hints": ["..."],
@@ -345,7 +422,7 @@ MCP query feedback should include planner metadata:
 }
 ```
 
-Feedback logs should not include prompt text by default. The planned hints are enough for quality analysis and avoid storing unnecessary prompt details.
+Feedback logs should not include full prompt text by default. They should include `prompt_version` and `prompt_hash` so planner behavior can be correlated with the source-controlled prompt. The planned hints are enough for quality analysis and avoid storing unnecessary prompt details.
 
 ## Testing Strategy
 
@@ -356,6 +433,8 @@ Unit tests:
 - Disabled planner returns `status="disabled"`.
 - Ollama planner parses valid JSON into `QueryPlan`.
 - Ollama planner bypasses environment proxies.
+- Ollama planner honors `use_system_proxy`.
+- Ollama planner does not retry after timeout or HTTP error.
 - Ollama planner falls back on timeout, HTTP error, invalid JSON, and wrong field types.
 - Planner list cleanup strips, dedupes, and truncates fields.
 
@@ -364,13 +443,16 @@ Retrieval pipeline tests:
 - With planner disabled, existing query results are unchanged.
 - With a fake planner returning `Dashboard` hints, a Chinese query can retrieve Dashboard fixture files.
 - Planner hint matches add a visible reason without removing existing reasons.
+- Planner-only matches rank below comparable original-query matches.
 - Planner fallback still returns original-query results.
+- Rewritten queries do not trigger extra semantic searches in the first implementation.
 
 MCP tests:
 
 - Query payload includes planner metadata.
 - Feedback log includes planner metadata.
 - Feedback does not include full prompt text.
+- Feedback includes `prompt_version` and `prompt_hash`.
 
 Integration smoke test:
 
@@ -394,7 +476,8 @@ Initial budgets:
 - Rewritten queries: at most 4.
 - Keywords: at most 12.
 - Symbol hints: at most 8.
-- Semantic searches for rewritten queries: bounded by `max_rewritten_queries`.
+- Semantic searches for rewritten queries: 0 in the first implementation.
+- Query latency should be measured in feedback but should not be a CI gate because local Ollama latency depends on cold starts and machine load.
 
 If local qwen latency is high, users can leave the planner disabled and use it only for difficult cross-language queries.
 
@@ -406,11 +489,13 @@ If local qwen latency is high, users can leave the planner disabled and use it o
 - Planner hints may drown exact matches. Mitigation: preserve original tokens first and keep original query retrieval priority.
 - Local Ollama may be unavailable. Mitigation: fallback to current retrieval.
 
-## Open Decisions For The Implementation Plan
+## Implementation Decisions
 
-- Whether CLI should add `--planner` and `--no-planner` overrides in the first implementation, or rely only on config.
-- Whether semantic retrieval should run for every rewritten query in the first implementation, or only lexical/symbol retrieval should use rewritten terms.
-- Whether Markdown output should include a short planner line when enabled, or keep planner details JSON/MCP-only.
+- CLI should add `--planner` and `--no-planner` overrides in the first implementation.
+- Rewritten queries should only affect lexical, path, symbol, and signal retrieval in the first implementation.
+- Markdown output should include one concise planner expansion line when planning succeeds and should stay silent on planner fallback.
+- `intent` is metadata-only in the first implementation.
+- Feedback records prompt version/hash, not full prompt text.
 
 ## Acceptance Criteria
 
@@ -419,5 +504,9 @@ If local qwen latency is high, users can leave the planner disabled and use it o
 - Enabling planner does not require reindexing.
 - Planner failure degrades to original query retrieval.
 - JSON and MCP outputs include planner status.
+- JSON and MCP outputs include planner latency, prompt version, and prompt hash when the planner is enabled.
 - A fake planner test proves Chinese `数据看板统计图表功能` can surface Dashboard fixture code through planner hints.
+- A fake planner hallucination test proves unrelated planner hints do not outrank comparable original-query evidence.
+- A fake planner timeout test proves fallback returns original-query results and records fallback status.
+- An invalid JSON test proves fallback returns original-query results and records a clear error.
 - A real `qwen3.5:4b-mlx` smoke test against `operation-admin-api` surfaces Dashboard-related code in Top 5.
