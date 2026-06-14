@@ -537,7 +537,7 @@ def _relation_expansion_candidates(
         for candidate in seed_candidates
     }
     visited_signals: set[str] = set()
-    queue: deque[tuple[str, float, int]] = deque()
+    queue: deque[tuple[str, float, int, bool]] = deque()
 
     for candidate in sorted(
         seed_candidates,
@@ -546,14 +546,15 @@ def _relation_expansion_candidates(
         current_score = _candidate_relation_seed_score(candidate)
         if current_score <= 0:
             continue
+        planner_seeded = _is_planner_hint_only(candidate.score_parts)
         for signal in store.signals_for_chunk(candidate.chunk_id):
             if signal.signal_id in visited_signals:
                 continue
             visited_signals.add(signal.signal_id)
-            queue.append((signal.signal_id, current_score, 0))
+            queue.append((signal.signal_id, current_score, 0, planner_seeded))
 
     while queue:
-        source_signal_id, current_score, depth = queue.popleft()
+        source_signal_id, current_score, depth, planner_seeded = queue.popleft()
         if depth >= MAX_EXPANSION_DEPTH:
             continue
 
@@ -580,11 +581,14 @@ def _relation_expansion_candidates(
                 if should_add_relation and (
                     existing is None or next_score > existing.score
                 ):
+                    score_parts = {"relation": next_score}
+                    if planner_seeded:
+                        score_parts["planner_signal"] = next_score
                     expanded_by_chunk[chunk.chunk_id] = RetrievalCandidate(
                         chunk_id=chunk.chunk_id,
                         score=next_score,
                         source="relation",
-                        score_parts={"relation": next_score},
+                        score_parts=score_parts,
                     )
 
                 if chunk.chunk_id not in seen_chunks:
@@ -597,7 +601,9 @@ def _relation_expansion_candidates(
                     if signal.signal_id in visited_signals:
                         continue
                     visited_signals.add(signal.signal_id)
-                    queue.append((signal.signal_id, next_score, next_depth))
+                    queue.append(
+                        (signal.signal_id, next_score, next_depth, planner_seeded)
+                    )
 
     return list(expanded_by_chunk.values())
 
@@ -1098,7 +1104,7 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("signal match")
     if score_parts.get("relation", 0.0) > 0:
         reasons.append("relation expansion")
-    if _is_planner_hint_only(score_parts):
+    if _has_planner_hint(score_parts):
         reasons.append("planner hint match")
     if score_parts.get("token_coverage", 0.0) > 0:
         reasons.append("token coverage")

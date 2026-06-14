@@ -1437,8 +1437,177 @@ def test_query_planner_fallback_returns_original_query_results(tmp_path: Path) -
     bundle = query_repository(repo, "targetToken", config, planner=planner)
 
     assert bundle.planner.status == "fallback"
-    assert bundle.expanded_tokens == ["targettoken"]
+    assert bundle.expanded_tokens == ["target", "token"]
     assert bundle.results[0].file_path == Path("OriginalMatch.java")
+
+
+def test_query_planner_mixed_original_and_hint_match_keeps_planner_reason(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "MixedDashboard.java").write_text(
+        'class MixedDashboard { String value = "targetToken dashboard"; }\n',
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=10,
+            final_top_k=1,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    index_repository(repo, config)
+    planner = FakePlanner(
+        QueryPlan(
+            original_query="targetToken",
+            grep_keywords=["dashboard"],
+            status="ok",
+            provider="ollama",
+            model="qwen3.5:4b-mlx",
+            prompt_version="qwen-query-planner-v1",
+            prompt_hash="sha256:test",
+            latency_ms=1,
+        )
+    )
+
+    bundle = query_repository(repo, "targetToken", config, planner=planner)
+
+    assert bundle.results[0].file_path == Path("MixedDashboard.java")
+    assert any(
+        reason in bundle.results[0].reasons
+        for reason in ("lexical match", "token coverage")
+    )
+    assert "planner hint match" in bundle.results[0].reasons
+
+
+def test_planner_seeded_relation_keeps_planner_provenance(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "OriginalMatch.java").write_text(
+        'class OriginalMatch { String value = "targetToken"; }\n',
+        encoding="utf-8",
+    )
+    (repo / "DashboardController.java").write_text(
+        """
+class DashboardController {
+  String dashboard() { return dashboardService.list(); }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    (repo / "DashboardService.java").write_text(
+        """
+class DashboardService {
+  String list() { return "ok"; }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=10,
+            final_top_k=3,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    index_repository(repo, config)
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+
+    original_chunk = store.chunk_for_line(Path("OriginalMatch.java"), 1)
+    controller_chunk = store.chunk_for_line(Path("DashboardController.java"), 2)
+    service_chunk = store.chunk_for_line(Path("DashboardService.java"), 2)
+    store.replace_signals(
+        Path("OriginalMatch.java"),
+        [
+            CodeSignal(
+                signal_id="sig-original-target",
+                chunk_id=original_chunk.chunk_id,
+                file_path=Path("OriginalMatch.java"),
+                kind="method",
+                name="OriginalMatch.targetToken",
+                start_line=1,
+                end_line=1,
+                language="java",
+                tokens=["target", "token"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_signals(
+        Path("DashboardController.java"),
+        [
+            CodeSignal(
+                signal_id="sig-dashboard-controller",
+                chunk_id=controller_chunk.chunk_id,
+                file_path=Path("DashboardController.java"),
+                kind="method",
+                name="DashboardController.dashboard",
+                start_line=2,
+                end_line=2,
+                language="java",
+                tokens=["dashboard", "controller"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_signals(
+        Path("DashboardService.java"),
+        [
+            CodeSignal(
+                signal_id="sig-dashboard-service",
+                chunk_id=service_chunk.chunk_id,
+                file_path=Path("DashboardService.java"),
+                kind="method",
+                name="DashboardService.list",
+                start_line=2,
+                end_line=2,
+                language="java",
+                tokens=["dashboard", "service", "list"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_relations(
+        Path("DashboardController.java"),
+        [
+            CodeRelation(
+                relation_id="rel-dashboard-controller-service",
+                source_signal_id="sig-dashboard-controller",
+                target_name="DashboardService.list",
+                kind="calls",
+                confidence=0.9,
+                metadata={},
+            )
+        ],
+    )
+    planner = FakePlanner(
+        QueryPlan(
+            original_query="targetToken",
+            symbol_hints=["DashboardController"],
+            status="ok",
+            provider="ollama",
+            model="qwen3.5:4b-mlx",
+            prompt_version="qwen-query-planner-v1",
+            prompt_hash="sha256:test",
+            latency_ms=1,
+        )
+    )
+
+    bundle = query_repository(repo, "targetToken", config, planner=planner)
+
+    service_result = next(
+        result
+        for result in bundle.results
+        if result.file_path == Path("DashboardService.java")
+    )
+    assert bundle.results[0].file_path == Path("OriginalMatch.java")
+    assert "relation" in service_result.score_parts
+    assert "planner hint match" in service_result.reasons
 
 
 def test_planner_only_match_ranks_below_comparable_original_match(
@@ -1483,7 +1652,8 @@ def test_planner_only_match_ranks_below_comparable_original_match(
         Path("OriginalDashboard.java"),
         Path("PlannerDashboard.java"),
     ]
-    assert "planner hint match" not in bundle.results[0].reasons
+    assert "lexical match" in bundle.results[0].reasons
+    assert "planner hint match" in bundle.results[0].reasons
     assert "planner hint match" in bundle.results[1].reasons
 
 

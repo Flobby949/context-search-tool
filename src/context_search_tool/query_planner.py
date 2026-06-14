@@ -227,14 +227,14 @@ def planner_from_config(config: QueryPlannerConfig) -> QueryPlanner:
 
 
 def expand_query_plan_tokens(query: str, plan: QueryPlan) -> list[str]:
-    original_tokens = _original_query_tokens(query)
+    original_tokens = _dedupe(tokenize_query(query))
     if plan.status != "ok":
         return original_tokens
     expanded: list[str] = []
     for rewritten_query in plan.rewritten_queries:
         expanded.extend(tokenize_query(rewritten_query))
-    expanded.extend(plan.grep_keywords)
-    expanded.extend(plan.symbol_hints)
+    for keyword in [*plan.grep_keywords, *plan.symbol_hints]:
+        expanded.extend(tokenize_query(keyword))
     return _dedupe([*original_tokens, *expanded])
 
 
@@ -244,20 +244,6 @@ def planner_hint_tokens(
 ) -> list[str]:
     original = {token.lower() for token in original_tokens}
     return [token for token in expanded_tokens if token.lower() not in original]
-
-
-def _original_query_tokens(query: str) -> list[str]:
-    compact = _compact_ascii_query_token(query)
-    if compact:
-        return [compact]
-    return _dedupe(tokenize_query(query))
-
-
-def _compact_ascii_query_token(query: str) -> str:
-    stripped = query.strip()
-    if stripped.isascii() and stripped.isalnum():
-        return stripped.lower()
-    return ""
 
 
 def _user_payload(query: str, config: QueryPlannerConfig) -> dict[str, object]:

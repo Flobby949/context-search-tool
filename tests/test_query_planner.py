@@ -15,6 +15,7 @@ from context_search_tool.query_planner import (
     planner_from_config,
     prompt_hash,
 )
+from context_search_tool.tokenizer import tokenize_query
 
 
 def test_query_plan_defaults_to_disabled() -> None:
@@ -39,20 +40,56 @@ def test_query_plan_disabled_default_uses_empty_disabled_plan() -> None:
 
 
 def test_expand_query_plan_tokens_keeps_original_tokens_first() -> None:
+    query = "数据看板统计图表功能"
     plan = QueryPlan(
-        original_query="数据看板统计图表功能",
+        original_query=query,
         rewritten_queries=["数据看板 dashboard statistics chart"],
         grep_keywords=["Dashboard", "Chart"],
         symbol_hints=["DashboardController"],
         status="ok",
     )
 
-    tokens = expand_query_plan_tokens("数据看板统计图表功能", plan)
+    tokens = expand_query_plan_tokens(query, plan)
+    original_tokens = tokenize_query(query)
 
-    assert tokens[:1] == ["数据看板统计图表功能"]
+    assert tokens[: len(original_tokens)] == original_tokens
     assert "dashboard" in tokens
-    assert "dashboardcontroller" in tokens
-    assert planner_hint_tokens(["数据看板统计图表功能"], tokens)
+    assert "controller" in tokens
+    assert "dashboardcontroller" not in tokens
+    assert planner_hint_tokens(original_tokens, tokens)
+
+
+def test_expand_query_plan_tokens_tokenizes_planner_keywords_and_symbol_hints() -> None:
+    plan = QueryPlan(
+        original_query="targetToken",
+        grep_keywords=["auditStatus"],
+        symbol_hints=["DashboardController"],
+        status="ok",
+    )
+
+    tokens = expand_query_plan_tokens("targetToken", plan)
+
+    assert tokens[:2] == ["target", "token"]
+    assert "audit" in tokens
+    assert "status" in tokens
+    assert "dashboard" in tokens
+    assert "controller" in tokens
+    assert "auditstatus" not in tokens
+    assert "dashboardcontroller" not in tokens
+
+
+def test_expand_query_plan_tokens_non_ok_returns_normal_original_tokens() -> None:
+    plan = QueryPlan(
+        original_query="targetToken",
+        rewritten_queries=["dashboard"],
+        grep_keywords=["auditStatus"],
+        symbol_hints=["DashboardController"],
+        status="fallback",
+    )
+
+    tokens = expand_query_plan_tokens("targetToken", plan)
+
+    assert tokens == ["target", "token"]
 
 
 def test_clean_planner_payload_strips_dedupes_truncates_and_validates_intent() -> None:
