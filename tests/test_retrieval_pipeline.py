@@ -1206,6 +1206,35 @@ def test_relation_expansion_preserves_mixed_original_and_planner_provenance(
     assert retrieval._is_planner_hint_only(target.score_parts) is False
 
 
+def test_relation_expansion_keeps_planner_only_seed_provenance_when_seed_has_lexical_evidence(
+    tmp_path: Path,
+) -> None:
+    store = _graph_store(
+        tmp_path,
+        ["Source", "Target"],
+        [("Source", "Target", 0.9)],
+    )
+
+    relation_candidates = retrieval._relation_expansion_candidates(
+        store,
+        [
+            RetrievalCandidate(
+                chunk_id="chunk-Source",
+                score=1.0,
+                source="lexical,planner_signal",
+                score_parts={"lexical": 1.0, "planner_signal": 1.0},
+            )
+        ],
+        _expansion_config(),
+    )
+
+    target = relation_candidates[0]
+    assert target.score_parts["relation"] == target.score
+    assert target.score_parts["planner_relation"] == target.score
+    assert "original_relation" not in target.score_parts
+    assert retrieval._is_planner_hint_only(target.score_parts) is True
+
+
 def test_query_combines_route_tokens_and_ranking_reasons(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

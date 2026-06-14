@@ -58,6 +58,13 @@ class _RankedChunk:
 
 
 @dataclass(frozen=True)
+class _RelationSeed:
+    score: float
+    planner_seeded: bool
+    original_seeded: bool
+
+
+@dataclass(frozen=True)
 class _ExpandedResult:
     chunk_ids: list[str]
     file_path: Path
@@ -529,7 +536,7 @@ def _relation_expansion_candidates(
     expanded_by_chunk: dict[str, RetrievalCandidate] = {}
     seen_chunks = {candidate.chunk_id for candidate in seed_candidates}
     seed_scores = {
-        candidate.chunk_id: _candidate_relation_seed_score(candidate)
+        candidate.chunk_id: _candidate_relation_seed(candidate)
         for candidate in seed_candidates
     }
     visited_signals: set[str] = set()
@@ -537,19 +544,23 @@ def _relation_expansion_candidates(
 
     for candidate in sorted(
         seed_candidates,
-        key=lambda item: (-_candidate_relation_seed_score(item), item.chunk_id),
+        key=lambda item: (-seed_scores[item.chunk_id].score, item.chunk_id),
     )[:source_limit]:
-        current_score = _candidate_relation_seed_score(candidate)
-        if current_score <= 0:
+        relation_seed = seed_scores[candidate.chunk_id]
+        if relation_seed.score <= 0:
             continue
-        planner_seeded = _has_planner_hint(candidate.score_parts)
-        original_seeded = _has_original_query_evidence(candidate.score_parts)
         for signal in store.signals_for_chunk(candidate.chunk_id):
             if signal.signal_id in visited_signals:
                 continue
             visited_signals.add(signal.signal_id)
             queue.append(
-                (signal.signal_id, current_score, 0, planner_seeded, original_seeded)
+                (
+                    signal.signal_id,
+                    relation_seed.score,
+                    0,
+                    relation_seed.planner_seeded,
+                    relation_seed.original_seeded,
+                )
             )
 
     while queue:
@@ -579,7 +590,10 @@ def _relation_expansion_candidates(
                 remaining,
             ):
                 existing = expanded_by_chunk.get(chunk.chunk_id)
-                seed_score = seed_scores.get(chunk.chunk_id, 0.0)
+                seed_score = seed_scores.get(
+                    chunk.chunk_id,
+                    _RelationSeed(0.0, False, False),
+                ).score
                 should_add_relation = (
                     chunk.chunk_id not in seed_scores or next_score > seed_score
                 )
@@ -625,20 +639,36 @@ def _candidate_base_score(candidate: RetrievalCandidate) -> float:
     return _bounded_score(max(candidate.score, *candidate.score_parts.values(), 0.0))
 
 
-def _candidate_relation_seed_score(candidate: RetrievalCandidate) -> float:
+def _candidate_relation_seed(candidate: RetrievalCandidate) -> _RelationSeed:
     relation_score = candidate.score_parts.get("relation", 0.0)
     if relation_score > 0:
-        return _bounded_score(relation_score)
+        planner_seeded = candidate.score_parts.get("planner_relation", 0.0) > 0
+        original_seeded = candidate.score_parts.get("original_relation", 0.0) > 0
+        if not planner_seeded and not original_seeded:
+            original_seeded = True
+        return _RelationSeed(
+            _bounded_score(relation_score),
+            planner_seeded,
+            original_seeded,
+        )
 
     signal_score = candidate.score_parts.get("signal", 0.0)
-    if signal_score > 0:
-        return _bounded_score(signal_score)
-
     planner_signal_score = candidate.score_parts.get("planner_signal", 0.0)
-    if planner_signal_score > 0:
-        return _bounded_score(planner_signal_score) * 0.65
+    if signal_score > 0:
+        return _RelationSeed(
+            _bounded_score(signal_score),
+            planner_signal_score > 0,
+            True,
+        )
 
-    return 0.0
+    if planner_signal_score > 0:
+        return _RelationSeed(
+            _bounded_score(planner_signal_score) * 0.65,
+            True,
+            False,
+        )
+
+    return _RelationSeed(0.0, False, False)
 
 
 def _log_expansion_limit() -> None:
