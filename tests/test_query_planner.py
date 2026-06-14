@@ -19,6 +19,17 @@ def test_query_plan_defaults_to_disabled() -> None:
     assert plan.intent == "unknown"
 
 
+def test_query_plan_disabled_default_uses_empty_disabled_plan() -> None:
+    plan = QueryPlan.disabled_default()
+
+    assert plan.status == "disabled"
+    assert plan.original_query == ""
+    assert plan.rewritten_queries == []
+    assert plan.grep_keywords == []
+    assert plan.symbol_hints == []
+    assert plan.intent == "unknown"
+
+
 def test_clean_planner_payload_strips_dedupes_truncates_and_validates_intent() -> None:
     config = QueryPlannerConfig(
         max_rewritten_queries=2,
@@ -68,6 +79,20 @@ def test_clean_planner_payload_falls_back_on_wrong_field_types() -> None:
 
     assert plan.status == "fallback"
     assert "grep_keywords must be a list" in (plan.error or "")
+
+
+def test_clean_planner_payload_falls_back_on_non_string_list_members() -> None:
+    plan = clean_planner_payload(
+        original_query="数据看板统计图表功能",
+        payload={"grep_keywords": ["Dashboard", 123]},
+        config=QueryPlannerConfig(),
+        provider="ollama",
+        model="qwen3.5:4b-mlx",
+        latency_ms=10,
+    )
+
+    assert plan.status == "fallback"
+    assert "grep_keywords must contain only strings" in (plan.error or "")
 
 
 def test_clean_planner_payload_uses_unknown_for_unknown_intent() -> None:
