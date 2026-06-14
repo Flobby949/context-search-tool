@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import shutil
 from pathlib import Path
 from typing import Optional, Sequence
@@ -68,6 +69,12 @@ def query(
         "--full-file",
         help="Return full files when they are below the configured size limit.",
     ),
+    planner: bool = typer.Option(False, "--planner", help="Force query planner on."),
+    no_planner: bool = typer.Option(
+        False,
+        "--no-planner",
+        help="Force query planner off.",
+    ),
 ) -> None:
     if question is None:
         repo = _resolve_repo(None)
@@ -78,6 +85,14 @@ def query(
 
     _require_index(repo)
     config = load_config(repo)
+    if planner and no_planner:
+        typer.echo("Error: --planner and --no-planner cannot be used together", err=True)
+        raise typer.Exit(code=1)
+    if planner or no_planner:
+        config = replace(
+            config,
+            query_planner=replace(config.query_planner, enabled=planner),
+        )
     _warn_if_signal_schema_stale(repo)
     try:
         bundle = query_repository(

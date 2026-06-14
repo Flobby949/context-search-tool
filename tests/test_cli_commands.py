@@ -81,6 +81,44 @@ def test_query_warns_when_signal_schema_is_stale(tmp_path: Path) -> None:
     assert "Warning: index signal schema is older than this version" in result.output
 
 
+def test_query_rejects_conflicting_planner_flags(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    runner = CliRunner()
+    assert runner.invoke(app, ["index", str(repo)]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["query", str(repo), "App", "--planner", "--no-planner"],
+    )
+
+    assert result.exit_code == 1
+    assert "Error: --planner and --no-planner cannot be used together" in result.output
+
+
+def test_query_no_planner_overrides_enabled_config(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    runner = CliRunner()
+    assert runner.invoke(app, ["index", str(repo)]).exit_code == 0
+    config_path = repo / ".context-search" / "config.toml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "enabled = false",
+            "enabled = true",
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["query", str(repo), "App", "--json", "--no-planner"])
+
+    assert result.exit_code == 0
+    parsed = json.loads(result.output)
+    assert parsed["planner"]["status"] == "disabled"
+
+
 def test_index_reports_embedding_config_errors_without_traceback(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
