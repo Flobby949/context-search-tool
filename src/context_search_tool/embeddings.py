@@ -125,6 +125,9 @@ def provider_from_config(config: EmbeddingConfig) -> EmbeddingProvider:
         return HashEmbeddingProvider(config)
     if config.provider == "openai-compatible":
         return OpenAICompatibleEmbeddingProvider(config)
+    if config.provider == "bge":
+        from context_search_tool.embeddings_bge import BGEEmbeddingProvider
+        return BGEEmbeddingProvider(config)
     raise ValueError(f"unsupported embedding provider: {config.provider}")
 
 

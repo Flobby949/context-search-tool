@@ -144,3 +144,19 @@ def test_numpy_vector_store_rejects_mismatched_persisted_ids(tmp_path: Path) -> 
 
     with pytest.raises(ValueError, match="vector id count"):
         NumpyVectorStore(tmp_path)
+
+
+def test_provider_from_config_supports_bge() -> None:
+    from context_search_tool.embeddings import provider_from_config
+    from context_search_tool.embeddings_bge import BGEEmbeddingProvider
+
+    config = EmbeddingConfig(
+        provider="bge",
+        model="bge-m3",
+        dimensions=1024
+    )
+
+    provider = provider_from_config(config)
+
+    assert isinstance(provider, BGEEmbeddingProvider)
+    assert provider.config.model == "bge-m3"
