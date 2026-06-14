@@ -40,6 +40,29 @@ class FakePlanner:
         return self.query_plan
 
 
+def test_query_without_index_does_not_call_planner(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    planner = FakePlanner(
+        QueryPlan(
+            original_query="targetToken",
+            grep_keywords=["ExpensiveHint"],
+            status="ok",
+            provider="ollama",
+            model="qwen3.5:4b-mlx",
+            prompt_version="qwen-query-planner-v1",
+            prompt_hash="sha256:test",
+            latency_ms=1,
+        )
+    )
+
+    bundle = query_repository(repo, "targetToken", DEFAULT_CONFIG, planner=planner)
+
+    assert planner.calls == []
+    assert bundle.results == []
+    assert bundle.planner.status == "disabled"
+
+
 def test_query_expands_signal_relations_before_weak_lexical_matches(
     tmp_path: Path,
 ) -> None:
@@ -1153,6 +1176,36 @@ def test_relation_expansion_ignores_high_path_symbol_seed_without_signal(
     assert scores["chunk-Direct"] > scores["chunk-Dto"]
 
 
+def test_relation_expansion_preserves_mixed_original_and_planner_provenance(
+    tmp_path: Path,
+) -> None:
+    store = _graph_store(
+        tmp_path,
+        ["Source", "Target"],
+        [("Source", "Target", 0.9)],
+    )
+
+    relation_candidates = retrieval._relation_expansion_candidates(
+        store,
+        [
+            RetrievalCandidate(
+                chunk_id="chunk-Source",
+                score=1.0,
+                source="signal,planner_signal",
+                score_parts={"signal": 1.0, "planner_signal": 1.0},
+            )
+        ],
+        _expansion_config(),
+    )
+
+    target = relation_candidates[0]
+    assert target.score_parts["relation"] == target.score
+    assert target.score_parts["planner_relation"] == target.score
+    assert target.score_parts["original_relation"] == target.score
+    assert "planner_signal" not in target.score_parts
+    assert retrieval._is_planner_hint_only(target.score_parts) is False
+
+
 def test_query_combines_route_tokens_and_ranking_reasons(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1259,9 +1312,22 @@ def test_query_rejects_incompatible_embedding_model(tmp_path: Path) -> None:
     config = ToolConfig(
         embedding=EmbeddingConfig(provider="hash", model="hash-v2", dimensions=384)
     )
+    planner = FakePlanner(
+        QueryPlan(
+            original_query="targetToken",
+            grep_keywords=["ExpensiveHint"],
+            status="ok",
+            provider="ollama",
+            model="qwen3.5:4b-mlx",
+            prompt_version="qwen-query-planner-v1",
+            prompt_hash="sha256:test",
+            latency_ms=1,
+        )
+    )
 
     with pytest.raises(ValueError, match="incompatible"):
-        query_repository(repo, "targetToken", config)
+        query_repository(repo, "targetToken", config, planner=planner)
+    assert planner.calls == []
 
 
 def test_query_rejects_incompatible_embedding_dimensions(tmp_path: Path) -> None:
@@ -1493,14 +1559,14 @@ def test_planner_seeded_relation_keeps_planner_provenance(tmp_path: Path) -> Non
     (repo / "DashboardController.java").write_text(
         """
 class DashboardController {
-  String dashboard() { return dashboardService.list(); }
+  String dashboard() { return bridgeService.list(); }
 }
 """.strip(),
         encoding="utf-8",
     )
-    (repo / "DashboardService.java").write_text(
+    (repo / "BridgeService.java").write_text(
         """
-class DashboardService {
+class BridgeService {
   String list() { return "ok"; }
 }
 """.strip(),
@@ -1520,7 +1586,7 @@ class DashboardService {
 
     original_chunk = store.chunk_for_line(Path("OriginalMatch.java"), 1)
     controller_chunk = store.chunk_for_line(Path("DashboardController.java"), 2)
-    service_chunk = store.chunk_for_line(Path("DashboardService.java"), 2)
+    service_chunk = store.chunk_for_line(Path("BridgeService.java"), 2)
     store.replace_signals(
         Path("OriginalMatch.java"),
         [
@@ -1556,18 +1622,18 @@ class DashboardService {
         ],
     )
     store.replace_signals(
-        Path("DashboardService.java"),
+        Path("BridgeService.java"),
         [
             CodeSignal(
-                signal_id="sig-dashboard-service",
+                signal_id="sig-bridge-service",
                 chunk_id=service_chunk.chunk_id,
-                file_path=Path("DashboardService.java"),
+                file_path=Path("BridgeService.java"),
                 kind="method",
-                name="DashboardService.list",
+                name="BridgeService.list",
                 start_line=2,
                 end_line=2,
                 language="java",
-                tokens=["dashboard", "service", "list"],
+                tokens=["bridge", "service", "list"],
                 metadata={},
             )
         ],
@@ -1578,7 +1644,7 @@ class DashboardService {
             CodeRelation(
                 relation_id="rel-dashboard-controller-service",
                 source_signal_id="sig-dashboard-controller",
-                target_name="DashboardService.list",
+                target_name="BridgeService.list",
                 kind="calls",
                 confidence=0.9,
                 metadata={},
@@ -1603,10 +1669,12 @@ class DashboardService {
     service_result = next(
         result
         for result in bundle.results
-        if result.file_path == Path("DashboardService.java")
+        if result.file_path == Path("BridgeService.java")
     )
     assert bundle.results[0].file_path == Path("OriginalMatch.java")
     assert "relation" in service_result.score_parts
+    assert "planner_relation" in service_result.score_parts
+    assert "planner_signal" not in service_result.score_parts
     assert "planner hint match" in service_result.reasons
 
 

@@ -81,18 +81,8 @@ def query_repository(
 ) -> QueryBundle:
     repo = repo.resolve()
     original_tokens = _dedupe(tokenize_query(query))
-    query_planner = planner or planner_from_config(config.query_planner)
-    plan = query_planner.plan(query)
-    tokens = expand_query_plan_tokens(query, plan)
-    original_plan_tokens = expand_query_plan_tokens(
-        query,
-        QueryPlan(original_query=query),
-    )
-    hint_tokens = (
-        planner_hint_tokens(_dedupe([*original_tokens, *original_plan_tokens]), tokens)
-        if plan.status == "ok"
-        else []
-    )
+    tokens = original_tokens
+    plan = QueryPlan(original_query=query)
     index_dir = index_dir_for(repo)
     db_path = index_dir / "index.sqlite"
     if not db_path.exists():
@@ -118,6 +108,12 @@ def query_repository(
             planner=plan,
         )
 
+    query_planner = planner or planner_from_config(config.query_planner)
+    plan = query_planner.plan(query)
+    tokens = expand_query_plan_tokens(query, plan)
+    hint_tokens = (
+        planner_hint_tokens(original_tokens, tokens) if plan.status == "ok" else []
+    )
     initial_candidates = _initial_candidates(
         index_dir,
         store,
@@ -537,7 +533,7 @@ def _relation_expansion_candidates(
         for candidate in seed_candidates
     }
     visited_signals: set[str] = set()
-    queue: deque[tuple[str, float, int, bool]] = deque()
+    queue: deque[tuple[str, float, int, bool, bool]] = deque()
 
     for candidate in sorted(
         seed_candidates,
@@ -546,15 +542,24 @@ def _relation_expansion_candidates(
         current_score = _candidate_relation_seed_score(candidate)
         if current_score <= 0:
             continue
-        planner_seeded = _is_planner_hint_only(candidate.score_parts)
+        planner_seeded = _has_planner_hint(candidate.score_parts)
+        original_seeded = _has_original_query_evidence(candidate.score_parts)
         for signal in store.signals_for_chunk(candidate.chunk_id):
             if signal.signal_id in visited_signals:
                 continue
             visited_signals.add(signal.signal_id)
-            queue.append((signal.signal_id, current_score, 0, planner_seeded))
+            queue.append(
+                (signal.signal_id, current_score, 0, planner_seeded, original_seeded)
+            )
 
     while queue:
-        source_signal_id, current_score, depth, planner_seeded = queue.popleft()
+        (
+            source_signal_id,
+            current_score,
+            depth,
+            planner_seeded,
+            original_seeded,
+        ) = queue.popleft()
         if depth >= MAX_EXPANSION_DEPTH:
             continue
 
@@ -583,7 +588,9 @@ def _relation_expansion_candidates(
                 ):
                     score_parts = {"relation": next_score}
                     if planner_seeded:
-                        score_parts["planner_signal"] = next_score
+                        score_parts["planner_relation"] = next_score
+                    if original_seeded:
+                        score_parts["original_relation"] = next_score
                     expanded_by_chunk[chunk.chunk_id] = RetrievalCandidate(
                         chunk_id=chunk.chunk_id,
                         score=next_score,
@@ -602,7 +609,13 @@ def _relation_expansion_candidates(
                         continue
                     visited_signals.add(signal.signal_id)
                     queue.append(
-                        (signal.signal_id, next_score, next_depth, planner_seeded)
+                        (
+                            signal.signal_id,
+                            next_score,
+                            next_depth,
+                            planner_seeded,
+                            original_seeded,
+                        )
                     )
 
     return list(expanded_by_chunk.values())
@@ -1030,14 +1043,26 @@ def _rank_tier(
 def _has_planner_hint(score_parts: dict[str, float]) -> bool:
     return any(
         score_parts.get(key, 0.0) > 0
-        for key in ("planner_lexical", "planner_path_symbol", "planner_signal")
+        for key in (
+            "planner_lexical",
+            "planner_path_symbol",
+            "planner_signal",
+            "planner_relation",
+        )
     )
 
 
 def _has_original_query_evidence(score_parts: dict[str, float]) -> bool:
     return any(
         score_parts.get(key, 0.0) > 0
-        for key in ("semantic", "lexical", "path_symbol", "signal", "token_coverage")
+        for key in (
+            "semantic",
+            "lexical",
+            "path_symbol",
+            "signal",
+            "token_coverage",
+            "original_relation",
+        )
     )
 
 
