@@ -352,6 +352,8 @@ def _feedback_planner_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "enabled",
             "provider",
             "model",
+            "prompt_version",
+            "prompt_hash",
             "status",
             "latency_ms",
             "intent",

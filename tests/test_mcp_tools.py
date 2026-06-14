@@ -221,8 +221,14 @@ def test_mcp_query_feedback_includes_planner_metadata_without_prompt_text(
     log_path = repo / ".context-search" / "mcp_calls.jsonl"
     events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     event = events[0]
-    assert event["planner"]["status"] == "disabled"
-    assert "prompt" not in json.dumps(event).lower()
+    planner = event["planner"]
+    assert planner["status"] == "disabled"
+    assert "prompt_version" in planner
+    assert "prompt_hash" in planner
+    assert "rewritten_queries" not in planner
+    assert "grep_keywords" not in planner
+    assert "symbol_hints" not in planner
+    assert "ApplyAuditController" not in json.dumps(event)
 
 
 def test_mcp_query_feedback_includes_embedding_config_hash(tmp_path: Path) -> None:
