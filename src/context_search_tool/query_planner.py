@@ -79,7 +79,21 @@ class OllamaQueryPlanner:
                 timeout=self.config.timeout_seconds,
             )
             response.raise_for_status()
-            raw_content = response.json().get("message", {}).get("content", "")
+            response_payload = response.json()
+            if not isinstance(response_payload, dict):
+                return self._fallback(
+                    query,
+                    start,
+                    "planner response must be an object",
+                )
+            message = response_payload.get("message", {})
+            if not isinstance(message, dict):
+                return self._fallback(
+                    query,
+                    start,
+                    "planner response message must be an object",
+                )
+            raw_content = message.get("content", "")
             if not isinstance(raw_content, str):
                 return self._fallback(
                     query,

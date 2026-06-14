@@ -263,6 +263,16 @@ def test_ollama_planner_falls_back_on_invalid_json_content() -> None:
     assert "invalid planner JSON" in (plan.error or "")
 
 
+def test_ollama_planner_falls_back_on_malformed_response_message() -> None:
+    session = FakeSession(FakeResponse(200, {"message": None}))
+    planner = OllamaQueryPlanner(QueryPlannerConfig(enabled=True), session=session)
+
+    plan = planner.plan("query")
+
+    assert plan.status == "fallback"
+    assert "planner response message must be an object" in (plan.error or "")
+
+
 def test_ollama_planner_falls_back_on_http_error_without_retry() -> None:
     session = FakeSession(FakeResponse(500, {"message": {"content": "{}"}}))
     planner = OllamaQueryPlanner(QueryPlannerConfig(enabled=True), session=session)
