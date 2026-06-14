@@ -130,6 +130,44 @@ def test_load_config_creates_default_when_missing(tmp_path: Path) -> None:
     assert (repo / ".context-search" / "config.toml").exists()
 
 
+def test_ensure_index_layout_creates_gitignore_entry_when_missing(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    ensure_index_layout(repo)
+
+    assert (repo / ".gitignore").read_text(encoding="utf-8") == ".context-search/\n"
+
+
+def test_ensure_index_layout_appends_gitignore_entry_to_existing_file(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".gitignore").write_text("dist/", encoding="utf-8")
+
+    ensure_index_layout(repo)
+
+    assert (repo / ".gitignore").read_text(encoding="utf-8") == (
+        "dist/\n.context-search/\n"
+    )
+
+
+def test_ensure_index_layout_does_not_duplicate_gitignore_entry(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".gitignore").write_text(".context-search/\n", encoding="utf-8")
+
+    ensure_index_layout(repo)
+    ensure_index_layout(repo)
+
+    assert (repo / ".gitignore").read_text(encoding="utf-8") == ".context-search/\n"
+
+
 def test_find_repo_root_prefers_existing_index_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repo = tmp_path / "repo"
     child = repo / "src" / "main"
