@@ -3,16 +3,18 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from context_search_tool.models import QueryPlan
 from context_search_tool.retrieval import QueryBundle
 
 
 def format_markdown(bundle: QueryBundle) -> str:
+    planner_line = _planner_markdown_line(bundle.planner)
     lines = [
         "# Context Search Results",
         "",
         f"Query: {bundle.query}",
         f"Expanded tokens: {_format_list(bundle.expanded_tokens)}",
-        "",
+        *([planner_line, ""] if planner_line else [""]),
         "## Summary",
         "### Likely Entry Points",
         *_format_bullets(list(bundle.summary.entry_points)),
@@ -75,6 +77,7 @@ def format_json(bundle: QueryBundle) -> str:
             "related_types": bundle.summary.related_types,
             "possibly_legacy": bundle.summary.possibly_legacy,
         },
+        "planner": _planner_payload(bundle.planner),
         "results": [
             {
                 "file_path": result.file_path.as_posix(),
@@ -90,6 +93,43 @@ def format_json(bundle: QueryBundle) -> str:
         ],
     }
     return json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True)
+
+
+def _planner_payload(plan: QueryPlan) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "enabled": plan.status != "disabled",
+        "provider": plan.provider,
+        "model": plan.model,
+        "prompt_version": plan.prompt_version,
+        "prompt_hash": plan.prompt_hash,
+        "status": plan.status,
+        "latency_ms": plan.latency_ms,
+    }
+    if plan.status == "ok":
+        payload.update(
+            {
+                "rewritten_queries": plan.rewritten_queries,
+                "grep_keywords": plan.grep_keywords,
+                "symbol_hints": plan.symbol_hints,
+                "intent": plan.intent,
+            }
+        )
+    if plan.status == "fallback":
+        payload["error"] = plan.error
+    return payload
+
+
+def _planner_markdown_line(plan: QueryPlan) -> str:
+    if plan.status != "ok":
+        return ""
+    hints = [*plan.symbol_hints[:2], *plan.grep_keywords[:2]][:3]
+    if not hints:
+        return f"Query expanded by {plan.model}."
+    hint_text = ", ".join(hints)
+    total_hints = len(plan.symbol_hints) + len(plan.grep_keywords)
+    if total_hints > 3:
+        hint_text += f", ... (+{total_hints - 3} more)"
+    return f"Query expanded by {plan.model}: {hint_text}"
 
 
 def _format_list(items: list[str]) -> str:
