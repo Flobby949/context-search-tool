@@ -69,6 +69,26 @@ def _short_hash(value: str) -> str:
 
 
 @dataclass(frozen=True)
+class QueryPlan:
+    original_query: str
+    rewritten_queries: list[str] = field(default_factory=list)
+    grep_keywords: list[str] = field(default_factory=list)
+    symbol_hints: list[str] = field(default_factory=list)
+    intent: str = "unknown"
+    status: str = "disabled"
+    provider: str = ""
+    model: str = ""
+    prompt_version: str = ""
+    prompt_hash: str = ""
+    latency_ms: int | None = None
+    error: str | None = None
+
+    @staticmethod
+    def disabled_default() -> QueryPlan:
+        return QueryPlan(original_query="", status="disabled")
+
+
+@dataclass(frozen=True)
 class DocumentChunk:
     chunk_id: str
     file_path: Path
