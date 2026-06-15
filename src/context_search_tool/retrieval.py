@@ -1047,6 +1047,259 @@ def _bounded_score(score: float) -> float:
     return min(max(score, 0.0), 1.0)
 
 
+# Thresholds for strong evidence classification
+_STRONG_SEMANTIC_EVIDENCE = 0.35
+_STRONG_LEXICAL_EVIDENCE = 0.25
+_STRONG_PATH_SYMBOL_EVIDENCE = 1.0
+_STRONG_SIGNAL_EVIDENCE = 0.5
+
+
+def _has_original_direct_evidence(score_parts: dict[str, float]) -> bool:
+    """
+    Check if score_parts contains direct original query evidence.
+
+    This is similar to _has_original_query_evidence but excludes original_relation.
+    Used to distinguish direct matches from relation-only expansion results.
+
+    Args:
+        score_parts: Dictionary of score components
+
+    Returns:
+        True if any direct evidence exists (semantic, lexical, path_symbol, signal, token_coverage)
+    """
+    return any(
+        score_parts.get(key, 0.0) > 0
+        for key in (
+            "semantic",
+            "lexical",
+            "path_symbol",
+            "signal",
+            "token_coverage",
+        )
+    )
+
+
+def _has_planner_direct_evidence(score_parts: dict[str, float]) -> bool:
+    """
+    Check if score_parts contains direct planner evidence (excluding planner_relation).
+
+    Args:
+        score_parts: Dictionary of score components
+
+    Returns:
+        True if any planner direct evidence exists (planner_lexical, planner_signal, planner_path_symbol)
+    """
+    return any(
+        score_parts.get(key, 0.0) > 0
+        for key in (
+            "planner_lexical",
+            "planner_signal",
+            "planner_path_symbol",
+        )
+    )
+
+
+def _has_strong_original_direct_evidence(score_parts: dict[str, float]) -> bool:
+    """
+    Check if score_parts contains strong original direct evidence.
+
+    Used to compute dynamic planner_ceiling. Strong evidence means at least one
+    of the direct signals exceeds its threshold.
+
+    Args:
+        score_parts: Dictionary of score components
+
+    Returns:
+        True if any strong evidence threshold is met
+    """
+    return (
+        score_parts.get("semantic", 0.0) >= _STRONG_SEMANTIC_EVIDENCE
+        or score_parts.get("lexical", 0.0) >= _STRONG_LEXICAL_EVIDENCE
+        or score_parts.get("path_symbol", 0.0) >= _STRONG_PATH_SYMBOL_EVIDENCE
+        or score_parts.get("signal", 0.0) >= _STRONG_SIGNAL_EVIDENCE
+        or score_parts.get("token_coverage", 0.0) >= 0.5
+    )
+
+
+def _evidence_class(score_parts: dict[str, float]) -> str:
+    """
+    Classify evidence type by priority.
+
+    Priority order (lower number = higher priority):
+    0. original_direct: has direct original evidence (semantic/lexical/path_symbol/signal/token_coverage)
+    1. original_relation: has original_relation score only
+    2. planner_direct: has planner direct evidence (planner_lexical/signal/path_symbol)
+    3. planner_relation: has planner_relation score only
+    4. weak_or_generic: fallback for everything else
+
+    Args:
+        score_parts: Dictionary of score components
+
+    Returns:
+        Evidence class string
+    """
+    if _has_original_direct_evidence(score_parts):
+        return "original_direct"
+    elif score_parts.get("original_relation", 0.0) > 0:
+        return "original_relation"
+    elif _has_planner_direct_evidence(score_parts):
+        return "planner_direct"
+    elif score_parts.get("planner_relation", 0.0) > 0:
+        return "planner_relation"
+    else:
+        return "weak_or_generic"
+
+
+def _evidence_priority(evidence_class: str) -> int:
+    """
+    Map evidence class to numeric priority (0 is highest priority).
+
+    Args:
+        evidence_class: Evidence class string from _evidence_class
+
+    Returns:
+        Priority value 0-4
+    """
+    priority_map = {
+        "original_direct": 0,
+        "original_relation": 1,
+        "planner_direct": 2,
+        "planner_relation": 3,
+        "weak_or_generic": 4,
+    }
+    return priority_map.get(evidence_class, 4)
+
+
+def normalize_score(scores: list[float]) -> list[float]:
+    """
+    Normalize scores to [0, 1] range using max normalization.
+
+    Args:
+        scores: List of raw scores
+
+    Returns:
+        List of normalized scores in [0, 1] range
+    """
+    if not scores:
+        return []
+
+    # Handle NaN/inf values by clipping to 0.0
+    cleaned_scores = []
+    for s in scores:
+        if s != s or s == float('inf') or s == float('-inf'):  # NaN or inf check
+            cleaned_scores.append(0.0)
+        else:
+            cleaned_scores.append(s)
+
+    max_score = max(cleaned_scores)
+
+    if max_score == 0.0:
+        return [0.0] * len(cleaned_scores)
+
+    if len(cleaned_scores) == 1:
+        return [1.0]
+
+    return [s / max_score for s in cleaned_scores]
+
+
+def _generic_hint_penalty(chunk: DocumentChunk, score_parts: dict[str, float]) -> float:
+    """
+    Return penalty for generic symbols that match too broadly.
+
+    Generic patterns include: Service, Controller, Manager, message, device.
+    These often get weak lexical/path matches but aren't semantically relevant.
+
+    Args:
+        chunk: The document chunk to check
+        score_parts: Score components (unused but kept for future extension)
+
+    Returns:
+        Penalty value (e.g., 0.1 for generic symbols, 0.0 otherwise)
+    """
+    generic_patterns = [
+        "Service",
+        "Controller",
+        "Manager",
+        "message",
+        "device",
+    ]
+
+    content_lower = chunk.content.lower()
+    path_str = str(chunk.file_path).lower()
+
+    for pattern in generic_patterns:
+        if pattern.lower() in content_lower or pattern.lower() in path_str:
+            return 0.1
+
+    return 0.0
+
+
+def _rerank_score(
+    normalized_score: float,
+    score_parts: dict[str, float],
+    chunk: DocumentChunk,
+    flags: dict,
+    *,
+    planner_ceiling: float | None,
+) -> float:
+    """
+    Compute rerank score with boosts, penalties, and ceiling clamp.
+
+    Formula:
+        rerank_score = normalized_score
+            + original_direct_boost (if has direct evidence)
+            + endpoint_or_controller_boost (if endpoint or controller)
+            + implementation_chain_boost (if has relation support)
+            - planner_only_penalty (if planner-only, no original evidence)
+            - relation_only_penalty (if only relation, no direct evidence)
+            - generic_hint_penalty
+
+    Then apply ceiling clamp for non-original_direct evidence classes if planner_ceiling is set.
+
+    Args:
+        normalized_score: Normalized combined score
+        score_parts: Score components dictionary
+        chunk: The document chunk
+        flags: Precomputed flags dict with keys:
+            - has_endpoint_signal: bool
+            - is_controller: bool
+            - has_relation_support: bool
+        planner_ceiling: Optional ceiling for planner/relation evidence classes
+
+    Returns:
+        Final rerank score
+    """
+    rerank_score = normalized_score
+
+    # Boosts
+    if _has_original_direct_evidence(score_parts):
+        rerank_score += 0.2
+
+    if flags.get("has_endpoint_signal", False) or flags.get("is_controller", False):
+        rerank_score += 0.15
+
+    if flags.get("has_relation_support", False):
+        rerank_score += 0.1
+
+    # Penalties
+    if _is_planner_hint_only(score_parts):
+        rerank_score -= 0.3
+
+    if not _has_original_direct_evidence(score_parts) and (
+        score_parts.get("original_relation", 0.0) > 0 or score_parts.get("planner_relation", 0.0) > 0
+    ):
+        rerank_score -= 0.2
+
+    rerank_score -= _generic_hint_penalty(chunk, score_parts)
+
+    # Apply ceiling clamp for lower-priority evidence
+    evidence_class = _evidence_class(score_parts)
+    if evidence_class in {"original_relation", "planner_direct", "planner_relation", "weak_or_generic"} and planner_ceiling is not None:
+        rerank_score = min(rerank_score, planner_ceiling)
+
+    return rerank_score
+
+
 def _rank_tier(
     store: SQLiteStore,
     chunk: DocumentChunk,

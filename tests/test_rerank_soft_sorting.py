@@ -291,16 +291,12 @@ def test_rerank_second_sort_consistency():
     pytest.skip("Requires full query() integration - implement after steps 2-4")
 
 
-@pytest.mark.xfail(reason="_evidence_class function doesn't exist yet")
 def test_rerank_original_relation_not_misclassified():
     """
     Test #10: Construct candidate with original_relation>0, assert _evidence_class
     returns "original_relation" not "original_direct".
     """
-    try:
-        from context_search_tool.retrieval import _evidence_class
-    except ImportError:
-        pytest.skip("_evidence_class not implemented yet")
+    from context_search_tool.retrieval import _evidence_class
 
     # Pure relation evidence
     score_parts = {
@@ -340,3 +336,217 @@ def test_rerank_merge_field_consistency():
     combined_score. Assert merged result's fields come from rerank_score winner.
     """
     pytest.skip("Requires _ExpandedResult changes - implement after step 4")
+
+
+# Unit tests for evidence classification helpers
+def test_evidence_class_priority_order():
+    """Test that _evidence_class follows priority order correctly."""
+    from context_search_tool.retrieval import _evidence_class
+
+    # Priority 0: original_direct
+    assert _evidence_class({"semantic": 0.5}) == "original_direct"
+    assert _evidence_class({"lexical": 0.3}) == "original_direct"
+    assert _evidence_class({"path_symbol": 1.0}) == "original_direct"
+    assert _evidence_class({"signal": 0.4}) == "original_direct"
+    assert _evidence_class({"token_coverage": 0.6}) == "original_direct"
+
+    # Priority 1: original_relation (only if no direct evidence)
+    assert _evidence_class({"original_relation": 0.8}) == "original_relation"
+
+    # Priority 2: planner_direct
+    assert _evidence_class({"planner_lexical": 0.5}) == "planner_direct"
+    assert _evidence_class({"planner_signal": 0.4}) == "planner_direct"
+    assert _evidence_class({"planner_path_symbol": 1.0}) == "planner_direct"
+
+    # Priority 3: planner_relation
+    assert _evidence_class({"planner_relation": 0.7}) == "planner_relation"
+
+    # Priority 4: weak_or_generic
+    assert _evidence_class({}) == "weak_or_generic"
+
+
+def test_evidence_class_mixed_evidence():
+    """Test that direct evidence takes priority over relation."""
+    from context_search_tool.retrieval import _evidence_class
+
+    # Direct + relation = direct
+    assert _evidence_class({
+        "semantic": 0.3,
+        "original_relation": 0.8,
+    }) == "original_direct"
+
+    # Original direct beats planner direct
+    assert _evidence_class({
+        "lexical": 0.2,
+        "planner_lexical": 0.5,
+    }) == "original_direct"
+
+    # Original relation (without direct) beats planner direct
+    assert _evidence_class({
+        "original_relation": 0.6,
+        "planner_lexical": 0.4,
+    }) == "original_relation"
+
+    # Only original_relation, no direct
+    assert _evidence_class({
+        "original_relation": 0.6,
+        "semantic": 0.0,
+    }) == "original_relation"
+
+
+def test_has_strong_original_direct_evidence():
+    """Test strong evidence threshold detection."""
+    from context_search_tool.retrieval import _has_strong_original_direct_evidence
+
+    # Strong semantic
+    assert _has_strong_original_direct_evidence({"semantic": 0.35}) == True
+    assert _has_strong_original_direct_evidence({"semantic": 0.4}) == True
+    assert _has_strong_original_direct_evidence({"semantic": 0.34}) == False
+
+    # Strong lexical
+    assert _has_strong_original_direct_evidence({"lexical": 0.25}) == True
+    assert _has_strong_original_direct_evidence({"lexical": 0.24}) == False
+
+    # Strong path_symbol
+    assert _has_strong_original_direct_evidence({"path_symbol": 1.0}) == True
+    assert _has_strong_original_direct_evidence({"path_symbol": 0.9}) == False
+
+    # Strong signal
+    assert _has_strong_original_direct_evidence({"signal": 0.5}) == True
+    assert _has_strong_original_direct_evidence({"signal": 0.49}) == False
+
+    # Strong token_coverage
+    assert _has_strong_original_direct_evidence({"token_coverage": 0.5}) == True
+    assert _has_strong_original_direct_evidence({"token_coverage": 0.49}) == False
+
+    # Weak evidence
+    assert _has_strong_original_direct_evidence({
+        "semantic": 0.1,
+        "lexical": 0.1,
+    }) == False
+
+
+def test_normalize_score_basic():
+    """Test score normalization."""
+    from context_search_tool.retrieval import normalize_score
+
+    # Normal case
+    assert normalize_score([1.0, 2.0, 3.0]) == [1/3, 2/3, 1.0]
+
+    # All zeros
+    assert normalize_score([0.0, 0.0, 0.0]) == [0.0, 0.0, 0.0]
+
+    # Single item
+    assert normalize_score([5.0]) == [1.0]
+
+    # Empty list
+    assert normalize_score([]) == []
+
+
+def test_normalize_score_edge_cases():
+    """Test score normalization with edge cases."""
+    from context_search_tool.retrieval import normalize_score
+    import math
+
+    # NaN values
+    result = normalize_score([1.0, float('nan'), 2.0])
+    assert result[0] == 0.5
+    assert result[1] == 0.0
+    assert result[2] == 1.0
+
+    # Inf values
+    result = normalize_score([1.0, float('inf'), 2.0])
+    assert result[0] == 0.5
+    assert result[1] == 0.0
+    assert result[2] == 1.0
+
+
+def test_evidence_priority_mapping():
+    """Test evidence priority numeric mapping."""
+    from context_search_tool.retrieval import _evidence_priority
+
+    assert _evidence_priority("original_direct") == 0
+    assert _evidence_priority("original_relation") == 1
+    assert _evidence_priority("planner_direct") == 2
+    assert _evidence_priority("planner_relation") == 3
+    assert _evidence_priority("weak_or_generic") == 4
+    assert _evidence_priority("unknown") == 4  # Default fallback
+
+
+def test_generic_hint_penalty():
+    """Test generic symbol penalty detection."""
+    from context_search_tool.retrieval import _generic_hint_penalty
+    from context_search_tool.models import DocumentChunk
+    from pathlib import Path
+
+    # Generic service class
+    chunk = DocumentChunk(
+        chunk_id="test1",
+        file_path=Path("service/UserService.java"),
+        start_line=1,
+        end_line=10,
+        content="public class UserService { }",
+        chunk_type="code",
+    )
+    assert _generic_hint_penalty(chunk, {}) == 0.1
+
+    # Generic controller
+    chunk = DocumentChunk(
+        chunk_id="test2",
+        file_path=Path("controller/ApiController.java"),
+        start_line=1,
+        end_line=10,
+        content="public class ApiController { }",
+        chunk_type="code",
+    )
+    assert _generic_hint_penalty(chunk, {}) == 0.1
+
+    # Non-generic
+    chunk = DocumentChunk(
+        chunk_id="test3",
+        file_path=Path("util/StringUtils.java"),
+        start_line=1,
+        end_line=10,
+        content="public class StringUtils { }",
+        chunk_type="code",
+    )
+    assert _generic_hint_penalty(chunk, {}) == 0.0
+
+
+def test_has_planner_direct_evidence():
+    """Test planner direct evidence detection (excluding planner_relation)."""
+    from context_search_tool.retrieval import _has_planner_direct_evidence
+
+    assert _has_planner_direct_evidence({"planner_lexical": 0.5}) == True
+    assert _has_planner_direct_evidence({"planner_signal": 0.3}) == True
+    assert _has_planner_direct_evidence({"planner_path_symbol": 1.0}) == True
+
+    # planner_relation should NOT count as direct evidence
+    assert _has_planner_direct_evidence({"planner_relation": 0.8}) == False
+
+    # Mixed
+    assert _has_planner_direct_evidence({
+        "planner_lexical": 0.5,
+        "planner_relation": 0.8,
+    }) == True
+
+
+def test_has_original_direct_evidence():
+    """Test original direct evidence detection (excluding original_relation)."""
+    from context_search_tool.retrieval import _has_original_direct_evidence
+
+    assert _has_original_direct_evidence({"semantic": 0.3}) == True
+    assert _has_original_direct_evidence({"lexical": 0.2}) == True
+    assert _has_original_direct_evidence({"path_symbol": 1.0}) == True
+    assert _has_original_direct_evidence({"signal": 0.4}) == True
+    assert _has_original_direct_evidence({"token_coverage": 0.5}) == True
+
+    # original_relation should NOT count as direct evidence
+    assert _has_original_direct_evidence({"original_relation": 0.8}) == False
+
+    # Mixed: has direct evidence even with relation
+    assert _has_original_direct_evidence({
+        "semantic": 0.3,
+        "original_relation": 0.7,
+    }) == True
+
