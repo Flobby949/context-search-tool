@@ -55,6 +55,9 @@ class _RankedChunk:
     score_parts: dict[str, float]
     reasons: list[str]
     rank_tier: int
+    rerank_score: float
+    evidence_class: str
+    evidence_priority: int
 
 
 @dataclass(frozen=True)
@@ -709,7 +712,10 @@ def _rank_chunks(
     tokens: list[str],
     query: str,
 ) -> list[_RankedChunk]:
+    # First pass: compute scores and build ranked list
     ranked: list[_RankedChunk] = []
+    all_combined_scores: list[float] = []
+
     for candidate in candidates.values():
         try:
             chunk = store.chunk_for_id(candidate.chunk_id)
@@ -734,21 +740,82 @@ def _rank_chunks(
             score_parts["penalty"] = -penalty
 
         score = _combined_score(score_parts)
-        ranked.append(
-            _RankedChunk(
-                chunk=chunk,
-                score=score,
-                score_parts=score_parts,
-                reasons=_reasons(score_parts, query),
-                rank_tier=_rank_tier(store, chunk, score_parts),
-            )
+        all_combined_scores.append(score)
+
+        # Precompute flags for rerank scoring
+        flags = {
+            'has_endpoint_signal': score_parts.get("signal", 0.0) > 0 and _chunk_has_signal_kind(store, chunk.chunk_id, "endpoint"),
+            'is_controller': 'controller' in chunk.file_path.as_posix().lower(),
+            'has_relation_support': score_parts.get("original_relation", 0.0) > 0 or score_parts.get("planner_relation", 0.0) > 0,
+        }
+
+        ranked.append({
+            'chunk': chunk,
+            'score': score,
+            'score_parts': score_parts,
+            'flags': flags,
+        })
+
+    # Normalize all combined scores
+    normalized_scores = normalize_score(all_combined_scores)
+
+    # Update ranked items with normalized scores and compute unclamped rerank scores
+    for i, item in enumerate(ranked):
+        normalized_score = normalized_scores[i]
+        evidence_class = _evidence_class(item['score_parts'])
+        evidence_priority = _evidence_priority(evidence_class)
+
+        # Compute unclamped rerank score
+        rerank_score = _rerank_score(
+            normalized_score,
+            item['score_parts'],
+            item['chunk'],
+            item['flags'],
+            planner_ceiling=None,
         )
 
+        item['normalized_score'] = normalized_score
+        item['rerank_score'] = rerank_score
+        item['evidence_class'] = evidence_class
+        item['evidence_priority'] = evidence_priority
+
+    # Compute planner_ceiling from strong direct results
+    strong_direct_results = [
+        r for r in ranked
+        if _has_strong_original_direct_evidence(r['score_parts'])
+    ]
+
+    if strong_direct_results:
+        planner_ceiling = min(r['rerank_score'] for r in strong_direct_results) * (1.0 - 1e-6)
+    else:
+        planner_ceiling = None
+
+    # Second pass: apply ceiling clamp to non-original_direct classes
+    for item in ranked:
+        if item['evidence_class'] in {"original_relation", "planner_direct", "planner_relation", "weak_or_generic"} and planner_ceiling is not None:
+            item['rerank_score'] = min(item['rerank_score'], planner_ceiling)
+
+    # Build final _RankedChunk objects
+    final_ranked = [
+        _RankedChunk(
+            chunk=item['chunk'],
+            score=item['score'],
+            score_parts=item['score_parts'],
+            reasons=_reasons(item['score_parts'], query),
+            rank_tier=_rank_tier(store, item['chunk'], item['score_parts']),
+            rerank_score=item['rerank_score'],
+            evidence_class=item['evidence_class'],
+            evidence_priority=item['evidence_priority'],
+        )
+        for item in ranked
+    ]
+
     return sorted(
-        ranked,
+        final_ranked,
         key=lambda item: (
-            item.rank_tier,
-            -item.score,
+            -item.rerank_score,        # Descending: larger is better
+            item.evidence_priority,    # Ascending: 0 (original_direct) is highest priority
+            -item.score,               # Descending: combined_score tiebreaker
             item.chunk.file_path.as_posix(),
             item.chunk.start_line,
             item.chunk.chunk_id,
@@ -1037,6 +1104,8 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         + _bounded_score(score_parts.get("signal", 0.0))
         + (_bounded_score(score_parts.get("planner_signal", 0.0)) * 0.65)
         + _bounded_score(score_parts.get("relation", 0.0))
+        + _bounded_score(score_parts.get("original_relation", 0.0))
+        + _bounded_score(score_parts.get("planner_relation", 0.0))
         + (score_parts.get("token_coverage", 0.0) * 0.20)
         + score_parts.get("plugin_boost", 0.0)
         + score_parts.get("penalty", 0.0)
@@ -1281,16 +1350,17 @@ def _rerank_score(
     if flags.get("has_relation_support", False):
         rerank_score += 0.1
 
-    # Penalties
-    if _is_planner_hint_only(score_parts):
-        rerank_score -= 0.3
+    # Penalties (only apply when there's a ceiling from strong direct evidence)
+    if planner_ceiling is not None:
+        if _is_planner_hint_only(score_parts):
+            rerank_score -= 0.3
 
-    if not _has_original_direct_evidence(score_parts) and (
-        score_parts.get("original_relation", 0.0) > 0 or score_parts.get("planner_relation", 0.0) > 0
-    ):
-        rerank_score -= 0.2
+        if not _has_original_direct_evidence(score_parts) and (
+            score_parts.get("original_relation", 0.0) > 0 or score_parts.get("planner_relation", 0.0) > 0
+        ):
+            rerank_score -= 0.2
 
-    rerank_score -= _generic_hint_penalty(chunk, score_parts)
+        rerank_score -= _generic_hint_penalty(chunk, score_parts)
 
     # Apply ceiling clamp for lower-priority evidence
     evidence_class = _evidence_class(score_parts)
