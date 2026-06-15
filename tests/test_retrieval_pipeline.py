@@ -180,16 +180,21 @@ class WorkspaceQueryExe {
 
     bundle = query_repository(repo, "工作台相关代码", config)
 
+    # With rerank scoring, order is:
+    # 1. Controller: original_direct (lexical + signal) - highest
+    # 2. Dto: original_direct (lexical only) - high
+    # 3. ServiceImpl: original_relation - lower
+    # 4. QueryExe: original_relation - lowest
     assert [result.file_path for result in bundle.results] == [
         Path("WorkspaceController.java"),
+        Path("WorkspaceDto.java"),
         Path("WorkspaceServiceImpl.java"),
         Path("WorkspaceQueryExe.java"),
-        Path("WorkspaceDto.java"),
     ]
     assert "signal" in bundle.results[0].score_parts
-    assert "relation" in bundle.results[1].score_parts
+    assert "lexical" in bundle.results[1].score_parts
     assert "relation" in bundle.results[2].score_parts
-    assert "lexical" in bundle.results[3].score_parts
+    assert "relation" in bundle.results[3].score_parts
 
 
 def test_workflow_alias_query_prefers_process_endpoint_over_generic_api(

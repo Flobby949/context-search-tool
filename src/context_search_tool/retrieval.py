@@ -79,6 +79,9 @@ class _ExpandedResult:
     reasons: list[str]
     followup_keywords: list[str]
     rank_tier: int
+    rerank_score: float
+    evidence_class: str
+    evidence_priority: int
 
 
 def query_repository(
@@ -167,8 +170,13 @@ def query_repository(
             start_line=item.start_line,
             end_line=item.end_line,
             content=item.content,
-            score=item.score,
-            score_parts=item.score_parts,
+            score=item.rerank_score,
+            score_parts={
+                **item.score_parts,
+                "combined_score": item.score,
+                "rerank_score": item.rerank_score,
+                "evidence_priority": float(item.evidence_priority),
+            },
             reasons=_dedupe(item.reasons + result_reasons[index]),
             followup_keywords=item.followup_keywords,
         )
@@ -873,6 +881,9 @@ def _expand_ranked_chunks(
                 reasons=ranked.reasons,
                 followup_keywords=ranked.chunk.lexical_tokens,
                 rank_tier=ranked.rank_tier,
+                rerank_score=ranked.rerank_score,
+                evidence_class=ranked.evidence_class,
+                evidence_priority=ranked.evidence_priority,
             )
         )
 
@@ -997,6 +1008,9 @@ def _cap_expanded_result(
         reasons=result.reasons,
         followup_keywords=result.followup_keywords,
         rank_tier=result.rank_tier,
+        rerank_score=result.rerank_score,
+        evidence_class=result.evidence_class,
+        evidence_priority=result.evidence_priority,
     )
 
 
@@ -1033,7 +1047,8 @@ def _merge_overlapping_results(results: list[_ExpandedResult]) -> list[_Expanded
     return sorted(
         merged,
         key=lambda item: (
-            item.rank_tier,
+            -item.rerank_score,
+            item.evidence_priority,
             -item.score,
             item.file_path.as_posix(),
             item.start_line,
@@ -1049,6 +1064,25 @@ def _merge_expanded_result(
     right_lines = right.content.splitlines()
     overlap = max(0, left.end_line - right.start_line + 1)
     content_lines = [*left_lines, *right_lines[overlap:]]
+
+    # Winner selection based on rerank_score (with tiebreak)
+    if left.rerank_score != right.rerank_score:
+        winner = left if left.rerank_score > right.rerank_score else right
+    else:
+        # Tiebreak by complete sort key
+        winner = min(left, right, key=lambda x: (
+            x.evidence_priority,
+            -x.score,
+            x.file_path.as_posix(),
+            x.start_line
+        ))
+
+    # Merge score_parts: max for most fields, winner value for rerank-related fields
+    merged_score_parts = _merge_score_parts(left.score_parts, right.score_parts)
+    merged_score_parts["rerank_score"] = winner.rerank_score
+    # evidence_priority is smaller-is-better, so use winner's value
+    merged_score_parts["evidence_priority"] = float(winner.evidence_priority)
+
     return _ExpandedResult(
         chunk_ids=_dedupe([*left.chunk_ids, *right.chunk_ids]),
         file_path=left.file_path,
@@ -1056,10 +1090,13 @@ def _merge_expanded_result(
         end_line=max(left.end_line, right.end_line),
         content="\n".join(content_lines),
         score=max(left.score, right.score),
-        score_parts=_merge_score_parts(left.score_parts, right.score_parts),
-        reasons=_dedupe([*left.reasons, *right.reasons]),
+        score_parts=merged_score_parts,
+        reasons=winner.reasons,
         followup_keywords=_dedupe([*left.followup_keywords, *right.followup_keywords]),
         rank_tier=min(left.rank_tier, right.rank_tier),
+        rerank_score=winner.rerank_score,
+        evidence_class=winner.evidence_class,
+        evidence_priority=winner.evidence_priority,
     )
 
 
@@ -1472,6 +1509,9 @@ def _generated_or_test_penalty(chunk: DocumentChunk) -> float:
 
 def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
     reasons: list[str] = []
+    if score_parts.get("rerank_score"):
+        evidence_class = _evidence_class(score_parts)
+        reasons.append(f"rerank_score={score_parts['rerank_score']:.2f} ({evidence_class})")
     if score_parts.get("semantic", 0.0) > 0:
         reasons.append("semantic match")
     if score_parts.get("lexical", 0.0) > 0:
