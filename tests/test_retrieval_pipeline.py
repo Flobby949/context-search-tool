@@ -2776,6 +2776,8 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
             "combined_score": 1.5,
             "rerank_score": 0.6,  # Lower rerank_score
             "evidence_priority": 4,
+            "role_priority": 1.0,
+            "role_boost": 0.10,
         },
         reasons=["reason from left"],
         followup_keywords=["left"],
@@ -2796,6 +2798,9 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
             "combined_score": 1.2,
             "rerank_score": 0.8,  # Higher rerank_score (winner)
             "evidence_priority": 2,
+            "role_priority": 5.0,
+            "role_boost": 0.0,
+            "role_penalty": -0.10,
         },
         reasons=["reason from right"],
         followup_keywords=["right"],
@@ -2814,3 +2819,58 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
     assert "reason from right" in merged.reasons
     assert merged.score_parts["rerank_score"] == 0.8
     assert merged.score_parts["evidence_priority"] == 2
+    assert merged.score_parts["role_priority"] == 5.0
+    assert merged.score_parts["role_boost"] == 0.0
+    assert merged.score_parts["role_penalty"] == -0.10
+
+
+def test_merge_overlapping_results_uses_role_priority_tiebreak() -> None:
+    from context_search_tool.retrieval import (
+        _ExpandedResult,
+        _merge_overlapping_results,
+    )
+
+    service = _ExpandedResult(
+        chunk_ids=["service"],
+        file_path=Path("ZService.java"),
+        start_line=1,
+        end_line=3,
+        content="service",
+        score=1.0,
+        score_parts={
+            "combined_score": 1.0,
+            "rerank_score": 0.8,
+            "evidence_priority": 0.0,
+            "role_priority": 2.0,
+        },
+        reasons=["service"],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=0.8,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+    handler = _ExpandedResult(
+        chunk_ids=["handler"],
+        file_path=Path("AHandler.java"),
+        start_line=1,
+        end_line=3,
+        content="handler",
+        score=1.0,
+        score_parts={
+            "combined_score": 1.0,
+            "rerank_score": 0.8,
+            "evidence_priority": 0.0,
+            "role_priority": 5.0,
+        },
+        reasons=["handler"],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=0.8,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+
+    merged = _merge_overlapping_results([handler, service])
+
+    assert [item.chunk_ids[0] for item in merged] == ["service", "handler"]

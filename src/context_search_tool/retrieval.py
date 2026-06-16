@@ -1073,6 +1073,7 @@ def _merge_overlapping_results(results: list[_ExpandedResult]) -> list[_Expanded
         key=lambda item: (
             -item.rerank_score,
             item.evidence_priority,
+            item.score_parts.get("role_priority", 99.0),
             -item.score,
             item.file_path.as_posix(),
             item.start_line,
@@ -1096,6 +1097,7 @@ def _merge_expanded_result(
         # Tiebreak by complete sort key
         winner = min(left, right, key=lambda x: (
             x.evidence_priority,
+            x.score_parts.get("role_priority", 99.0),
             -x.score,
             x.file_path.as_posix(),
             x.start_line
@@ -1106,6 +1108,11 @@ def _merge_expanded_result(
     merged_score_parts["rerank_score"] = winner.rerank_score
     # evidence_priority is smaller-is-better, so use winner's value
     merged_score_parts["evidence_priority"] = float(winner.evidence_priority)
+    for key in ("role_priority", "role_boost", "role_penalty"):
+        if key in winner.score_parts:
+            merged_score_parts[key] = winner.score_parts[key]
+        else:
+            merged_score_parts.pop(key, None)
 
     return _ExpandedResult(
         chunk_ids=_dedupe([*left.chunk_ids, *right.chunk_ids]),
