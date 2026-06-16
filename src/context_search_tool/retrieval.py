@@ -61,6 +61,14 @@ class _RankedChunk:
 
 
 @dataclass(frozen=True)
+class _ChunkRole:
+    name: str
+    priority: int
+    boost: float
+    penalty: float = 0.0
+
+
+@dataclass(frozen=True)
 class _RelationSeed:
     score: float
     planner_seeded: bool
@@ -1137,6 +1145,29 @@ def _merge_score_parts(
     for key, value in right.items():
         merged[key] = max(merged.get(key, value), value)
     return merged
+
+
+def _chunk_role(chunk: DocumentChunk) -> _ChunkRole:
+    path = chunk.file_path.as_posix().lower()
+    names = " ".join(symbol.name for symbol in chunk.symbols).lower()
+    content = chunk.content.lower()
+    haystack = f"{path} {names} {content}"
+
+    if "controller" in path or "controller" in names:
+        return _ChunkRole("entrypoint", 0, 0.12)
+    if "/service/" in path and "impl" not in path and "interface " in content:
+        return _ChunkRole("service_interface", 1, 0.10)
+    if "/service/impl/" in path or "serviceimpl" in haystack:
+        return _ChunkRole("service_impl", 2, 0.10)
+    if any(token in path for token in ("/dto/", "/vo/", "/query/", "/entity/")):
+        return _ChunkRole("data_type", 3, 0.04)
+    if "/mapper/" in path or "mapper" in names:
+        return _ChunkRole("mapper", 4, 0.03)
+    if any(token in haystack for token in ("handler", "listener", "callback", "connector")):
+        return _ChunkRole("handler", 5, 0.0, 0.10)
+    if any(token in haystack for token in ("constant", "config", "buildermanager", "parambuilder")):
+        return _ChunkRole("constant_or_config", 6, 0.0, 0.12)
+    return _ChunkRole("generic", 7, 0.0, 0.02)
 
 
 def _combined_score(score_parts: dict[str, float]) -> float:

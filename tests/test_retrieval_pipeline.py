@@ -1956,6 +1956,37 @@ def test_rank_chunks_exposes_numeric_diagnostic_score_parts(tmp_path: Path) -> N
     assert isinstance(parts["role_boost"], float)
 
 
+@pytest.mark.parametrize(
+    ("path", "content", "expected_role", "expected_priority"),
+    [
+        ("src/main/java/com/example/controller/AuthController.java", "class AuthController {}", "entrypoint", 0),
+        ("src/main/java/com/example/service/AuthService.java", "interface AuthService {}", "service_interface", 1),
+        ("src/main/java/com/example/service/impl/AuthServiceImpl.java", "class AuthServiceImpl {}", "service_impl", 2),
+        ("src/main/java/com/example/dto/AuthLoginDto.java", "class AuthLoginDto {}", "data_type", 3),
+        ("src/main/java/com/example/entity/User.java", "class User {}", "data_type", 3),
+        ("src/main/java/com/example/mapper/UserMapper.java", "interface UserMapper {}", "mapper", 4),
+        ("src/main/java/com/example/iot/code/beehive/BeehiveCodeHandler.java", "class BeehiveCodeHandler {}", "handler", 5),
+        ("src/main/java/com/example/mqtt/PeachMqttConstant.java", "class PeachMqttConstant {}", "constant_or_config", 6),
+    ],
+)
+def test_chunk_role_classification(path: str, content: str, expected_role: str, expected_priority: int) -> None:
+    chunk = DocumentChunk(
+        chunk_id="chunk",
+        file_path=Path(path),
+        start_line=1,
+        end_line=1,
+        content=content,
+        chunk_type="symbol",
+        lexical_tokens=[],
+        metadata={"language": "java"},
+    )
+
+    role = retrieval._chunk_role(chunk)
+
+    assert role.name == expected_role
+    assert role.priority == expected_priority
+
+
 def test_reasons_include_role_diagnostics() -> None:
     reasons = retrieval._reasons(
         {"role_boost": 0.2, "role_penalty": -0.1},
