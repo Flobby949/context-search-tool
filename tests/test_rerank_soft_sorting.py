@@ -3,13 +3,11 @@ Tests for soft rerank sorting functionality.
 
 These tests validate the rerank-based sorting that fixes the rank_tier bug
 where low-score relation expansion results incorrectly outrank high-score
-direct matches.
-
-All tests are marked as xfail since the features don't exist yet (TDD red phase).
+direct matches, and the implemented rerank diagnostics.
 """
 
-import pytest
 from pathlib import Path
+from context_search_tool import retrieval
 from context_search_tool.models import (
     DocumentChunk,
     RetrievalCandidate,
@@ -61,7 +59,6 @@ def _setup_test_data(
     return store, candidates
 
 
-@pytest.mark.xfail(reason="rerank_score field doesn't exist yet")
 def test_rerank_high_score_direct_beats_low_score_relation():
     """
     Test #1: High-score direct (semantic ~2.0) must rank before low-score relation-only.
@@ -92,7 +89,6 @@ def test_rerank_high_score_direct_beats_low_score_relation():
     assert hasattr(ranked[0], "rerank_score")
 
 
-@pytest.mark.xfail(reason="planner_ceiling and rerank_score don't exist yet")
 def test_rerank_planner_only_relation_cannot_beat_strong_original_direct():
     """
     Test #2: planner-only relation (_is_planner_hint_only=true) cannot outrank
@@ -123,7 +119,6 @@ def test_rerank_planner_only_relation_cannot_beat_strong_original_direct():
     assert max(planner_rerank) < min(direct_rerank)
 
 
-@pytest.mark.xfail(reason="planner_direct classification doesn't exist yet")
 def test_rerank_planner_direct_cannot_beat_strong_original_direct():
     """
     Test #3: planner_direct (planner_signal/planner_lexical without relation)
@@ -147,7 +142,6 @@ def test_rerank_planner_direct_cannot_beat_strong_original_direct():
     assert ranked[1].evidence_class == "planner_direct"
 
 
-@pytest.mark.xfail(reason="planner_ceiling threshold logic doesn't exist yet")
 def test_rerank_weak_direct_does_not_trigger_planner_ceiling():
     """
     Test #4: Weak direct (lexical=0.05 or token_coverage=0.1) does NOT trigger
@@ -175,7 +169,6 @@ def test_rerank_weak_direct_does_not_trigger_planner_ceiling():
     assert planner_result.rerank_score > 0.3  # Not severely clamped
 
 
-@pytest.mark.xfail(reason="planner_ceiling conditional logic doesn't exist yet")
 def test_rerank_no_strong_direct_means_no_clamp():
     """
     Test #5: When there's no strong original_direct, planner-only results are
@@ -205,7 +198,6 @@ def test_rerank_no_strong_direct_means_no_clamp():
     assert planner_b_result.rerank_score > 0.0  # Not artificially lowered to negative
 
 
-@pytest.mark.xfail(reason="endpoint boost logic in rerank doesn't exist yet")
 def test_rerank_endpoint_boost_does_not_override_score():
     """
     Test #6: endpoint/controller has boost, but high-score non-endpoint can
@@ -230,7 +222,6 @@ def test_rerank_endpoint_boost_does_not_override_score():
     assert ranked[0].chunk.chunk_id == "auth_service_impl"
 
 
-@pytest.mark.xfail(reason="relation expansion with rerank doesn't exist yet")
 def test_rerank_relation_expansion_still_surfaces_impl():
     """
     Test #7: Relation expansion can still surface Service/Impl classes.
@@ -257,7 +248,6 @@ def test_rerank_relation_expansion_still_surfaces_impl():
     assert "station_service_impl" in chunk_ids
 
 
-@pytest.mark.xfail(reason="normalize_score and rerank don't exist yet")
 def test_rerank_normalization_effectiveness():
     """
     Test #8: Normalization works correctly with outlier scores.
@@ -377,13 +367,13 @@ def test_rerank_merge_field_consistency():
         end_line=20,
         content="line 10\nline 11\n...\nline 20",
         score=0.8,  # higher combined_score
-        score_parts={"semantic": 0.7, "lexical": 0.1, "combined_score": 0.8, "rerank_score": 0.6, "evidence_priority": 2.0},
+        score_parts={"semantic": 0.7, "lexical": 0.1, "combined_score": 0.8, "rerank_score": 0.6, "evidence_priority": 3.0},
         reasons=["left reasons"],
         followup_keywords=["left_kw"],
         rank_tier=1,
         rerank_score=0.6,  # lower rerank_score
         evidence_class="planner_direct",
-        evidence_priority=2,
+        evidence_priority=3,
     )
 
     # Right: lower combined_score (0.5) but higher rerank_score (0.9)
@@ -420,6 +410,20 @@ def test_rerank_merge_field_consistency():
 
 
 # Unit tests for evidence classification helpers
+def test_evidence_class_splits_weak_original_direct() -> None:
+    assert retrieval._evidence_class({"lexical": 0.05}) == "weak_original_direct"
+    assert retrieval._evidence_class({"token_coverage": 0.1}) == "weak_original_direct"
+    assert retrieval._evidence_priority("weak_original_direct") == 1
+
+
+def test_evidence_class_keeps_strong_original_direct() -> None:
+    assert retrieval._evidence_class({"lexical": 0.25}) == "original_direct"
+    assert retrieval._evidence_class({"semantic": 0.35}) == "original_direct"
+    assert retrieval._evidence_class({"path_symbol": 1.0}) == "original_direct"
+    assert retrieval._evidence_class({"signal": 0.5}) == "original_direct"
+    assert retrieval._evidence_class({"token_coverage": 0.5}) == "original_direct"
+
+
 def test_evidence_class_priority_order():
     """Test that _evidence_class follows priority order correctly."""
     from context_search_tool.retrieval import _evidence_class
@@ -428,21 +432,24 @@ def test_evidence_class_priority_order():
     assert _evidence_class({"semantic": 0.5}) == "original_direct"
     assert _evidence_class({"lexical": 0.3}) == "original_direct"
     assert _evidence_class({"path_symbol": 1.0}) == "original_direct"
-    assert _evidence_class({"signal": 0.4}) == "original_direct"
+    assert _evidence_class({"signal": 0.5}) == "original_direct"
     assert _evidence_class({"token_coverage": 0.6}) == "original_direct"
 
-    # Priority 1: original_relation (only if no direct evidence)
+    # Priority 1: weak_original_direct
+    assert _evidence_class({"lexical": 0.05}) == "weak_original_direct"
+
+    # Priority 2: original_relation (only if no direct evidence)
     assert _evidence_class({"original_relation": 0.8}) == "original_relation"
 
-    # Priority 2: planner_direct
+    # Priority 3: planner_direct
     assert _evidence_class({"planner_lexical": 0.5}) == "planner_direct"
     assert _evidence_class({"planner_signal": 0.4}) == "planner_direct"
     assert _evidence_class({"planner_path_symbol": 1.0}) == "planner_direct"
 
-    # Priority 3: planner_relation
+    # Priority 4: planner_relation
     assert _evidence_class({"planner_relation": 0.7}) == "planner_relation"
 
-    # Priority 4: weak_or_generic
+    # Priority 5: weak_or_generic
     assert _evidence_class({}) == "weak_or_generic"
 
 
@@ -452,13 +459,13 @@ def test_evidence_class_mixed_evidence():
 
     # Direct + relation = direct
     assert _evidence_class({
-        "semantic": 0.3,
+        "semantic": 0.35,
         "original_relation": 0.8,
     }) == "original_direct"
 
     # Original direct beats planner direct
     assert _evidence_class({
-        "lexical": 0.2,
+        "lexical": 0.25,
         "planner_lexical": 0.5,
     }) == "original_direct"
 
@@ -547,11 +554,12 @@ def test_evidence_priority_mapping():
     from context_search_tool.retrieval import _evidence_priority
 
     assert _evidence_priority("original_direct") == 0
-    assert _evidence_priority("original_relation") == 1
-    assert _evidence_priority("planner_direct") == 2
-    assert _evidence_priority("planner_relation") == 3
-    assert _evidence_priority("weak_or_generic") == 4
-    assert _evidence_priority("unknown") == 4  # Default fallback
+    assert _evidence_priority("weak_original_direct") == 1
+    assert _evidence_priority("original_relation") == 2
+    assert _evidence_priority("planner_direct") == 3
+    assert _evidence_priority("planner_relation") == 4
+    assert _evidence_priority("weak_or_generic") == 5
+    assert _evidence_priority("unknown") == 5  # Default fallback
 
 
 def test_generic_hint_penalty():
@@ -630,4 +638,3 @@ def test_has_original_direct_evidence():
         "semantic": 0.3,
         "original_relation": 0.7,
     }) == True
-

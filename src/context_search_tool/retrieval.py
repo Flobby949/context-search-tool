@@ -800,9 +800,12 @@ def _rank_chunks(
     else:
         planner_ceiling = None
 
-    # Second pass: apply ceiling clamp to non-original_direct classes
+    # Second pass: apply ceiling clamp to non-strong evidence classes
     for item in ranked:
-        if item['evidence_class'] in {"original_relation", "planner_direct", "planner_relation", "weak_or_generic"} and planner_ceiling is not None:
+        if (
+            item['evidence_class'] in _CLAMPED_EVIDENCE_CLASSES
+            and planner_ceiling is not None
+        ):
             item['rerank_score'] = min(item['rerank_score'], planner_ceiling)
 
         score_parts = item['score_parts']
@@ -1168,6 +1171,14 @@ _STRONG_LEXICAL_EVIDENCE = 0.25
 _STRONG_PATH_SYMBOL_EVIDENCE = 1.0
 _STRONG_SIGNAL_EVIDENCE = 0.5
 
+_CLAMPED_EVIDENCE_CLASSES = {
+    "weak_original_direct",
+    "original_relation",
+    "planner_direct",
+    "planner_relation",
+    "weak_or_generic",
+}
+
 
 def _has_original_direct_evidence(score_parts: dict[str, float]) -> bool:
     """
@@ -1236,16 +1247,24 @@ def _has_strong_original_direct_evidence(score_parts: dict[str, float]) -> bool:
     )
 
 
+def _has_weak_original_direct_evidence(score_parts: dict[str, float]) -> bool:
+    return (
+        _has_original_direct_evidence(score_parts)
+        and not _has_strong_original_direct_evidence(score_parts)
+    )
+
+
 def _evidence_class(score_parts: dict[str, float]) -> str:
     """
     Classify evidence type by priority.
 
     Priority order (lower number = higher priority):
-    0. original_direct: has direct original evidence (semantic/lexical/path_symbol/signal/token_coverage)
-    1. original_relation: has original_relation score only
-    2. planner_direct: has planner direct evidence (planner_lexical/signal/path_symbol)
-    3. planner_relation: has planner_relation score only
-    4. weak_or_generic: fallback for everything else
+    0. original_direct: has strong direct original evidence
+    1. weak_original_direct: has weak direct original evidence
+    2. original_relation: has original_relation score only
+    3. planner_direct: has planner direct evidence (planner_lexical/signal/path_symbol)
+    4. planner_relation: has planner_relation score only
+    5. weak_or_generic: fallback for everything else
 
     Args:
         score_parts: Dictionary of score components
@@ -1253,16 +1272,17 @@ def _evidence_class(score_parts: dict[str, float]) -> str:
     Returns:
         Evidence class string
     """
-    if _has_original_direct_evidence(score_parts):
+    if _has_strong_original_direct_evidence(score_parts):
         return "original_direct"
-    elif score_parts.get("original_relation", 0.0) > 0:
+    if _has_weak_original_direct_evidence(score_parts):
+        return "weak_original_direct"
+    if score_parts.get("original_relation", 0.0) > 0:
         return "original_relation"
-    elif _has_planner_direct_evidence(score_parts):
+    if _has_planner_direct_evidence(score_parts):
         return "planner_direct"
-    elif score_parts.get("planner_relation", 0.0) > 0:
+    if score_parts.get("planner_relation", 0.0) > 0:
         return "planner_relation"
-    else:
-        return "weak_or_generic"
+    return "weak_or_generic"
 
 
 def _evidence_priority(evidence_class: str) -> int:
@@ -1273,16 +1293,17 @@ def _evidence_priority(evidence_class: str) -> int:
         evidence_class: Evidence class string from _evidence_class
 
     Returns:
-        Priority value 0-4
+        Priority value 0-5
     """
     priority_map = {
         "original_direct": 0,
-        "original_relation": 1,
-        "planner_direct": 2,
-        "planner_relation": 3,
-        "weak_or_generic": 4,
+        "weak_original_direct": 1,
+        "original_relation": 2,
+        "planner_direct": 3,
+        "planner_relation": 4,
+        "weak_or_generic": 5,
     }
-    return priority_map.get(evidence_class, 4)
+    return priority_map.get(evidence_class, 5)
 
 
 def normalize_score(scores: list[float]) -> list[float]:
@@ -1369,7 +1390,7 @@ def _rerank_score(
             - relation_only_penalty (if only relation, no direct evidence)
             - generic_hint_penalty
 
-    Then apply ceiling clamp for non-original_direct evidence classes if planner_ceiling is set.
+    Then apply ceiling clamp for non-strong evidence classes if planner_ceiling is set.
 
     Args:
         normalized_score: Normalized combined score
@@ -1387,8 +1408,10 @@ def _rerank_score(
     rerank_score = normalized_score
 
     # Boosts
-    if _has_original_direct_evidence(score_parts):
+    if _has_strong_original_direct_evidence(score_parts):
         rerank_score += 0.2
+    elif _has_weak_original_direct_evidence(score_parts):
+        rerank_score += 0.05
 
     if flags.get("has_endpoint_signal", False) or flags.get("is_controller", False):
         rerank_score += 0.15
@@ -1408,9 +1431,12 @@ def _rerank_score(
 
         rerank_score -= _generic_hint_penalty(chunk, score_parts)
 
-    # Apply ceiling clamp for lower-priority evidence
+    # Apply ceiling clamp for non-strong evidence
     evidence_class = _evidence_class(score_parts)
-    if evidence_class in {"original_relation", "planner_direct", "planner_relation", "weak_or_generic"} and planner_ceiling is not None:
+    if (
+        evidence_class in _CLAMPED_EVIDENCE_CLASSES
+        and planner_ceiling is not None
+    ):
         rerank_score = min(rerank_score, planner_ceiling)
 
     return rerank_score

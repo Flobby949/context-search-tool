@@ -2554,7 +2554,6 @@ def test_rerank_second_sort_consistency_after_merge(tmp_path: Path) -> None:
     assert bundle.results[0].file_path == Path("DirectMatch.java")
 
 
-@pytest.mark.xfail(reason="Feature not implemented yet: _evidence_class")
 def test_rerank_original_relation_not_misclassified(tmp_path: Path) -> None:
     """
     Test #10: Candidate with original_relation>0 should be classified as
@@ -2623,7 +2622,6 @@ def test_rerank_output_contract_score_equals_rerank_score(tmp_path: Path) -> Non
         ), f"score_parts[{key}] should be numeric, got {type(value)}"
 
 
-@pytest.mark.xfail(reason="Feature not implemented yet: _merge_expanded_result changes")
 def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
     """
     Test #12: When merging overlapping results where lower rerank_score has higher
@@ -2649,14 +2647,14 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
         score_parts={
             "combined_score": 1.5,
             "rerank_score": 0.6,  # Lower rerank_score
-            "evidence_priority": 3,
+            "evidence_priority": 4,
         },
         reasons=["reason from left"],
         followup_keywords=["left"],
         rank_tier=2,
         rerank_score=0.6,
         evidence_class="planner_relation",
-        evidence_priority=3,
+        evidence_priority=4,
     )
 
     right = _ExpandedResult(
@@ -2669,14 +2667,14 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
         score_parts={
             "combined_score": 1.2,
             "rerank_score": 0.8,  # Higher rerank_score (winner)
-            "evidence_priority": 1,
+            "evidence_priority": 2,
         },
         reasons=["reason from right"],
         followup_keywords=["right"],
         rank_tier=1,
         rerank_score=0.8,
         evidence_class="original_relation",
-        evidence_priority=1,
+        evidence_priority=2,
     )
 
     merged = _merge_expanded_result(left, right)
@@ -2684,7 +2682,7 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
     # All fields should come from the winner (right, with higher rerank_score)
     assert merged.rerank_score == 0.8  # From right
     assert merged.evidence_class == "original_relation"  # From right
-    assert merged.evidence_priority == 1  # From right
+    assert merged.evidence_priority == 2  # From right
     assert "reason from right" in merged.reasons
     assert merged.score_parts["rerank_score"] == 0.8
-    assert merged.score_parts["evidence_priority"] == 1
+    assert merged.score_parts["evidence_priority"] == 2
