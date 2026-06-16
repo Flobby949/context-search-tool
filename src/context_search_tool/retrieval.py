@@ -153,6 +153,11 @@ def query_repository(
     direct_candidates = _merge_candidates(
         [*initial_candidates, *signal_candidates, *planner_candidates]
     )
+    anchor_candidates = _anchor_expansion_candidates(
+        store,
+        list(direct_candidates.values()),
+        config,
+    )
     relation_candidates = _relation_expansion_candidates(
         store,
         list(direct_candidates.values()),
@@ -161,6 +166,7 @@ def query_repository(
     candidates = _merge_candidates(
         [
             *direct_candidates.values(),
+            *anchor_candidates,
             *relation_candidates,
         ]
     )
@@ -587,6 +593,133 @@ def _planner_hint_candidates(
     return [*lexical, *path_symbol, *signals]
 
 
+def _anchor_expansion_candidates(
+    store: SQLiteStore,
+    seed_candidates: list[RetrievalCandidate],
+    config: ToolConfig,
+) -> list[RetrievalCandidate]:
+    direct_seeds = [
+        candidate
+        for candidate in seed_candidates
+        if candidate.score_parts.get("direct_text", 0.0) > 0
+    ]
+    if not direct_seeds:
+        return []
+
+    limit = max(config.retrieval.final_top_k * 3, config.retrieval.final_top_k)
+    expanded: dict[str, RetrievalCandidate] = {}
+    seed_ids = {candidate.chunk_id for candidate in direct_seeds}
+
+    for candidate in sorted(
+        direct_seeds,
+        key=lambda item: (
+            -item.score_parts.get("direct_text", item.score),
+            item.chunk_id,
+        ),
+    ):
+        try:
+            anchor_chunk = store.chunk_for_id(candidate.chunk_id)
+        except KeyError:
+            continue
+        anchor_score = _bounded_score(
+            candidate.score_parts.get("direct_text", candidate.score)
+        )
+        _add_same_file_anchor_candidates(
+            store,
+            expanded,
+            seed_ids,
+            anchor_chunk,
+            anchor_score,
+            limit,
+        )
+        if _is_document_or_config_anchor(anchor_chunk.file_path):
+            _add_directory_anchor_candidates(
+                store,
+                expanded,
+                seed_ids,
+                anchor_chunk,
+                anchor_score,
+                limit,
+            )
+        if len(expanded) >= limit:
+            break
+
+    return list(expanded.values())
+
+
+def _add_same_file_anchor_candidates(
+    store: SQLiteStore,
+    expanded: dict[str, RetrievalCandidate],
+    seed_ids: set[str],
+    anchor_chunk: DocumentChunk,
+    anchor_score: float,
+    limit: int,
+) -> None:
+    score = anchor_score * 0.80
+    for chunk in store.chunks_for_file(anchor_chunk.file_path, limit):
+        if chunk.chunk_id in seed_ids:
+            continue
+        _put_anchor_candidate(
+            expanded,
+            chunk.chunk_id,
+            score,
+            "same_file_anchor",
+        )
+        if len(expanded) >= limit:
+            return
+
+
+def _add_directory_anchor_candidates(
+    store: SQLiteStore,
+    expanded: dict[str, RetrievalCandidate],
+    seed_ids: set[str],
+    anchor_chunk: DocumentChunk,
+    anchor_score: float,
+    limit: int,
+) -> None:
+    score = anchor_score * 0.55
+    for chunk in store.chunks_in_directory(anchor_chunk.file_path.parent, limit):
+        if chunk.chunk_id in seed_ids:
+            continue
+        if _is_document_or_config_anchor(chunk.file_path):
+            continue
+        _put_anchor_candidate(
+            expanded,
+            chunk.chunk_id,
+            score,
+            "directory_anchor",
+        )
+        if len(expanded) >= limit:
+            return
+
+
+def _put_anchor_candidate(
+    expanded: dict[str, RetrievalCandidate],
+    chunk_id: str,
+    score: float,
+    anchor_key: str,
+) -> None:
+    existing = expanded.get(chunk_id)
+    if existing is not None and existing.score >= score:
+        return
+    score_parts = {
+        "anchored_relation": score,
+        "original_relation": score,
+        anchor_key: score,
+    }
+    expanded[chunk_id] = RetrievalCandidate(
+        chunk_id=chunk_id,
+        score=score,
+        source="anchored_relation",
+        score_parts=score_parts,
+    )
+
+
+def _is_document_or_config_anchor(path: Path) -> bool:
+    suffix = path.suffix.lower()
+    return suffix in {".md", ".yml", ".yaml", ".json", ".properties"}
+
+
 def _relation_expansion_candidates(
     store: SQLiteStore,
     seed_candidates: list[RetrievalCandidate],
@@ -729,6 +862,14 @@ def _candidate_relation_seed(candidate: RetrievalCandidate) -> _RelationSeed:
         return _RelationSeed(
             _bounded_score(signal_score),
             planner_signal_score > 0,
+            True,
+        )
+
+    direct_text_score = candidate.score_parts.get("direct_text", 0.0)
+    if direct_text_score > 0:
+        return _RelationSeed(
+            _bounded_score(direct_text_score),
+            False,
             True,
         )
 
@@ -1263,6 +1404,7 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         + _bounded_score(score_parts.get("relation", 0.0))
         + _bounded_score(score_parts.get("original_relation", 0.0))
         + _bounded_score(score_parts.get("planner_relation", 0.0))
+        + (_bounded_score(score_parts.get("anchored_relation", 0.0)) * 0.75)
         + (score_parts.get("token_coverage", 0.0) * 0.20)
         + (_bounded_score(score_parts.get("direct_text", 0.0)) * 0.45)  # High weight for literal text matches in comments/strings
         + score_parts.get("plugin_boost", 0.0)
@@ -1729,6 +1871,12 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("relation expansion")
     if score_parts.get("direct_text", 0.0) > 0:
         reasons.append("direct text match")
+    if score_parts.get("anchored_relation", 0.0) > 0:
+        reasons.append("evidence-anchored expansion")
+    if score_parts.get("same_file_anchor", 0.0) > 0:
+        reasons.append("same-file anchor")
+    if score_parts.get("directory_anchor", 0.0) > 0:
+        reasons.append("directory anchor")
     if _has_planner_hint(score_parts):
         reasons.append("planner hint match")
     if score_parts.get("role_boost", 0.0) > 0:

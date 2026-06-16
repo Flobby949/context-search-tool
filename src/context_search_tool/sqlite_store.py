@@ -658,6 +658,42 @@ class SQLiteStore:
                 raise KeyError(chunk_id)
             return self._chunk_from_row(connection, row)
 
+    def chunks_for_file(self, file_path: Path, limit: int) -> list[DocumentChunk]:
+        if limit <= 0:
+            return []
+        path = _path_key(file_path)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM chunks
+                WHERE file_path = ?
+                  AND deleted_at IS NULL
+                ORDER BY start_line, end_line, chunk_id
+                LIMIT ?
+                """,
+                (path, limit),
+            ).fetchall()
+            return [self._chunk_from_row(connection, row) for row in rows]
+
+    def chunks_in_directory(self, directory: Path, limit: int) -> list[DocumentChunk]:
+        if limit <= 0:
+            return []
+        directory_pattern = directory.as_posix().strip("/") + "/%"
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM chunks
+                WHERE file_path LIKE ?
+                  AND deleted_at IS NULL
+                ORDER BY file_path, start_line, end_line, chunk_id
+                LIMIT ?
+                """,
+                (directory_pattern, limit),
+            ).fetchall()
+            return [self._chunk_from_row(connection, row) for row in rows]
+
     def chunk_for_line(self, file_path: Path, line: int) -> DocumentChunk:
         path = _path_key(file_path)
         with self._connect() as connection:
