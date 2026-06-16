@@ -299,3 +299,21 @@ def test_mcp_query_rotates_large_feedback_log(
     assert len(rotated) == 1
     assert rotated[0].read_text(encoding="utf-8") == "oversized\n"
     assert len(log_path.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_mcp_query_payload_keeps_direct_text_diagnostics_numeric(tmp_path: Path) -> None:
+    """Verify direct text diagnostics remain numeric in MCP payload."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "test.py").write_text("# 测试\ndef test(): pass\n", encoding="utf-8")
+
+    context_search_index_tool(str(repo))
+    result = context_search_query_tool(str(repo), "测试")
+
+    # Direct text diagnostics should be numeric
+    if "direct_text" in result.get("diagnostics", {}):
+        assert isinstance(result["diagnostics"]["direct_text"], (int, float))
+    if "direct_text_hits" in result.get("diagnostics", {}):
+        assert isinstance(result["diagnostics"]["direct_text_hits"], (int, float))
+    if "anchored_relation" in result.get("diagnostics", {}):
+        assert isinstance(result["diagnostics"]["anchored_relation"], (int, float))

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -14,6 +16,9 @@ from context_search_tool.models import (
     SourceFile,
     SymbolRef,
 )
+
+logger = logging.getLogger(__name__)
+_DIRECT_TEXT_CJK_SEQUENCE_RE = re.compile(r"[㐀-鿿]{2,}")
 
 
 class SQLiteStore:
@@ -579,6 +584,65 @@ class SQLiteStore:
             for chunk_id, score in ranked[:limit]
         ]
 
+    def direct_text_search(
+        self,
+        probes: list[str],
+        limit: int,
+    ) -> list[RetrievalCandidate]:
+        normalized = _dedupe_search_probes(probes)
+        if not normalized or limit <= 0:
+            return []
+
+        start = time.perf_counter()
+        matches: list[RetrievalCandidate] = []
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT chunk_id, file_path, content
+                FROM chunks
+                WHERE deleted_at IS NULL
+                """
+            ).fetchall()
+
+        for row in rows:
+            haystack = f"{row['file_path']}\n{row['content']}"
+            matched = _matched_direct_text_probes(haystack, normalized)
+            if not matched:
+                continue
+            hit_count = float(len(matched))
+            score = _direct_text_score(matched, normalized)
+            matches.append(
+                RetrievalCandidate(
+                    chunk_id=row["chunk_id"],
+                    score=score,
+                    source="direct_text",
+                    score_parts={
+                        "direct_text": score,
+                        "direct_text_hits": hit_count,
+                    },
+                )
+            )
+
+        matches.sort(
+            key=lambda item: (
+                -item.score,
+                -item.score_parts.get("direct_text_hits", 0.0),
+                item.chunk_id,
+            )
+        )
+
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        if elapsed_ms > 50:
+            logger.warning(
+                "direct_text_search slow: %.1fms for %s probes, %s chunks",
+                elapsed_ms,
+                len(normalized),
+                len(rows),
+            )
+
+        return matches[:limit]
+
     def chunk_for_id(self, chunk_id: str) -> DocumentChunk:
         with self._connect() as connection:
             row = connection.execute(
@@ -593,6 +657,42 @@ class SQLiteStore:
             if row is None:
                 raise KeyError(chunk_id)
             return self._chunk_from_row(connection, row)
+
+    def chunks_for_file(self, file_path: Path, limit: int) -> list[DocumentChunk]:
+        if limit <= 0:
+            return []
+        path = _path_key(file_path)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM chunks
+                WHERE file_path = ?
+                  AND deleted_at IS NULL
+                ORDER BY start_line, end_line, chunk_id
+                LIMIT ?
+                """,
+                (path, limit),
+            ).fetchall()
+            return [self._chunk_from_row(connection, row) for row in rows]
+
+    def chunks_in_directory(self, directory: Path, limit: int) -> list[DocumentChunk]:
+        if limit <= 0:
+            return []
+        directory_pattern = directory.as_posix().strip("/") + "/%"
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM chunks
+                WHERE file_path LIKE ?
+                  AND deleted_at IS NULL
+                ORDER BY file_path, start_line, end_line, chunk_id
+                LIMIT ?
+                """,
+                (directory_pattern, limit),
+            ).fetchall()
+            return [self._chunk_from_row(connection, row) for row in rows]
 
     def chunk_for_line(self, file_path: Path, line: int) -> DocumentChunk:
         path = _path_key(file_path)
@@ -930,6 +1030,49 @@ def _from_json(value: str) -> dict[str, Any]:
 
 def _from_json_list(value: str) -> list[str]:
     return list(json.loads(value))
+
+
+def _dedupe_search_probes(probes: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for probe in probes:
+        normalized = probe.strip()
+        if not normalized:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(normalized)
+    # Limit total probes to prevent performance issues with CJK n-gram explosion
+    # Prioritize longer probes (more information density)
+    if len(deduped) > 30:
+        deduped = sorted(deduped, key=len, reverse=True)[:30]
+    return deduped
+
+
+def _matched_direct_text_probes(haystack: str, probes: list[str]) -> list[str]:
+    folded_haystack = haystack.casefold()
+    matched: list[str] = []
+    for probe in probes:
+        if probe.casefold() in folded_haystack:
+            matched.append(probe)
+    return matched
+
+
+def _direct_text_score(matched: list[str], probes: list[str]) -> float:
+    if not matched or not probes:
+        return 0.0
+    # Distinguish CJK and ASCII information density
+    # CJK: 4+ chars = high confidence; ASCII: 8+ chars = high confidence
+    has_strong_match = any(
+        (len(probe) >= 4 and _DIRECT_TEXT_CJK_SEQUENCE_RE.search(probe)) or len(probe) >= 8
+        for probe in matched
+    )
+    if not has_strong_match:
+        return min(0.50, len(matched) / min(len(probes), 6))
+    coverage = len(matched) / min(len(probes), 6)
+    return min(1.0, max(0.60, coverage))
 
 
 def _metadata_search_text(metadata: dict[str, Any]) -> str:

@@ -374,3 +374,91 @@ def test_store_exposes_source_file_and_active_indexed_paths(tmp_path: Path) -> N
 
     assert store.source_file_paths() == set()
     assert store.indexed_file_paths() == set()
+
+
+def test_store_direct_text_search_scores_literal_chunk_matches(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    chunk = DocumentChunk(
+        chunk_id="chunk-approval",
+        file_path=Path("approval.py"),
+        start_line=1,
+        end_line=3,
+        content="# 当前审批人查询接口\ndef current_auditor():\n    pass\n",
+        chunk_type="text",
+        symbols=[],
+        lexical_tokens=[],
+        embedding_id="chunk-approval",
+        deleted_at=None,
+        metadata={},
+    )
+    store.replace_chunks(Path("approval.py"), [chunk])
+
+    matches = store.direct_text_search(["当前审批人查询接口", "审批人", "查询接口"], limit=5)
+
+    assert [match.chunk_id for match in matches] == ["chunk-approval"]
+    assert matches[0].source == "direct_text"
+    assert matches[0].score_parts["direct_text"] >= 0.60
+    assert matches[0].score_parts["direct_text_hits"] == 3.0
+
+
+from context_search_tool.sqlite_store import _dedupe_search_probes, _direct_text_score
+
+
+def test_direct_text_score_caps_short_weak_probe() -> None:
+    score = _direct_text_score(["审批"], ["审批"])
+    assert score <= 0.50
+
+
+def test_direct_text_score_treats_long_cjk_phrase_as_strong() -> None:
+    score = _direct_text_score(["当前审批人查询接口"], ["当前审批人查询接口", "审批"])
+    assert score >= 0.60
+
+
+def test_direct_text_probe_deduplication_and_limit() -> None:
+    deduped = _dedupe_search_probes(["审批", "审批", "当前审批人查询接口"])
+    assert deduped == ["审批", "当前审批人查询接口"]
+
+    many_probes = [f"p{i}" for i in range(40)] + ["当前审批人查询接口"]
+    limited = _dedupe_search_probes(many_probes)
+    assert len(limited) == 30
+    assert "当前审批人查询接口" in limited
+
+
+def test_direct_text_search_performance_benchmark(tmp_path: Path) -> None:
+    """Verify direct text search stays under the 100ms CI guardrail."""
+    import time
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+
+    # Create 1000 single-chunk files
+    for i in range(1000):
+        file_path = Path(f"module{i % 10}/file{i}.py")
+        store.replace_chunks(
+            file_path,
+            [
+                DocumentChunk(
+                    chunk_id=f"chunk-{i}",
+                    file_path=file_path,
+                    start_line=1,
+                    end_line=5,
+                    content=f"# 审批流程 {i}\ndef process_{i}():\n    pass\n",
+                    chunk_type="text",
+                    symbols=[],
+                    lexical_tokens=[],
+                    embedding_id=f"chunk-{i}",
+                    deleted_at=None,
+                    metadata={},
+                )
+            ],
+        )
+
+    # Test with 20 probes
+    probes = ["审批流程", "审批", "流程"] + [f"process_{i}" for i in range(17)]
+
+    start = time.perf_counter()
+    results = store.direct_text_search(probes, limit=10)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    assert len(results) > 0
+    assert elapsed_ms < 100, f"Search took {elapsed_ms:.1f}ms, expected <100ms"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 import logging
 from collections import Counter, deque
@@ -36,6 +37,10 @@ MAX_EXPANSION_DEPTH = 3
 MAX_EXPANSION_CANDIDATES = 1000
 _MIN_RELATION_CONFIDENCE = 0.5
 _RELATION_SCORE_DECAY = 0.8
+
+_CJK_SEQUENCE_RE = re.compile(r"[㐀-鿿]{2,}")
+_DIRECT_FRAGMENT_RE = re.compile(r"[A-Za-z0-9_./:@-]{3,}")
+_DIRECT_TEXT_TOP_K_MULTIPLIER = 3
 
 
 @dataclass(frozen=True)
@@ -148,6 +153,11 @@ def query_repository(
     direct_candidates = _merge_candidates(
         [*initial_candidates, *signal_candidates, *planner_candidates]
     )
+    anchor_candidates = _anchor_expansion_candidates(
+        store,
+        list(direct_candidates.values()),
+        config,
+    )
     relation_candidates = _relation_expansion_candidates(
         store,
         list(direct_candidates.values()),
@@ -156,6 +166,7 @@ def query_repository(
     candidates = _merge_candidates(
         [
             *direct_candidates.values(),
+            *anchor_candidates,
             *relation_candidates,
         ]
     )
@@ -412,6 +423,52 @@ def _is_implementation_name(value: str) -> bool:
     )
 
 
+def _direct_text_probes(query: str, original_tokens: list[str]) -> list[str]:
+    probes: list[str] = []
+    stripped = query.strip()
+    if stripped:
+        probes.append(stripped)
+
+    for part in re.split(r"\s+", stripped):
+        if part and part != stripped:
+            probes.append(part)
+
+    for match in _CJK_SEQUENCE_RE.finditer(query):
+        segment = match.group(0)
+        probes.append(segment)
+        chars = list(segment)
+        for size in (2, 3):
+            if len(chars) < size:
+                continue
+            for index in range(0, len(chars) - size + 1):
+                probes.append("".join(chars[index : index + size]))
+
+    for match in _DIRECT_FRAGMENT_RE.finditer(query):
+        probes.append(match.group(0))
+
+    for token in original_tokens:
+        if len(token) >= 3 or _CJK_SEQUENCE_RE.search(token):
+            probes.append(token)
+
+    return _dedupe(probes)
+
+
+def _direct_text_candidates(
+    store: SQLiteStore,
+    query: str,
+    original_tokens: list[str],
+    config: ToolConfig,
+) -> list[RetrievalCandidate]:
+    limit = max(
+        config.retrieval.lexical_top_k,
+        config.retrieval.final_top_k * _DIRECT_TEXT_TOP_K_MULTIPLIER,
+    )
+    return store.direct_text_search(
+        _direct_text_probes(query, original_tokens),
+        limit,
+    )
+
+
 def _is_related_type_name(value: str) -> bool:
     lowered = value.lower()
     return any(
@@ -445,6 +502,7 @@ def _initial_candidates(
         *_semantic_candidates(index_dir, query, config, deleted_ids),
         *_lexical_candidates(store, original_tokens, config.retrieval.lexical_top_k),
         *store.path_symbol_search(original_tokens, config.retrieval.lexical_top_k),
+        *_direct_text_candidates(store, query, original_tokens, config),
     ]
 
 
@@ -533,6 +591,133 @@ def _planner_hint_candidates(
     ]
     signals = _signal_candidates(store, hint_tokens, config, planner_hint=True)
     return [*lexical, *path_symbol, *signals]
+
+
+def _anchor_expansion_candidates(
+    store: SQLiteStore,
+    seed_candidates: list[RetrievalCandidate],
+    config: ToolConfig,
+) -> list[RetrievalCandidate]:
+    direct_seeds = [
+        candidate
+        for candidate in seed_candidates
+        if candidate.score_parts.get("direct_text", 0.0) > 0
+    ]
+    if not direct_seeds:
+        return []
+
+    limit = max(config.retrieval.final_top_k * 3, config.retrieval.final_top_k)
+    expanded: dict[str, RetrievalCandidate] = {}
+    seed_ids = {candidate.chunk_id for candidate in direct_seeds}
+
+    for candidate in sorted(
+        direct_seeds,
+        key=lambda item: (
+            -item.score_parts.get("direct_text", item.score),
+            item.chunk_id,
+        ),
+    ):
+        try:
+            anchor_chunk = store.chunk_for_id(candidate.chunk_id)
+        except KeyError:
+            continue
+        anchor_score = _bounded_score(
+            candidate.score_parts.get("direct_text", candidate.score)
+        )
+        _add_same_file_anchor_candidates(
+            store,
+            expanded,
+            seed_ids,
+            anchor_chunk,
+            anchor_score,
+            limit,
+        )
+        if _is_document_or_config_anchor(anchor_chunk.file_path):
+            _add_directory_anchor_candidates(
+                store,
+                expanded,
+                seed_ids,
+                anchor_chunk,
+                anchor_score,
+                limit,
+            )
+        if len(expanded) >= limit:
+            break
+
+    return list(expanded.values())
+
+
+def _add_same_file_anchor_candidates(
+    store: SQLiteStore,
+    expanded: dict[str, RetrievalCandidate],
+    seed_ids: set[str],
+    anchor_chunk: DocumentChunk,
+    anchor_score: float,
+    limit: int,
+) -> None:
+    score = anchor_score * 0.80
+    for chunk in store.chunks_for_file(anchor_chunk.file_path, limit):
+        if chunk.chunk_id in seed_ids:
+            continue
+        _put_anchor_candidate(
+            expanded,
+            chunk.chunk_id,
+            score,
+            "same_file_anchor",
+        )
+        if len(expanded) >= limit:
+            return
+
+
+def _add_directory_anchor_candidates(
+    store: SQLiteStore,
+    expanded: dict[str, RetrievalCandidate],
+    seed_ids: set[str],
+    anchor_chunk: DocumentChunk,
+    anchor_score: float,
+    limit: int,
+) -> None:
+    score = anchor_score * 0.55
+    for chunk in store.chunks_in_directory(anchor_chunk.file_path.parent, limit):
+        if chunk.chunk_id in seed_ids:
+            continue
+        if _is_document_or_config_anchor(chunk.file_path):
+            continue
+        _put_anchor_candidate(
+            expanded,
+            chunk.chunk_id,
+            score,
+            "directory_anchor",
+        )
+        if len(expanded) >= limit:
+            return
+
+
+def _put_anchor_candidate(
+    expanded: dict[str, RetrievalCandidate],
+    chunk_id: str,
+    score: float,
+    anchor_key: str,
+) -> None:
+    existing = expanded.get(chunk_id)
+    if existing is not None and existing.score >= score:
+        return
+    score_parts = {
+        "anchored_relation": score,
+        "original_relation": score,
+        anchor_key: score,
+    }
+    expanded[chunk_id] = RetrievalCandidate(
+        chunk_id=chunk_id,
+        score=score,
+        source="anchored_relation",
+        score_parts=score_parts,
+    )
+
+
+def _is_document_or_config_anchor(path: Path) -> bool:
+    suffix = path.suffix.lower()
+    return suffix in {".md", ".yml", ".yaml", ".json", ".properties"}
 
 
 def _relation_expansion_candidates(
@@ -677,6 +862,14 @@ def _candidate_relation_seed(candidate: RetrievalCandidate) -> _RelationSeed:
         return _RelationSeed(
             _bounded_score(signal_score),
             planner_signal_score > 0,
+            True,
+        )
+
+    direct_text_score = candidate.score_parts.get("direct_text", 0.0)
+    if direct_text_score > 0:
+        return _RelationSeed(
+            _bounded_score(direct_text_score),
+            False,
             True,
         )
 
@@ -1211,7 +1404,9 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         + _bounded_score(score_parts.get("relation", 0.0))
         + _bounded_score(score_parts.get("original_relation", 0.0))
         + _bounded_score(score_parts.get("planner_relation", 0.0))
+        + (_bounded_score(score_parts.get("anchored_relation", 0.0)) * 0.75)
         + (score_parts.get("token_coverage", 0.0) * 0.20)
+        + (_bounded_score(score_parts.get("direct_text", 0.0)) * 0.45)  # High weight for literal text matches in comments/strings
         + score_parts.get("plugin_boost", 0.0)
         + score_parts.get("penalty", 0.0)
     )
@@ -1247,7 +1442,7 @@ def _has_original_direct_evidence(score_parts: dict[str, float]) -> bool:
         score_parts: Dictionary of score components
 
     Returns:
-        True if any direct evidence exists (semantic, lexical, path_symbol, signal, token_coverage)
+        True if any direct evidence exists (semantic, lexical, path_symbol, signal, token_coverage, direct_text)
     """
     return any(
         score_parts.get(key, 0.0) > 0
@@ -1257,6 +1452,7 @@ def _has_original_direct_evidence(score_parts: dict[str, float]) -> bool:
             "path_symbol",
             "signal",
             "token_coverage",
+            "direct_text",
         )
     )
 
@@ -1304,6 +1500,7 @@ def _has_strong_original_direct_evidence(score_parts: dict[str, float]) -> bool:
         or score_parts.get("path_symbol", 0.0) >= _STRONG_PATH_SYMBOL_EVIDENCE
         or score_parts.get("signal", 0.0) >= _STRONG_SIGNAL_EVIDENCE
         or token_coverage >= 0.5
+        or score_parts.get("direct_text", 0.0) >= 0.60
     )
 
 
@@ -1569,6 +1766,8 @@ def _rank_tier(
         base_tier = 1
     elif score_parts.get("signal", 0.0) > 0:
         base_tier = 2
+    elif score_parts.get("direct_text", 0.0) > 0:
+        base_tier = 2
     else:
         base_tier = 3
 
@@ -1599,6 +1798,7 @@ def _has_original_query_evidence(score_parts: dict[str, float]) -> bool:
             "signal",
             "token_coverage",
             "original_relation",
+            "direct_text",
         )
     )
 
@@ -1669,6 +1869,14 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("signal match")
     if score_parts.get("relation", 0.0) > 0:
         reasons.append("relation expansion")
+    if score_parts.get("direct_text", 0.0) > 0:
+        reasons.append("direct text match")
+    if score_parts.get("anchored_relation", 0.0) > 0:
+        reasons.append("evidence-anchored expansion")
+    if score_parts.get("same_file_anchor", 0.0) > 0:
+        reasons.append("same-file anchor")
+    if score_parts.get("directory_anchor", 0.0) > 0:
+        reasons.append("directory anchor")
     if _has_planner_hint(score_parts):
         reasons.append("planner hint match")
     if score_parts.get("role_boost", 0.0) > 0:
