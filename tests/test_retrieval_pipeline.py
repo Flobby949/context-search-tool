@@ -1962,6 +1962,7 @@ def test_rank_chunks_exposes_numeric_diagnostic_score_parts(tmp_path: Path) -> N
         ("src/main/java/com/example/controller/AuthController.java", "class AuthController {}", "entrypoint", 0, 0.12, 0.0),
         ("src/main/java/com/example/service/AuthService.java", "interface AuthService {}", "service_interface", 1, 0.10, 0.0),
         ("src/main/java/com/example/service/SimpleService.java", "interface SimpleService {}", "service_interface", 1, 0.10, 0.0),
+        ("src/main/java/com/example/service/AuthService.java", "interface AuthService { // AuthServiceImpl handles this }", "service_interface", 1, 0.10, 0.0),
         ("src/main/java/com/example/service/impl/AuthServiceImpl.java", "class AuthServiceImpl {}", "service_impl", 2, 0.10, 0.0),
         ("src/main/java/com/example/dto/AuthLoginDto.java", "class AuthLoginDto {}", "data_type", 3, 0.04, 0.0),
         ("src/main/java/com/example/entity/User.java", "class User {}", "data_type", 3, 0.04, 0.0),

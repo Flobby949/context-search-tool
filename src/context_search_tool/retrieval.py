@@ -1152,10 +1152,11 @@ def _chunk_role(chunk: DocumentChunk) -> _ChunkRole:
     names = " ".join(symbol.name for symbol in chunk.symbols).lower()
     content = chunk.content.lower()
     haystack = f"{path} {names} {content}"
+    path_and_names = f"{path} {names}"
 
     if "controller" in path or "controller" in names:
         return _ChunkRole("entrypoint", 0, 0.12)
-    if "/service/impl/" in path or "serviceimpl" in haystack:
+    if "/service/impl/" in path or "serviceimpl" in path_and_names:
         return _ChunkRole("service_impl", 2, 0.10)
     if "/service/" in path and "interface " in content:
         return _ChunkRole("service_interface", 1, 0.10)
