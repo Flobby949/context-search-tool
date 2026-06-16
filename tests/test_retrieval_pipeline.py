@@ -2560,10 +2560,7 @@ def test_rerank_original_relation_not_misclassified(tmp_path: Path) -> None:
     "original_relation", not "original_direct". Guards against the P1 bug where
     _has_original_query_evidence includes "original_relation" key.
     """
-    try:
-        from context_search_tool.retrieval import _evidence_class
-    except ImportError:
-        pytest.skip("_evidence_class not implemented yet")
+    from context_search_tool.retrieval import _evidence_class
 
     score_parts_relation_only = {
         "original_relation": 0.8,
@@ -2628,13 +2625,10 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
     combined_score, the merged result's rerank_score/evidence_class/evidence_priority/
     reasons should all come from the same winner (highest rerank_score side).
     """
-    try:
-        from context_search_tool.retrieval import (
-            _ExpandedResult,
-            _merge_expanded_result,
-        )
-    except ImportError:
-        pytest.skip("_ExpandedResult or _merge_expanded_result not available")
+    from context_search_tool.retrieval import (
+        _ExpandedResult,
+        _merge_expanded_result,
+    )
 
     # Create two overlapping results
     left = _ExpandedResult(

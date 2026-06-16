@@ -1383,7 +1383,7 @@ def _rerank_score(
 
     Formula:
         rerank_score = normalized_score
-            + original_direct_boost (if has direct evidence)
+            + original_direct_boost (strong direct +0.2, weak direct +0.05)
             + endpoint_or_controller_boost (if endpoint or controller)
             + implementation_chain_boost (if has relation support)
             - planner_only_penalty (if planner-only, no original evidence)
