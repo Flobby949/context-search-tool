@@ -786,6 +786,8 @@ def _rank_chunks(
         item['rerank_score'] = rerank_score
         item['evidence_class'] = evidence_class
         item['evidence_priority'] = evidence_priority
+        item['role_priority'] = 0.0
+        item['role_boost'] = 0.0
 
     # Compute planner_ceiling from strong direct results
     strong_direct_results = [
@@ -802,6 +804,13 @@ def _rank_chunks(
     for item in ranked:
         if item['evidence_class'] in {"original_relation", "planner_direct", "planner_relation", "weak_or_generic"} and planner_ceiling is not None:
             item['rerank_score'] = min(item['rerank_score'], planner_ceiling)
+
+        score_parts = item['score_parts']
+        score_parts["combined_score"] = float(item['score'])
+        score_parts["rerank_score"] = float(item['rerank_score'])
+        score_parts["evidence_priority"] = float(item['evidence_priority'])
+        score_parts["role_priority"] = float(item['role_priority'])
+        score_parts["role_boost"] = float(item['role_boost'])
 
     # Build final _RankedChunk objects
     final_ranked = [
@@ -1524,6 +1533,10 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("relation expansion")
     if _has_planner_hint(score_parts):
         reasons.append("planner hint match")
+    if score_parts.get("role_boost", 0.0) > 0:
+        reasons.append("business role boost")
+    if score_parts.get("role_penalty", 0.0) < 0:
+        reasons.append("detail role penalty")
     if score_parts.get("token_coverage", 0.0) > 0:
         reasons.append("token coverage")
     if "/" in query and score_parts.get("route_boost", 0.0) > 0:

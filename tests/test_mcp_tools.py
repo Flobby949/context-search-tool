@@ -208,6 +208,20 @@ def test_mcp_query_payload_includes_planner_status(tmp_path: Path) -> None:
     assert result["planner"]["enabled"] is False
 
 
+def test_mcp_query_payload_keeps_rerank_diagnostics_numeric(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    context_search_index_tool(str(repo))
+
+    payload = context_search_query_tool(str(repo), "/apply/audit/pageEs", final_top_k=1)
+
+    assert payload["ok"] is True
+    parts = payload["results"][0]["score_parts"]
+    assert isinstance(parts["rerank_score"], float)
+    assert isinstance(parts["evidence_priority"], float)
+    assert "evidence_class" not in parts
+
+
 def test_mcp_query_feedback_includes_planner_metadata_without_prompt_text(
     tmp_path: Path,
 ) -> None:

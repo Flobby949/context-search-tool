@@ -1923,6 +1923,49 @@ def test_rerank_high_score_direct_beats_low_score_relation(tmp_path: Path) -> No
     assert ranked[1].chunk.chunk_id == "low-relation"
 
 
+def test_rank_chunks_exposes_numeric_diagnostic_score_parts(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    chunk = DocumentChunk(
+        chunk_id="auth-service",
+        file_path=Path("src/main/java/com/example/service/AuthService.java"),
+        start_line=1,
+        end_line=10,
+        content="public interface AuthService { void login(); }",
+        chunk_type="symbol",
+        lexical_tokens=["auth", "service", "login"],
+        metadata={"language": "java"},
+    )
+    store.replace_chunks(chunk.file_path, [chunk])
+    candidates = {
+        "auth-service": RetrievalCandidate(
+            chunk_id="auth-service",
+            score=1.0,
+            source="test",
+            score_parts={"lexical": 0.8, "path_symbol": 2.0},
+        )
+    }
+
+    ranked = retrieval._rank_chunks(store, candidates, ["auth", "login"], "auth login")
+
+    parts = ranked[0].score_parts
+    assert isinstance(parts["combined_score"], float)
+    assert isinstance(parts["rerank_score"], float)
+    assert isinstance(parts["evidence_priority"], float)
+    assert isinstance(parts["role_priority"], float)
+    assert isinstance(parts["role_boost"], float)
+
+
+def test_reasons_include_role_diagnostics() -> None:
+    reasons = retrieval._reasons(
+        {"role_boost": 0.2, "role_penalty": -0.1},
+        "auth login",
+    )
+
+    assert "business role boost" in reasons
+    assert "detail role penalty" in reasons
+
+
 def test_rerank_planner_only_relation_cannot_beat_strong_original_direct(
     tmp_path: Path,
 ) -> None:
