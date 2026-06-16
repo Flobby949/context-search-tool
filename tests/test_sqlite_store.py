@@ -263,6 +263,54 @@ def test_store_round_trips_files_chunks_symbols_and_fts(tmp_path: Path) -> None:
     assert store.chunk_for_line(Path("src/App.java"), 3).chunk_id == "chunk-1"
 
 
+def test_path_symbol_search_downweights_content_token_matches(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    content_only = DocumentChunk(
+        chunk_id="content-only",
+        file_path=Path("src/main/java/com/example/MqttConstant.java"),
+        start_line=1,
+        end_line=5,
+        content="class MqttConstant { static final String TOPIC = \"设备告警\"; }",
+        chunk_type="symbol",
+        symbols=[],
+        lexical_tokens=["alarm"],
+        embedding_id="content-only",
+        deleted_at=None,
+        metadata={"language": "java"},
+    )
+    symbol_match = DocumentChunk(
+        chunk_id="symbol-match",
+        file_path=Path("src/main/java/com/example/service/AlarmService.java"),
+        start_line=1,
+        end_line=5,
+        content="interface AlarmService {}",
+        chunk_type="symbol",
+        symbols=[
+            SymbolRef(
+                name="AlarmService",
+                kind="interface",
+                start_line=1,
+                end_line=5,
+                language="java",
+                metadata={},
+            )
+        ],
+        lexical_tokens=["alarm", "service"],
+        embedding_id="symbol-match",
+        deleted_at=None,
+        metadata={"language": "java"},
+    )
+    store.replace_chunks(content_only.file_path, [content_only])
+    store.replace_chunks(symbol_match.file_path, [symbol_match])
+
+    results = store.path_symbol_search(["alarm"], limit=5)
+    scores = {result.chunk_id: result.score_parts["path_symbol"] for result in results}
+
+    assert scores["content-only"] < 1.0
+    assert scores["symbol-match"] == 1.0
+
+
 def test_store_marks_removed_file_chunks_deleted(tmp_path: Path) -> None:
     store = SQLiteStore(tmp_path / "index.sqlite")
     store.initialize()

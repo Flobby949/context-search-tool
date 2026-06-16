@@ -61,6 +61,27 @@ def test_query_tokenizer_aliases_approval_to_audit_terms() -> None:
     assert "audit" in tokens
 
 
+@pytest.mark.parametrize(
+    ("query", "expected_aliases"),
+    [
+        ("设备告警", {"alarm", "alert"}),
+        ("开门控制", {"open", "door", "access", "control"}),
+        ("驿站设备列表", {"station", "device", "equipment", "list"}),
+        ("发布意见反馈 发送短信", {"feedback", "sms", "send"}),
+        ("账号密码登录注册", {"account", "password", "login", "register", "auth"}),
+        ("IOT设备状态", {"iot", "device", "control", "status", "state"}),
+        ("用户登录认证", {"user", "login", "auth", "authentication"}),
+    ],
+)
+def test_query_tokenizer_adds_java_business_cjk_code_aliases(
+    query: str,
+    expected_aliases: set[str],
+) -> None:
+    tokens = set(tokenize_query(query))
+
+    assert expected_aliases.issubset(tokens)
+
+
 def test_scanner_respects_gitignore_and_context_search(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

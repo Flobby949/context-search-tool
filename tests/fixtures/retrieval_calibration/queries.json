@@ -80,6 +80,8 @@
       "src/main/java/com/njbandou/service/DeviceControlService.java",
       "src/main/java/com/njbandou/service/impl/DeviceControlServiceImpl.java",
       "src/main/java/com/njbandou/iot/DeviceControlFactoryManager.java",
+      "src/main/java/com/njbandou/service/IndexService.java",
+      "src/main/java/com/njbandou/service/impl/IndexServiceImpl.java",
       "src/main/java/com/njbandou/iot/DeviceControlHandler.java"
     ],
     "expected_top5_min": 3,
@@ -111,6 +113,9 @@
       "src/main/java/com/njbandou/controller/AuthController.java",
       "src/main/java/com/njbandou/service/AuthService.java",
       "src/main/java/com/njbandou/service/impl/AuthServiceImpl.java",
+      "src/main/java/com/njbandou/service/impl/SysManagerDetailsServiceImpl.java",
+      "src/main/java/com/njbandou/security/service/UserDetailsServiceImpl.java",
+      "src/main/java/com/njbandou/service/impl/SysManagerServiceImpl.java",
       "src/main/java/com/njbandou/security/utils/TokenUtils.java",
       "src/main/java/com/njbandou/security/filter/AuthenticationTokenFilter.java"
     ],

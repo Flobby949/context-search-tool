@@ -10,10 +10,29 @@ _ASCII_TOKEN_RE = re.compile(
 )
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _CJK_CODE_ALIASES = {
+    "账号": ["account", "user"],
+    "密码": ["password"],
+    "登录": ["login", "auth"],
+    "注册": ["register"],
     "工作流": ["workflow", "process", "流程"],
     "接口": ["api", "endpoint"],
     "审批": ["审核", "audit"],
     "待我审批": ["待我审核"],
+    "用户": ["user"],
+    "认证": ["auth", "authentication"],
+    "驿站": ["station"],
+    "设备列表": ["device", "equipment", "list", "page"],
+    "驿站设备列表": ["station", "device", "equipment", "list", "page"],
+    "设备状态": ["device", "equipment", "control", "status", "state"],
+    "列表": ["list", "page"],
+    "开门": ["open", "door", "access"],
+    "控制": ["control"],
+    "意见": ["feedback"],
+    "反馈": ["feedback"],
+    "发送": ["send"],
+    "短信": ["sms"],
+    "设备告警": ["alarm", "alert"],
+    "告警": ["alarm", "alert"],
 }
 
 

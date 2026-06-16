@@ -1117,6 +1117,8 @@ def _merge_expanded_result(
         "role_priority",
         "role_boost",
         "role_penalty",
+        "role_exact_match_boost",
+        "impl_match_boost",
         "relation_role_boost",
         "relation_detail_penalty",
     ):
@@ -1186,7 +1188,7 @@ def _chunk_role(chunk: DocumentChunk) -> _ChunkRole:
         return _ChunkRole("data_type", 3, 0.04)
     if "/mapper/" in path or "mapper" in names:
         return _ChunkRole("mapper", 4, 0.03)
-    if any(token in haystack for token in ("handler", "listener", "callback", "connector")):
+    if any(token in haystack for token in ("handler", "listener", "callback", "connector", "webhook")):
         return _ChunkRole("handler", 5, 0.0, 0.10)
     if any(token in haystack for token in ("constant", "config", "buildermanager", "parambuilder")):
         return _ChunkRole("constant_or_config", 6, 0.0, 0.12)
@@ -1292,12 +1294,16 @@ def _has_strong_original_direct_evidence(score_parts: dict[str, float]) -> bool:
     Returns:
         True if any strong evidence threshold is met
     """
-    return (
+    token_coverage = score_parts.get("token_coverage", 0.0)
+    corroborated_text_match = token_coverage >= 0.2 and (
         score_parts.get("semantic", 0.0) >= _STRONG_SEMANTIC_EVIDENCE
         or score_parts.get("lexical", 0.0) >= _STRONG_LEXICAL_EVIDENCE
+    )
+    return (
+        corroborated_text_match
         or score_parts.get("path_symbol", 0.0) >= _STRONG_PATH_SYMBOL_EVIDENCE
         or score_parts.get("signal", 0.0) >= _STRONG_SIGNAL_EVIDENCE
-        or score_parts.get("token_coverage", 0.0) >= 0.5
+        or token_coverage >= 0.5
     )
 
 
@@ -1484,6 +1490,19 @@ def _rerank_score(
     if role.boost:
         score_parts["role_boost"] = role.boost
 
+    role_exact_boost = _role_exact_match_boost(role, score_parts)
+    if role_exact_boost:
+        rerank_score += role_exact_boost
+        score_parts["role_exact_match_boost"] = role_exact_boost
+
+    if (
+        role.name == "service_impl"
+        and score_parts.get("path_symbol", 0.0) >= 1.0
+        and score_parts.get("token_coverage", 0.0) >= 0.25
+    ):
+        rerank_score += 0.18
+        score_parts["impl_match_boost"] = 0.18
+
     if flags.get("has_relation_support", False) and role.name in {
         "service_interface",
         "service_impl",
@@ -1520,6 +1539,19 @@ def _rerank_score(
         rerank_score = min(rerank_score, planner_ceiling)
 
     return rerank_score
+
+
+def _role_exact_match_boost(
+    role: _ChunkRole,
+    score_parts: dict[str, float],
+) -> float:
+    path_symbol = score_parts.get("path_symbol", 0.0)
+    token_coverage = score_parts.get("token_coverage", 0.0)
+    if role.name == "entrypoint" and path_symbol >= 4.0 and token_coverage >= 0.5:
+        return 0.12
+    if role.name == "data_type" and path_symbol >= 2.0 and token_coverage >= 0.2:
+        return 0.24
+    return 0.0
 
 
 def _rank_tier(
@@ -1643,6 +1675,10 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("business role boost")
     if score_parts.get("role_penalty", 0.0) < 0:
         reasons.append("detail role penalty")
+    if score_parts.get("role_exact_match_boost", 0.0) > 0:
+        reasons.append("role exact match boost")
+    if score_parts.get("impl_match_boost", 0.0) > 0:
+        reasons.append("service implementation exact match boost")
     if score_parts.get("relation_role_boost", 0.0) > 0:
         reasons.append("relation chain role boost")
     if score_parts.get("relation_detail_penalty", 0.0) < 0:

@@ -2002,6 +2002,189 @@ def test_role_rerank_prefers_service_impl_over_handler_for_business_query(tmp_pa
     assert ranked[0].score_parts["role_priority"] < ranked[1].score_parts["role_priority"]
 
 
+def test_service_impl_exact_match_boost_keeps_impl_near_entrypoints(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    controller = DocumentChunk(
+        chunk_id="open-controller",
+        file_path=Path("src/main/java/com/example/controller/OpenApiController.java"),
+        start_line=1,
+        end_line=20,
+        content="class OpenApiController { void openDoor() {} }",
+        chunk_type="symbol",
+        lexical_tokens=["open", "api", "controller", "door"],
+        metadata={"language": "java"},
+    )
+    service_impl = DocumentChunk(
+        chunk_id="access-service-impl",
+        file_path=Path("src/main/java/com/example/service/impl/AccessControlServiceImpl.java"),
+        start_line=1,
+        end_line=20,
+        content="class AccessControlServiceImpl { void openDoor() {} }",
+        chunk_type="symbol",
+        lexical_tokens=["access", "control", "service", "open", "door"],
+        metadata={"language": "java"},
+    )
+    for chunk in (controller, service_impl):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    candidates = {
+        "open-controller": RetrievalCandidate(
+            chunk_id="open-controller",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.55,
+                "lexical": 0.35,
+                "path_symbol": 1.0,
+                "signal": 0.5,
+                "token_coverage": 0.5,
+            },
+        ),
+        "access-service-impl": RetrievalCandidate(
+            chunk_id="access-service-impl",
+            score=1.0,
+            source="direct,relation",
+            score_parts={
+                "semantic": 0.55,
+                "lexical": 0.35,
+                "path_symbol": 1.0,
+                "original_relation": 0.2,
+                "relation": 0.2,
+                "token_coverage": 0.5,
+            },
+        ),
+    }
+
+    ranked = retrieval._rank_chunks(store, candidates, ["开门", "控制"], "开门控制")
+
+    assert ranked[0].chunk.chunk_id == "access-service-impl"
+    assert ranked[0].score_parts["impl_match_boost"] == 0.18
+
+
+def test_data_type_exact_match_beats_low_coverage_entrypoint_noise(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    user_controller = DocumentChunk(
+        chunk_id="user-controller",
+        file_path=Path("src/main/java/com/example/controller/UserController.java"),
+        start_line=1,
+        end_line=20,
+        content="class UserController { void editProfile() {} }",
+        chunk_type="symbol",
+        lexical_tokens=["user", "controller"],
+        metadata={"language": "java"},
+    )
+    user_entity = DocumentChunk(
+        chunk_id="user-entity",
+        file_path=Path("src/main/java/com/example/entity/User.java"),
+        start_line=1,
+        end_line=20,
+        content="class User { String account; String password; }",
+        chunk_type="symbol",
+        lexical_tokens=["user", "account", "password"],
+        metadata={"language": "java"},
+    )
+    for chunk in (user_controller, user_entity):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    candidates = {
+        "user-controller": RetrievalCandidate(
+            chunk_id="user-controller",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.52,
+                "lexical": 0.6,
+                "path_symbol": 2.0,
+                "signal": 0.1,
+            },
+        ),
+        "user-entity": RetrievalCandidate(
+            chunk_id="user-entity",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.53,
+                "lexical": 1.05,
+                "path_symbol": 2.0,
+            },
+        ),
+    }
+
+    ranked = retrieval._rank_chunks(
+        store,
+        candidates,
+        ["account", "password", "login", "register", "auth", "user"],
+        "账号密码登录注册",
+    )
+
+    assert ranked[0].chunk.chunk_id == "user-entity"
+    assert ranked[0].score_parts["role_exact_match_boost"] == 0.24
+
+
+def test_entrypoint_exact_match_beats_related_service_for_list_query(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    equipment_controller = DocumentChunk(
+        chunk_id="equipment-controller",
+        file_path=Path("src/main/java/com/example/controller/EquipmentController.java"),
+        start_line=1,
+        end_line=20,
+        content="class EquipmentController { void page() {} void list() {} }",
+        chunk_type="symbol",
+        lexical_tokens=["equipment", "controller", "device", "list", "page"],
+        metadata={"language": "java"},
+    )
+    device_service = DocumentChunk(
+        chunk_id="device-control-service",
+        file_path=Path("src/main/java/com/example/service/DeviceControlService.java"),
+        start_line=1,
+        end_line=20,
+        content="interface DeviceControlService { boolean deviceOnlineStatus(); }",
+        chunk_type="symbol",
+        lexical_tokens=["device", "control", "service"],
+        metadata={"language": "java"},
+    )
+    for chunk in (equipment_controller, device_service):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    candidates = {
+        "equipment-controller": RetrievalCandidate(
+            chunk_id="equipment-controller",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.56,
+                "lexical": 0.04,
+                "path_symbol": 4.75,
+                "signal": 0.3,
+            },
+        ),
+        "device-control-service": RetrievalCandidate(
+            chunk_id="device-control-service",
+            score=1.0,
+            source="direct,relation",
+            score_parts={
+                "semantic": 0.57,
+                "path_symbol": 2.0,
+                "original_relation": 0.2,
+                "relation": 0.2,
+            },
+        ),
+    }
+
+    ranked = retrieval._rank_chunks(
+        store,
+        candidates,
+        ["device", "equipment", "list", "page"],
+        "设备列表",
+    )
+
+    assert ranked[0].chunk.chunk_id == "equipment-controller"
+    assert ranked[0].score_parts["role_exact_match_boost"] == 0.12
+
+
 def test_role_rerank_prefers_alarm_service_over_mqtt_constant(tmp_path: Path) -> None:
     store = SQLiteStore(tmp_path / "index.sqlite")
     store.initialize()
@@ -2187,6 +2370,7 @@ def test_detail_only_strong_direct_still_sets_planner_ceiling(tmp_path: Path) ->
         ("src/main/java/com/example/entity/User.java", "class User {}", "data_type", 3, 0.04, 0.0),
         ("src/main/java/com/example/mapper/UserMapper.java", "interface UserMapper {}", "mapper", 4, 0.03, 0.0),
         ("src/main/java/com/example/iot/code/beehive/BeehiveCodeHandler.java", "class BeehiveCodeHandler {}", "handler", 5, 0.0, 0.10),
+        ("src/main/java/com/example/alarm/DahuaWebhook.java", "class DahuaWebhook {}", "handler", 5, 0.0, 0.10),
         ("src/main/java/com/example/mqtt/PeachMqttConstant.java", "class PeachMqttConstant {}", "constant_or_config", 6, 0.0, 0.12),
         ("src/main/java/com/example/util/AuthUtils.java", "class AuthUtils {}", "generic", 7, 0.0, 0.02),
     ],
@@ -2906,6 +3090,8 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
             "evidence_priority": 4,
             "role_priority": 1.0,
             "role_boost": 0.10,
+            "role_exact_match_boost": 0.12,
+            "impl_match_boost": 0.18,
             "relation_role_boost": 0.08,
             "relation_detail_penalty": -0.06,
         },
@@ -2952,6 +3138,8 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
     assert merged.score_parts["role_priority"] == 5.0
     assert merged.score_parts["role_boost"] == 0.0
     assert merged.score_parts["role_penalty"] == -0.10
+    assert "role_exact_match_boost" not in merged.score_parts
+    assert "impl_match_boost" not in merged.score_parts
     assert "relation_role_boost" not in merged.score_parts
     assert "relation_detail_penalty" not in merged.score_parts
 

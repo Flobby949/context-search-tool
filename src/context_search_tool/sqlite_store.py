@@ -514,7 +514,11 @@ class SQLiteStore:
         if not normalized or limit <= 0:
             return []
 
-        scores: dict[str, float] = {}
+        scores: dict[str, dict[str, float]] = {}
+        def add_token_score(chunk_id: str, token: str, score: float) -> None:
+            chunk_scores = scores.setdefault(chunk_id, {})
+            chunk_scores[token] = max(chunk_scores.get(token, 0.0), score)
+
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -525,9 +529,9 @@ class SQLiteStore:
             ).fetchall()
             for row in rows:
                 path = row["file_path"].lower()
-                scores[row["chunk_id"]] = sum(
-                    1.0 for token in normalized if token in path
-                )
+                for token in normalized:
+                    if token in path:
+                        add_token_score(row["chunk_id"], token, 1.0)
 
             token_rows = connection.execute(
                 """
@@ -538,8 +542,9 @@ class SQLiteStore:
                 """
             ).fetchall()
             for row in token_rows:
-                if row["token"].lower() in normalized:
-                    scores[row["chunk_id"]] = scores.get(row["chunk_id"], 0.0) + 1.0
+                token = row["token"].lower()
+                if token in normalized:
+                    add_token_score(row["chunk_id"], token, 0.25)
 
             symbol_rows = connection.execute(
                 """
@@ -552,12 +557,16 @@ class SQLiteStore:
             ).fetchall()
             for row in symbol_rows:
                 name = row["name"].lower()
-                scores[row["chunk_id"]] = scores.get(row["chunk_id"], 0.0) + sum(
-                    1.0 for token in normalized if token in name
-                )
+                for token in normalized:
+                    if token in name:
+                        add_token_score(row["chunk_id"], token, 1.0)
 
         ranked = sorted(
-            ((chunk_id, score) for chunk_id, score in scores.items() if score > 0),
+            (
+                (chunk_id, sum(token_scores.values()))
+                for chunk_id, token_scores in scores.items()
+                if token_scores
+            ),
             key=lambda item: (-item[1], item[0]),
         )
         return [

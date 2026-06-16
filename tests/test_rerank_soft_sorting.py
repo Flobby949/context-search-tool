@@ -99,6 +99,7 @@ def test_rerank_planner_only_relation_cannot_beat_strong_original_direct():
         ("auth_service", {
             "semantic": 0.4,  # Above strong threshold (0.35)
             "lexical": 0.0,
+            "token_coverage": 0.2,
         }, "service/AuthService.java", 10),
         # Planner-only relation (no original evidence)
         ("redis_cache", {
@@ -127,6 +128,7 @@ def test_rerank_planner_direct_cannot_beat_strong_original_direct():
     store, candidates = _setup_test_data([
         ("feedback_service", {
             "lexical": 0.3,  # Above strong threshold (0.25)
+            "token_coverage": 0.2,
         }, "service/FeedbackService.java", 10),
         ("station_controller", {
             "planner_signal": 0.8,
@@ -323,6 +325,7 @@ def test_rerank_original_relation_not_misclassified():
     mixed_score_parts = {
         "original_relation": 0.5,
         "lexical": 0.3,
+        "token_coverage": 0.2,
     }
 
     mixed_class = _evidence_class(mixed_score_parts)
@@ -417,8 +420,16 @@ def test_evidence_class_splits_weak_original_direct() -> None:
 
 
 def test_evidence_class_keeps_strong_original_direct() -> None:
-    assert retrieval._evidence_class({"lexical": 0.25}) == "original_direct"
-    assert retrieval._evidence_class({"semantic": 0.35}) == "original_direct"
+    assert retrieval._evidence_class({"lexical": 0.25}) == "weak_original_direct"
+    assert retrieval._evidence_class({"semantic": 0.35}) == "weak_original_direct"
+    assert retrieval._evidence_class({
+        "lexical": 0.25,
+        "token_coverage": 0.2,
+    }) == "original_direct"
+    assert retrieval._evidence_class({
+        "semantic": 0.35,
+        "token_coverage": 0.2,
+    }) == "original_direct"
     assert retrieval._evidence_class({"path_symbol": 1.0}) == "original_direct"
     assert retrieval._evidence_class({"signal": 0.5}) == "original_direct"
     assert retrieval._evidence_class({"token_coverage": 0.5}) == "original_direct"
@@ -429,8 +440,10 @@ def test_evidence_class_priority_order():
     from context_search_tool.retrieval import _evidence_class
 
     # Priority 0: original_direct
-    assert _evidence_class({"semantic": 0.5}) == "original_direct"
-    assert _evidence_class({"lexical": 0.3}) == "original_direct"
+    assert _evidence_class({"semantic": 0.5}) == "weak_original_direct"
+    assert _evidence_class({"lexical": 0.3}) == "weak_original_direct"
+    assert _evidence_class({"semantic": 0.5, "token_coverage": 0.2}) == "original_direct"
+    assert _evidence_class({"lexical": 0.3, "token_coverage": 0.2}) == "original_direct"
     assert _evidence_class({"path_symbol": 1.0}) == "original_direct"
     assert _evidence_class({"signal": 0.5}) == "original_direct"
     assert _evidence_class({"token_coverage": 0.6}) == "original_direct"
@@ -460,12 +473,14 @@ def test_evidence_class_mixed_evidence():
     # Direct + relation = direct
     assert _evidence_class({
         "semantic": 0.35,
+        "token_coverage": 0.2,
         "original_relation": 0.8,
     }) == "original_direct"
 
     # Original direct beats planner direct
     assert _evidence_class({
         "lexical": 0.25,
+        "token_coverage": 0.2,
         "planner_lexical": 0.5,
     }) == "original_direct"
 
@@ -486,13 +501,20 @@ def test_has_strong_original_direct_evidence():
     """Test strong evidence threshold detection."""
     from context_search_tool.retrieval import _has_strong_original_direct_evidence
 
-    # Strong semantic
-    assert _has_strong_original_direct_evidence({"semantic": 0.35}) == True
-    assert _has_strong_original_direct_evidence({"semantic": 0.4}) == True
+    # Semantic/lexical evidence needs query-token corroboration to be strong.
+    assert _has_strong_original_direct_evidence({"semantic": 0.35}) == False
+    assert _has_strong_original_direct_evidence({
+        "semantic": 0.4,
+        "token_coverage": 0.2,
+    }) == True
     assert _has_strong_original_direct_evidence({"semantic": 0.34}) == False
 
     # Strong lexical
-    assert _has_strong_original_direct_evidence({"lexical": 0.25}) == True
+    assert _has_strong_original_direct_evidence({"lexical": 0.25}) == False
+    assert _has_strong_original_direct_evidence({
+        "lexical": 0.25,
+        "token_coverage": 0.2,
+    }) == True
     assert _has_strong_original_direct_evidence({"lexical": 0.24}) == False
 
     # Strong path_symbol
