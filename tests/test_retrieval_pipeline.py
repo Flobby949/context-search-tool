@@ -1957,20 +1957,28 @@ def test_rank_chunks_exposes_numeric_diagnostic_score_parts(tmp_path: Path) -> N
 
 
 @pytest.mark.parametrize(
-    ("path", "content", "expected_role", "expected_priority"),
+    ("path", "content", "expected_role", "expected_priority", "expected_boost", "expected_penalty"),
     [
-        ("src/main/java/com/example/controller/AuthController.java", "class AuthController {}", "entrypoint", 0),
-        ("src/main/java/com/example/service/AuthService.java", "interface AuthService {}", "service_interface", 1),
-        ("src/main/java/com/example/service/impl/AuthServiceImpl.java", "class AuthServiceImpl {}", "service_impl", 2),
-        ("src/main/java/com/example/dto/AuthLoginDto.java", "class AuthLoginDto {}", "data_type", 3),
-        ("src/main/java/com/example/entity/User.java", "class User {}", "data_type", 3),
-        ("src/main/java/com/example/mapper/UserMapper.java", "interface UserMapper {}", "mapper", 4),
-        ("src/main/java/com/example/iot/code/beehive/BeehiveCodeHandler.java", "class BeehiveCodeHandler {}", "handler", 5),
-        ("src/main/java/com/example/mqtt/PeachMqttConstant.java", "class PeachMqttConstant {}", "constant_or_config", 6),
-        ("src/main/java/com/example/util/AuthUtils.java", "class AuthUtils {}", "generic", 7),
+        ("src/main/java/com/example/controller/AuthController.java", "class AuthController {}", "entrypoint", 0, 0.12, 0.0),
+        ("src/main/java/com/example/service/AuthService.java", "interface AuthService {}", "service_interface", 1, 0.10, 0.0),
+        ("src/main/java/com/example/service/SimpleService.java", "interface SimpleService {}", "service_interface", 1, 0.10, 0.0),
+        ("src/main/java/com/example/service/impl/AuthServiceImpl.java", "class AuthServiceImpl {}", "service_impl", 2, 0.10, 0.0),
+        ("src/main/java/com/example/dto/AuthLoginDto.java", "class AuthLoginDto {}", "data_type", 3, 0.04, 0.0),
+        ("src/main/java/com/example/entity/User.java", "class User {}", "data_type", 3, 0.04, 0.0),
+        ("src/main/java/com/example/mapper/UserMapper.java", "interface UserMapper {}", "mapper", 4, 0.03, 0.0),
+        ("src/main/java/com/example/iot/code/beehive/BeehiveCodeHandler.java", "class BeehiveCodeHandler {}", "handler", 5, 0.0, 0.10),
+        ("src/main/java/com/example/mqtt/PeachMqttConstant.java", "class PeachMqttConstant {}", "constant_or_config", 6, 0.0, 0.12),
+        ("src/main/java/com/example/util/AuthUtils.java", "class AuthUtils {}", "generic", 7, 0.0, 0.02),
     ],
 )
-def test_chunk_role_classification(path: str, content: str, expected_role: str, expected_priority: int) -> None:
+def test_chunk_role_classification(
+    path: str,
+    content: str,
+    expected_role: str,
+    expected_priority: int,
+    expected_boost: float,
+    expected_penalty: float,
+) -> None:
     chunk = DocumentChunk(
         chunk_id="chunk",
         file_path=Path(path),
@@ -1986,6 +1994,8 @@ def test_chunk_role_classification(path: str, content: str, expected_role: str, 
 
     assert role.name == expected_role
     assert role.priority == expected_priority
+    assert role.boost == expected_boost
+    assert role.penalty == expected_penalty
 
 
 def test_reasons_include_role_diagnostics() -> None:

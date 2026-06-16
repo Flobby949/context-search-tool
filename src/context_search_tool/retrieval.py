@@ -1155,10 +1155,10 @@ def _chunk_role(chunk: DocumentChunk) -> _ChunkRole:
 
     if "controller" in path or "controller" in names:
         return _ChunkRole("entrypoint", 0, 0.12)
-    if "/service/" in path and "impl" not in path and "interface " in content:
-        return _ChunkRole("service_interface", 1, 0.10)
     if "/service/impl/" in path or "serviceimpl" in haystack:
         return _ChunkRole("service_impl", 2, 0.10)
+    if "/service/" in path and "interface " in content:
+        return _ChunkRole("service_interface", 1, 0.10)
     if any(token in path for token in ("/dto/", "/vo/", "/query/", "/entity/")):
         return _ChunkRole("data_type", 3, 0.04)
     if "/mapper/" in path or "mapper" in names:
