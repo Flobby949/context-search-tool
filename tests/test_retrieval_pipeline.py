@@ -1967,6 +1967,7 @@ def test_rank_chunks_exposes_numeric_diagnostic_score_parts(tmp_path: Path) -> N
         ("src/main/java/com/example/mapper/UserMapper.java", "interface UserMapper {}", "mapper", 4),
         ("src/main/java/com/example/iot/code/beehive/BeehiveCodeHandler.java", "class BeehiveCodeHandler {}", "handler", 5),
         ("src/main/java/com/example/mqtt/PeachMqttConstant.java", "class PeachMqttConstant {}", "constant_or_config", 6),
+        ("src/main/java/com/example/util/AuthUtils.java", "class AuthUtils {}", "generic", 7),
     ],
 )
 def test_chunk_role_classification(path: str, content: str, expected_role: str, expected_priority: int) -> None:
