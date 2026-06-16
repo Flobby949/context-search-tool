@@ -41,45 +41,45 @@ def test_query_tokenizer_adds_cjk_search_ngrams() -> None:
     assert "代码" in tokens
 
 
-def test_query_tokenizer_adds_common_cjk_code_aliases() -> None:
+def test_query_tokenizer_does_not_add_hardcoded_cjk_code_aliases() -> None:
     tokens = tokenize_query("apaas工作流相关接口")
 
     assert "apaas" in tokens
     assert "工作流" in tokens
-    assert "process" in tokens
-    assert "workflow" in tokens
-    assert "流程" in tokens
-    assert "api" in tokens
-    assert "endpoint" in tokens
+    assert "process" not in tokens
+    assert "workflow" not in tokens
+    assert "流程" not in tokens
+    assert "api" not in tokens
+    assert "endpoint" not in tokens
 
 
-def test_query_tokenizer_aliases_approval_to_audit_terms() -> None:
+def test_query_tokenizer_does_not_alias_approval_to_audit_terms() -> None:
     tokens = tokenize_query("待我审批")
 
     assert "审批" in tokens
-    assert "审核" in tokens
-    assert "audit" in tokens
+    assert "审核" not in tokens
+    assert "audit" not in tokens
 
 
 @pytest.mark.parametrize(
-    ("query", "expected_aliases"),
+    ("query", "forbidden_aliases"),
     [
         ("设备告警", {"alarm", "alert"}),
         ("开门控制", {"open", "door", "access", "control"}),
         ("驿站设备列表", {"station", "device", "equipment", "list"}),
         ("发布意见反馈 发送短信", {"feedback", "sms", "send"}),
         ("账号密码登录注册", {"account", "password", "login", "register", "auth"}),
-        ("IOT设备状态", {"iot", "device", "control", "status", "state"}),
+        ("IOT设备状态", {"device", "control", "status", "state"}),
         ("用户登录认证", {"user", "login", "auth", "authentication"}),
     ],
 )
-def test_query_tokenizer_adds_java_business_cjk_code_aliases(
+def test_query_tokenizer_does_not_add_java_business_cjk_code_aliases(
     query: str,
-    expected_aliases: set[str],
+    forbidden_aliases: set[str],
 ) -> None:
     tokens = set(tokenize_query(query))
 
-    assert expected_aliases.issubset(tokens)
+    assert tokens.isdisjoint(forbidden_aliases)
 
 
 def test_scanner_respects_gitignore_and_context_search(tmp_path: Path) -> None:

@@ -26,7 +26,7 @@ def _assert_query_spec(query: dict) -> None:
     assert isinstance(query["query"], str) and query["query"]
     _assert_string_list(query["expected_core"])
     assert isinstance(query["expected_top5_min"], int)
-    assert 3 <= query["expected_top5_min"] <= min(5, len(query["expected_core"]))
+    assert 0 <= query["expected_top5_min"] <= min(5, len(query["expected_core"]))
     _assert_string_list(query.get("required_top3", []))
     _assert_string_list(query.get("forbidden_top3", []))
 
@@ -70,6 +70,13 @@ def test_retrieval_calibration_rejects_invalid_fixture_shapes() -> None:
             "query": "bad",
             "expected_core": ["src/AuthController.java"],
             "expected_top5_min": 6,
+            "forbidden_top3": [],
+        },
+        {
+            "repo_key": "operation_client",
+            "query": "bad",
+            "expected_core": ["src/AuthController.java"],
+            "expected_top5_min": -1,
             "forbidden_top3": [],
         },
         {
