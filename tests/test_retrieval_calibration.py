@@ -75,8 +75,12 @@ def test_retrieval_calibration_rejects_invalid_fixture_shapes() -> None:
         {
             "repo_key": "console_iot",
             "query": "bad",
-            "expected_core": ["src/AuthController.java"],
-            "expected_top5_min": 1,
+            "expected_core": [
+                "src/AuthController.java",
+                "src/AuthService.java",
+                "src/AuthServiceImpl.java",
+            ],
+            "expected_top5_min": 3,
             "required_top3": "src/AuthController.java",
             "forbidden_top3": [],
         },
