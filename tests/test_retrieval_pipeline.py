@@ -2047,6 +2047,134 @@ def test_role_rerank_prefers_alarm_service_over_mqtt_constant(tmp_path: Path) ->
     assert ranked[0].chunk.chunk_id == "alarm-service-impl"
 
 
+def test_relation_chain_service_interface_stays_near_impl(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    controller = DocumentChunk(
+        chunk_id="equipment-controller",
+        file_path=Path("src/main/java/com/example/controller/EquipmentController.java"),
+        start_line=1,
+        end_line=20,
+        content="class EquipmentController { EquipmentService equipmentService; }",
+        chunk_type="symbol",
+        lexical_tokens=["equipment", "controller", "service"],
+        metadata={"language": "java"},
+    )
+    service = DocumentChunk(
+        chunk_id="equipment-service",
+        file_path=Path("src/main/java/com/example/service/EquipmentService.java"),
+        start_line=1,
+        end_line=20,
+        content="interface EquipmentService { void page(); }",
+        chunk_type="symbol",
+        lexical_tokens=["equipment", "service", "page"],
+        metadata={"language": "java"},
+    )
+    impl = DocumentChunk(
+        chunk_id="equipment-service-impl",
+        file_path=Path("src/main/java/com/example/service/impl/EquipmentServiceImpl.java"),
+        start_line=1,
+        end_line=20,
+        content="class EquipmentServiceImpl implements EquipmentService { void page() {} }",
+        chunk_type="symbol",
+        lexical_tokens=["equipment", "service", "impl", "page"],
+        metadata={"language": "java"},
+    )
+    handler = DocumentChunk(
+        chunk_id="equipment-handler",
+        file_path=Path("src/main/java/com/example/iot/EquipmentHandler.java"),
+        start_line=1,
+        end_line=20,
+        content="class EquipmentHandler { void page() {} }",
+        chunk_type="symbol",
+        lexical_tokens=["equipment", "handler", "page"],
+        metadata={"language": "java"},
+    )
+    for chunk in (controller, service, impl, handler):
+        store.replace_chunks(chunk.file_path, [chunk])
+    candidates = {
+        "equipment-controller": RetrievalCandidate(
+            chunk_id="equipment-controller",
+            score=1.0,
+            source="direct",
+            score_parts={"lexical": 0.5, "path_symbol": 1.0},
+        ),
+        "equipment-service": RetrievalCandidate(
+            chunk_id="equipment-service",
+            score=1.0,
+            source="relation",
+            score_parts={"original_relation": 0.8, "relation": 0.8},
+        ),
+        "equipment-service-impl": RetrievalCandidate(
+            chunk_id="equipment-service-impl",
+            score=1.0,
+            source="relation",
+            score_parts={"original_relation": 0.8, "relation": 0.8},
+        ),
+        "equipment-handler": RetrievalCandidate(
+            chunk_id="equipment-handler",
+            score=1.0,
+            source="semantic",
+            score_parts={"semantic": 0.45, "lexical": 0.2},
+        ),
+    }
+
+    ranked = retrieval._rank_chunks(store, candidates, ["设备", "列表"], "设备列表")
+    top3 = [item.chunk.chunk_id for item in ranked[:3]]
+
+    assert "equipment-service" in top3
+    assert "equipment-service-impl" in top3
+    assert "equipment-handler" not in top3
+
+
+def test_detail_only_strong_direct_still_sets_planner_ceiling(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    handler = DocumentChunk(
+        chunk_id="access-handler",
+        file_path=Path("src/main/java/com/example/iot/AccessCodeHandler.java"),
+        start_line=1,
+        end_line=20,
+        content="class AccessCodeHandler { void openDoor() {} }",
+        chunk_type="symbol",
+        lexical_tokens=["access", "handler", "open", "door"],
+        metadata={"language": "java"},
+    )
+    service_impl = DocumentChunk(
+        chunk_id="access-service-impl",
+        file_path=Path("src/main/java/com/example/service/impl/AccessControlServiceImpl.java"),
+        start_line=1,
+        end_line=20,
+        content="class AccessControlServiceImpl { void openDoor() {} }",
+        chunk_type="symbol",
+        lexical_tokens=["access", "control", "service", "open", "door"],
+        metadata={"language": "java"},
+    )
+    for chunk in (handler, service_impl):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    candidates = {
+        "access-handler": RetrievalCandidate(
+            chunk_id="access-handler",
+            score=1.0,
+            source="direct",
+            score_parts={"lexical": 0.8, "path_symbol": 5.0},
+        ),
+        "access-service-impl": RetrievalCandidate(
+            chunk_id="access-service-impl",
+            score=1.0,
+            source="planner_relation",
+            score_parts={"planner_relation": 1.0, "relation": 1.0},
+        ),
+    }
+
+    ranked = retrieval._rank_chunks(store, candidates, ["handler"], "handler")
+
+    assert ranked[0].chunk.chunk_id == "access-handler"
+    assert ranked[1].chunk.chunk_id == "access-service-impl"
+    assert ranked[1].rerank_score < ranked[0].rerank_score
+
+
 @pytest.mark.parametrize(
     ("path", "content", "expected_role", "expected_priority", "expected_boost", "expected_penalty"),
     [
@@ -2778,6 +2906,8 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
             "evidence_priority": 4,
             "role_priority": 1.0,
             "role_boost": 0.10,
+            "relation_role_boost": 0.08,
+            "relation_detail_penalty": -0.06,
         },
         reasons=["reason from left"],
         followup_keywords=["left"],
@@ -2822,6 +2952,8 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
     assert merged.score_parts["role_priority"] == 5.0
     assert merged.score_parts["role_boost"] == 0.0
     assert merged.score_parts["role_penalty"] == -0.10
+    assert "relation_role_boost" not in merged.score_parts
+    assert "relation_detail_penalty" not in merged.score_parts
 
 
 def test_merge_overlapping_results_uses_role_priority_tiebreak() -> None:

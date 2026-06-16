@@ -800,14 +800,19 @@ def _rank_chunks(
         item['evidence_class'] = evidence_class
         item['evidence_priority'] = evidence_priority
 
-    # Compute planner_ceiling from strong direct results
     strong_direct_results = [
         r for r in ranked
         if _has_strong_original_direct_evidence(r['score_parts'])
     ]
+    # Prefer business-chain anchors, but preserve exact detail-only queries.
+    ceiling_anchor_results = [
+        r for r in strong_direct_results
+        if r['role'].name not in {"handler", "constant_or_config"}
+    ] or strong_direct_results
 
-    if strong_direct_results:
-        planner_ceiling = min(r['rerank_score'] for r in strong_direct_results) * (1.0 - 1e-6)
+    # Compute planner_ceiling from strong direct results
+    if ceiling_anchor_results:
+        planner_ceiling = min(r['rerank_score'] for r in ceiling_anchor_results) * (1.0 - 1e-6)
     else:
         planner_ceiling = None
 
@@ -1108,7 +1113,13 @@ def _merge_expanded_result(
     merged_score_parts["rerank_score"] = winner.rerank_score
     # evidence_priority is smaller-is-better, so use winner's value
     merged_score_parts["evidence_priority"] = float(winner.evidence_priority)
-    for key in ("role_priority", "role_boost", "role_penalty"):
+    for key in (
+        "role_priority",
+        "role_boost",
+        "role_penalty",
+        "relation_role_boost",
+        "relation_detail_penalty",
+    ):
         if key in winner.score_parts:
             merged_score_parts[key] = winner.score_parts[key]
         else:
@@ -1473,6 +1484,21 @@ def _rerank_score(
     if role.boost:
         score_parts["role_boost"] = role.boost
 
+    if flags.get("has_relation_support", False) and role.name in {
+        "service_interface",
+        "service_impl",
+        "data_type",
+        "mapper",
+    }:
+        rerank_score += 0.08
+        score_parts["relation_role_boost"] = 0.08
+    if flags.get("has_relation_support", False) and role.name in {
+        "handler",
+        "constant_or_config",
+    }:
+        rerank_score -= 0.06
+        score_parts["relation_detail_penalty"] = -0.06
+
     # Penalties (only apply when there's a ceiling from strong direct evidence)
     if planner_ceiling is not None:
         if _is_planner_hint_only(score_parts):
@@ -1617,6 +1643,10 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("business role boost")
     if score_parts.get("role_penalty", 0.0) < 0:
         reasons.append("detail role penalty")
+    if score_parts.get("relation_role_boost", 0.0) > 0:
+        reasons.append("relation chain role boost")
+    if score_parts.get("relation_detail_penalty", 0.0) < 0:
+        reasons.append("relation detail penalty")
     if score_parts.get("token_coverage", 0.0) > 0:
         reasons.append("token coverage")
     if "/" in query and score_parts.get("route_boost", 0.0) > 0:
