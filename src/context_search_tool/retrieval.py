@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 import logging
 from collections import Counter, deque
@@ -36,6 +37,10 @@ MAX_EXPANSION_DEPTH = 3
 MAX_EXPANSION_CANDIDATES = 1000
 _MIN_RELATION_CONFIDENCE = 0.5
 _RELATION_SCORE_DECAY = 0.8
+
+_CJK_SEQUENCE_RE = re.compile(r"[㐀-鿿]{2,}")
+_DIRECT_FRAGMENT_RE = re.compile(r"[A-Za-z0-9_./:@-]{3,}")
+_DIRECT_TEXT_TOP_K_MULTIPLIER = 3
 
 
 @dataclass(frozen=True)
@@ -412,6 +417,52 @@ def _is_implementation_name(value: str) -> bool:
     )
 
 
+def _direct_text_probes(query: str, original_tokens: list[str]) -> list[str]:
+    probes: list[str] = []
+    stripped = query.strip()
+    if stripped:
+        probes.append(stripped)
+
+    for part in re.split(r"\s+", stripped):
+        if part and part != stripped:
+            probes.append(part)
+
+    for match in _CJK_SEQUENCE_RE.finditer(query):
+        segment = match.group(0)
+        probes.append(segment)
+        chars = list(segment)
+        for size in (2, 3):
+            if len(chars) < size:
+                continue
+            for index in range(0, len(chars) - size + 1):
+                probes.append("".join(chars[index : index + size]))
+
+    for match in _DIRECT_FRAGMENT_RE.finditer(query):
+        probes.append(match.group(0))
+
+    for token in original_tokens:
+        if len(token) >= 3 or _CJK_SEQUENCE_RE.search(token):
+            probes.append(token)
+
+    return _dedupe(probes)
+
+
+def _direct_text_candidates(
+    store: SQLiteStore,
+    query: str,
+    original_tokens: list[str],
+    config: ToolConfig,
+) -> list[RetrievalCandidate]:
+    limit = max(
+        config.retrieval.lexical_top_k,
+        config.retrieval.final_top_k * _DIRECT_TEXT_TOP_K_MULTIPLIER,
+    )
+    return store.direct_text_search(
+        _direct_text_probes(query, original_tokens),
+        limit,
+    )
+
+
 def _is_related_type_name(value: str) -> bool:
     lowered = value.lower()
     return any(
@@ -445,6 +496,7 @@ def _initial_candidates(
         *_semantic_candidates(index_dir, query, config, deleted_ids),
         *_lexical_candidates(store, original_tokens, config.retrieval.lexical_top_k),
         *store.path_symbol_search(original_tokens, config.retrieval.lexical_top_k),
+        *_direct_text_candidates(store, query, original_tokens, config),
     ]
 
 
@@ -1212,6 +1264,7 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         + _bounded_score(score_parts.get("original_relation", 0.0))
         + _bounded_score(score_parts.get("planner_relation", 0.0))
         + (score_parts.get("token_coverage", 0.0) * 0.20)
+        + (_bounded_score(score_parts.get("direct_text", 0.0)) * 0.45)  # High weight for literal text matches in comments/strings
         + score_parts.get("plugin_boost", 0.0)
         + score_parts.get("penalty", 0.0)
     )
@@ -1247,7 +1300,7 @@ def _has_original_direct_evidence(score_parts: dict[str, float]) -> bool:
         score_parts: Dictionary of score components
 
     Returns:
-        True if any direct evidence exists (semantic, lexical, path_symbol, signal, token_coverage)
+        True if any direct evidence exists (semantic, lexical, path_symbol, signal, token_coverage, direct_text)
     """
     return any(
         score_parts.get(key, 0.0) > 0
@@ -1257,6 +1310,7 @@ def _has_original_direct_evidence(score_parts: dict[str, float]) -> bool:
             "path_symbol",
             "signal",
             "token_coverage",
+            "direct_text",
         )
     )
 
@@ -1304,6 +1358,7 @@ def _has_strong_original_direct_evidence(score_parts: dict[str, float]) -> bool:
         or score_parts.get("path_symbol", 0.0) >= _STRONG_PATH_SYMBOL_EVIDENCE
         or score_parts.get("signal", 0.0) >= _STRONG_SIGNAL_EVIDENCE
         or token_coverage >= 0.5
+        or score_parts.get("direct_text", 0.0) >= 0.60
     )
 
 
@@ -1569,6 +1624,8 @@ def _rank_tier(
         base_tier = 1
     elif score_parts.get("signal", 0.0) > 0:
         base_tier = 2
+    elif score_parts.get("direct_text", 0.0) > 0:
+        base_tier = 2
     else:
         base_tier = 3
 
@@ -1599,6 +1656,7 @@ def _has_original_query_evidence(score_parts: dict[str, float]) -> bool:
             "signal",
             "token_coverage",
             "original_relation",
+            "direct_text",
         )
     )
 
@@ -1669,6 +1727,8 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("signal match")
     if score_parts.get("relation", 0.0) > 0:
         reasons.append("relation expansion")
+    if score_parts.get("direct_text", 0.0) > 0:
+        reasons.append("direct text match")
     if _has_planner_hint(score_parts):
         reasons.append("planner hint match")
     if score_parts.get("role_boost", 0.0) > 0:

@@ -660,3 +660,56 @@ def test_has_original_direct_evidence():
         "semantic": 0.3,
         "original_relation": 0.7,
     }) == True
+
+
+def test_direct_text_counts_as_original_direct_evidence() -> None:
+    assert retrieval._has_original_direct_evidence({"direct_text": 0.4}) is True
+    assert retrieval._evidence_class({"direct_text": 0.4}) == "weak_original_direct"
+    assert retrieval._evidence_class({"direct_text": 0.6}) == "original_direct"
+
+
+def test_direct_text_strong_anchor_beats_anchor_relation_candidate() -> None:
+    store, candidates = _setup_test_data(
+        [
+            (
+                "direct_anchor",
+                {"direct_text": 0.9},
+                "approval/README.md",
+                1,
+            ),
+            (
+                "expanded_service",
+                {
+                    "anchored_relation": 0.8,
+                    "original_relation": 0.8,
+                    "same_file_anchor": 0.8,
+                },
+                "approval/ApprovalService.java",
+                1,
+            ),
+        ]
+    )
+
+    ranked = _rank_chunks(store, candidates, tokens=[], query="当前审批人查询接口")
+
+    assert ranked[0].chunk.chunk_id == "direct_anchor"
+    assert ranked[0].evidence_class == "original_direct"
+    assert ranked[1].evidence_class == "original_relation"
+
+
+def test_direct_text_boundary_empty_query() -> None:
+    """Ensure empty/whitespace queries don't crash direct text probe generation."""
+    probes = retrieval._direct_text_probes("", [])
+    assert probes == []
+
+    probes = retrieval._direct_text_probes("   ", [])
+    assert probes == []
+
+
+def test_direct_text_boundary_special_characters() -> None:
+    """Ensure special characters in annotations/decorators are captured."""
+    probes = retrieval._direct_text_probes('@GetMapping("/api/users")', [])
+    # Verify that the decorator name and path are both captured
+    assert "@getmapping" in probes
+    assert "/api/users" in probes
+
