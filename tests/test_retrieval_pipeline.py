@@ -1956,6 +1956,97 @@ def test_rank_chunks_exposes_numeric_diagnostic_score_parts(tmp_path: Path) -> N
     assert isinstance(parts["role_boost"], float)
 
 
+def test_role_rerank_prefers_service_impl_over_handler_for_business_query(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    service_impl = DocumentChunk(
+        chunk_id="access-service-impl",
+        file_path=Path("src/main/java/com/example/service/impl/AccessControlServiceImpl.java"),
+        start_line=1,
+        end_line=20,
+        content="class AccessControlServiceImpl { void keyOpenDoor() {} }",
+        chunk_type="symbol",
+        lexical_tokens=["access", "control", "service", "open", "door"],
+        metadata={"language": "java"},
+    )
+    handler = DocumentChunk(
+        chunk_id="beehive-handler",
+        file_path=Path("src/main/java/com/example/iot/code/beehive/BeehiveCodeHandler.java"),
+        start_line=1,
+        end_line=20,
+        content="class BeehiveCodeHandler { void openDoor() {} }",
+        chunk_type="symbol",
+        lexical_tokens=["beehive", "handler", "open", "door"],
+        metadata={"language": "java"},
+    )
+    store.replace_chunks(service_impl.file_path, [service_impl])
+    store.replace_chunks(handler.file_path, [handler])
+    candidates = {
+        "access-service-impl": RetrievalCandidate(
+            chunk_id="access-service-impl",
+            score=1.0,
+            source="test",
+            score_parts={"semantic": 0.5, "lexical": 0.3, "path_symbol": 1.0},
+        ),
+        "beehive-handler": RetrievalCandidate(
+            chunk_id="beehive-handler",
+            score=1.0,
+            source="test",
+            score_parts={"semantic": 0.5, "lexical": 0.35, "path_symbol": 1.0},
+        ),
+    }
+
+    ranked = retrieval._rank_chunks(store, candidates, ["开门", "控制"], "开门控制")
+
+    assert ranked[0].chunk.chunk_id == "access-service-impl"
+    assert ranked[0].score_parts["role_priority"] < ranked[1].score_parts["role_priority"]
+
+
+def test_role_rerank_prefers_alarm_service_over_mqtt_constant(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    alarm_service = DocumentChunk(
+        chunk_id="alarm-service-impl",
+        file_path=Path("src/main/java/com/example/service/impl/AlarmServiceImpl.java"),
+        start_line=1,
+        end_line=20,
+        content="class AlarmServiceImpl { void saveAlarm() {} }",
+        chunk_type="symbol",
+        lexical_tokens=["alarm", "service", "device"],
+        metadata={"language": "java"},
+    )
+    mqtt_constant = DocumentChunk(
+        chunk_id="mqtt-constant",
+        file_path=Path("src/main/java/com/example/mqtt/peach/PeachMqttConstant.java"),
+        start_line=1,
+        end_line=20,
+        content='class PeachMqttConstant { static final String ALARM = "alarm"; }',
+        chunk_type="symbol",
+        lexical_tokens=["alarm", "mqtt", "constant", "device"],
+        metadata={"language": "java"},
+    )
+    store.replace_chunks(alarm_service.file_path, [alarm_service])
+    store.replace_chunks(mqtt_constant.file_path, [mqtt_constant])
+    candidates = {
+        "alarm-service-impl": RetrievalCandidate(
+            chunk_id="alarm-service-impl",
+            score=1.0,
+            source="test",
+            score_parts={"semantic": 0.5, "lexical": 0.3, "path_symbol": 1.0},
+        ),
+        "mqtt-constant": RetrievalCandidate(
+            chunk_id="mqtt-constant",
+            score=1.0,
+            source="test",
+            score_parts={"semantic": 0.5, "lexical": 0.35, "path_symbol": 1.0},
+        ),
+    }
+
+    ranked = retrieval._rank_chunks(store, candidates, ["设备", "告警"], "设备告警")
+
+    assert ranked[0].chunk.chunk_id == "alarm-service-impl"
+
+
 @pytest.mark.parametrize(
     ("path", "content", "expected_role", "expected_priority", "expected_boost", "expected_penalty"),
     [

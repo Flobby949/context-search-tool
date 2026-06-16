@@ -757,12 +757,15 @@ def _rank_chunks(
 
         score = _combined_score(score_parts)
         all_combined_scores.append(score)
+        role = _chunk_role(chunk)
 
         # Precompute flags for rerank scoring
         flags = {
             'has_endpoint_signal': score_parts.get("signal", 0.0) > 0 and _chunk_has_signal_kind(store, chunk.chunk_id, "endpoint"),
             'is_controller': 'controller' in chunk.file_path.as_posix().lower(),
             'has_relation_support': score_parts.get("original_relation", 0.0) > 0 or score_parts.get("planner_relation", 0.0) > 0,
+            'role_name': role.name,
+            'role_priority': role.priority,
         }
 
         ranked.append({
@@ -770,6 +773,7 @@ def _rank_chunks(
             'score': score,
             'score_parts': score_parts,
             'flags': flags,
+            'role': role,
         })
 
     # Normalize all combined scores
@@ -787,6 +791,7 @@ def _rank_chunks(
             item['score_parts'],
             item['chunk'],
             item['flags'],
+            item['role'],
             planner_ceiling=None,
         )
 
@@ -794,8 +799,6 @@ def _rank_chunks(
         item['rerank_score'] = rerank_score
         item['evidence_class'] = evidence_class
         item['evidence_priority'] = evidence_priority
-        item['role_priority'] = 0.0
-        item['role_boost'] = 0.0
 
     # Compute planner_ceiling from strong direct results
     strong_direct_results = [
@@ -820,8 +823,8 @@ def _rank_chunks(
         score_parts["combined_score"] = float(item['score'])
         score_parts["rerank_score"] = float(item['rerank_score'])
         score_parts["evidence_priority"] = float(item['evidence_priority'])
-        score_parts["role_priority"] = float(item['role_priority'])
-        score_parts["role_boost"] = float(item['role_boost'])
+        score_parts["role_priority"] = float(item['role'].priority)
+        score_parts["role_boost"] = float(item['role'].boost)
 
     # Build final _RankedChunk objects
     final_ranked = [
@@ -843,6 +846,7 @@ def _rank_chunks(
         key=lambda item: (
             -item.rerank_score,        # Descending: larger is better
             item.evidence_priority,    # Ascending: 0 (original_direct) is highest priority
+            item.score_parts.get("role_priority", 99.0),
             -item.score,               # Descending: combined_score tiebreaker
             item.chunk.file_path.as_posix(),
             item.chunk.start_line,
@@ -1407,6 +1411,7 @@ def _rerank_score(
     score_parts: dict[str, float],
     chunk: DocumentChunk,
     flags: dict,
+    role: _ChunkRole,
     *,
     planner_ceiling: float | None,
 ) -> float:
@@ -1418,6 +1423,8 @@ def _rerank_score(
             + original_direct_boost (strong direct +0.2, weak direct +0.05)
             + endpoint_or_controller_boost (if endpoint or controller)
             + implementation_chain_boost (if has relation support)
+            + role_boost
+            - role_penalty
             - planner_only_penalty (if planner-only, no original evidence)
             - relation_only_penalty (if only relation, no direct evidence)
             - generic_hint_penalty
@@ -1432,6 +1439,7 @@ def _rerank_score(
             - has_endpoint_signal: bool
             - is_controller: bool
             - has_relation_support: bool
+        role: Role classification with boost/penalty metadata
         planner_ceiling: Optional ceiling for planner/relation evidence classes
 
     Returns:
@@ -1450,6 +1458,13 @@ def _rerank_score(
 
     if flags.get("has_relation_support", False):
         rerank_score += 0.1
+
+    rerank_score += role.boost
+    if role.penalty:
+        rerank_score -= role.penalty
+        score_parts["role_penalty"] = -role.penalty
+    if role.boost:
+        score_parts["role_boost"] = role.boost
 
     # Penalties (only apply when there's a ceiling from strong direct evidence)
     if planner_ceiling is not None:
