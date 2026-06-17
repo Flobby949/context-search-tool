@@ -12,6 +12,27 @@ from context_search_tool.models import (
 from context_search_tool.sqlite_store import SQLiteStore
 
 
+def _chunk(
+    chunk_id: str,
+    file_path: str,
+    lexical_tokens: list[str],
+    symbols: list[SymbolRef] | None = None,
+) -> DocumentChunk:
+    return DocumentChunk(
+        chunk_id=chunk_id,
+        file_path=Path(file_path),
+        start_line=1,
+        end_line=10,
+        content=f"class {chunk_id} {{}}",
+        chunk_type="symbol",
+        symbols=symbols or [],
+        lexical_tokens=lexical_tokens,
+        embedding_id=chunk_id,
+        deleted_at=None,
+        metadata={},
+    )
+
+
 def test_code_signal_and_relation_models_are_language_neutral() -> None:
     signal = CodeSignal(
         signal_id="sig-1",
@@ -140,6 +161,34 @@ def test_store_round_trips_signals_by_chunk_and_token(tmp_path: Path) -> None:
     assert store.signal_search(["工作台"], limit=10) == [comment]
 
 
+def test_signals_for_chunks_batches_and_preserves_per_chunk_order(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    first = _chunk("first", "src/First.java", ["first"])
+    second = _chunk("second", "src/Second.java", ["second"])
+    store.replace_chunks(first.file_path, [first])
+    store.replace_chunks(second.file_path, [second])
+    store.replace_signals(
+        first.file_path,
+        [
+            CodeSignal("s2", "first", first.file_path, "method", "First.two", 8, 8, "java"),
+            CodeSignal("s1", "first", first.file_path, "method", "First.one", 3, 3, "java"),
+        ],
+    )
+    store.replace_signals(
+        second.file_path,
+        [CodeSignal("s3", "second", second.file_path, "method", "Second.one", 4, 4, "java")],
+    )
+
+    grouped = store.signals_for_chunks(["second", "missing", "first"])
+
+    assert [signal.signal_id for signal in grouped["first"]] == ["s1", "s2"]
+    assert [signal.signal_id for signal in grouped["second"]] == ["s3"]
+    assert grouped["missing"] == []
+
+
 def test_signal_search_keeps_endpoint_signals_near_top_for_endpoint_tokens(
     tmp_path: Path,
 ) -> None:
@@ -260,6 +309,36 @@ def test_store_round_trips_relations_by_source_and_target(tmp_path: Path) -> Non
     assert store.relations_targeting("ResourceAuditService.statsWait") == [relation]
 
 
+def test_relations_for_sources_batches_and_preserves_source_order(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    source = _chunk("source", "src/Source.java", ["source"])
+    store.replace_chunks(source.file_path, [source])
+    store.replace_signals(
+        source.file_path,
+        [
+            CodeSignal("sig-a", "source", source.file_path, "method", "Source.a", 1, 1, "java"),
+            CodeSignal("sig-b", "source", source.file_path, "method", "Source.b", 2, 2, "java"),
+        ],
+    )
+    store.replace_relations(
+        source.file_path,
+        [
+            CodeRelation("rel-2", "sig-a", "Target.two", "calls", 0.8),
+            CodeRelation("rel-1", "sig-a", "Target.one", "calls", 0.9),
+            CodeRelation("rel-3", "sig-b", "Target.three", "calls", 0.7),
+        ],
+    )
+
+    grouped = store.relations_for_sources(["sig-b", "missing", "sig-a"])
+
+    assert [relation.relation_id for relation in grouped["sig-a"]] == ["rel-1", "rel-2"]
+    assert [relation.relation_id for relation in grouped["sig-b"]] == ["rel-3"]
+    assert grouped["missing"] == []
+
+
 def test_store_round_trips_index_metadata(tmp_path: Path) -> None:
     store = SQLiteStore(tmp_path / "index.sqlite")
     store.initialize()
@@ -315,6 +394,58 @@ def test_store_round_trips_files_chunks_symbols_and_fts(tmp_path: Path) -> None:
 
     assert matches[0].chunk_id == "chunk-1"
     assert store.chunk_for_line(Path("src/App.java"), 3).chunk_id == "chunk-1"
+
+
+def test_chunks_for_ids_batches_existing_chunks(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    first = _chunk("first", "src/First.java", ["first"])
+    second = _chunk("second", "src/Second.java", ["second"])
+    store.replace_chunks(first.file_path, [first])
+    store.replace_chunks(second.file_path, [second])
+
+    chunks = store.chunks_for_ids(["second", "missing", "first"])
+
+    assert list(chunks) == ["second", "first"]
+    assert chunks["second"].file_path == second.file_path
+    assert chunks["first"].file_path == first.file_path
+
+
+def test_chunks_matching_signal_or_symbols_batches_by_target(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    service = _chunk(
+        "service",
+        "src/AppInfoServiceImpl.java",
+        ["app", "info"],
+        [SymbolRef("page", "method", 2, 2, "java")],
+    )
+    executor = _chunk(
+        "executor",
+        "src/PageAppCatalogQueryExe.java",
+        ["page", "catalog"],
+        [SymbolRef("execute", "method", 2, 2, "java")],
+    )
+    store.replace_chunks(service.file_path, [service])
+    store.replace_chunks(executor.file_path, [executor])
+
+    grouped = store.chunks_matching_signal_or_symbols(
+        [
+            "AppInfoServiceImpl.page",
+            "PageAppCatalogQueryExe.execute",
+            "AppInfoServiceImpl.missingMember",
+            "missing",
+        ],
+        limit_per_target=3,
+    )
+
+    assert "service" in [chunk.chunk_id for chunk in grouped["AppInfoServiceImpl.page"]]
+    assert "executor" in [chunk.chunk_id for chunk in grouped["PageAppCatalogQueryExe.execute"]]
+    assert grouped["AppInfoServiceImpl.missingMember"] == store.chunks_matching_signal_or_symbol(
+        "AppInfoServiceImpl.missingMember",
+        3,
+    ) == []
+    assert grouped["missing"] == []
 
 
 def test_path_symbol_search_downweights_content_token_matches(tmp_path: Path) -> None:

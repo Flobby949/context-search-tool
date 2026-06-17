@@ -330,6 +330,31 @@ class SQLiteStore:
             ).fetchall()
         return [_signal_from_row(row) for row in rows]
 
+    def signals_for_chunks(self, chunk_ids: list[str]) -> dict[str, list[CodeSignal]]:
+        chunk_ids = _dedupe_values(chunk_ids)
+        grouped: dict[str, list[CodeSignal]] = {chunk_id: [] for chunk_id in chunk_ids}
+        if not chunk_ids:
+            return grouped
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                _in_query(
+                    """
+                SELECT *
+                FROM code_signals
+                WHERE chunk_id IN ({placeholders})
+                  AND deleted_at IS NULL
+                ORDER BY chunk_id, start_line, end_line, kind, name, signal_id
+                """,
+                    chunk_ids,
+                ),
+                chunk_ids,
+            ).fetchall()
+
+        for row in rows:
+            grouped[row["chunk_id"]].append(_signal_from_row(row))
+        return grouped
+
     def signal_search(self, tokens: list[str], limit: int) -> list[CodeSignal]:
         normalized = [token.lower() for token in tokens if token]
         if not normalized or limit <= 0:
@@ -385,6 +410,35 @@ class SQLiteStore:
             ).fetchall()
         return [_relation_from_row(row) for row in rows]
 
+    def relations_for_sources(
+        self, source_signal_ids: list[str]
+    ) -> dict[str, list[CodeRelation]]:
+        source_signal_ids = _dedupe_values(source_signal_ids)
+        grouped: dict[str, list[CodeRelation]] = {
+            source_signal_id: [] for source_signal_id in source_signal_ids
+        }
+        if not source_signal_ids:
+            return grouped
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                _in_query(
+                    """
+                SELECT *
+                FROM code_relations
+                WHERE source_signal_id IN ({placeholders})
+                  AND deleted_at IS NULL
+                ORDER BY source_signal_id, kind, target_name, relation_id
+                """,
+                    source_signal_ids,
+                ),
+                source_signal_ids,
+            ).fetchall()
+
+        for row in rows:
+            grouped[row["source_signal_id"]].append(_relation_from_row(row))
+        return grouped
+
     def relations_targeting(self, target_name: str) -> list[CodeRelation]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -416,6 +470,34 @@ class SQLiteStore:
                     limit,
                 )
             return [self._chunk_from_row(connection, row) for row in rows]
+
+    def chunks_matching_signal_or_symbols(
+        self, target_names: list[str], limit_per_target: int
+    ) -> dict[str, list[DocumentChunk]]:
+        target_names = _dedupe_values(target_names)
+        grouped: dict[str, list[DocumentChunk]] = {
+            target_name: [] for target_name in target_names
+        }
+        if limit_per_target <= 0:
+            return grouped
+
+        with self._connect() as connection:
+            for target_name in target_names:
+                if not target_name:
+                    continue
+                rows = _chunks_matching_name(connection, target_name, limit_per_target)
+                if not rows and "." in target_name:
+                    owner_name, member_name = target_name.rsplit(".", 1)
+                    rows = _chunks_matching_member_name(
+                        connection,
+                        owner_name,
+                        member_name,
+                        limit_per_target,
+                    )
+                grouped[target_name] = [
+                    self._chunk_from_row(connection, row) for row in rows
+                ]
+        return grouped
 
     def get_metadata(self, key: str) -> str | None:
         with self._connect() as connection:
@@ -660,6 +742,34 @@ class SQLiteStore:
             if row is None:
                 raise KeyError(chunk_id)
             return self._chunk_from_row(connection, row)
+
+    def chunks_for_ids(self, chunk_ids: list[str]) -> dict[str, DocumentChunk]:
+        chunk_ids = _dedupe_values(chunk_ids)
+        if not chunk_ids:
+            return {}
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                _in_query(
+                    """
+                SELECT *
+                FROM chunks
+                WHERE chunk_id IN ({placeholders})
+                  AND deleted_at IS NULL
+                """,
+                    chunk_ids,
+                ),
+                chunk_ids,
+            ).fetchall()
+            chunks_by_id = {
+                row["chunk_id"]: self._chunk_from_row(connection, row) for row in rows
+            }
+
+        return {
+            chunk_id: chunks_by_id[chunk_id]
+            for chunk_id in chunk_ids
+            if chunk_id in chunks_by_id
+        }
 
     def chunks_for_file(self, file_path: Path, limit: int) -> list[DocumentChunk]:
         if limit <= 0:
@@ -1069,6 +1179,17 @@ def _dedupe_search_probes(probes: list[str]) -> list[str]:
     # Prioritize longer probes (more information density)
     if len(deduped) > 30:
         deduped = sorted(deduped, key=len, reverse=True)[:30]
+    return deduped
+
+
+def _dedupe_values(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
     return deduped
 
 
