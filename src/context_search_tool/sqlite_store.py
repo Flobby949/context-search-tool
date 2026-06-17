@@ -679,19 +679,32 @@ class SQLiteStore:
     def chunks_in_directory(self, directory: Path, limit: int) -> list[DocumentChunk]:
         if limit <= 0:
             return []
-        directory_pattern = directory.as_posix().strip("/") + "/%"
+        directory_key = directory.as_posix().strip("/")
         with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT *
-                FROM chunks
-                WHERE file_path LIKE ?
-                  AND deleted_at IS NULL
-                ORDER BY file_path, start_line, end_line, chunk_id
-                LIMIT ?
-                """,
-                (directory_pattern, limit),
-            ).fetchall()
+            if directory_key in {"", "."}:
+                rows = connection.execute(
+                    """
+                    SELECT *
+                    FROM chunks
+                    WHERE instr(file_path, '/') = 0
+                      AND deleted_at IS NULL
+                    ORDER BY file_path, start_line, end_line, chunk_id
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT *
+                    FROM chunks
+                    WHERE file_path LIKE ?
+                      AND deleted_at IS NULL
+                    ORDER BY file_path, start_line, end_line, chunk_id
+                    LIMIT ?
+                    """,
+                    (f"{directory_key}/%", limit),
+                ).fetchall()
             return [self._chunk_from_row(connection, row) for row in rows]
 
     def chunk_for_line(self, file_path: Path, line: int) -> DocumentChunk:

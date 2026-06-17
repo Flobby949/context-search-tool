@@ -41,6 +41,7 @@ _RELATION_SCORE_DECAY = 0.8
 _CJK_SEQUENCE_RE = re.compile(r"[㐀-鿿]{2,}")
 _DIRECT_FRAGMENT_RE = re.compile(r"[A-Za-z0-9_./:@-]{3,}")
 _DIRECT_TEXT_TOP_K_MULTIPLIER = 3
+_NON_README_DOCUMENT_DISPLAY_PENALTY = 0.30
 
 
 @dataclass(frozen=True)
@@ -158,9 +159,15 @@ def query_repository(
         list(direct_candidates.values()),
         config,
     )
+    relation_seed_candidates = _merge_candidates(
+        [
+            *direct_candidates.values(),
+            *anchor_candidates,
+        ]
+    )
     relation_candidates = _relation_expansion_candidates(
         store,
-        list(direct_candidates.values()),
+        list(relation_seed_candidates.values()),
         config,
     )
     candidates = _merge_candidates(
@@ -720,6 +727,14 @@ def _is_document_or_config_anchor(path: Path) -> bool:
     return suffix in {".md", ".yml", ".yaml", ".json", ".properties"}
 
 
+def _is_readme_document(path: Path) -> bool:
+    return path.suffix.lower() == ".md" and path.stem.lower().startswith("readme")
+
+
+def _is_non_readme_markdown_document(path: Path) -> bool:
+    return path.suffix.lower() == ".md" and not _is_readme_document(path)
+
+
 def _relation_expansion_candidates(
     store: SQLiteStore,
     seed_candidates: list[RetrievalCandidate],
@@ -748,7 +763,11 @@ def _relation_expansion_candidates(
 
     for candidate in sorted(
         seed_candidates,
-        key=lambda item: (-seed_scores[item.chunk_id].score, item.chunk_id),
+        key=lambda item: (
+            _relation_seed_source_priority(item.score_parts),
+            -seed_scores[item.chunk_id].score,
+            item.chunk_id,
+        ),
     )[:source_limit]:
         relation_seed = seed_scores[candidate.chunk_id]
         if relation_seed.score <= 0:
@@ -843,6 +862,24 @@ def _candidate_base_score(candidate: RetrievalCandidate) -> float:
     return _bounded_score(max(candidate.score, *candidate.score_parts.values(), 0.0))
 
 
+def _relation_seed_source_priority(score_parts: dict[str, float]) -> int:
+    if score_parts.get("relation", 0.0) > 0:
+        return 0
+    if score_parts.get("signal", 0.0) > 0:
+        return 1
+    if score_parts.get("direct_text", 0.0) > 0:
+        return 2
+    if max(
+        score_parts.get("anchored_relation", 0.0),
+        score_parts.get("same_file_anchor", 0.0),
+        score_parts.get("directory_anchor", 0.0),
+    ) > 0:
+        return 3
+    if score_parts.get("planner_signal", 0.0) > 0:
+        return 4
+    return 5
+
+
 def _candidate_relation_seed(candidate: RetrievalCandidate) -> _RelationSeed:
     relation_score = candidate.score_parts.get("relation", 0.0)
     if relation_score > 0:
@@ -869,6 +906,18 @@ def _candidate_relation_seed(candidate: RetrievalCandidate) -> _RelationSeed:
     if direct_text_score > 0:
         return _RelationSeed(
             _bounded_score(direct_text_score),
+            False,
+            True,
+        )
+
+    anchored_score = max(
+        candidate.score_parts.get("anchored_relation", 0.0),
+        candidate.score_parts.get("same_file_anchor", 0.0),
+        candidate.score_parts.get("directory_anchor", 0.0),
+    )
+    if anchored_score > 0:
+        return _RelationSeed(
+            _bounded_score(anchored_score),
             False,
             True,
         )
@@ -1686,6 +1735,12 @@ def _rerank_score(
         score_parts["role_penalty"] = -role.penalty
     if role.boost:
         score_parts["role_boost"] = role.boost
+
+    if _is_non_readme_markdown_document(chunk.file_path):
+        rerank_score -= _NON_README_DOCUMENT_DISPLAY_PENALTY
+        score_parts[
+            "non_readme_document_penalty"
+        ] = -_NON_README_DOCUMENT_DISPLAY_PENALTY
 
     role_exact_boost = _role_exact_match_boost(role, score_parts)
     if role_exact_boost:

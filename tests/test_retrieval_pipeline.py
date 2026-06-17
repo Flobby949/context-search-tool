@@ -1211,6 +1211,122 @@ def test_relation_expansion_preserves_mixed_original_and_planner_provenance(
     assert retrieval._is_planner_hint_only(target.score_parts) is False
 
 
+def test_relation_expansion_uses_anchor_only_seed_as_original_evidence(
+    tmp_path: Path,
+) -> None:
+    store = _graph_store(
+        tmp_path,
+        ["Source", "Target"],
+        [("Source", "Target", 0.9)],
+    )
+
+    relation_candidates = retrieval._relation_expansion_candidates(
+        store,
+        [
+            RetrievalCandidate(
+                chunk_id="chunk-Source",
+                score=0.55,
+                source="anchored_relation",
+                score_parts={
+                    "anchored_relation": 0.55,
+                    "directory_anchor": 0.55,
+                    "original_relation": 0.55,
+                },
+            )
+        ],
+        _expansion_config(),
+    )
+
+    target = relation_candidates[0]
+    assert target.chunk_id == "chunk-Target"
+    assert target.score == pytest.approx(0.55 * 0.9 * 0.8)
+    assert target.score_parts["relation"] == target.score
+    assert target.score_parts["original_relation"] == target.score
+    assert "planner_relation" not in target.score_parts
+
+
+def test_relation_expansion_prefers_signal_seed_over_weaker_anchor(
+    tmp_path: Path,
+) -> None:
+    store = _graph_store(
+        tmp_path,
+        ["Source", "Target"],
+        [("Source", "Target", 0.9)],
+    )
+
+    relation_candidates = retrieval._relation_expansion_candidates(
+        store,
+        [
+            RetrievalCandidate(
+                chunk_id="chunk-Source",
+                score=1.0,
+                source="signal,anchored_relation",
+                score_parts={
+                    "signal": 1.0,
+                    "anchored_relation": 0.55,
+                    "directory_anchor": 0.55,
+                    "original_relation": 0.55,
+                },
+            )
+        ],
+        _expansion_config(),
+    )
+
+    target = relation_candidates[0]
+    assert target.chunk_id == "chunk-Target"
+    assert target.score == pytest.approx(1.0 * 0.9 * 0.8)
+    assert target.score_parts["relation"] == target.score
+    assert target.score_parts["original_relation"] == target.score
+
+
+def test_relation_expansion_keeps_direct_text_seed_when_anchor_seed_has_higher_score(
+    tmp_path: Path,
+) -> None:
+    store = _graph_store(
+        tmp_path,
+        ["Direct", "DirectTarget", "Anchor"],
+        [("Direct", "DirectTarget", 0.9)],
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=0,
+            final_top_k=1,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+
+    relation_candidates = retrieval._relation_expansion_candidates(
+        store,
+        [
+            RetrievalCandidate(
+                chunk_id="chunk-Anchor",
+                score=0.8,
+                source="anchored_relation",
+                score_parts={
+                    "anchored_relation": 0.8,
+                    "same_file_anchor": 0.8,
+                    "original_relation": 0.8,
+                },
+            ),
+            RetrievalCandidate(
+                chunk_id="chunk-Direct",
+                score=0.61,
+                source="direct_text",
+                score_parts={"direct_text": 0.61},
+            ),
+        ],
+        config,
+    )
+
+    target = relation_candidates[0]
+    assert target.chunk_id == "chunk-DirectTarget"
+    assert target.score == pytest.approx(0.61 * 0.9 * 0.8)
+    assert target.score_parts["relation"] == target.score
+    assert target.score_parts["original_relation"] == target.score
+
+
 def test_relation_expansion_keeps_planner_only_seed_provenance_when_seed_has_lexical_evidence(
     tmp_path: Path,
 ) -> None:
@@ -2356,6 +2472,76 @@ def test_detail_only_strong_direct_still_sets_planner_ceiling(tmp_path: Path) ->
     assert ranked[0].chunk.chunk_id == "access-handler"
     assert ranked[1].chunk.chunk_id == "access-service-impl"
     assert ranked[1].rerank_score < ranked[0].rerank_score
+
+
+def test_non_readme_markdown_display_priority_is_lower_than_code(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    readme = DocumentChunk(
+        chunk_id="readme",
+        file_path=Path("README.md"),
+        start_line=1,
+        end_line=3,
+        content="当前审批人查询接口由 ApprovalController 负责。",
+        chunk_type="file",
+        lexical_tokens=["当前", "审批人", "查询", "接口"],
+        metadata={"language": "markdown"},
+    )
+    risks = DocumentChunk(
+        chunk_id="risks",
+        file_path=Path("RISKS.md"),
+        start_line=1,
+        end_line=3,
+        content="当前审批人查询接口的风险说明。",
+        chunk_type="file",
+        lexical_tokens=["当前", "审批人", "查询", "接口"],
+        metadata={"language": "markdown"},
+    )
+    controller = DocumentChunk(
+        chunk_id="controller",
+        file_path=Path("src/main/java/com/example/ApprovalController.java"),
+        start_line=1,
+        end_line=10,
+        content="class ApprovalController { String current() { return \"ok\"; } }",
+        chunk_type="symbol",
+        lexical_tokens=["approval", "controller", "current"],
+        metadata={"language": "java"},
+    )
+    for chunk in (readme, risks, controller):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "readme": RetrievalCandidate(
+                chunk_id="readme",
+                score=1.0,
+                source="direct_text",
+                score_parts={"direct_text": 1.0},
+            ),
+            "risks": RetrievalCandidate(
+                chunk_id="risks",
+                score=1.0,
+                source="direct_text",
+                score_parts={"direct_text": 1.0},
+            ),
+            "controller": RetrievalCandidate(
+                chunk_id="controller",
+                score=0.7,
+                source="direct_text",
+                score_parts={"direct_text": 0.7},
+            ),
+        },
+        ["当前", "审批人", "查询", "接口"],
+        "当前审批人查询接口",
+    )
+
+    paths = [item.chunk.file_path for item in ranked]
+    assert paths.index(Path("src/main/java/com/example/ApprovalController.java")) < paths.index(Path("RISKS.md"))
+    assert "non_readme_document_penalty" not in ranked[paths.index(Path("README.md"))].score_parts
+    assert ranked[paths.index(Path("RISKS.md"))].score_parts["non_readme_document_penalty"] < 0
 
 
 @pytest.mark.parametrize(

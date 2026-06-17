@@ -99,6 +99,38 @@ def test_scanner_respects_gitignore_and_context_search(tmp_path: Path) -> None:
     assert len(files[0].sha256) == 64
 
 
+def test_scanner_skips_all_hidden_paths_by_default(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    (repo / "README.md").write_text("# Visible docs\n", encoding="utf-8")
+    src = repo / "src" / "main" / "java"
+    src.mkdir(parents=True)
+    (src / "App.java").write_text("class App {}\n", encoding="utf-8")
+    config_dir = repo / "config"
+    config_dir.mkdir()
+    (config_dir / "broker.properties").write_text(
+        "brokerPort=9999\n",
+        encoding="utf-8",
+    )
+
+    qoder_docs = repo / ".qoder" / "repowiki"
+    qoder_docs.mkdir(parents=True)
+    (qoder_docs / "Notes.md").write_text("# Generated notes\n", encoding="utf-8")
+    github_workflow = repo / ".github" / "workflows"
+    github_workflow.mkdir(parents=True)
+    (github_workflow / "ci.yml").write_text("name: ci\n", encoding="utf-8")
+    (repo / ".hidden.yml").write_text("hidden: true\n", encoding="utf-8")
+
+    files = scan_workspace(repo, DEFAULT_CONFIG)
+
+    assert [item.path for item in files] == [
+        Path("README.md"),
+        Path("config/broker.properties"),
+        Path("src/main/java/App.java"),
+    ]
+
+
 def test_scanner_respects_include_patterns(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

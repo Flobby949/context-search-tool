@@ -172,6 +172,39 @@ def test_readme_direct_text_anchor_expands_to_same_directory_code(
     assert service_parts["original_relation"] > 0
 
 
+def test_root_readme_direct_text_anchor_expands_to_root_code(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text(
+        "当前审批人查询接口由 ApprovalController 负责。\n",
+        encoding="utf-8",
+    )
+    (repo / "ApprovalController.java").write_text(
+        "\n".join(
+            [
+                "class ApprovalController {",
+                '  String current() { return "ok"; }',
+                "}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    config = _direct_text_config(final_top_k=2)
+    index_repository(repo, config)
+
+    bundle = query_repository(repo, "当前审批人查询接口", config)
+
+    assert [result.file_path for result in bundle.results] == [
+        Path("README.md"),
+        Path("ApprovalController.java"),
+    ]
+    controller_parts = bundle.results[1].score_parts
+    assert controller_parts["directory_anchor"] > 0
+    assert controller_parts["anchored_relation"] > 0
+    assert controller_parts["original_relation"] > 0
+
+
 def test_direct_text_anchor_seeds_existing_relation_expansion(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -243,3 +276,94 @@ def test_direct_text_anchor_seeds_existing_relation_expansion(tmp_path: Path) ->
     ]
     assert bundle.results[0].score_parts["direct_text"] >= MIN_STRONG_DIRECT_TEXT_SCORE
     assert bundle.results[1].score_parts["original_relation"] > 0
+
+
+def test_directory_anchor_candidate_can_seed_relation_expansion(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    feature_dir = repo / "approval"
+    feature_dir.mkdir(parents=True)
+    (feature_dir / "README.md").write_text(
+        "当前审批人查询接口由 ApprovalController 调用 ApprovalServiceImpl。\n",
+        encoding="utf-8",
+    )
+    (feature_dir / "ApprovalController.java").write_text(
+        "\n".join(
+            [
+                "class ApprovalController {",
+                "  String current() { return service.currentAuditor(); }",
+                "}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (repo / "ApprovalServiceImpl.java").write_text(
+        "\n".join(
+            [
+                "class ApprovalServiceImpl {",
+                "  String currentAuditor() { return \"ok\"; }",
+                "}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    config = _direct_text_config(final_top_k=3)
+    index_repository(repo, config)
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+
+    controller_chunk = store.chunk_for_line(Path("approval/ApprovalController.java"), 2)
+    service_chunk = store.chunk_for_line(Path("ApprovalServiceImpl.java"), 2)
+
+    _create_test_signal(
+        store,
+        Path("approval/ApprovalController.java"),
+        "sig-controller-current",
+        controller_chunk.chunk_id,
+        "ApprovalController.current",
+        2,
+        2,
+        ["approval", "current"],
+    )
+    _create_test_signal(
+        store,
+        Path("ApprovalServiceImpl.java"),
+        "sig-service-current-auditor",
+        service_chunk.chunk_id,
+        "ApprovalServiceImpl.currentAuditor",
+        2,
+        2,
+        ["approval", "current", "auditor"],
+    )
+    _create_test_relation(
+        store,
+        Path("approval/ApprovalController.java"),
+        "rel-controller-service",
+        "sig-controller-current",
+        "ApprovalServiceImpl.currentAuditor",
+        0.9,
+    )
+
+    bundle = query_repository(repo, "当前审批人查询接口", config)
+
+    paths = [result.file_path for result in bundle.results]
+    assert Path("approval/README.md") in paths
+    assert Path("approval/ApprovalController.java") in paths
+    assert Path("ApprovalServiceImpl.java") in paths
+
+    controller = next(
+        result
+        for result in bundle.results
+        if result.file_path == Path("approval/ApprovalController.java")
+    )
+    assert controller.score_parts["directory_anchor"] > 0
+    assert controller.score_parts["anchored_relation"] > 0
+
+    service = next(
+        result
+        for result in bundle.results
+        if result.file_path == Path("ApprovalServiceImpl.java")
+    )
+    assert service.score_parts["relation"] > 0
+    assert service.score_parts["original_relation"] > 0
+    assert "relation expansion" in service.reasons

@@ -80,7 +80,7 @@ def _load_gitignore(repo: Path) -> pathspec.PathSpec:
 
 
 def _is_internal_path(path: Path) -> bool:
-    return any(part in {".git", ".context-search"} for part in path.parts)
+    return any(part.startswith(".") for part in path.parts)
 
 
 def _is_skipped_path(
