@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import logging
-from collections import Counter, deque
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -850,24 +850,31 @@ def _relation_expansion_candidates(
         for candidate in seed_candidates
     }
     visited_signals: set[str] = set()
-    queue: deque[tuple[str, float, int, bool, bool]] = deque()
-
-    for candidate in sorted(
+    frontier: list[tuple[str, float, int, bool, bool]] = []
+    ordered_seed_candidates = sorted(
         seed_candidates,
         key=lambda item: (
             _relation_seed_source_priority(item.score_parts),
             -seed_scores[item.chunk_id].score,
             item.chunk_id,
         ),
-    )[:source_limit]:
+    )[:source_limit]
+    seed_chunk_ids = [
+        candidate.chunk_id
+        for candidate in ordered_seed_candidates
+        if seed_scores[candidate.chunk_id].score > 0
+    ]
+    seed_signals_by_chunk = store.signals_for_chunks(seed_chunk_ids)
+
+    for candidate in ordered_seed_candidates:
         relation_seed = seed_scores[candidate.chunk_id]
         if relation_seed.score <= 0:
             continue
-        for signal in store.signals_for_chunk(candidate.chunk_id):
+        for signal in seed_signals_by_chunk.get(candidate.chunk_id, []):
             if signal.signal_id in visited_signals:
                 continue
             visited_signals.add(signal.signal_id)
-            queue.append(
+            frontier.append(
                 (
                     signal.signal_id,
                     relation_seed.score,
@@ -877,32 +884,75 @@ def _relation_expansion_candidates(
                 )
             )
 
-    while queue:
-        (
+    while frontier:
+        active_frontier = [
+            source for source in frontier if source[2] < MAX_EXPANSION_DEPTH
+        ]
+        if not active_frontier:
+            break
+
+        relations_by_source = store.relations_for_sources(
+            [source_signal_id for source_signal_id, *_ in active_frontier]
+        )
+        relation_steps: list[tuple[str, float, int, bool, bool]] = []
+        target_names: list[str] = []
+        for (
             source_signal_id,
             current_score,
             depth,
             planner_seeded,
             original_seeded,
-        ) = queue.popleft()
-        if depth >= MAX_EXPANSION_DEPTH:
-            continue
+        ) in active_frontier:
+            next_depth = depth + 1
+            for relation in relations_by_source.get(source_signal_id, []):
+                if relation.confidence < _MIN_RELATION_CONFIDENCE:
+                    continue
+                next_score = (
+                    current_score * relation.confidence * _RELATION_SCORE_DECAY
+                )
+                relation_steps.append(
+                    (
+                        relation.target_name,
+                        next_score,
+                        next_depth,
+                        planner_seeded,
+                        original_seeded,
+                    )
+                )
+                target_names.append(relation.target_name)
 
-        next_depth = depth + 1
-        for relation in store.relations_for_source(source_signal_id):
-            if relation.confidence < _MIN_RELATION_CONFIDENCE:
-                continue
+        if not relation_steps:
+            break
 
-            next_score = current_score * relation.confidence * _RELATION_SCORE_DECAY
+        remaining = MAX_EXPANSION_CANDIDATES - len(expanded_by_chunk)
+        if remaining <= 0:
+            _log_expansion_limit()
+            return sorted(
+                expanded_by_chunk.values(),
+                key=lambda candidate: (-candidate.score, candidate.chunk_id),
+            )
+        chunks_by_target = store.chunks_matching_signal_or_symbols(
+            target_names,
+            remaining,
+        )
+        reached_chunk_ids: list[str] = []
+        signal_seed_by_chunk: dict[str, tuple[float, int, bool, bool]] = {}
+        for (
+            target_name,
+            next_score,
+            next_depth,
+            planner_seeded,
+            original_seeded,
+        ) in relation_steps:
             remaining = MAX_EXPANSION_CANDIDATES - len(expanded_by_chunk)
             if remaining <= 0:
                 _log_expansion_limit()
-                return list(expanded_by_chunk.values())
+                return sorted(
+                    expanded_by_chunk.values(),
+                    key=lambda candidate: (-candidate.score, candidate.chunk_id),
+                )
 
-            for chunk in store.chunks_matching_signal_or_symbol(
-                relation.target_name,
-                remaining,
-            ):
+            for chunk in chunks_by_target.get(target_name, [])[:remaining]:
                 existing = expanded_by_chunk.get(chunk.chunk_id)
                 seed_score = seed_scores.get(
                     chunk.chunk_id,
@@ -930,13 +980,42 @@ def _relation_expansion_candidates(
                     seen_chunks.add(chunk.chunk_id)
                     if len(expanded_by_chunk) >= MAX_EXPANSION_CANDIDATES:
                         _log_expansion_limit()
-                        return list(expanded_by_chunk.values())
+                        return sorted(
+                            expanded_by_chunk.values(),
+                            key=lambda candidate: (
+                                -candidate.score,
+                                candidate.chunk_id,
+                            ),
+                        )
 
-                for signal in store.signals_for_chunk(chunk.chunk_id):
+                next_signal_seed = (
+                    next_score,
+                    next_depth,
+                    planner_seeded,
+                    original_seeded,
+                )
+                existing_signal_seed = signal_seed_by_chunk.get(chunk.chunk_id)
+                if existing_signal_seed is None:
+                    signal_seed_by_chunk[chunk.chunk_id] = next_signal_seed
+                    reached_chunk_ids.append(chunk.chunk_id)
+                elif next_score > existing_signal_seed[0]:
+                    signal_seed_by_chunk[chunk.chunk_id] = next_signal_seed
+
+        next_frontier: list[tuple[str, float, int, bool, bool]] = []
+        if reached_chunk_ids:
+            signals_by_chunk = store.signals_for_chunks(reached_chunk_ids)
+            for chunk_id in reached_chunk_ids:
+                (
+                    next_score,
+                    next_depth,
+                    planner_seeded,
+                    original_seeded,
+                ) = signal_seed_by_chunk[chunk_id]
+                for signal in signals_by_chunk.get(chunk_id, []):
                     if signal.signal_id in visited_signals:
                         continue
                     visited_signals.add(signal.signal_id)
-                    queue.append(
+                    next_frontier.append(
                         (
                             signal.signal_id,
                             next_score,
@@ -945,8 +1024,12 @@ def _relation_expansion_candidates(
                             original_seeded,
                         )
                     )
+        frontier = next_frontier
 
-    return list(expanded_by_chunk.values())
+    return sorted(
+        expanded_by_chunk.values(),
+        key=lambda candidate: (-candidate.score, candidate.chunk_id),
+    )
 
 
 def _candidate_base_score(candidate: RetrievalCandidate) -> float:

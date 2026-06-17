@@ -600,6 +600,278 @@ def test_relation_expansion_adds_relation_score_to_existing_direct_candidate(
     assert any(candidate.chunk_id == "target" for candidate in expanded)
 
 
+def test_relation_expansion_uses_batched_store_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+
+    def java_chunk(chunk_id: str, file_path: Path) -> DocumentChunk:
+        return DocumentChunk(
+            chunk_id=chunk_id,
+            file_path=file_path,
+            start_line=1,
+            end_line=5,
+            content=f"class {file_path.stem} {{}}",
+            chunk_type="symbol",
+            symbols=[],
+            lexical_tokens=[file_path.stem.lower()],
+            embedding_id=chunk_id,
+            deleted_at=None,
+            metadata={"language": "java"},
+        )
+
+    def java_signal(
+        signal_id: str,
+        chunk: DocumentChunk,
+        kind: str,
+        name: str,
+    ) -> CodeSignal:
+        return CodeSignal(
+            signal_id=signal_id,
+            chunk_id=chunk.chunk_id,
+            file_path=chunk.file_path,
+            kind=kind,
+            name=name,
+            start_line=1,
+            end_line=1,
+            language="java",
+            tokens=[name.lower()],
+            metadata={},
+        )
+
+    def relation(
+        relation_id: str,
+        source_signal_id: str,
+        target_name: str,
+    ) -> CodeRelation:
+        return CodeRelation(
+            relation_id=relation_id,
+            source_signal_id=source_signal_id,
+            target_name=target_name,
+            kind="calls",
+            confidence=0.9,
+            metadata={},
+        )
+
+    source_a = java_chunk("source-a", Path("src/ControllerA.java"))
+    source_b = java_chunk("source-b", Path("src/ControllerB.java"))
+    service_a = java_chunk("service-a", Path("src/AppInfoServiceImpl.java"))
+    service_b = java_chunk("service-b", Path("src/CatalogServiceImpl.java"))
+    executor_a = java_chunk("executor-a", Path("src/PageAppCatalogQueryExe.java"))
+    executor_b = java_chunk("executor-b", Path("src/PageReviewQueryExe.java"))
+    for chunk in [source_a, source_b, service_a, service_b, executor_a, executor_b]:
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    source_a_signal = java_signal(
+        "sig-source-a",
+        source_a,
+        "endpoint",
+        "GET /appInfo/page",
+    )
+    source_b_signal = java_signal(
+        "sig-source-b",
+        source_b,
+        "endpoint",
+        "GET /catalog/page",
+    )
+    service_a_signal = java_signal(
+        "sig-service-a",
+        service_a,
+        "method",
+        "AppInfoServiceImpl.page",
+    )
+    service_b_signal = java_signal(
+        "sig-service-b",
+        service_b,
+        "method",
+        "CatalogServiceImpl.page",
+    )
+    executor_a_signal = java_signal(
+        "sig-executor-a",
+        executor_a,
+        "method",
+        "PageAppCatalogQueryExe.execute",
+    )
+    executor_b_signal = java_signal(
+        "sig-executor-b",
+        executor_b,
+        "method",
+        "PageReviewQueryExe.execute",
+    )
+    store.replace_signals(source_a.file_path, [source_a_signal])
+    store.replace_signals(source_b.file_path, [source_b_signal])
+    store.replace_signals(service_a.file_path, [service_a_signal])
+    store.replace_signals(service_b.file_path, [service_b_signal])
+    store.replace_signals(executor_a.file_path, [executor_a_signal])
+    store.replace_signals(executor_b.file_path, [executor_b_signal])
+    store.replace_relations(
+        source_a.file_path,
+        [
+            relation(
+                "rel-source-a-service-a",
+                "sig-source-a",
+                "AppInfoServiceImpl.page",
+            )
+        ],
+    )
+    store.replace_relations(
+        source_b.file_path,
+        [
+            relation(
+                "rel-source-b-service-b",
+                "sig-source-b",
+                "CatalogServiceImpl.page",
+            )
+        ],
+    )
+    store.replace_relations(
+        service_a.file_path,
+        [
+            relation(
+                "rel-service-a-executor-a",
+                "sig-service-a",
+                "PageAppCatalogQueryExe.execute",
+            )
+        ],
+    )
+    store.replace_relations(
+        service_b.file_path,
+        [
+            relation(
+                "rel-service-b-executor-b",
+                "sig-service-b",
+                "PageReviewQueryExe.execute",
+            )
+        ],
+    )
+
+    call_counts = {
+        "signals_for_chunks": 0,
+        "relations_for_sources": 0,
+        "chunks_matching_signal_or_symbols": 0,
+        "signals_for_chunk": 0,
+        "relations_for_source": 0,
+        "chunks_matching_signal_or_symbol": 0,
+    }
+    captured_calls: dict[str, list[list[str]]] = {
+        "signals_for_chunks": [],
+        "relations_for_sources": [],
+        "chunks_matching_signal_or_symbols": [],
+    }
+    original_signals_for_chunks = store.signals_for_chunks
+    original_relations_for_sources = store.relations_for_sources
+    original_chunks_matching_signal_or_symbols = (
+        store.chunks_matching_signal_or_symbols
+    )
+    original_signals_for_chunk = store.signals_for_chunk
+    original_relations_for_source = store.relations_for_source
+    original_chunks_matching_signal_or_symbol = (
+        store.chunks_matching_signal_or_symbol
+    )
+
+    def counting_signals_for_chunks(chunk_ids: list[str]) -> dict[str, list[CodeSignal]]:
+        call_counts["signals_for_chunks"] += 1
+        captured_calls["signals_for_chunks"].append(list(chunk_ids))
+        return original_signals_for_chunks(chunk_ids)
+
+    def counting_relations_for_sources(
+        source_signal_ids: list[str],
+    ) -> dict[str, list[CodeRelation]]:
+        call_counts["relations_for_sources"] += 1
+        captured_calls["relations_for_sources"].append(list(source_signal_ids))
+        return original_relations_for_sources(source_signal_ids)
+
+    def counting_chunks_matching_signal_or_symbols(
+        target_names: list[str],
+        limit_per_target: int,
+    ) -> dict[str, list[DocumentChunk]]:
+        call_counts["chunks_matching_signal_or_symbols"] += 1
+        captured_calls["chunks_matching_signal_or_symbols"].append(list(target_names))
+        return original_chunks_matching_signal_or_symbols(target_names, limit_per_target)
+
+    def counting_signals_for_chunk(chunk_id: str) -> list[CodeSignal]:
+        call_counts["signals_for_chunk"] += 1
+        return original_signals_for_chunk(chunk_id)
+
+    def counting_relations_for_source(source_signal_id: str) -> list[CodeRelation]:
+        call_counts["relations_for_source"] += 1
+        return original_relations_for_source(source_signal_id)
+
+    def counting_chunks_matching_signal_or_symbol(
+        target_name: str,
+        limit: int,
+    ) -> list[DocumentChunk]:
+        call_counts["chunks_matching_signal_or_symbol"] += 1
+        return original_chunks_matching_signal_or_symbol(target_name, limit)
+
+    monkeypatch.setattr(store, "signals_for_chunks", counting_signals_for_chunks)
+    monkeypatch.setattr(store, "relations_for_sources", counting_relations_for_sources)
+    monkeypatch.setattr(
+        store,
+        "chunks_matching_signal_or_symbols",
+        counting_chunks_matching_signal_or_symbols,
+    )
+    monkeypatch.setattr(store, "signals_for_chunk", counting_signals_for_chunk)
+    monkeypatch.setattr(store, "relations_for_source", counting_relations_for_source)
+    monkeypatch.setattr(
+        store,
+        "chunks_matching_signal_or_symbol",
+        counting_chunks_matching_signal_or_symbol,
+    )
+
+    expanded = retrieval._relation_expansion_candidates(
+        store,
+        [
+            RetrievalCandidate(
+                chunk_id="source-a",
+                score=1.0,
+                source="signal",
+                score_parts={"signal": 1.0},
+            ),
+            RetrievalCandidate(
+                chunk_id="source-b",
+                score=1.0,
+                source="signal",
+                score_parts={"signal": 1.0},
+            )
+        ],
+        _expansion_config(),
+    )
+
+    assert {candidate.chunk_id for candidate in expanded} == {
+        "service-a",
+        "service-b",
+        "executor-a",
+        "executor-b",
+    }
+    assert any(
+        set(source_ids) == {"sig-source-a", "sig-source-b"}
+        for source_ids in captured_calls["relations_for_sources"]
+    )
+    assert any(
+        set(target_names) == {"AppInfoServiceImpl.page", "CatalogServiceImpl.page"}
+        for target_names in captured_calls["chunks_matching_signal_or_symbols"]
+    )
+    assert any(
+        set(chunk_ids) == {"service-a", "service-b"}
+        for chunk_ids in captured_calls["signals_for_chunks"]
+    )
+    assert call_counts["signals_for_chunks"] > 0
+    assert call_counts["relations_for_sources"] > 0
+    assert call_counts["chunks_matching_signal_or_symbols"] > 0
+    assert call_counts["relations_for_sources"] <= retrieval.MAX_EXPANSION_DEPTH
+    assert (
+        call_counts["chunks_matching_signal_or_symbols"]
+        <= retrieval.MAX_EXPANSION_DEPTH
+    )
+    assert call_counts["signals_for_chunks"] <= retrieval.MAX_EXPANSION_DEPTH + 1
+    assert call_counts["signals_for_chunk"] == 0
+    assert call_counts["relations_for_source"] == 0
+    assert call_counts["chunks_matching_signal_or_symbol"] == 0
+
+
 def test_query_bundle_summary_groups_entrypoints_implementation_related_and_legacy(
     tmp_path: Path,
 ) -> None:
@@ -1091,6 +1363,54 @@ def test_relation_expansion_stops_at_depth_three(tmp_path: Path) -> None:
         "chunk-C",
         "chunk-D",
     ]
+
+
+def test_relation_expansion_propagates_stronger_same_layer_arrival(
+    tmp_path: Path,
+) -> None:
+    store = _graph_store(
+        tmp_path,
+        ["A_low", "A_high", "B", "C"],
+        [("A_low", "B", 0.5), ("A_high", "B", 0.9), ("B", "C", 0.9)],
+    )
+
+    candidates = retrieval._relation_expansion_candidates(
+        store,
+        [
+            RetrievalCandidate(
+                chunk_id="chunk-A_low",
+                score=1.0,
+                source="signal",
+                score_parts={"signal": 1.0},
+            ),
+            RetrievalCandidate(
+                chunk_id="chunk-A_high",
+                score=1.0,
+                source="planner_signal",
+                score_parts={"planner_signal": 1.0},
+            ),
+        ],
+        _expansion_config(),
+    )
+
+    candidates_by_chunk = {candidate.chunk_id: candidate for candidate in candidates}
+    b_score = 0.65 * 0.9 * retrieval._RELATION_SCORE_DECAY
+    c_score = b_score * 0.9 * retrieval._RELATION_SCORE_DECAY
+
+    assert candidates_by_chunk["chunk-B"].score_parts["relation"] == pytest.approx(
+        b_score
+    )
+    assert candidates_by_chunk["chunk-B"].score_parts["planner_relation"] == (
+        pytest.approx(b_score)
+    )
+    assert "original_relation" not in candidates_by_chunk["chunk-B"].score_parts
+    assert candidates_by_chunk["chunk-C"].score_parts["relation"] == pytest.approx(
+        c_score
+    )
+    assert candidates_by_chunk["chunk-C"].score_parts["planner_relation"] == (
+        pytest.approx(c_score)
+    )
+    assert "original_relation" not in candidates_by_chunk["chunk-C"].score_parts
 
 
 def test_relation_expansion_filters_low_confidence_relations(tmp_path: Path) -> None:
