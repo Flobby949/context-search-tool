@@ -7,6 +7,13 @@ from context_search_tool.retrieval import query_repository
 from context_search_tool.sqlite_store import SQLiteStore
 
 
+def _copy_java_fixture(tmp_path: Path) -> Path:
+    source_fixture = Path(__file__).parent / "fixtures" / "java-spring-mini"
+    repo = tmp_path / "java-spring-mini"
+    shutil.copytree(source_fixture, repo)
+    return repo
+
+
 def test_java_fixture_surfaces_controller_query_mapper_and_enum(tmp_path: Path) -> None:
     source_fixture = Path(__file__).parent / "fixtures" / "java-spring-mini"
     repo = tmp_path / "java-spring-mini"
@@ -123,3 +130,54 @@ def test_java_fixture_workflow_query_returns_expected_summary(tmp_path: Path) ->
         or "Response" in item and "DTO" in item
         for item in bundle.summary.related_types
     )
+
+
+def test_java_spring_path_rerank_prefers_exact_app_catalog_page_chain(
+    tmp_path: Path,
+) -> None:
+    repo = _copy_java_fixture(tmp_path)
+    config = DEFAULT_CONFIG
+
+    index_repository(repo, config)
+    bundle = query_repository(repo, "/appCatalog/page canApply", config, context_lines=20)
+
+    names = [result.file_path.name for result in bundle.results]
+    top_five = names[:5]
+
+    assert "AppCatalogController.java" in top_five
+    assert "AppInfoServiceImpl.java" in top_five
+    assert "PageAppCatalogQueryExe.java" in top_five
+    non_target_names = {"ResourceAuditServiceImpl.java", "EsApplyAuditPageQryExe.java"}
+    for result in bundle.results:
+        if result.file_path.name in non_target_names:
+            assert "java_method_context_match" not in result.score_parts
+            assert "java_executor_context_boost" not in result.score_parts
+    assert names[0] != "AppCatalogOpenController.java"
+    if "AppCatalogOpenController.java" in names:
+        assert names.index("AppCatalogController.java") < names.index(
+            "AppCatalogOpenController.java"
+        )
+
+
+def test_java_spring_path_rerank_prefers_es_audit_business_chain(
+    tmp_path: Path,
+) -> None:
+    repo = _copy_java_fixture(tmp_path)
+    config = DEFAULT_CONFIG
+
+    index_repository(repo, config)
+    bundle = query_repository(
+        repo, "/apply/audit/pageEs INVOLVED_BY_ME", config, context_lines=20
+    )
+
+    names = [result.file_path.name for result in bundle.results]
+    top_six = names[:6]
+
+    assert "ResourceApplyAuditController.java" in top_six
+    assert "ResourceAuditServiceImpl.java" in top_six
+    assert "EsApplyAuditPageQryExe.java" in top_six
+    assert "ResourceApplyAuditControllerTest.java" not in top_six
+    if "ApplyAuditPageQryExe.java" in names:
+        assert names.index("EsApplyAuditPageQryExe.java") < names.index(
+            "ApplyAuditPageQryExe.java"
+        )

@@ -1356,6 +1356,55 @@ def test_relation_expansion_keeps_planner_only_seed_provenance_when_seed_has_lex
     assert retrieval._is_planner_hint_only(target.score_parts) is True
 
 
+def test_route_score_parts_prefers_exact_route_over_sibling_route() -> None:
+    exact_signal = CodeSignal(
+        signal_id="sig-exact",
+        chunk_id="exact",
+        file_path=Path("AppCatalogController.java"),
+        kind="endpoint",
+        name="POST /appCatalog/page",
+        start_line=1,
+        end_line=1,
+        language="java",
+        tokens=["app", "catalog", "page", "/appCatalog/page"],
+        metadata={"path": "/appCatalog/page"},
+    )
+    sibling_signal = CodeSignal(
+        signal_id="sig-sibling",
+        chunk_id="sibling",
+        file_path=Path("AppCatalogOpenController.java"),
+        kind="endpoint",
+        name="POST /openApi/appCatalog/page",
+        start_line=1,
+        end_line=1,
+        language="java",
+        tokens=["open", "api", "app", "catalog", "page", "/openApi/appCatalog/page"],
+        metadata={"path": "/openApi/appCatalog/page"},
+    )
+    false_sibling_signal = CodeSignal(
+        signal_id="sig-false-sibling",
+        chunk_id="false-sibling",
+        file_path=Path("MegaCatalogController.java"),
+        kind="endpoint",
+        name="POST /megaCatalog/page",
+        start_line=1,
+        end_line=1,
+        language="java",
+        tokens=["mega", "catalog", "page", "/megaCatalog/page"],
+        metadata={"path": "/megaCatalog/page"},
+    )
+
+    exact_parts = retrieval._route_score_parts([exact_signal], "/appCatalog/page canApply")
+    sibling_parts = retrieval._route_score_parts([sibling_signal], "/appCatalog/page canApply")
+    false_sibling_parts = retrieval._route_score_parts([false_sibling_signal], "/catalog/page canApply")
+
+    assert exact_parts["route_exact_match"] == 0.35
+    assert sibling_parts["route_sibling_penalty"] == -0.18
+    assert "route_sibling_penalty" not in false_sibling_parts
+    assert false_sibling_parts["route_mismatch_penalty"] == -0.12
+    assert exact_parts["route_exact_match"] > abs(sibling_parts["route_sibling_penalty"])
+
+
 def test_query_combines_route_tokens_and_ranking_reasons(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1960,6 +2009,145 @@ def _expansion_config() -> ToolConfig:
     )
 
 
+def _rank_chunks_signal_lookup_case(
+    tmp_path: Path,
+    signal_indices: set[int] | None = None,
+    route_relevant_indices: set[int] | None = None,
+) -> tuple[SQLiteStore, dict[str, RetrievalCandidate]]:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    signal_indices = signal_indices or set()
+    route_relevant_indices = route_relevant_indices or set()
+    candidates: dict[str, RetrievalCandidate] = {}
+    for index in range(1000):
+        chunk_id = f"chunk-{index}"
+        is_route_relevant = index in route_relevant_indices
+        class_name = f"TargetTokenController{index}" if is_route_relevant else f"Service{index}"
+        path = Path(f"src/main/java/example/{class_name}.java")
+        content = (
+            f'class {class_name} {{ @GetMapping("/target/token") void page() {{}} }}'
+            if is_route_relevant
+            else f"class {class_name} {{ String unrelatedValue; }}"
+        )
+        lexical_tokens = (
+            ["/target/token", "target", "token"]
+            if is_route_relevant
+            else ["service", "unrelated"]
+        )
+        store.replace_chunks(
+            path,
+            [
+                DocumentChunk(
+                    chunk_id=chunk_id,
+                    file_path=path,
+                    start_line=1,
+                    end_line=1,
+                    content=content,
+                    chunk_type="symbol",
+                    symbols=[],
+                    lexical_tokens=lexical_tokens,
+                    embedding_id=chunk_id,
+                    deleted_at=None,
+                    metadata={"language": "java"},
+                )
+            ],
+        )
+        has_signal = index in signal_indices
+        if has_signal:
+            store.replace_signals(
+                path,
+                [
+                    CodeSignal(
+                        signal_id=f"sig-{index}",
+                        chunk_id=chunk_id,
+                        file_path=path,
+                        kind="endpoint",
+                        name=f"GET /target/token/{index}",
+                        start_line=1,
+                        end_line=1,
+                        language="java",
+                        tokens=["target", "token"],
+                        metadata={"path": f"/target/token/{index}"},
+                    )
+                ],
+            )
+        candidates[chunk_id] = RetrievalCandidate(
+            chunk_id=chunk_id,
+            score=1.0,
+            source="signal" if has_signal else "lexical",
+            score_parts={"signal": 1.0} if has_signal else {"lexical": 1.0},
+        )
+    return store, candidates
+
+
+def _count_signal_lookups(store: SQLiteStore, monkeypatch: pytest.MonkeyPatch):
+    call_count = 0
+
+    original = store.signals_for_chunk
+
+    def counting_signals_for_chunk(chunk_id: str) -> list[CodeSignal]:
+        nonlocal call_count
+        call_count += 1
+        return original(chunk_id)
+
+    monkeypatch.setattr(store, "signals_for_chunk", counting_signals_for_chunk)
+    return lambda: call_count
+
+
+def test_rank_chunks_skips_signal_lookup_for_non_route_non_signal_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, candidates = _rank_chunks_signal_lookup_case(tmp_path)
+    signal_lookup_count = _count_signal_lookups(store, monkeypatch)
+
+    retrieval._rank_chunks(store, candidates, ["target", "token"], "targetToken")
+
+    assert signal_lookup_count() == 0
+
+
+def test_rank_chunks_skips_signal_lookup_for_slash_file_path_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, candidates = _rank_chunks_signal_lookup_case(tmp_path)
+    signal_lookup_count = _count_signal_lookups(store, monkeypatch)
+
+    retrieval._rank_chunks(store, candidates, ["src", "main", "java", "foo"], "src/main/java Foo")
+
+    assert signal_lookup_count() == 0
+
+
+def test_rank_chunks_only_fetches_route_signals_for_route_relevant_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route_relevant_indices = {3, 503, 999}
+    store, candidates = _rank_chunks_signal_lookup_case(
+        tmp_path,
+        signal_indices=route_relevant_indices,
+        route_relevant_indices=route_relevant_indices,
+    )
+    signal_lookup_count = _count_signal_lookups(store, monkeypatch)
+
+    retrieval._rank_chunks(store, candidates, ["target", "token"], "/target/token")
+
+    assert signal_lookup_count() == len(route_relevant_indices)
+
+
+def test_rank_chunks_uses_signal_lookup_for_signal_candidates_without_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signal_indices = {1, 501}
+    store, candidates = _rank_chunks_signal_lookup_case(tmp_path, signal_indices)
+    signal_lookup_count = _count_signal_lookups(store, monkeypatch)
+
+    retrieval._rank_chunks(store, candidates, ["target", "token"], "targetToken")
+
+    assert signal_lookup_count() == len(signal_indices)
+
+
 # ============================================================================
 # Rerank Soft Sorting Tests (TDD - Step 1)
 # These tests validate the rerank-based sorting behavior that will fix the
@@ -2424,6 +2612,36 @@ def test_relation_chain_service_interface_stays_near_impl(tmp_path: Path) -> Non
     assert "equipment-service" in top3
     assert "equipment-service-impl" in top3
     assert "equipment-handler" not in top3
+
+
+def test_relation_role_boost_applies_to_service_interface_with_relation_support(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    service = DocumentChunk(
+        chunk_id="equipment-service",
+        file_path=Path("src/main/java/com/example/service/EquipmentService.java"),
+        start_line=1,
+        end_line=20,
+        content="interface EquipmentService { void page(); }",
+        chunk_type="symbol",
+        lexical_tokens=["equipment", "service", "page"],
+        metadata={"language": "java"},
+    )
+    store.replace_chunks(service.file_path, [service])
+    candidates = {
+        "equipment-service": RetrievalCandidate(
+            chunk_id="equipment-service",
+            score=1.0,
+            source="relation",
+            score_parts={"original_relation": 0.8, "relation": 0.8},
+        )
+    }
+
+    ranked = retrieval._rank_chunks(store, candidates, ["equipment", "page"], "equipment page")
+
+    assert ranked[0].score_parts["relation_role_boost"] == 0.08
 
 
 def test_detail_only_strong_direct_still_sets_planner_ceiling(tmp_path: Path) -> None:
@@ -2950,18 +3168,22 @@ def test_evidence_anchors_still_seed_directory_expansion(tmp_path: Path) -> None
 @pytest.mark.parametrize(
     ("path", "content", "expected_role", "expected_priority", "expected_boost", "expected_penalty"),
     [
-        ("src/main/java/com/example/controller/AuthController.java", "class AuthController {}", "entrypoint", 0, 0.12, 0.0),
-        ("src/main/java/com/example/service/AuthService.java", "interface AuthService {}", "service_interface", 1, 0.10, 0.0),
-        ("src/main/java/com/example/service/SimpleService.java", "interface SimpleService {}", "service_interface", 1, 0.10, 0.0),
-        ("src/main/java/com/example/service/AuthService.java", "interface AuthService { // AuthServiceImpl handles this }", "service_interface", 1, 0.10, 0.0),
-        ("src/main/java/com/example/service/impl/AuthServiceImpl.java", "class AuthServiceImpl {}", "service_impl", 2, 0.10, 0.0),
+        ("src/main/java/com/example/controller/AuthController.java", "class AuthController {}", "entrypoint", 0, 0.18, 0.0),
+        ("src/test/java/com/example/controller/AuthControllerTest.java", "class AuthControllerTest {}", "generic", 5, 0.0, 0.0),
+        ("src/main/java/com/example/service/AuthService.java", "interface AuthService {}", "service_interface", 4, 0.06, 0.0),
+        ("src/main/java/com/example/service/SimpleService.java", "interface SimpleService {}", "service_interface", 4, 0.06, 0.0),
+        ("src/main/java/com/example/service/AuthService.java", "interface AuthService { // AuthServiceImpl handles this }", "service_interface", 4, 0.06, 0.0),
+        ("src/main/java/com/example/service/impl/AuthServiceImpl.java", "class AuthServiceImpl {}", "service_impl", 1, 0.12, 0.0),
+        ("src/main/java/com/example/catalog/PageAppCatalogQueryExe.java", "class PageAppCatalogQueryExe {}", "executor", 2, 0.12, 0.0),
+        ("src/main/java/com/example/catalog/FooExe.java", "class FooExe {}", "executor", 2, 0.12, 0.0),
+        ("src/main/java/com/example/catalog/ExecuteHelper.java", "class ExecuteHelper { void execute() {} }", "generic", 5, 0.0, 0.0),
         ("src/main/java/com/example/dto/AuthLoginDto.java", "class AuthLoginDto {}", "data_type", 3, 0.04, 0.0),
         ("src/main/java/com/example/entity/User.java", "class User {}", "data_type", 3, 0.04, 0.0),
         ("src/main/java/com/example/mapper/UserMapper.java", "interface UserMapper {}", "mapper", 4, 0.03, 0.0),
         ("src/main/java/com/example/iot/code/beehive/BeehiveCodeHandler.java", "class BeehiveCodeHandler {}", "handler", 5, 0.0, 0.10),
         ("src/main/java/com/example/alarm/DahuaWebhook.java", "class DahuaWebhook {}", "handler", 5, 0.0, 0.10),
         ("src/main/java/com/example/mqtt/PeachMqttConstant.java", "class PeachMqttConstant {}", "constant_or_config", 6, 0.0, 0.12),
-        ("src/main/java/com/example/util/AuthUtils.java", "class AuthUtils {}", "generic", 7, 0.0, 0.02),
+        ("src/main/java/com/example/util/AuthUtils.java", "class AuthUtils {}", "generic", 5, 0.0, 0.0),
     ],
 )
 def test_chunk_role_classification(
@@ -2989,6 +3211,588 @@ def test_chunk_role_classification(
     assert role.priority == expected_priority
     assert role.boost == expected_boost
     assert role.penalty == expected_penalty
+
+
+def test_chunk_role_classifies_query_executor_before_generic() -> None:
+    chunk = DocumentChunk(
+        chunk_id="executor",
+        file_path=Path("src/main/java/PageAppCatalogQueryExe.java"),
+        start_line=1,
+        end_line=5,
+        content="class PageAppCatalogQueryExe { String fillCanApplyFilter() { return \"\"; } }",
+        chunk_type="symbol",
+        symbols=[SymbolRef("PageAppCatalogQueryExe", "class", 1, 5, "java")],
+        lexical_tokens=["page", "app", "catalog", "query", "exe", "can", "apply"],
+        metadata={"language": "java"},
+    )
+
+    role = retrieval._chunk_role(chunk)
+
+    assert role.name == "executor"
+    assert role.priority == 2
+    assert role.boost == 0.12
+
+
+def test_java_context_score_parts_boosts_field_related_executor_method() -> None:
+    method_signal = CodeSignal(
+        signal_id="sig-method",
+        chunk_id="executor",
+        file_path=Path("PageAppCatalogQueryExe.java"),
+        kind="method",
+        name="PageAppCatalogQueryExe.fillCanApplyFilter",
+        start_line=3,
+        end_line=3,
+        language="java",
+        tokens=["page", "app", "catalog", "fill", "can", "apply", "filter"],
+        metadata={
+            "owner_type": "PageAppCatalogQueryExe",
+            "owner_method": "fillCanApplyFilter",
+            "parameter_types": ["AppCatalogPageQry"],
+            "parameter_names": ["qry"],
+        },
+    )
+
+    parts = retrieval._java_context_score_parts(
+        [method_signal],
+        ["app", "catalog", "page", "can", "apply"],
+        retrieval._ChunkRole("executor", 2, 0.12),
+    )
+
+    assert parts["java_method_context_match"] == 0.14
+    assert parts["java_executor_context_boost"] == 0.10
+
+
+def test_java_context_score_parts_boosts_field_signal() -> None:
+    field_signal = CodeSignal(
+        signal_id="sig-field",
+        chunk_id="dto",
+        file_path=Path("AppCatalogPageQry.java"),
+        kind="field",
+        name="AppCatalogPageQry.canApply",
+        start_line=3,
+        end_line=3,
+        language="java",
+        tokens=["app", "catalog", "page", "can", "apply"],
+        metadata={
+            "owner_type": "AppCatalogPageQry",
+            "field_type": "Boolean",
+        },
+    )
+
+    parts = retrieval._java_context_score_parts(
+        [field_signal],
+        ["app", "catalog", "page", "can", "apply"],
+        retrieval._ChunkRole("data_type", 3, 0.04),
+    )
+
+    assert parts["java_field_context_match"] == 0.12
+    assert "java_executor_context_boost" not in parts
+
+
+def test_rank_chunks_route_java_context_uses_non_route_business_tokens(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    catalog_executor = DocumentChunk(
+        chunk_id="catalog-executor",
+        file_path=Path("src/main/java/com/example/catalog/PageAppCatalogQueryExe.java"),
+        start_line=1,
+        end_line=10,
+        content="class PageAppCatalogQueryExe { String fillCanApplyFilter() { return \"\"; } }",
+        chunk_type="symbol",
+        lexical_tokens=["page", "app", "catalog", "can", "apply", "filter"],
+        metadata={"language": "java"},
+    )
+    audit_executor = DocumentChunk(
+        chunk_id="audit-executor",
+        file_path=Path("src/main/java/com/example/audit/ApplyAuditPageQryExe.java"),
+        start_line=1,
+        end_line=10,
+        content="class ApplyAuditPageQryExe { String page() { return \"\"; } }",
+        chunk_type="symbol",
+        lexical_tokens=["apply", "audit", "page", "es"],
+        metadata={"language": "java"},
+    )
+    for chunk in (catalog_executor, audit_executor):
+        store.replace_chunks(chunk.file_path, [chunk])
+    store.replace_signals(
+        catalog_executor.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-catalog-method",
+                chunk_id="catalog-executor",
+                file_path=catalog_executor.file_path,
+                kind="method",
+                name="PageAppCatalogQueryExe.fillCanApplyFilter",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["page", "app", "catalog", "fill", "can", "apply", "filter"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_signals(
+        audit_executor.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-audit-method",
+                chunk_id="audit-executor",
+                file_path=audit_executor.file_path,
+                kind="method",
+                name="ApplyAuditPageQryExe.page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["apply", "audit", "page", "es"],
+                metadata={},
+            )
+        ],
+    )
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "catalog-executor": RetrievalCandidate(
+                chunk_id="catalog-executor",
+                score=1.0,
+                source="lexical",
+                score_parts={"lexical": 0.8},
+            ),
+            "audit-executor": RetrievalCandidate(
+                chunk_id="audit-executor",
+                score=1.0,
+                source="lexical",
+                score_parts={"lexical": 0.8},
+            ),
+        },
+        ["app", "catalog", "page", "can", "apply"],
+        "/appCatalog/page canApply",
+    )
+
+    catalog_result = next(item for item in ranked if item.chunk.chunk_id == "catalog-executor")
+    audit_result = next(item for item in ranked if item.chunk.chunk_id == "audit-executor")
+    assert catalog_result.score_parts["java_method_context_match"] == 0.14
+    assert catalog_result.score_parts["java_executor_context_boost"] == 0.10
+    assert "java_method_context_match" not in audit_result.score_parts
+    assert "java_executor_context_boost" not in audit_result.score_parts
+
+
+def test_rank_chunks_route_java_context_preserves_matching_business_tokens(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    es_executor = DocumentChunk(
+        chunk_id="es-executor",
+        file_path=Path("src/main/java/com/example/audit/EsApplyAuditPageQryExe.java"),
+        start_line=1,
+        end_line=10,
+        content="class EsApplyAuditPageQryExe { String involvedByMe() { return \"\"; } }",
+        chunk_type="symbol",
+        lexical_tokens=["apply", "audit", "page", "es", "involved", "by", "me"],
+        metadata={"language": "java"},
+    )
+    non_es_executor = DocumentChunk(
+        chunk_id="non-es-executor",
+        file_path=Path("src/main/java/com/example/audit/ApplyAuditPageQryExe.java"),
+        start_line=1,
+        end_line=10,
+        content="class ApplyAuditPageQryExe { String page() { return \"\"; } }",
+        chunk_type="symbol",
+        lexical_tokens=["apply", "audit", "page", "es"],
+        metadata={"language": "java"},
+    )
+    for chunk in (es_executor, non_es_executor):
+        store.replace_chunks(chunk.file_path, [chunk])
+    store.replace_signals(
+        es_executor.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-es-method",
+                chunk_id="es-executor",
+                file_path=es_executor.file_path,
+                kind="method",
+                name="EsApplyAuditPageQryExe.involvedByMe",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["apply", "audit", "page", "es", "involved", "by", "me"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_signals(
+        non_es_executor.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-non-es-method",
+                chunk_id="non-es-executor",
+                file_path=non_es_executor.file_path,
+                kind="method",
+                name="ApplyAuditPageQryExe.page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["apply", "audit", "page", "es"],
+                metadata={},
+            )
+        ],
+    )
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "es-executor": RetrievalCandidate(
+                chunk_id="es-executor",
+                score=1.0,
+                source="lexical",
+                score_parts={"lexical": 0.8},
+            ),
+            "non-es-executor": RetrievalCandidate(
+                chunk_id="non-es-executor",
+                score=1.0,
+                source="lexical",
+                score_parts={"lexical": 0.8},
+            ),
+        },
+        ["apply", "audit", "page", "es", "involved", "by", "me"],
+        "/apply/audit/pageEs INVOLVED_BY_ME",
+    )
+
+    es_result = next(item for item in ranked if item.chunk.chunk_id == "es-executor")
+    non_es_result = next(item for item in ranked if item.chunk.chunk_id == "non-es-executor")
+    assert es_result.score_parts["java_method_context_match"] == 0.14
+    assert es_result.score_parts["java_executor_context_boost"] == 0.10
+    assert "java_method_context_match" not in non_es_result.score_parts
+    assert "java_executor_context_boost" not in non_es_result.score_parts
+
+
+def test_rank_chunks_applies_java_context_without_generic_signal_lookups(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    executor = DocumentChunk(
+        chunk_id="executor",
+        file_path=Path("src/main/java/com/example/catalog/PageAppCatalogQueryExe.java"),
+        start_line=1,
+        end_line=10,
+        content="class PageAppCatalogQueryExe { String fillCanApplyFilter() { return \"\"; } }",
+        chunk_type="symbol",
+        lexical_tokens=["page", "app", "catalog", "can", "apply", "filter"],
+        metadata={"language": "java"},
+    )
+    generic = DocumentChunk(
+        chunk_id="generic",
+        file_path=Path("src/main/java/com/example/catalog/PageAppCatalogFormatter.java"),
+        start_line=1,
+        end_line=10,
+        content="class PageAppCatalogFormatter { String displayName; }",
+        chunk_type="symbol",
+        lexical_tokens=["page", "app", "catalog"],
+        metadata={"language": "java"},
+    )
+    for chunk in (executor, generic):
+        store.replace_chunks(chunk.file_path, [chunk])
+    store.replace_signals(
+        executor.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-method",
+                chunk_id="executor",
+                file_path=executor.file_path,
+                kind="method",
+                name="PageAppCatalogQueryExe.fillCanApplyFilter",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["page", "app", "catalog", "fill", "can", "apply", "filter"],
+                metadata={},
+            )
+        ],
+    )
+    signal_lookup_count = _count_signal_lookups(store, monkeypatch)
+    candidates = {
+        "executor": RetrievalCandidate(
+            chunk_id="executor",
+            score=1.0,
+            source="lexical",
+            score_parts={"lexical": 0.8},
+        ),
+        "generic": RetrievalCandidate(
+            chunk_id="generic",
+            score=1.0,
+            source="lexical",
+            score_parts={"lexical": 0.8},
+        ),
+    }
+
+    ranked = retrieval._rank_chunks(
+        store,
+        candidates,
+        ["app", "catalog", "page", "can", "apply"],
+        "app catalog page can apply",
+    )
+
+    executor_result = next(item for item in ranked if item.chunk.chunk_id == "executor")
+    assert executor_result.score_parts["java_method_context_match"] == 0.14
+    assert executor_result.score_parts["java_executor_context_boost"] == 0.10
+    assert signal_lookup_count() == 1
+
+
+def test_rank_chunks_applies_java_context_for_matching_generic_helper_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    helper = DocumentChunk(
+        chunk_id="helper",
+        file_path=Path("src/main/java/com/example/catalog/AppCatalogFilterHelper.java"),
+        start_line=1,
+        end_line=10,
+        content="class AppCatalogFilterHelper { void fillCanApplyFilter() {} }",
+        chunk_type="symbol",
+        lexical_tokens=["app", "catalog", "filter", "helper", "can", "apply"],
+        metadata={"language": "java"},
+    )
+    unrelated = DocumentChunk(
+        chunk_id="unrelated",
+        file_path=Path("src/main/java/com/example/catalog/AppCatalogFormatter.java"),
+        start_line=1,
+        end_line=10,
+        content="class AppCatalogFormatter { String displayName; }",
+        chunk_type="symbol",
+        lexical_tokens=["app", "catalog", "formatter"],
+        metadata={"language": "java"},
+    )
+    for chunk in (helper, unrelated):
+        store.replace_chunks(chunk.file_path, [chunk])
+    store.replace_signals(
+        helper.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-helper-method",
+                chunk_id="helper",
+                file_path=helper.file_path,
+                kind="method",
+                name="AppCatalogFilterHelper.fillCanApplyFilter",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["app", "catalog", "fill", "can", "apply", "filter"],
+                metadata={},
+            )
+        ],
+    )
+    signal_lookup_count = _count_signal_lookups(store, monkeypatch)
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "helper": RetrievalCandidate(
+                chunk_id="helper",
+                score=1.0,
+                source="lexical",
+                score_parts={"lexical": 0.8},
+            ),
+            "unrelated": RetrievalCandidate(
+                chunk_id="unrelated",
+                score=1.0,
+                source="lexical",
+                score_parts={"lexical": 0.8},
+            ),
+        },
+        ["app", "catalog", "can", "apply"],
+        "app catalog can apply",
+    )
+
+    helper_result = next(item for item in ranked if item.chunk.chunk_id == "helper")
+    unrelated_result = next(item for item in ranked if item.chunk.chunk_id == "unrelated")
+    assert helper_result.score_parts["java_method_context_match"] == 0.14
+    assert "java_method_context_match" not in unrelated_result.score_parts
+    assert signal_lookup_count() == 1
+
+
+def test_rank_chunks_skips_java_context_for_test_executor(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    executor_test = DocumentChunk(
+        chunk_id="executor-test",
+        file_path=Path("src/test/java/com/example/catalog/PageAppCatalogQueryExecutorTest.java"),
+        start_line=1,
+        end_line=10,
+        content="class PageAppCatalogQueryExecutorTest { void fillCanApplyFilter() {} }",
+        chunk_type="symbol",
+        lexical_tokens=["page", "app", "catalog", "can", "apply", "filter"],
+        metadata={"language": "java"},
+    )
+    store.replace_chunks(executor_test.file_path, [executor_test])
+    store.replace_signals(
+        executor_test.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-method",
+                chunk_id="executor-test",
+                file_path=executor_test.file_path,
+                kind="method",
+                name="PageAppCatalogQueryExecutorTest.fillCanApplyFilter",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["page", "app", "catalog", "fill", "can", "apply", "filter"],
+                metadata={},
+            )
+        ],
+    )
+    candidates = {
+        "executor-test": RetrievalCandidate(
+            chunk_id="executor-test",
+            score=1.0,
+            source="lexical",
+            score_parts={"lexical": 0.8},
+        )
+    }
+
+    ranked = retrieval._rank_chunks(
+        store,
+        candidates,
+        ["app", "catalog", "page", "can", "apply"],
+        "app catalog page can apply",
+    )
+
+    score_parts = ranked[0].score_parts
+    assert score_parts["penalty"] == -0.10
+    assert "java_method_context_match" not in score_parts
+    assert "java_executor_context_boost" not in score_parts
+
+
+def test_rank_chunks_bounds_java_context_signal_lookups_by_local_overlap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    candidates: dict[str, RetrievalCandidate] = {}
+    matching_indices = {17, 503}
+    matching_executor_id = "chunk-17"
+
+    for index in range(1000):
+        chunk_id = f"chunk-{index}"
+        is_match = index in matching_indices
+        is_executor = index != 503
+        class_name = (
+            "PageAppCatalogQueryExe"
+            if index == 17
+            else "AppCatalogPageQry"
+            if index == 503
+            else f"Noise{index}QueryExe"
+        )
+        path = Path(
+            f"src/main/java/com/example/{'dto' if not is_executor else 'query'}/{class_name}.java"
+        )
+        lexical_tokens = (
+            ["app", "catalog", "page", "can", "apply", "filter"]
+            if is_match
+            else ["noise", "executor"]
+        )
+        content = (
+            f"class {class_name} {{ void fillCanApplyFilter() {{}} }}"
+            if is_match
+            else f"class {class_name} {{ void executeNoise() {{}} }}"
+        )
+        chunk = DocumentChunk(
+            chunk_id=chunk_id,
+            file_path=path,
+            start_line=1,
+            end_line=10,
+            content=content,
+            chunk_type="symbol",
+            lexical_tokens=lexical_tokens,
+            metadata={"language": "java"},
+        )
+        store.replace_chunks(path, [chunk])
+        candidates[chunk_id] = RetrievalCandidate(
+            chunk_id=chunk_id,
+            score=1.0,
+            source="lexical",
+            score_parts={"lexical": 0.8},
+        )
+
+    store.replace_signals(
+        Path("src/main/java/com/example/query/PageAppCatalogQueryExe.java"),
+        [
+            CodeSignal(
+                signal_id="sig-method",
+                chunk_id=matching_executor_id,
+                file_path=Path("src/main/java/com/example/query/PageAppCatalogQueryExe.java"),
+                kind="method",
+                name="PageAppCatalogQueryExe.fillCanApplyFilter",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["app", "catalog", "fill", "can", "apply", "filter"],
+                metadata={},
+            )
+        ],
+    )
+    signal_lookup_count = _count_signal_lookups(store, monkeypatch)
+
+    ranked = retrieval._rank_chunks(
+        store,
+        candidates,
+        ["app", "catalog", "page", "can", "apply"],
+        "app catalog page can apply",
+    )
+
+    executor_result = next(item for item in ranked if item.chunk.chunk_id == matching_executor_id)
+    assert signal_lookup_count() == len(matching_indices)
+    assert executor_result.score_parts["java_method_context_match"] == 0.14
+    assert executor_result.score_parts["java_executor_context_boost"] == 0.10
+
+
+def test_route_boost_ignores_side_routes_when_query_has_leading_route() -> None:
+    exact = DocumentChunk(
+        chunk_id="exact",
+        file_path=Path("src/main/java/AppCatalogController.java"),
+        start_line=1,
+        end_line=10,
+        content="class AppCatalogController {}",
+        chunk_type="symbol",
+        lexical_tokens=["/appCatalog/page", "app", "catalog", "page"],
+        metadata={"language": "java"},
+    )
+    sibling = DocumentChunk(
+        chunk_id="sibling",
+        file_path=Path("src/main/java/AppCatalogOpenController.java"),
+        start_line=1,
+        end_line=10,
+        content="class AppCatalogOpenController {}",
+        chunk_type="symbol",
+        lexical_tokens=["/openApi/appCatalog/page", "open", "api", "app", "catalog", "page"],
+        metadata={"language": "java"},
+    )
+    side_route = DocumentChunk(
+        chunk_id="side-route",
+        file_path=Path("src/main/java/ApplyAuditController.java"),
+        start_line=1,
+        end_line=10,
+        content="class ApplyAuditController {}",
+        chunk_type="symbol",
+        lexical_tokens=["/apply/audit/pageEs", "apply", "audit", "page", "es"],
+        metadata={"language": "java"},
+    )
+
+    tokens = ["app", "catalog", "page", "can", "apply"]
+
+    assert retrieval._route_boost(exact, "/appCatalog/page canApply", tokens) == 0.12
+    assert retrieval._route_boost(sibling, "/appCatalog/page canApply", tokens) == 0.0
+    assert retrieval._route_boost(side_route, "/appCatalog/page canApply", tokens) == 0.0
 
 
 def test_reasons_include_role_diagnostics() -> None:

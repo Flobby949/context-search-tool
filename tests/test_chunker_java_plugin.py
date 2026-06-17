@@ -171,6 +171,154 @@ class WorkbenchController {
     assert "owner_method" not in comment_signal.metadata
 
 
+def test_java_plugin_emits_field_signals_for_dto_fields() -> None:
+    source = """
+class AppCatalogPageQry {
+    private Boolean canApply;
+
+    public Boolean getCanApply() {
+        return canApply;
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("AppCatalogPageQry.java"), source)
+    signals = {signal.name: signal for signal in extraction.signals}
+
+    field_signal = signals["AppCatalogPageQry.canApply"]
+    assert field_signal.kind == "field"
+    assert field_signal.metadata["owner_type"] == "AppCatalogPageQry"
+    assert field_signal.metadata["field"] == "canApply"
+    assert field_signal.metadata["field_type"] == "Boolean"
+    assert "can" in field_signal.tokens
+    assert "apply" in field_signal.tokens
+
+
+def test_java_plugin_does_not_emit_field_signal_for_method_local_variable() -> None:
+    source = """
+class Example {
+    void run() {
+        AppCatalogPageQry qry = load();
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("Example.java"), source)
+    field_signal_names = {
+        signal.name for signal in extraction.signals if signal.kind == "field"
+    }
+    field_symbols = {
+        symbol.name for symbol in extraction.symbols if symbol.kind == "field"
+    }
+
+    assert "Example.qry" not in field_signal_names
+    assert "qry" not in field_symbols
+
+
+def test_java_plugin_method_signals_include_parameter_context() -> None:
+    source = """
+class PageAppCatalogQueryExe {
+    public String execute(AppCatalogPageQry qry) {
+        return fillCanApplyFilter(qry);
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("PageAppCatalogQueryExe.java"), source)
+    signals = {signal.name: signal for signal in extraction.signals}
+
+    method_signal = signals["PageAppCatalogQueryExe.execute"]
+    assert method_signal.kind == "method"
+    assert method_signal.metadata["parameter_types"] == ["AppCatalogPageQry"]
+    assert method_signal.metadata["parameter_names"] == ["qry"]
+    assert "app" in method_signal.tokens
+    assert "catalog" in method_signal.tokens
+    assert "qry" in method_signal.tokens
+
+
+def test_java_plugin_method_signals_include_multiline_parameter_context() -> None:
+    source = """
+class PageAppCatalogQueryExe {
+    public String execute(
+        AppCatalogPageQry qry,
+        String status
+    ) {
+        return status;
+    }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("PageAppCatalogQueryExe.java"), source)
+    signals = {signal.name: signal for signal in extraction.signals}
+
+    method_signal = signals["PageAppCatalogQueryExe.execute"]
+    assert method_signal.metadata["parameter_types"] == ["AppCatalogPageQry", "String"]
+    assert method_signal.metadata["parameter_names"] == ["qry", "status"]
+    assert "catalog" in method_signal.tokens
+    assert "qry" in method_signal.tokens
+    assert "status" in method_signal.tokens
+
+
+def test_java_plugin_method_parameter_context_handles_annotation_parentheses() -> None:
+    source = """
+class UserMapper {
+    User find(@Param("id") Long id, String status);
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("UserMapper.java"), source)
+    signals = {signal.name: signal for signal in extraction.signals}
+
+    method_signal = signals["UserMapper.find"]
+    assert method_signal.metadata["parameter_types"] == ["Long", "String"]
+    assert method_signal.metadata["parameter_names"] == ["id", "status"]
+    assert "id" in method_signal.tokens
+    assert "status" in method_signal.tokens
+
+
+def test_java_plugin_method_parameter_context_handles_annotation_commas() -> None:
+    source = """
+class UserMapper {
+    User find(@RequestParam(value = "id", required = false) Long id, String status);
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("UserMapper.java"), source)
+    signals = {signal.name: signal for signal in extraction.signals}
+
+    method_signal = signals["UserMapper.find"]
+    assert method_signal.metadata["parameter_types"] == ["Long", "String"]
+    assert method_signal.metadata["parameter_names"] == ["id", "status"]
+    assert "id" in method_signal.tokens
+    assert "status" in method_signal.tokens
+
+
+def test_java_plugin_does_not_reuse_mapping_after_parameter_annotation() -> None:
+    source = """
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+
+class DemoController {
+    @GetMapping("/x")
+    String endpoint(@RequestParam(value = "id", required = false) Long id) { return "ok"; }
+    String helper(String q) { return q; }
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("DemoController.java"), source)
+    endpoint_signals = [
+        (signal.name, signal.metadata["method"])
+        for signal in extraction.signals
+        if signal.kind == "endpoint"
+    ]
+    method_signal_names = {
+        signal.name for signal in extraction.signals if signal.kind == "method"
+    }
+
+    assert endpoint_signals == [("GET /x", "endpoint")]
+    assert "DemoController.helper" in method_signal_names
+
+
 def test_java_plugin_emits_usage_signals_for_receiver_method_calls() -> None:
     extraction = JavaPlugin().extract(Path("ApplyAuditController.java"), JAVA_SOURCE)
     usage_signals = [
@@ -296,6 +444,39 @@ interface ResourceAuditService {
     relation = relations[("calls", "ResourceAuditService.statsWait")]
     assert relation.confidence == 0.8
     assert relation.metadata["receiver_type"] == "ResourceAuditService"
+
+
+def test_java_plugin_uses_annotated_constructor_assignment_to_refine_receiver_type() -> None:
+    source = """
+import org.springframework.beans.factory.annotation.Qualifier;
+
+class AuditController {
+    private final Object resourceAuditService;
+
+    AuditController(@Qualifier("primary") ResourceAuditService resourceAuditService) {
+        this.resourceAuditService = resourceAuditService;
+    }
+
+    Object statsWait() {
+        return resourceAuditService.statsWait();
+    }
+}
+
+interface ResourceAuditService {
+    Object statsWait();
+}
+""".strip()
+
+    extraction = JavaPlugin().extract(Path("AuditController.java"), source)
+    relations = {
+        (relation.kind, relation.target_name): relation
+        for relation in extraction.relations
+    }
+
+    relation = relations[("uses", "ResourceAuditService.statsWait")]
+    assert relation.confidence == 0.8
+    assert relation.metadata["receiver_type"] == "ResourceAuditService"
+    assert ("uses", "Object.statsWait") not in relations
 
 
 def test_java_plugin_splits_generic_implements_targets_at_top_level_commas() -> None:
@@ -681,8 +862,11 @@ class ItemController {
 """.strip()
 
     extraction = JavaPlugin().extract(Path("ItemController.java"), source)
+    endpoint_signals = [
+        signal for signal in extraction.signals if signal.kind == "endpoint"
+    ]
 
-    assert [(signal.name, signal.metadata["method"]) for signal in extraction.signals] == [
+    assert [(signal.name, signal.metadata["method"]) for signal in endpoint_signals] == [
         ("GET /a", "a")
     ]
 

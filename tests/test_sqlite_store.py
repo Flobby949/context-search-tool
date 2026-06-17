@@ -140,6 +140,60 @@ def test_store_round_trips_signals_by_chunk_and_token(tmp_path: Path) -> None:
     assert store.signal_search(["工作台"], limit=10) == [comment]
 
 
+def test_signal_search_keeps_endpoint_signals_near_top_for_endpoint_tokens(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    chunk = DocumentChunk(
+        chunk_id="chunk-1",
+        file_path=Path("src/App.java"),
+        start_line=1,
+        end_line=80,
+        content="class App {}",
+        chunk_type="symbol",
+        symbols=[],
+        lexical_tokens=["stats"],
+        embedding_id="chunk-1",
+        deleted_at=None,
+        metadata={},
+    )
+    method_signals = [
+        CodeSignal(
+            signal_id=f"sig-method-{index}",
+            chunk_id="chunk-1",
+            file_path=Path("src/App.java"),
+            kind="method",
+            name=f"StatsService.method{index}",
+            start_line=index,
+            end_line=index,
+            language="java",
+            tokens=["stats"],
+            metadata={},
+        )
+        for index in range(1, 8)
+    ]
+    endpoint = CodeSignal(
+        signal_id="sig-endpoint",
+        chunk_id="chunk-1",
+        file_path=Path("src/App.java"),
+        kind="endpoint",
+        name="POST /apply/audit/stats",
+        start_line=60,
+        end_line=60,
+        language="java",
+        tokens=["apply", "audit", "stats"],
+        metadata={"path": "/apply/audit/stats"},
+    )
+
+    store.replace_chunks(Path("src/App.java"), [chunk])
+    store.replace_signals(Path("src/App.java"), [*method_signals, endpoint])
+
+    top_names = [signal.name for signal in store.signal_search(["stats"], limit=3)]
+
+    assert "POST /apply/audit/stats" in top_names
+
+
 def test_store_replaces_active_signals_for_file(tmp_path: Path) -> None:
     store = SQLiteStore(tmp_path / "index.sqlite")
     store.initialize()

@@ -95,6 +95,10 @@ class JavaPlugin:
         class_contexts = _class_contexts(annotations_by_line, lines)
         type_contexts = _type_contexts(annotations_by_line, lines)
         receiver_types = _receiver_types_by_owner(lines, type_contexts)
+        field_owner_by_line: dict[int, str] = {}
+        for context in type_contexts:
+            for top_level_line in _top_level_type_body_lines(lines, context):
+                field_owner_by_line[top_level_line] = context["name"]
 
         for line_number, line in enumerate(lines, start=1):
             type_match = _TYPE_RE.search(line)
@@ -126,6 +130,27 @@ class JavaPlugin:
                 name = constant_match.group(1)
                 symbols.append(_symbol(name, "constant", line_number, line_number))
                 _add_identifier_tokens(tokens, name)
+
+            field_match = _FIELD_RE.search(line)
+            if (
+                field_match
+                and line_number in field_owner_by_line
+                and line_number not in enum_constant_lines
+            ):
+                field_type, field_name = field_match.groups()
+                owner_type = field_owner_by_line[line_number]
+                symbols.append(_symbol(field_name, "field", line_number, line_number))
+                _add_identifier_tokens(tokens, field_name)
+                _add_identifier_tokens(tokens, field_type)
+                signals.append(
+                    _field_signal(
+                        path=path,
+                        owner_type=owner_type,
+                        field_type=field_type,
+                        field_name=field_name,
+                        line_number=line_number,
+                    )
+                )
 
             method_match = _method_match(lines, line_number)
             if (
@@ -187,6 +212,9 @@ class JavaPlugin:
                     )
                     signals.append(endpoint_signal)
                     endpoint_signal_id = endpoint_signal.signal_id
+                parameter_context = _method_parameter_context(
+                    _method_signature_text(lines, line_number)
+                )
                 method_contexts.append(
                     {
                         "owner_type": type_name,
@@ -194,6 +222,8 @@ class JavaPlugin:
                         "line": line_number,
                         "usage_signals": usage_signals,
                         "endpoint_signal_id": endpoint_signal_id,
+                        "parameter_types": parameter_context["parameter_types"],
+                        "parameter_names": parameter_context["parameter_names"],
                     }
                 )
 
@@ -354,10 +384,20 @@ def _method_signal(path: Path, method_context: dict[str, Any]) -> CodeSignal:
     owner_type = method_context["owner_type"]
     method_name = method_context["method"]
     signal_name = f"{owner_type}.{method_name}" if owner_type else method_name
+    parameter_types = method_context["parameter_types"]
+    parameter_names = method_context["parameter_names"]
     signal_tokens: list[str] = []
     _add_identifier_tokens(signal_tokens, owner_type)
     _add_identifier_tokens(signal_tokens, method_name)
-    metadata = {"owner_method": method_name}
+    for parameter_type in parameter_types:
+        _add_identifier_tokens(signal_tokens, parameter_type)
+    for parameter_name in parameter_names:
+        _add_identifier_tokens(signal_tokens, parameter_name)
+    metadata = {
+        "owner_method": method_name,
+        "parameter_types": parameter_types,
+        "parameter_names": parameter_names,
+    }
     if owner_type:
         metadata["owner_type"] = owner_type
     return CodeSignal(
@@ -371,6 +411,36 @@ def _method_signal(path: Path, method_context: dict[str, Any]) -> CodeSignal:
         language="java",
         tokens=_dedupe(signal_tokens),
         metadata=metadata,
+    )
+
+
+def _field_signal(
+    path: Path,
+    owner_type: str,
+    field_type: str,
+    field_name: str,
+    line_number: int,
+) -> CodeSignal:
+    signal_name = f"{owner_type}.{field_name}" if owner_type else field_name
+    signal_tokens: list[str] = []
+    _add_identifier_tokens(signal_tokens, owner_type)
+    _add_identifier_tokens(signal_tokens, field_type)
+    _add_identifier_tokens(signal_tokens, field_name)
+    return CodeSignal(
+        signal_id=generate_signal_id(path, "field", line_number, signal_name),
+        chunk_id="",
+        file_path=path,
+        kind="field",
+        name=signal_name,
+        start_line=line_number,
+        end_line=line_number,
+        language="java",
+        tokens=_dedupe(signal_tokens),
+        metadata={
+            "owner_type": owner_type,
+            "field": field_name,
+            "field_type": _clean_java_type(field_type),
+        },
     )
 
 
@@ -567,15 +637,14 @@ def _relation_signals_and_relations(
 
     for method_context in method_contexts:
         usage_signals = method_context["usage_signals"]
-        if not usage_signals:
-            continue
-
         source_signal_id = method_context["endpoint_signal_id"]
         relation_kind = "calls" if source_signal_id else "uses"
         if not source_signal_id:
             signal = _method_signal(path, method_context)
             signals.append(signal)
             source_signal_id = signal.signal_id
+        if not usage_signals:
+            continue
 
         owner_type = method_context["owner_type"]
         owner_receiver_types = receiver_types.get(owner_type, {})
@@ -711,6 +780,26 @@ def _method_match(lines: list[str], line_number: int) -> re.Match[str] | None:
     return None
 
 
+def _method_signature_text(lines: list[str], line_number: int) -> str:
+    signature_parts: list[str] = []
+    paren_depth = 0
+    saw_parameters = False
+    for current_line_number in range(line_number, len(lines) + 1):
+        line = lines[current_line_number - 1].strip()
+        signature_parts.append(line)
+        for char in line:
+            if char == "(":
+                paren_depth += 1
+                saw_parameters = True
+            elif char == ")" and paren_depth > 0:
+                paren_depth -= 1
+        if saw_parameters and paren_depth == 0:
+            break
+        if "{" in line or ";" in line:
+            break
+    return " ".join(signature_parts)
+
+
 def _annotations_by_line(
     lines: list[str], tokens: list[str]
 ) -> dict[int, list[dict[str, Any]]]:
@@ -726,12 +815,16 @@ def _iter_annotations(lines: list[str]) -> list[dict[str, Any]]:
     line_number = 1
     while line_number <= len(lines):
         line = lines[line_number - 1]
-        match = _ANNOTATION_START_RE.search(line)
+        stripped = line.lstrip()
+        match = _ANNOTATION_START_RE.match(stripped)
         if not match:
             line_number += 1
             continue
 
-        args, end_line = _annotation_args(lines, line_number, match.end())
+        indentation = len(line) - len(stripped)
+        args, end_line = _annotation_args(
+            lines, line_number, indentation + match.end()
+        )
         annotations.append(
             {
                 "line": line_number,
@@ -872,7 +965,9 @@ def _add_constructor_assignment_types(
     line_number: int,
     receiver_types: dict[str, str],
 ) -> None:
-    parameters = _constructor_parameters(lines[line_number - 1], context["name"])
+    parameters = _constructor_parameters(
+        _method_signature_text(lines, line_number), context["name"]
+    )
     if not parameters:
         return
     body_range = _method_body_range(lines, line_number)
@@ -892,12 +987,12 @@ def _add_constructor_assignment_types(
 
 def _constructor_parameters(line: str, type_name: str) -> dict[str, str]:
     match = re.search(
-        rf"^\s*(?:(?:public|protected|private)\s+)?{re.escape(type_name)}\s*\(([^)]*)\)",
+        rf"^\s*(?:(?:public|protected|private)\s+)?{re.escape(type_name)}\s*\(",
         line,
     )
     if not match:
         return {}
-    return _parameter_types(match.group(1))
+    return _parameter_types(_method_parameter_text(line))
 
 
 def _parameter_types(parameters: str) -> dict[str, str]:
@@ -917,16 +1012,65 @@ def _parameter_types(parameters: str) -> dict[str, str]:
     return parameter_types
 
 
+def _method_parameter_context(line: str) -> dict[str, list[str]]:
+    parameter_text = _method_parameter_text(line)
+    if not parameter_text:
+        return {"parameter_types": [], "parameter_names": []}
+
+    parameter_types: list[str] = []
+    parameter_names: list[str] = []
+    for parameter in _split_java_parameters(parameter_text):
+        cleaned = re.sub(r"@\w+(?:\([^)]*\))?\s*", "", parameter).strip()
+        cleaned = re.sub(r"\bfinal\s+", "", cleaned).strip()
+        if not cleaned:
+            continue
+        parts = cleaned.replace("...", " ").split()
+        if len(parts) < 2:
+            continue
+        parameter_types.append(_clean_java_type(" ".join(parts[:-1])))
+        parameter_names.append(parts[-1])
+    return {
+        "parameter_types": parameter_types,
+        "parameter_names": parameter_names,
+    }
+
+
+def _method_parameter_text(signature: str) -> str:
+    start = signature.find("(")
+    if start < 0:
+        return ""
+
+    depth = 0
+    parameter_chars: list[str] = []
+    for char in signature[start:]:
+        if char == "(":
+            depth += 1
+            if depth == 1:
+                continue
+        elif char == ")" and depth > 0:
+            depth -= 1
+            if depth == 0:
+                return "".join(parameter_chars).strip()
+        if depth > 0:
+            parameter_chars.append(char)
+    return ""
+
+
 def _split_java_parameters(parameters: str) -> list[str]:
     parts: list[str] = []
     current: list[str] = []
     angle_depth = 0
+    paren_depth = 0
     for char in parameters:
         if char == "<":
             angle_depth += 1
         elif char == ">" and angle_depth > 0:
             angle_depth -= 1
-        if char == "," and angle_depth == 0:
+        elif char == "(":
+            paren_depth += 1
+        elif char == ")" and paren_depth > 0:
+            paren_depth -= 1
+        if char == "," and angle_depth == 0 and paren_depth == 0:
             parts.append("".join(current).strip())
             current = []
             continue

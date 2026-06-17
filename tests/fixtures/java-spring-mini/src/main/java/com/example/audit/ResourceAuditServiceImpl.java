@@ -9,6 +9,10 @@ public class ResourceAuditServiceImpl implements ResourceAuditService {
         this.esApplyAuditPageQryExe = esApplyAuditPageQryExe;
     }
 
+    public String applyPageEs(AuditStatus auditStatus) {
+        return esApplyAuditPageQryExe.involvedByMe(auditStatus);
+    }
+
     public Map<String, Long> statsWait() {
         return esApplyAuditPageQryExe.statsWait();
     }
