@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from context_search_tool.models import QueryPlan, RetrievalResult, RetrievalSummary
+from context_search_tool.models import EvidenceAnchor, QueryPlan, RetrievalResult, RetrievalSummary
 from context_search_tool.retrieval import QueryBundle
 from context_search_tool.formatters import format_json, format_markdown
 
@@ -91,6 +91,51 @@ def test_markdown_formatter_includes_summary_before_results() -> None:
     assert "## Results" in output
 
 
+def test_markdown_formatter_includes_evidence_anchors_after_results() -> None:
+    bundle = QueryBundle(
+        query="apply audit",
+        expanded_tokens=["apply", "audit"],
+        followup_keywords=[],
+        results=[
+            RetrievalResult(
+                file_path=Path("ApplyAuditController.java"),
+                start_line=10,
+                end_line=20,
+                content="class ApplyAuditController {}",
+                score=0.87,
+                score_parts={"lexical": 0.8},
+                reasons=["lexical match: apply audit"],
+                followup_keywords=["pageEs"],
+            )
+        ],
+        evidence_anchors=[
+            EvidenceAnchor(
+                file_path=Path("anchors/config.yaml"),
+                start_line=1,
+                end_line=8,
+                content="audit_timeout: 30",
+                score=0.42,
+                score_parts={"lexical": 0.2},
+                reasons=["configuration signal from symbol"],
+                anchor_kind="config",
+            )
+        ],
+    )
+
+    output = format_markdown(bundle)
+
+    assert output.index("## Results") < output.index("## Evidence Anchors")
+    assert "anchors/config.yaml:1-8" in output
+    assert "Anchor kind: config" in output
+    assert "configuration signal from symbol" in output
+
+
+def test_markdown_formatter_omits_evidence_anchors_section_when_empty() -> None:
+    output = format_markdown(sample_bundle())
+
+    assert "## Evidence Anchors" not in output
+
+
 def test_json_formatter_is_structured() -> None:
     output = format_json(sample_bundle())
     parsed = json.loads(output)
@@ -98,6 +143,65 @@ def test_json_formatter_is_structured() -> None:
     assert parsed["query"] == "apply audit"
     assert parsed["results"][0]["file_path"] == "ApplyAuditController.java"
     assert parsed["results"][0]["score_parts"]["lexical"] == 0.8
+
+
+def test_json_formatter_includes_evidence_anchors_and_keeps_results() -> None:
+    bundle = QueryBundle(
+        query="apply audit",
+        expanded_tokens=["apply", "audit"],
+        followup_keywords=["pageEs", "INVOLVED_BY_ME"],
+        results=[
+            RetrievalResult(
+                file_path=Path("ApplyAuditController.java"),
+                start_line=10,
+                end_line=20,
+                content="class ApplyAuditController {}",
+                score=0.87,
+                score_parts={"lexical": 0.8},
+                reasons=["lexical match: apply audit"],
+                followup_keywords=["pageEs"],
+            )
+        ],
+        evidence_anchors=[
+            EvidenceAnchor(
+                file_path=Path("anchors/config.yaml"),
+                start_line=1,
+                end_line=8,
+                content="audit_timeout: 30",
+                score=0.42,
+                score_parts={"lexical": 0.2},
+                reasons=["configuration signal from symbol"],
+                anchor_kind="config",
+            )
+        ],
+    )
+
+    parsed = json.loads(format_json(bundle))
+
+    assert parsed["results"] == [
+        {
+            "file_path": "ApplyAuditController.java",
+            "start_line": 10,
+            "end_line": 20,
+            "content": "class ApplyAuditController {}",
+            "score": 0.87,
+            "score_parts": {"lexical": 0.8},
+            "reasons": ["lexical match: apply audit"],
+            "followup_keywords": ["pageEs"],
+        }
+    ]
+    assert parsed["evidence_anchors"] == [
+        {
+            "file_path": "anchors/config.yaml",
+            "start_line": 1,
+            "end_line": 8,
+            "content": "audit_timeout: 30",
+            "score": 0.42,
+            "score_parts": {"lexical": 0.2},
+            "reasons": ["configuration signal from symbol"],
+            "anchor_kind": "config",
+        }
+    ]
 
 
 def test_json_formatter_includes_summary_sections() -> None:

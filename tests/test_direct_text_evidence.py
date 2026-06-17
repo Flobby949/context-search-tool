@@ -162,11 +162,16 @@ def test_readme_direct_text_anchor_expands_to_same_directory_code(
     bundle = query_repository(repo, "当前审批人查询接口", config)
 
     assert [result.file_path for result in bundle.results] == [
-        Path("approval/README.md"),
         Path("approval/ApprovalService.java"),
     ]
-    assert bundle.results[0].score_parts["direct_text"] >= MIN_STRONG_DIRECT_TEXT_SCORE
-    service_parts = bundle.results[1].score_parts
+    assert [anchor.file_path for anchor in bundle.evidence_anchors] == [
+        Path("approval/README.md")
+    ]
+    assert (
+        bundle.evidence_anchors[0].score_parts["direct_text"]
+        >= MIN_STRONG_DIRECT_TEXT_SCORE
+    )
+    service_parts = bundle.results[0].score_parts
     assert service_parts["directory_anchor"] > 0
     assert service_parts["anchored_relation"] > 0
     assert service_parts["original_relation"] > 0
@@ -196,10 +201,12 @@ def test_root_readme_direct_text_anchor_expands_to_root_code(tmp_path: Path) -> 
     bundle = query_repository(repo, "当前审批人查询接口", config)
 
     assert [result.file_path for result in bundle.results] == [
-        Path("README.md"),
         Path("ApprovalController.java"),
     ]
-    controller_parts = bundle.results[1].score_parts
+    assert [anchor.file_path for anchor in bundle.evidence_anchors] == [
+        Path("README.md")
+    ]
+    controller_parts = bundle.results[0].score_parts
     assert controller_parts["directory_anchor"] > 0
     assert controller_parts["anchored_relation"] > 0
     assert controller_parts["original_relation"] > 0
@@ -347,7 +354,9 @@ def test_directory_anchor_candidate_can_seed_relation_expansion(tmp_path: Path) 
     bundle = query_repository(repo, "当前审批人查询接口", config)
 
     paths = [result.file_path for result in bundle.results]
-    assert Path("approval/README.md") in paths
+    assert [anchor.file_path for anchor in bundle.evidence_anchors] == [
+        Path("approval/README.md")
+    ]
     assert Path("approval/ApprovalController.java") in paths
     assert Path("ApprovalServiceImpl.java") in paths
 

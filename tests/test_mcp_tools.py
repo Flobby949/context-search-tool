@@ -8,6 +8,8 @@ from context_search_tool.mcp_tools import (
     context_search_query_tool,
     context_search_stats_tool,
 )
+from context_search_tool.models import EvidenceAnchor, RetrievalResult
+from context_search_tool.retrieval import QueryBundle
 
 
 def _write_java_repo(repo: Path) -> None:
@@ -220,6 +222,46 @@ def test_mcp_query_payload_keeps_rerank_diagnostics_numeric(tmp_path: Path) -> N
     assert isinstance(parts["rerank_score"], float)
     assert isinstance(parts["evidence_priority"], float)
     assert "evidence_class" not in parts
+
+
+def test_mcp_query_payload_includes_evidence_anchors() -> None:
+    bundle = QueryBundle(
+        query="audit timeout",
+        expanded_tokens=["audit", "timeout"],
+        followup_keywords=[],
+        results=[
+            RetrievalResult(
+                file_path=Path("ApplyAuditController.java"),
+                start_line=10,
+                end_line=20,
+                content="class ApplyAuditController {}",
+                score=0.87,
+                score_parts={"lexical": 0.8},
+                reasons=["lexical match: audit timeout"],
+                followup_keywords=["pageEs"],
+            )
+        ],
+        evidence_anchors=[
+            EvidenceAnchor(
+                file_path=Path("config/audit.yaml"),
+                start_line=1,
+                end_line=4,
+                content="timeout: 30",
+                score=0.42,
+                score_parts={"lexical": 0.2},
+                reasons=["config signal"],
+                anchor_kind="config",
+            )
+        ],
+    )
+
+    payload = mcp_tools._query_payload(bundle)
+
+    assert "evidence_anchors" in payload
+    assert payload["evidence_anchors"][0]["file_path"] == "config/audit.yaml"
+    assert payload["evidence_anchors"][0]["anchor_kind"] == "config"
+    assert payload["evidence_anchors"][0]["score_parts"]["lexical"] == 0.2
+    assert isinstance(payload["evidence_anchors"][0]["score_parts"]["lexical"], (int, float))
 
 
 def test_mcp_query_feedback_includes_planner_metadata_without_prompt_text(

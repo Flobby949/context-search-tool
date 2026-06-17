@@ -123,6 +123,18 @@ class RetrievalResult:
     followup_keywords: list[str]
 
 
+@dataclass(frozen=True)
+class EvidenceAnchor:
+    file_path: Path
+    start_line: int
+    end_line: int
+    content: str
+    score: float
+    score_parts: dict[str, float]
+    reasons: list[str]
+    anchor_kind: str
+
+
 @dataclass
 class RetrievalSummary:
     entry_points: list[str] = field(default_factory=list)

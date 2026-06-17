@@ -2477,6 +2477,432 @@ def test_detail_only_strong_direct_still_sets_planner_ceiling(tmp_path: Path) ->
 def test_non_readme_markdown_display_priority_is_lower_than_code(
     tmp_path: Path,
 ) -> None:
+    code_results, evidence_anchors = retrieval._split_code_results_and_evidence_anchors(
+        [
+            retrieval._ExpandedResult(
+                chunk_ids=["readme"],
+                file_path=Path("README.md"),
+                start_line=1,
+                end_line=3,
+                content="当前审批人查询接口由 ApprovalController 负责。",
+                score=1.0,
+                score_parts={
+                    "direct_text": 1.0,
+                    "rerank_score": 1.2,
+                },
+                reasons=["direct text match"],
+                followup_keywords=[],
+                rank_tier=0,
+                rerank_score=1.2,
+                evidence_class="original_direct",
+                evidence_priority=0,
+            ),
+            retrieval._ExpandedResult(
+                chunk_ids=["risks"],
+                file_path=Path("RISKS.md"),
+                start_line=1,
+                end_line=3,
+                content="当前审批人查询接口的风险说明。",
+                score=0.95,
+                score_parts={
+                    "direct_text": 0.95,
+                    "rerank_score": 1.1,
+                },
+                reasons=["direct text match"],
+                followup_keywords=[],
+                rank_tier=0,
+                rerank_score=1.1,
+                evidence_class="original_direct",
+                evidence_priority=0,
+            ),
+            retrieval._ExpandedResult(
+                chunk_ids=["controller"],
+                file_path=Path("src/main/java/com/example/ApprovalController.java"),
+                start_line=1,
+                end_line=10,
+                content="class ApprovalController { String current() { return \"ok\"; } }",
+                score=0.7,
+                score_parts={
+                    "direct_text": 0.7,
+                    "rerank_score": 0.8,
+                },
+                reasons=["direct text match"],
+                followup_keywords=[],
+                rank_tier=0,
+                rerank_score=0.8,
+                evidence_class="original_direct",
+                evidence_priority=0,
+            ),
+        ],
+        final_top_k=1,
+        anchor_top_k=2,
+    )
+
+    assert [item.file_path for item in code_results] == [
+        Path("src/main/java/com/example/ApprovalController.java")
+    ]
+    assert [anchor.file_path for anchor in evidence_anchors] == [
+        Path("README.md"),
+        Path("RISKS.md"),
+    ]
+
+
+def test_evidence_anchor_kind_classifies_supported_paths() -> None:
+    assert retrieval._evidence_anchor_kind(Path("README.md")) == "readme"
+    assert retrieval._evidence_anchor_kind(Path("docs/README-api.md")) == "readme"
+    assert retrieval._evidence_anchor_kind(Path("RISKS.md")) == "risks"
+    assert retrieval._evidence_anchor_kind(Path("docs/RISKS-auth.md")) == "risks"
+    assert retrieval._evidence_anchor_kind(Path("pom.xml")) == "pom"
+    assert retrieval._evidence_anchor_kind(Path("service/pom.xml")) == "pom"
+    assert retrieval._evidence_anchor_kind(Path("src/main/java/AuthController.java")) == ""
+
+
+def test_evidence_anchors_do_not_consume_code_result_slots() -> None:
+    readme = retrieval._ExpandedResult(
+        chunk_ids=["readme"],
+        file_path=Path("README.md"),
+        start_line=1,
+        end_line=3,
+        content="当前审批人查询接口由 ApprovalController 负责。",
+        score=1.0,
+        score_parts={"direct_text": 1.0, "rerank_score": 1.2},
+        reasons=["direct text match"],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=1.2,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+    risks = retrieval._ExpandedResult(
+        chunk_ids=["risks"],
+        file_path=Path("RISKS.md"),
+        start_line=1,
+        end_line=3,
+        content="当前审批人查询接口风险说明。",
+        score=0.95,
+        score_parts={"direct_text": 0.95, "rerank_score": 1.1},
+        reasons=["direct text match"],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=1.1,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+    pom = retrieval._ExpandedResult(
+        chunk_ids=["pom"],
+        file_path=Path("pom.xml"),
+        start_line=1,
+        end_line=20,
+        content="<artifactId>approval-service</artifactId>",
+        score=0.9,
+        score_parts={"direct_text": 0.9, "rerank_score": 1.0},
+        reasons=["direct text match"],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=1.0,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+    controller = retrieval._ExpandedResult(
+        chunk_ids=["controller"],
+        file_path=Path("src/main/java/com/example/ApprovalController.java"),
+        start_line=1,
+        end_line=10,
+        content="class ApprovalController {}",
+        score=0.7,
+        score_parts={"direct_text": 0.7, "rerank_score": 0.8},
+        reasons=["direct text match"],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=0.8,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+
+    code_results, anchors = retrieval._split_code_results_and_evidence_anchors(
+        [readme, risks, pom, controller],
+        final_top_k=1,
+        anchor_top_k=3,
+    )
+
+    assert [item.file_path for item in code_results] == [
+        Path("src/main/java/com/example/ApprovalController.java")
+    ]
+    assert [anchor.anchor_kind for anchor in anchors] == ["readme", "risks", "pom"]
+
+
+def test_evidence_anchors_do_not_steal_when_many_code_results_exist() -> None:
+    anchor = retrieval._ExpandedResult(
+        chunk_ids=["readme"],
+        file_path=Path("README.md"),
+        start_line=1,
+        end_line=2,
+        content="接口说明。",
+        score=1.0,
+        score_parts={"direct_text": 1.0, "rerank_score": 1.3},
+        reasons=["direct text match"],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=1.3,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+    code_items = [
+        retrieval._ExpandedResult(
+            chunk_ids=[f"code-{index}"],
+            file_path=Path(f"src/main/java/com/example/Service{index}.java"),
+            start_line=1,
+            end_line=5,
+            content=f"class Service{index} {{}}",
+            score=0.8 - (index * 0.01),
+            score_parts={
+                "direct_text": 0.5,
+                "rerank_score": 0.9 - (index * 0.01),
+            },
+            reasons=["direct text match"],
+            followup_keywords=[],
+            rank_tier=0,
+            rerank_score=0.9 - (index * 0.01),
+            evidence_class="original_direct",
+            evidence_priority=0,
+        )
+        for index in range(3)
+    ]
+
+    code_results, anchors = retrieval._split_code_results_and_evidence_anchors(
+        [anchor, *code_items],
+        final_top_k=2,
+        anchor_top_k=1,
+    )
+
+    assert [item.file_path.name for item in code_results] == [
+        "Service0.java",
+        "Service1.java",
+    ]
+    assert [anchor.anchor_kind for anchor in anchors] == ["readme"]
+
+
+def test_only_evidence_anchors_leave_code_results_empty() -> None:
+    readme = retrieval._ExpandedResult(
+        chunk_ids=["readme"],
+        file_path=Path("README.md"),
+        start_line=1,
+        end_line=2,
+        content="接口说明。",
+        score=1.0,
+        score_parts={"direct_text": 1.0, "rerank_score": 1.1},
+        reasons=["direct text match"],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=1.1,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+    risks = retrieval._ExpandedResult(
+        chunk_ids=["risks"],
+        file_path=Path("RISKS.md"),
+        start_line=1,
+        end_line=2,
+        content="风险说明。",
+        score=0.9,
+        score_parts={"direct_text": 0.9, "rerank_score": 1.0},
+        reasons=["direct text match"],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=1.0,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+
+    code_results, anchors = retrieval._split_code_results_and_evidence_anchors(
+        [readme, risks],
+        final_top_k=5,
+        anchor_top_k=5,
+    )
+
+    assert code_results == []
+    assert [anchor.anchor_kind for anchor in anchors] == ["readme", "risks"]
+
+
+def test_evidence_anchor_top_k_returns_zero_for_non_positive_final_top_k() -> None:
+    assert retrieval._evidence_anchor_top_k(0) == 0
+    assert retrieval._evidence_anchor_top_k(-1) == 0
+    assert retrieval._evidence_anchor_top_k(1) == 1
+    assert retrieval._evidence_anchor_top_k(2) == 1
+    assert retrieval._evidence_anchor_top_k(10) == 3
+
+
+def test_evidence_anchors_dedupe_by_kind_and_file_path() -> None:
+    split_code, split_anchors = retrieval._split_code_results_and_evidence_anchors(
+        [
+            retrieval._ExpandedResult(
+                chunk_ids=["readme-0"],
+                file_path=Path("README.md"),
+                start_line=1,
+                end_line=3,
+                content="README anchor top chunk",
+                score=1.0,
+                score_parts={"direct_text": 1.0, "rerank_score": 1.2},
+                reasons=["direct text match"],
+                followup_keywords=[],
+                rank_tier=0,
+                rerank_score=1.2,
+                evidence_class="original_direct",
+                evidence_priority=0,
+            ),
+            retrieval._ExpandedResult(
+                chunk_ids=["readme-1"],
+                file_path=Path("README.md"),
+                start_line=20,
+                end_line=24,
+                content="README anchor duplicate chunk",
+                score=0.99,
+                score_parts={"direct_text": 0.99, "rerank_score": 1.1},
+                reasons=["direct text match"],
+                followup_keywords=[],
+                rank_tier=0,
+                rerank_score=1.1,
+                evidence_class="original_direct",
+                evidence_priority=0,
+            ),
+            retrieval._ExpandedResult(
+                chunk_ids=["controller"],
+                file_path=Path("src/main/java/com/example/ApprovalController.java"),
+                start_line=1,
+                end_line=10,
+                content="class ApprovalController {}",
+                score=0.7,
+                score_parts={"direct_text": 0.7, "rerank_score": 0.8},
+                reasons=["direct text match"],
+                followup_keywords=[],
+                rank_tier=0,
+                rerank_score=0.8,
+                evidence_class="original_direct",
+                evidence_priority=0,
+            ),
+        ],
+        final_top_k=1,
+        anchor_top_k=2,
+    )
+
+    assert [item.file_path for item in split_code] == [
+        Path("src/main/java/com/example/ApprovalController.java")
+    ]
+    assert [item.file_path for item in split_anchors] == [Path("README.md")]
+    assert [item.start_line for item in split_anchors] == [1]
+
+
+def test_evidence_anchors_do_not_contribute_to_summary(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    controller = DocumentChunk(
+        chunk_id="controller",
+        file_path=Path("src/main/java/com/example/ApprovalController.java"),
+        start_line=1,
+        end_line=10,
+        content="class ApprovalController {}",
+        chunk_type="symbol",
+        symbols=[
+            SymbolRef(
+                name="ApprovalController",
+                kind="class",
+                start_line=1,
+                end_line=10,
+                language="java",
+            )
+        ],
+        lexical_tokens=["approval", "controller"],
+        metadata={"language": "java"},
+    )
+    store.replace_chunks(controller.file_path, [controller])
+
+    code_results, evidence_anchors = retrieval._split_code_results_and_evidence_anchors(
+        [
+            retrieval._ExpandedResult(
+                chunk_ids=["readme"],
+                file_path=Path("README.md"),
+                start_line=1,
+                end_line=3,
+                content="当前审批人查询接口由 ApprovalController 负责。",
+                score=1.0,
+                score_parts={"direct_text": 1.0, "rerank_score": 1.2},
+                reasons=["direct text match"],
+                followup_keywords=[],
+                rank_tier=0,
+                rerank_score=1.2,
+                evidence_class="original_direct",
+                evidence_priority=0,
+            ),
+            retrieval._ExpandedResult(
+                chunk_ids=["risks"],
+                file_path=Path("RISKS.md"),
+                start_line=1,
+                end_line=3,
+                content="当前审批人查询接口风险说明。",
+                score=0.95,
+                score_parts={"direct_text": 0.95, "rerank_score": 1.1},
+                reasons=["direct text match"],
+                followup_keywords=[],
+                rank_tier=0,
+                rerank_score=1.1,
+                evidence_class="original_direct",
+                evidence_priority=0,
+            ),
+            retrieval._ExpandedResult(
+                chunk_ids=["pom"],
+                file_path=Path("pom.xml"),
+                start_line=1,
+                end_line=20,
+                content="<artifactId>approval-service</artifactId>",
+                score=0.9,
+                score_parts={"direct_text": 0.9, "rerank_score": 1.0},
+                reasons=["direct text match"],
+                followup_keywords=[],
+                rank_tier=0,
+                rerank_score=1.0,
+                evidence_class="original_direct",
+                evidence_priority=0,
+            ),
+            retrieval._ExpandedResult(
+                chunk_ids=["controller"],
+                file_path=controller.file_path,
+                start_line=1,
+                end_line=10,
+                content="class ApprovalController {}",
+                score=0.7,
+                score_parts={"direct_text": 0.7, "rerank_score": 0.8},
+                reasons=["direct text match"],
+                followup_keywords=[],
+                rank_tier=0,
+                rerank_score=0.8,
+                evidence_class="original_direct",
+                evidence_priority=0,
+            ),
+        ],
+        final_top_k=1,
+        anchor_top_k=3,
+    )
+    summary, _ = retrieval._summarize_results(store, code_results)
+
+    assert [item.file_path.suffix for item in code_results] == [".java"]
+    assert [anchor.anchor_kind for anchor in evidence_anchors] == [
+        "readme",
+        "risks",
+        "pom",
+    ]
+    summary_items = {
+        *summary.entry_points,
+        *summary.implementation,
+        *summary.related_types,
+        *summary.possibly_legacy,
+    }
+    assert "README.md" not in summary_items
+    assert "RISKS.md" not in summary_items
+    assert "pom.xml" not in summary_items
+    assert any("ApprovalController" in item for item in summary.entry_points)
+
+
+def test_evidence_anchors_still_seed_directory_expansion(tmp_path: Path) -> None:
     store = SQLiteStore(tmp_path / "index.sqlite")
     store.initialize()
     readme = DocumentChunk(
@@ -2489,59 +2915,36 @@ def test_non_readme_markdown_display_priority_is_lower_than_code(
         lexical_tokens=["当前", "审批人", "查询", "接口"],
         metadata={"language": "markdown"},
     )
-    risks = DocumentChunk(
-        chunk_id="risks",
-        file_path=Path("RISKS.md"),
-        start_line=1,
-        end_line=3,
-        content="当前审批人查询接口的风险说明。",
-        chunk_type="file",
-        lexical_tokens=["当前", "审批人", "查询", "接口"],
-        metadata={"language": "markdown"},
-    )
     controller = DocumentChunk(
         chunk_id="controller",
-        file_path=Path("src/main/java/com/example/ApprovalController.java"),
+        file_path=Path("ApprovalController.java"),
         start_line=1,
         end_line=10,
-        content="class ApprovalController { String current() { return \"ok\"; } }",
+        content="class ApprovalController {}",
         chunk_type="symbol",
-        lexical_tokens=["approval", "controller", "current"],
+        lexical_tokens=["approval", "controller"],
         metadata={"language": "java"},
     )
-    for chunk in (readme, risks, controller):
+    for chunk in (readme, controller):
         store.replace_chunks(chunk.file_path, [chunk])
 
-    ranked = retrieval._rank_chunks(
+    expanded = retrieval._anchor_expansion_candidates(
         store,
-        {
-            "readme": RetrievalCandidate(
+        [
+            RetrievalCandidate(
                 chunk_id="readme",
                 score=1.0,
                 source="direct_text",
                 score_parts={"direct_text": 1.0},
-            ),
-            "risks": RetrievalCandidate(
-                chunk_id="risks",
-                score=1.0,
-                source="direct_text",
-                score_parts={"direct_text": 1.0},
-            ),
-            "controller": RetrievalCandidate(
-                chunk_id="controller",
-                score=0.7,
-                source="direct_text",
-                score_parts={"direct_text": 0.7},
-            ),
-        },
-        ["当前", "审批人", "查询", "接口"],
-        "当前审批人查询接口",
+            )
+        ],
+        ToolConfig(retrieval=RetrievalConfig(final_top_k=5)),
     )
 
-    paths = [item.chunk.file_path for item in ranked]
-    assert paths.index(Path("src/main/java/com/example/ApprovalController.java")) < paths.index(Path("RISKS.md"))
-    assert "non_readme_document_penalty" not in ranked[paths.index(Path("README.md"))].score_parts
-    assert ranked[paths.index(Path("RISKS.md"))].score_parts["non_readme_document_penalty"] < 0
+    assert Path("ApprovalController.java") in {
+        store.chunk_for_id(candidate.chunk_id).file_path
+        for candidate in expanded
+    }
 
 
 @pytest.mark.parametrize(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from context_search_tool.models import QueryPlan
+from context_search_tool.models import EvidenceAnchor, QueryPlan
 from context_search_tool.retrieval import QueryBundle
 
 
@@ -55,6 +55,38 @@ def format_markdown(bundle: QueryBundle) -> str:
                 ]
             )
 
+    if bundle.evidence_anchors:
+        lines.extend(
+            [
+                "",
+                "## Evidence Anchors",
+            ]
+        )
+        for index, anchor in enumerate(bundle.evidence_anchors, start=1):
+            fence = _markdown_fence(anchor.content)
+            lines.extend(
+                [
+                    "",
+                    (
+                        f"### {index}. {anchor.file_path.as_posix()}:"
+                        f"{anchor.start_line}-{anchor.end_line}"
+                    ),
+                    f"Anchor kind: {anchor.anchor_kind}",
+                    f"Score: {anchor.score}",
+                    "",
+                    "Reasons:",
+                    *_format_bullets(list(anchor.reasons)),
+                    "",
+                    "Score parts:",
+                    *_format_score_parts(anchor.score_parts),
+                    "",
+                    "Snippet:",
+                    fence,
+                    anchor.content,
+                    fence,
+                ]
+            )
+
     lines.extend(
         [
             "",
@@ -90,6 +122,9 @@ def format_json(bundle: QueryBundle) -> str:
                 "followup_keywords": result.followup_keywords,
             }
             for result in bundle.results
+        ],
+        "evidence_anchors": [
+            _anchor_payload(anchor) for anchor in bundle.evidence_anchors
         ],
     }
     return json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True)
@@ -157,3 +192,16 @@ def _format_score_parts(score_parts: dict[str, float]) -> list[str]:
         f"- {key}: {score_parts[key]}"
         for key in sorted(score_parts)
     ] or ["- (none)"]
+
+
+def _anchor_payload(anchor: EvidenceAnchor) -> dict[str, Any]:
+    return {
+        "file_path": anchor.file_path.as_posix(),
+        "start_line": anchor.start_line,
+        "end_line": anchor.end_line,
+        "content": anchor.content,
+        "score": anchor.score,
+        "score_parts": anchor.score_parts,
+        "reasons": anchor.reasons,
+        "anchor_kind": anchor.anchor_kind,
+    }

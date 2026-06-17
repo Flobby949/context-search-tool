@@ -14,6 +14,7 @@ from context_search_tool.manifest import assert_manifest_compatible
 from context_search_tool.models import (
     CodeSignal,
     DocumentChunk,
+    EvidenceAnchor,
     QueryPlan,
     RetrievalCandidate,
     RetrievalResult,
@@ -52,6 +53,7 @@ class QueryBundle:
     followup_keywords: list[str]
     summary: RetrievalSummary = field(default_factory=RetrievalSummary)
     planner: QueryPlan = field(default_factory=QueryPlan.disabled_default)
+    evidence_anchors: list[EvidenceAnchor] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -188,7 +190,11 @@ def query_repository(
 
     ranked_chunks = _rank_chunks(store, candidates, original_tokens, query)
     expanded = _expand_ranked_chunks(repo, ranked_chunks, config, context_lines, full_file)
-    visible_results = expanded[: config.retrieval.final_top_k]
+    visible_results, evidence_anchors = _split_code_results_and_evidence_anchors(
+        expanded,
+        final_top_k=config.retrieval.final_top_k,
+        anchor_top_k=_evidence_anchor_top_k(config.retrieval.final_top_k),
+    )
     summary, result_reasons = _summarize_results(store, visible_results)
     results = [
         RetrievalResult(
@@ -215,7 +221,62 @@ def query_repository(
         followup_keywords=_followup_keywords(results),
         summary=summary,
         planner=plan,
+        evidence_anchors=evidence_anchors,
     )
+
+
+def _split_code_results_and_evidence_anchors(
+    expanded: list[_ExpandedResult],
+    *,
+    final_top_k: int,
+    anchor_top_k: int,
+) -> tuple[list[_ExpandedResult], list[EvidenceAnchor]]:
+    code_results: list[_ExpandedResult] = []
+    evidence_anchors: list[EvidenceAnchor] = []
+    seen_anchor_keys: set[tuple[str, Path]] = set()
+
+    for item in expanded:
+        anchor_kind = _evidence_anchor_kind(item.file_path)
+        if anchor_kind:
+            anchor_key = (anchor_kind, item.file_path)
+            if anchor_key in seen_anchor_keys:
+                continue
+            seen_anchor_keys.add(anchor_key)
+            if len(evidence_anchors) < anchor_top_k:
+                evidence_anchors.append(_evidence_anchor_from_expanded(item, anchor_kind))
+            continue
+
+        if len(code_results) < final_top_k:
+            code_results.append(item)
+
+    return code_results, evidence_anchors
+
+
+def _evidence_anchor_from_expanded(
+    item: _ExpandedResult,
+    anchor_kind: str,
+) -> EvidenceAnchor:
+    return EvidenceAnchor(
+        file_path=item.file_path,
+        start_line=item.start_line,
+        end_line=item.end_line,
+        content=item.content,
+        score=item.rerank_score,
+        score_parts={
+            **item.score_parts,
+            "combined_score": item.score,
+            "rerank_score": item.rerank_score,
+            "evidence_priority": float(item.evidence_priority),
+        },
+        reasons=item.reasons,
+        anchor_kind=anchor_kind,
+    )
+
+
+def _evidence_anchor_top_k(final_top_k: int) -> int:
+    if final_top_k <= 0:
+        return 0
+    return max(1, min(5, final_top_k // 3))
 
 
 def _summarize_results(
@@ -725,6 +786,18 @@ def _put_anchor_candidate(
 def _is_document_or_config_anchor(path: Path) -> bool:
     suffix = path.suffix.lower()
     return suffix in {".md", ".yml", ".yaml", ".json", ".properties"}
+
+
+def _evidence_anchor_kind(path: Path) -> str:
+    name = path.name.lower()
+    stem = path.stem.lower()
+    if path.suffix.lower() == ".md" and stem.startswith("readme"):
+        return "readme"
+    if path.suffix.lower() == ".md" and stem.startswith("risks"):
+        return "risks"
+    if name == "pom.xml":
+        return "pom"
+    return ""
 
 
 def _is_readme_document(path: Path) -> bool:

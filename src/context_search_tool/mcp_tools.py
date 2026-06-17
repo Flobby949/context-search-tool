@@ -16,7 +16,12 @@ from context_search_tool.indexer import (
     signal_schema_is_current,
 )
 from context_search_tool.manifest import embedding_config_hash, load_manifest
-from context_search_tool.models import DocumentChunk, RetrievalResult, SymbolRef
+from context_search_tool.models import (
+    DocumentChunk,
+    EvidenceAnchor,
+    RetrievalResult,
+    SymbolRef,
+)
 from context_search_tool.paths import (
     RepositoryNotFoundError,
     find_repo_root,
@@ -208,6 +213,9 @@ def _query_payload(bundle: QueryBundle) -> dict[str, Any]:
         },
         "planner": _planner_payload(bundle),
         "results": [_result_payload(result) for result in bundle.results],
+        "evidence_anchors": [
+            _anchor_payload(anchor) for anchor in bundle.evidence_anchors
+        ],
     }
 
 
@@ -246,6 +254,19 @@ def _result_payload(result: RetrievalResult) -> dict[str, Any]:
         "score_parts": result.score_parts,
         "reasons": result.reasons,
         "followup_keywords": result.followup_keywords,
+    }
+
+
+def _anchor_payload(anchor: EvidenceAnchor) -> dict[str, Any]:
+    return {
+        "file_path": anchor.file_path.as_posix(),
+        "start_line": anchor.start_line,
+        "end_line": anchor.end_line,
+        "content": anchor.content,
+        "score": anchor.score,
+        "score_parts": anchor.score_parts,
+        "reasons": anchor.reasons,
+        "anchor_kind": anchor.anchor_kind,
     }
 
 
