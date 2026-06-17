@@ -1401,8 +1401,100 @@ def test_route_score_parts_prefers_exact_route_over_sibling_route() -> None:
     assert exact_parts["route_exact_match"] == 0.35
     assert sibling_parts["route_sibling_penalty"] == -0.18
     assert "route_sibling_penalty" not in false_sibling_parts
-    assert false_sibling_parts["route_mismatch_penalty"] == -0.12
+    assert false_sibling_parts["route_mismatch_penalty"] == -0.30
     assert exact_parts["route_exact_match"] > abs(sibling_parts["route_sibling_penalty"])
+
+
+def test_route_rerank_prefers_exact_controller_over_noisy_sibling(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    exact = DocumentChunk(
+        chunk_id="exact",
+        file_path=Path("src/main/java/AppCatalogController.java"),
+        start_line=1,
+        end_line=40,
+        content='@RequestMapping("/appCatalog") class AppCatalogController {}',
+        chunk_type="symbol",
+        lexical_tokens=["app", "catalog", "page", "/appCatalog/page"],
+        metadata={"language": "java"},
+    )
+    sibling = DocumentChunk(
+        chunk_id="sibling",
+        file_path=Path("src/main/java/AppCatalogOpenController.java"),
+        start_line=1,
+        end_line=40,
+        content='@RequestMapping("/openApi/appCatalog") class AppCatalogOpenController {}',
+        chunk_type="symbol",
+        lexical_tokens=["open", "api", "app", "catalog", "page", "/openApi/appCatalog/page"],
+        metadata={"language": "java"},
+    )
+    for chunk in (exact, sibling):
+        store.replace_chunks(chunk.file_path, [chunk])
+    store.replace_signals(
+        exact.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-exact",
+                chunk_id="exact",
+                file_path=exact.file_path,
+                kind="endpoint",
+                name="POST /appCatalog/page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["app", "catalog", "page", "/appCatalog/page"],
+                metadata={"path": "/appCatalog/page"},
+            )
+        ],
+    )
+    store.replace_signals(
+        sibling.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-sibling",
+                chunk_id="sibling",
+                file_path=sibling.file_path,
+                kind="endpoint",
+                name="POST /openApi/appCatalog/page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["open", "api", "app", "catalog", "page", "/openApi/appCatalog/page"],
+                metadata={"path": "/openApi/appCatalog/page"},
+            )
+        ],
+    )
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "exact": RetrievalCandidate(
+                chunk_id="exact",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.35, "path_symbol": 3.0, "signal": 0.6},
+            ),
+            "sibling": RetrievalCandidate(
+                chunk_id="sibling",
+                score=1.0,
+                source="direct",
+                score_parts={
+                    "semantic": 0.65,
+                    "path_symbol": 4.25,
+                    "direct_text": 1.0,
+                    "signal": 1.0,
+                },
+            ),
+        },
+        ["app", "catalog", "page", "can", "apply"],
+        "/appCatalog/page canApply",
+    )
+
+    assert ranked[0].chunk.chunk_id == "exact"
+    assert ranked[0].score_parts["route_exact_match"] == 0.35
+    assert ranked[1].score_parts["route_sibling_penalty"] == -0.18
 
 
 def test_query_combines_route_tokens_and_ranking_reasons(tmp_path: Path) -> None:
@@ -2363,6 +2455,44 @@ def test_service_impl_exact_match_boost_keeps_impl_near_entrypoints(tmp_path: Pa
     ranked = retrieval._rank_chunks(store, candidates, ["开门", "控制"], "开门控制")
 
     assert ranked[0].chunk.chunk_id == "access-service-impl"
+    assert ranked[0].score_parts["impl_match_boost"] == 0.18
+
+
+def test_service_impl_high_path_match_gets_role_exact_boost(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    service_impl = DocumentChunk(
+        chunk_id="app-info-service-impl",
+        file_path=Path("src/main/java/com/example/service/AppInfoServiceImpl.java"),
+        start_line=1,
+        end_line=40,
+        content="class AppInfoServiceImpl { Page page(AppCatalogPageQry qry) { return null; } }",
+        chunk_type="symbol",
+        lexical_tokens=["app", "info", "service", "impl", "page", "catalog", "qry"],
+        metadata={"language": "java"},
+    )
+    store.replace_chunks(service_impl.file_path, [service_impl])
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "app-info-service-impl": RetrievalCandidate(
+                chunk_id="app-info-service-impl",
+                score=1.0,
+                source="direct",
+                score_parts={
+                    "semantic": 0.50,
+                    "path_symbol": 4.0,
+                    "direct_text": 0.5,
+                    "token_coverage": 0.8,
+                },
+            )
+        },
+        ["app", "catalog", "page", "can", "apply"],
+        "/appCatalog/page canApply",
+    )
+
+    assert ranked[0].score_parts["role_exact_match_boost"] == 0.35
     assert ranked[0].score_parts["impl_match_boost"] == 0.18
 
 
@@ -3404,7 +3534,62 @@ def test_rank_chunks_route_java_context_preserves_matching_business_tokens(
         lexical_tokens=["apply", "audit", "page", "es"],
         metadata={"language": "java"},
     )
-    for chunk in (es_executor, non_es_executor):
+    es_directory_executor = DocumentChunk(
+        chunk_id="es-directory-executor",
+        file_path=Path("src/main/java/com/example/es/ApplyAuditPageQryExe.java"),
+        start_line=1,
+        end_line=10,
+        content="class ApplyAuditPageQryExe { String page() { return \"\"; } }",
+        chunk_type="symbol",
+        lexical_tokens=["apply", "audit", "page", "es"],
+        metadata={"language": "java"},
+    )
+    split_symbol_executor = DocumentChunk(
+        chunk_id="split-symbol-executor",
+        file_path=Path("src/main/java/com/example/es/ResourceAuditApplyService.java"),
+        start_line=1,
+        end_line=10,
+        content="class ResourceAuditApplyService { void currentNodePage() {} void resourceSynInvolvedToEs() {} }",
+        chunk_type="symbol",
+        symbols=[
+            SymbolRef(
+                name="ResourceAuditApplyService",
+                kind="class",
+                start_line=1,
+                end_line=10,
+                language="java",
+            ),
+            SymbolRef(
+                name="currentNodePage",
+                kind="method",
+                start_line=3,
+                end_line=3,
+                language="java",
+            ),
+            SymbolRef(
+                name="resourceSynInvolvedToEs",
+                kind="method",
+                start_line=4,
+                end_line=4,
+                language="java",
+            ),
+            SymbolRef(
+                name="executor",
+                kind="field",
+                start_line=5,
+                end_line=5,
+                language="java",
+            ),
+        ],
+        lexical_tokens=["apply", "audit", "page", "es"],
+        metadata={"language": "java"},
+    )
+    for chunk in (
+        es_executor,
+        non_es_executor,
+        es_directory_executor,
+        split_symbol_executor,
+    ):
         store.replace_chunks(chunk.file_path, [chunk])
     store.replace_signals(
         es_executor.file_path,
@@ -3440,6 +3625,52 @@ def test_rank_chunks_route_java_context_preserves_matching_business_tokens(
             )
         ],
     )
+    store.replace_signals(
+        es_directory_executor.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-es-directory-method",
+                chunk_id="es-directory-executor",
+                file_path=es_directory_executor.file_path,
+                kind="method",
+                name="ApplyAuditPageQryExe.page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["apply", "audit", "page", "es"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_signals(
+        split_symbol_executor.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-split-symbol-method-page",
+                chunk_id="split-symbol-executor",
+                file_path=split_symbol_executor.file_path,
+                kind="method",
+                name="currentNodePage",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["current", "node", "page"],
+                metadata={},
+            ),
+            CodeSignal(
+                signal_id="sig-split-symbol-method-es",
+                chunk_id="split-symbol-executor",
+                file_path=split_symbol_executor.file_path,
+                kind="method",
+                name="resourceSynInvolvedToEs",
+                start_line=4,
+                end_line=4,
+                language="java",
+                tokens=["resource", "syn", "involved", "to", "es"],
+                metadata={},
+            ),
+        ],
+    )
 
     ranked = retrieval._rank_chunks(
         store,
@@ -3456,6 +3687,18 @@ def test_rank_chunks_route_java_context_preserves_matching_business_tokens(
                 source="lexical",
                 score_parts={"lexical": 0.8},
             ),
+            "es-directory-executor": RetrievalCandidate(
+                chunk_id="es-directory-executor",
+                score=1.0,
+                source="lexical",
+                score_parts={"lexical": 0.8},
+            ),
+            "split-symbol-executor": RetrievalCandidate(
+                chunk_id="split-symbol-executor",
+                score=1.0,
+                source="lexical",
+                score_parts={"lexical": 0.8},
+            ),
         },
         ["apply", "audit", "page", "es", "involved", "by", "me"],
         "/apply/audit/pageEs INVOLVED_BY_ME",
@@ -3463,10 +3706,21 @@ def test_rank_chunks_route_java_context_preserves_matching_business_tokens(
 
     es_result = next(item for item in ranked if item.chunk.chunk_id == "es-executor")
     non_es_result = next(item for item in ranked if item.chunk.chunk_id == "non-es-executor")
+    es_directory_result = next(
+        item for item in ranked if item.chunk.chunk_id == "es-directory-executor"
+    )
+    split_symbol_result = next(
+        item for item in ranked if item.chunk.chunk_id == "split-symbol-executor"
+    )
+    assert ranked[0].chunk.chunk_id == "es-executor"
     assert es_result.score_parts["java_method_context_match"] == 0.14
     assert es_result.score_parts["java_executor_context_boost"] == 0.10
+    assert es_result.score_parts["route_tail_context_match"] == 0.22
     assert "java_method_context_match" not in non_es_result.score_parts
     assert "java_executor_context_boost" not in non_es_result.score_parts
+    assert "route_tail_context_match" not in non_es_result.score_parts
+    assert "route_tail_context_match" not in es_directory_result.score_parts
+    assert "route_tail_context_match" not in split_symbol_result.score_parts
 
 
 def test_rank_chunks_applies_java_context_without_generic_signal_lookups(
@@ -4535,6 +4789,18 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
     assert "impl_match_boost" not in merged.score_parts
     assert "relation_role_boost" not in merged.score_parts
     assert "relation_detail_penalty" not in merged.score_parts
+
+
+def test_merge_score_parts_preserves_stronger_penalty() -> None:
+    from context_search_tool.retrieval import _merge_score_parts
+
+    merged = _merge_score_parts(
+        {"route_sibling_penalty": -0.18, "role_boost": 0.12},
+        {"route_sibling_penalty": -0.12, "role_boost": 0.18},
+    )
+
+    assert merged["route_sibling_penalty"] == -0.18
+    assert merged["role_boost"] == 0.18
 
 
 def test_merge_overlapping_results_uses_role_priority_tiebreak() -> None:

@@ -46,7 +46,8 @@ _NON_README_DOCUMENT_DISPLAY_PENALTY = 0.30
 _ROUTE_EXACT_MATCH_BOOST = 0.35
 _ROUTE_PREFIX_MATCH_BOOST = 0.12
 _ROUTE_SIBLING_PENALTY = 0.18
-_ROUTE_MISMATCH_PENALTY = 0.12
+_ROUTE_MISMATCH_PENALTY = 0.30
+_ROUTE_TAIL_CONTEXT_MATCH_BOOST = 0.22
 _JAVA_CONTEXT_MIN_TOKEN_OVERLAP = 2
 _JAVA_METHOD_CONTEXT_MATCH_BOOST = 0.14
 _JAVA_FIELD_CONTEXT_MATCH_BOOST = 0.12
@@ -1119,6 +1120,8 @@ def _rank_chunks(
             score_parts.update(route_score_parts)
 
         role = _chunk_role(chunk)
+        if query_route:
+            score_parts.update(_route_tail_context_score_parts(chunk, query_route, role))
         if _should_apply_java_context_score(chunk, java_context_tokens, role, penalty):
             score_parts.update(
                 _java_context_score_parts(get_signals(), java_context_tokens, role)
@@ -1540,7 +1543,10 @@ def _merge_score_parts(
 ) -> dict[str, float]:
     merged = dict(left)
     for key, value in right.items():
-        merged[key] = max(merged.get(key, value), value)
+        if key == "penalty" or key.endswith("_penalty"):
+            merged[key] = min(merged.get(key, value), value)
+        else:
+            merged[key] = max(merged.get(key, value), value)
     return merged
 
 
@@ -1597,6 +1603,7 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         + score_parts.get("route_prefix_match", 0.0)
         + score_parts.get("route_sibling_penalty", 0.0)
         + score_parts.get("route_mismatch_penalty", 0.0)
+        + score_parts.get("route_tail_context_match", 0.0)
         + score_parts.get("java_method_context_match", 0.0)
         + score_parts.get("java_field_context_match", 0.0)
         + score_parts.get("java_executor_context_boost", 0.0)
@@ -1892,6 +1899,9 @@ def _rerank_score(
         rerank_score += role_exact_boost
         score_parts["role_exact_match_boost"] = role_exact_boost
 
+    rerank_score += _route_rerank_adjustment(score_parts)
+    rerank_score += score_parts.get("route_tail_context_match", 0.0)
+
     if (
         role.name == "service_impl"
         and score_parts.get("path_symbol", 0.0) >= 1.0
@@ -1947,8 +1957,22 @@ def _role_exact_match_boost(
     token_coverage = score_parts.get("token_coverage", 0.0)
     if role.name == "entrypoint" and path_symbol >= 4.0 and token_coverage >= 0.5:
         return 0.12
+    if role.name == "service_impl" and path_symbol >= 4.0 and token_coverage >= 0.5:
+        return 0.35
     if role.name == "data_type" and path_symbol >= 2.0 and token_coverage >= 0.2:
         return 0.24
+    return 0.0
+
+
+def _route_rerank_adjustment(score_parts: dict[str, float]) -> float:
+    if score_parts.get("route_exact_match", 0.0) > 0:
+        return score_parts["route_exact_match"]
+    if score_parts.get("route_prefix_match", 0.0) > 0:
+        return score_parts["route_prefix_match"]
+    if score_parts.get("route_sibling_penalty", 0.0) < 0:
+        return score_parts["route_sibling_penalty"]
+    if score_parts.get("route_mismatch_penalty", 0.0) < 0:
+        return score_parts["route_mismatch_penalty"]
     return 0.0
 
 
@@ -2079,12 +2103,34 @@ def _route_token_overlap(route: str, query_tokens: set[str]) -> int:
 
 def _chunk_local_tokens(chunk: DocumentChunk) -> set[str]:
     tokens = {token.lower() for token in chunk.lexical_tokens if token}
+    tokens.update(_chunk_symbolic_tokens(chunk))
+    return tokens
+
+
+def _chunk_symbolic_tokens(chunk: DocumentChunk) -> set[str]:
+    tokens: set[str] = set()
     for part in chunk.file_path.parts:
         tokens.update(token.lower() for token in tokenize_query(part) if token)
     for symbol in chunk.symbols:
         tokens.update(token.lower() for token in tokenize_query(symbol.name) if token)
     tokens.update(token.lower() for token in tokenize_query(chunk.content) if token)
     return tokens
+
+
+def _chunk_declared_name_has_tokens(
+    chunk: DocumentChunk,
+    required_tokens: set[str],
+) -> bool:
+    name_tokens = {token.lower() for token in tokenize_query(chunk.file_path.stem) if token}
+    if required_tokens.issubset(name_tokens):
+        return True
+    for symbol in chunk.symbols:
+        name_tokens = {
+            token.lower() for token in tokenize_query(symbol.name) if token
+        }
+        if required_tokens.issubset(name_tokens):
+            return True
+    return False
 
 
 def _chunk_looks_route_relevant(
@@ -2176,6 +2222,28 @@ def _route_score_parts(
     elif has_endpoint_route:
         parts["route_mismatch_penalty"] = -_ROUTE_MISMATCH_PENALTY
     return parts
+
+
+def _route_tail_context_score_parts(
+    chunk: DocumentChunk,
+    query_route: str,
+    role: _ChunkRole,
+) -> dict[str, float]:
+    if role.name != "executor":
+        return {}
+    segments = _route_segments(query_route)
+    if not segments:
+        return {}
+    tail_tokens = {
+        token.lower()
+        for token in tokenize_query(segments[-1])
+        if token and token.lower() not in _JAVA_CONTEXT_STRUCTURAL_TOKENS
+    }
+    if len(tail_tokens) < _JAVA_CONTEXT_MIN_TOKEN_OVERLAP:
+        return {}
+    if _chunk_declared_name_has_tokens(chunk, tail_tokens):
+        return {"route_tail_context_match": _ROUTE_TAIL_CONTEXT_MATCH_BOOST}
+    return {}
 
 
 def _java_context_query_tokens(query_tokens: list[str], query_route: str) -> list[str]:
@@ -2353,6 +2421,8 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("sibling Spring route penalty")
     if score_parts.get("route_mismatch_penalty", 0.0) < 0:
         reasons.append("non-matching Spring route penalty")
+    if score_parts.get("route_tail_context_match", 0.0) > 0:
+        reasons.append("Spring route tail context match")
     if score_parts.get("java_method_context_match", 0.0) > 0:
         reasons.append("java method context match")
     if score_parts.get("java_field_context_match", 0.0) > 0:
