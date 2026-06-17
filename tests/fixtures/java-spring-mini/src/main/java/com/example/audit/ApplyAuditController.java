@@ -41,6 +41,8 @@ public class ApplyAuditController {
 }
 
 interface ResourceAuditService {
+    String applyPageEs(AuditStatus auditStatus);
+
     Map<String, Long> statsWait();
 
     WorkbenchResourceAuditStatsDTO auditStats(ApplyAuditEsSearchQry qry);

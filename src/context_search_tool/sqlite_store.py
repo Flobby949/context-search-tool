@@ -5,6 +5,8 @@ import logging
 import re
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -359,6 +361,7 @@ class SQLiteStore:
         matches.sort(
             key=lambda item: (
                 -item[1],
+                0 if item[0].kind == "endpoint" else 1,
                 item[0].start_line,
                 item[0].end_line,
                 item[0].kind,
@@ -759,11 +762,16 @@ class SQLiteStore:
             "tokens": int(tokens),
         }
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _active_chunk_ids_for_file(
         self, connection: sqlite3.Connection, path: str

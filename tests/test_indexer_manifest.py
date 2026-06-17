@@ -8,7 +8,11 @@ from context_search_tool.config import (
     ToolConfig,
     load_config,
 )
-from context_search_tool.indexer import IncompatibleIndexError, index_repository
+from context_search_tool.indexer import (
+    IncompatibleIndexError,
+    SIGNAL_SCHEMA_VERSION_KEY,
+    index_repository,
+)
 from context_search_tool.manifest import load_manifest
 from context_search_tool.models import CodeRelation, CodeSignal
 from context_search_tool.plugins import PluginExtraction
@@ -160,7 +164,7 @@ def test_index_repository_persists_plugin_signals_and_relations(
     assert store.relations_for_source("sig-app") == [relation]
 
 
-def test_index_repository_rebuilds_stale_signal_schema(
+def test_index_repository_rebuilds_previous_signal_schema_for_unchanged_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = tmp_path / "repo"
@@ -178,20 +182,34 @@ def test_index_repository_rebuilds_stale_signal_schema(
         tokens=["old"],
         metadata={},
     )
+    new_signal = CodeSignal(
+        signal_id="sig-new",
+        chunk_id="plugin-placeholder",
+        file_path=Path("App.java"),
+        kind="field",
+        name="App.newSignal",
+        start_line=1,
+        end_line=1,
+        language="java",
+        tokens=["new", "signal"],
+        metadata={},
+    )
     monkeypatch.setattr(
         "context_search_tool.indexer.default_plugins",
         lambda: [_SignalPlugin([old_signal], [])],
     )
     index_repository(repo, DEFAULT_CONFIG)
     store = SQLiteStore(repo / ".context-search" / "index.sqlite")
-    store.set_metadata("signal_schema_version", "1")
+    assert store.signal_search(["old"], limit=10)[0].signal_id == "sig-old"
+    store.set_metadata(SIGNAL_SCHEMA_VERSION_KEY, "3")
 
     monkeypatch.setattr(
         "context_search_tool.indexer.default_plugins",
-        lambda: [_SignalPlugin([], [])],
+        lambda: [_SignalPlugin([new_signal], [])],
     )
     summary = index_repository(repo, DEFAULT_CONFIG)
 
     assert summary.files_indexed == 1
     assert store.signal_search(["old"], limit=10) == []
-    assert store.get_metadata("signal_schema_version") == "3"
+    assert store.signal_search(["new", "signal"], limit=10)[0].signal_id == "sig-new"
+    assert store.get_metadata(SIGNAL_SCHEMA_VERSION_KEY) == "4"

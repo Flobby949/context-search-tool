@@ -43,6 +43,23 @@ _CJK_SEQUENCE_RE = re.compile(r"[㐀-鿿]{2,}")
 _DIRECT_FRAGMENT_RE = re.compile(r"[A-Za-z0-9_./:@-]{3,}")
 _DIRECT_TEXT_TOP_K_MULTIPLIER = 3
 _NON_README_DOCUMENT_DISPLAY_PENALTY = 0.30
+_ROUTE_EXACT_MATCH_BOOST = 0.35
+_ROUTE_PREFIX_MATCH_BOOST = 0.12
+_ROUTE_SIBLING_PENALTY = 0.18
+_ROUTE_MISMATCH_PENALTY = 0.12
+_JAVA_CONTEXT_MIN_TOKEN_OVERLAP = 2
+_JAVA_METHOD_CONTEXT_MATCH_BOOST = 0.14
+_JAVA_FIELD_CONTEXT_MATCH_BOOST = 0.12
+_JAVA_EXECUTOR_CONTEXT_BOOST = 0.10
+_JAVA_CONTEXT_STRUCTURAL_TOKENS = {
+    "src",
+    "main",
+    "test",
+    "java",
+    "com",
+    "org",
+    "net",
+}
 
 
 @dataclass(frozen=True)
@@ -1046,12 +1063,30 @@ def _rank_chunks(
     # First pass: compute scores and build ranked list
     ranked: list[_RankedChunk] = []
     all_combined_scores: list[float] = []
+    signal_cache: dict[str, list[CodeSignal]] = {}
+    query_route = _query_route(query)
+    java_context_tokens = _java_context_query_tokens(tokens, query_route)
+
+    def signals_for_ranked_chunk(chunk_id: str) -> list[CodeSignal]:
+        if chunk_id not in signal_cache:
+            try:
+                signal_cache[chunk_id] = store.signals_for_chunk(chunk_id)
+            except sqlite3.Error:
+                signal_cache[chunk_id] = []
+        return signal_cache[chunk_id]
 
     for candidate in candidates.values():
         try:
             chunk = store.chunk_for_id(candidate.chunk_id)
         except KeyError:
             continue
+        signals: list[CodeSignal] | None = None
+
+        def get_signals() -> list[CodeSignal]:
+            nonlocal signals
+            if signals is None:
+                signals = signals_for_ranked_chunk(candidate.chunk_id)
+            return signals
 
         score_parts = dict(candidate.score_parts)
         coverage = _token_coverage(tokens, chunk)
@@ -1070,14 +1105,36 @@ def _rank_chunks(
         if penalty:
             score_parts["penalty"] = -penalty
 
+        if query_route and _chunk_looks_route_relevant(
+            chunk,
+            tokens,
+            query_route,
+            route_boost=route_boost,
+        ):
+            route_score_parts = _route_score_parts(
+                get_signals(),
+                query,
+                query_route=query_route,
+            )
+            score_parts.update(route_score_parts)
+
+        role = _chunk_role(chunk)
+        if _should_apply_java_context_score(chunk, java_context_tokens, role, penalty):
+            score_parts.update(
+                _java_context_score_parts(get_signals(), java_context_tokens, role)
+            )
+
         score = _combined_score(score_parts)
         all_combined_scores.append(score)
-        role = _chunk_role(chunk)
+        has_signal_evidence = score_parts.get("signal", 0.0) > 0
+        rank_tier_signals = get_signals() if has_signal_evidence else None
 
         # Precompute flags for rerank scoring
         flags = {
-            'has_endpoint_signal': score_parts.get("signal", 0.0) > 0 and _chunk_has_signal_kind(store, chunk.chunk_id, "endpoint"),
-            'is_controller': 'controller' in chunk.file_path.as_posix().lower(),
+            'has_endpoint_signal': has_signal_evidence and any(
+                signal.kind == "endpoint" for signal in rank_tier_signals or []
+            ),
+            'is_controller': penalty == 0 and 'controller' in chunk.file_path.as_posix().lower(),
             'has_relation_support': score_parts.get("original_relation", 0.0) > 0 or score_parts.get("planner_relation", 0.0) > 0,
             'role_name': role.name,
             'role_priority': role.priority,
@@ -1089,6 +1146,7 @@ def _rank_chunks(
             'score_parts': score_parts,
             'flags': flags,
             'role': role,
+            'signals': rank_tier_signals,
         })
 
     # Normalize all combined scores
@@ -1153,7 +1211,7 @@ def _rank_chunks(
             score=item['score'],
             score_parts=item['score_parts'],
             reasons=_reasons(item['score_parts'], query),
-            rank_tier=_rank_tier(store, item['chunk'], item['score_parts']),
+            rank_tier=_rank_tier(store, item['chunk'], item['score_parts'], item['signals']),
             rerank_score=item['rerank_score'],
             evidence_class=item['evidence_class'],
             evidence_priority=item['evidence_priority'],
@@ -1493,21 +1551,26 @@ def _chunk_role(chunk: DocumentChunk) -> _ChunkRole:
     haystack = f"{path} {names} {content}"
     path_and_names = f"{path} {names}"
 
+    if _is_test_path(path):
+        return _ChunkRole("generic", 5, 0.0)
     if "controller" in path or "controller" in names:
-        return _ChunkRole("entrypoint", 0, 0.12)
+        return _ChunkRole("entrypoint", 0, 0.18)
     if "/service/impl/" in path or "serviceimpl" in path_and_names:
-        return _ChunkRole("service_impl", 2, 0.10)
-    if "/service/" in path and "interface " in content:
-        return _ChunkRole("service_interface", 1, 0.10)
+        return _ChunkRole("service_impl", 1, 0.12)
+    class_names = [chunk.file_path.stem.lower(), *(symbol.name.lower() for symbol in chunk.symbols)]
+    if any(name.endswith(("queryexe", "qryexe", "executor", "queryexecutor", "exe")) for name in class_names):
+        return _ChunkRole("executor", 2, 0.12)
     if any(token in path for token in ("/dto/", "/vo/", "/query/", "/entity/")):
         return _ChunkRole("data_type", 3, 0.04)
+    if "/service/" in path and "interface " in content:
+        return _ChunkRole("service_interface", 4, 0.06)
     if "/mapper/" in path or "mapper" in names:
         return _ChunkRole("mapper", 4, 0.03)
     if any(token in haystack for token in ("handler", "listener", "callback", "connector", "webhook")):
         return _ChunkRole("handler", 5, 0.0, 0.10)
     if any(token in haystack for token in ("constant", "config", "buildermanager", "parambuilder")):
         return _ChunkRole("constant_or_config", 6, 0.0, 0.12)
-    return _ChunkRole("generic", 7, 0.0, 0.02)
+    return _ChunkRole("generic", 5, 0.0)
 
 
 def _combined_score(score_parts: dict[str, float]) -> float:
@@ -1530,6 +1593,13 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         + (score_parts.get("token_coverage", 0.0) * 0.20)
         + (_bounded_score(score_parts.get("direct_text", 0.0)) * 0.45)  # High weight for literal text matches in comments/strings
         + score_parts.get("plugin_boost", 0.0)
+        + score_parts.get("route_exact_match", 0.0)
+        + score_parts.get("route_prefix_match", 0.0)
+        + score_parts.get("route_sibling_penalty", 0.0)
+        + score_parts.get("route_mismatch_penalty", 0.0)
+        + score_parts.get("java_method_context_match", 0.0)
+        + score_parts.get("java_field_context_match", 0.0)
+        + score_parts.get("java_executor_context_boost", 0.0)
         + score_parts.get("penalty", 0.0)
     )
 
@@ -1791,7 +1861,9 @@ def _rerank_score(
     rerank_score = normalized_score
 
     # Boosts
-    if _has_strong_original_direct_evidence(score_parts):
+    if score_parts.get("penalty", 0.0) < 0:
+        pass
+    elif _has_strong_original_direct_evidence(score_parts):
         rerank_score += 0.2
     elif _has_weak_original_direct_evidence(score_parts):
         rerank_score += 0.05
@@ -1829,9 +1901,10 @@ def _rerank_score(
         score_parts["impl_match_boost"] = 0.18
 
     if flags.get("has_relation_support", False) and role.name in {
-        "service_interface",
         "service_impl",
+        "executor",
         "data_type",
+        "service_interface",
         "mapper",
     }:
         rerank_score += 0.08
@@ -1883,16 +1956,22 @@ def _rank_tier(
     store: SQLiteStore,
     chunk: DocumentChunk,
     score_parts: dict[str, float],
+    signals: list[CodeSignal] | None = None,
 ) -> int:
-    if score_parts.get("signal", 0.0) > 0 and _chunk_has_signal_kind(
-        store,
-        chunk.chunk_id,
-        "endpoint",
-    ):
+    has_signal_evidence = score_parts.get("signal", 0.0) > 0
+    has_endpoint_signal = False
+    if has_signal_evidence:
+        has_endpoint_signal = (
+            any(signal.kind == "endpoint" for signal in signals)
+            if signals is not None
+            else _chunk_has_signal_kind(store, chunk.chunk_id, "endpoint")
+        )
+
+    if has_signal_evidence and has_endpoint_signal:
         base_tier = 0
     elif score_parts.get("relation", 0.0) > 0:
         base_tier = 1
-    elif score_parts.get("signal", 0.0) > 0:
+    elif has_signal_evidence:
         base_tier = 2
     elif score_parts.get("direct_text", 0.0) > 0:
         base_tier = 2
@@ -1960,12 +2039,253 @@ def _plugin_boost(chunk: DocumentChunk) -> float:
     return 0.0
 
 
+def _query_route(query: str) -> str:
+    for part in re.split(r"\s+", query.strip()):
+        cleaned = part.strip().strip("`'\".,;:()[]{}")
+        if cleaned.startswith("/"):
+            return _normalize_route(cleaned)
+    return ""
+
+
+def _normalize_route(value: str) -> str:
+    cleaned = value.strip().strip("`'\".,;:()[]{}")
+    if not cleaned:
+        return ""
+    cleaned = "/" + cleaned.strip("/")
+    return re.sub(r"/+", "/", cleaned)
+
+
+def _route_segments(route: str) -> list[str]:
+    return [segment for segment in route.strip("/").split("/") if segment]
+
+
+def _has_route_segment_suffix(endpoint_route: str, query_route: str) -> bool:
+    endpoint_segments = _route_segments(endpoint_route)
+    query_segments = _route_segments(query_route)
+    if len(endpoint_segments) <= len(query_segments):
+        return False
+    return endpoint_segments[-len(query_segments) :] == query_segments
+
+
+def _route_token_overlap(route: str, query_tokens: set[str]) -> int:
+    route_tokens = {
+        token.lower()
+        for segment in _route_segments(route)
+        for token in tokenize_query(segment)
+        if token
+    }
+    return len(route_tokens.intersection(query_tokens))
+
+
+def _chunk_local_tokens(chunk: DocumentChunk) -> set[str]:
+    tokens = {token.lower() for token in chunk.lexical_tokens if token}
+    for part in chunk.file_path.parts:
+        tokens.update(token.lower() for token in tokenize_query(part) if token)
+    for symbol in chunk.symbols:
+        tokens.update(token.lower() for token in tokenize_query(symbol.name) if token)
+    tokens.update(token.lower() for token in tokenize_query(chunk.content) if token)
+    return tokens
+
+
+def _chunk_looks_route_relevant(
+    chunk: DocumentChunk,
+    query_tokens: list[str],
+    query_route: str,
+    route_boost: float = 0.0,
+) -> bool:
+    if route_boost:
+        return True
+
+    normalized_query_tokens = {token.lower() for token in query_tokens if token}
+    if not normalized_query_tokens:
+        return False
+    min_overlap = min(2, len(normalized_query_tokens))
+
+    route_values = [
+        _normalize_route(token)
+        for token in chunk.lexical_tokens
+        if token.startswith("/")
+    ]
+    route_values.extend(_normalize_route(match.group(0)) for match in re.finditer(r"/[A-Za-z0-9_./:@-]+", chunk.content))
+    for route in route_values:
+        if not route:
+            continue
+        if (
+            route == query_route
+            or query_route.startswith(route + "/")
+            or route.startswith(query_route + "/")
+            or _has_route_segment_suffix(route, query_route)
+        ):
+            return True
+        if _route_token_overlap(route, normalized_query_tokens) >= min_overlap:
+            return True
+
+    path = chunk.file_path.as_posix().lower()
+    names = " ".join(symbol.name for symbol in chunk.symbols).lower()
+    content = chunk.content.lower()
+    routeish = (
+        "controller" in path
+        or "controller" in names
+        or "requestmapping" in content
+        or "getmapping" in content
+        or "postmapping" in content
+        or "putmapping" in content
+        or "deletemapping" in content
+        or "patchmapping" in content
+    )
+    return routeish and len(_chunk_local_tokens(chunk).intersection(normalized_query_tokens)) >= min_overlap
+
+
+def _route_score_parts(
+    signals: list[CodeSignal],
+    query: str,
+    query_route: str | None = None,
+) -> dict[str, float]:
+    if query_route is None:
+        query_route = _query_route(query)
+    if not query_route:
+        return {}
+
+    parts: dict[str, float] = {}
+    has_endpoint_route = False
+    has_exact_match = False
+    has_prefix_match = False
+    has_sibling_match = False
+    for signal in signals:
+        if signal.kind != "endpoint":
+            continue
+        path = signal.metadata.get("path")
+        if not isinstance(path, str):
+            continue
+        has_endpoint_route = True
+        endpoint_route = _normalize_route(path)
+        if endpoint_route == query_route:
+            has_exact_match = True
+            continue
+        if _has_route_segment_suffix(endpoint_route, query_route):
+            has_sibling_match = True
+            continue
+        if query_route.startswith(endpoint_route + "/"):
+            has_prefix_match = True
+    if has_exact_match:
+        parts["route_exact_match"] = _ROUTE_EXACT_MATCH_BOOST
+    elif has_prefix_match:
+        parts["route_prefix_match"] = _ROUTE_PREFIX_MATCH_BOOST
+    elif has_sibling_match:
+        parts["route_sibling_penalty"] = -_ROUTE_SIBLING_PENALTY
+    elif has_endpoint_route:
+        parts["route_mismatch_penalty"] = -_ROUTE_MISMATCH_PENALTY
+    return parts
+
+
+def _java_context_query_tokens(query_tokens: list[str], query_route: str) -> list[str]:
+    if not query_route:
+        return query_tokens
+
+    route_tokens = {
+        token.lower()
+        for segment in _route_segments(query_route)
+        for token in tokenize_query(segment)
+        if token
+    }
+    if not route_tokens:
+        return query_tokens
+
+    non_route_tokens = [
+        token for token in query_tokens if token and token.lower() not in route_tokens
+    ]
+    if len({token.lower() for token in non_route_tokens}) < _JAVA_CONTEXT_MIN_TOKEN_OVERLAP:
+        return []
+    return non_route_tokens
+
+
+def _java_context_score_parts(
+    signals: list[CodeSignal],
+    query_tokens: list[str],
+    role: _ChunkRole,
+) -> dict[str, float]:
+    normalized_query = {token.lower() for token in query_tokens if token}
+    if not normalized_query:
+        return {}
+
+    parts: dict[str, float] = {}
+    for signal in signals:
+        if signal.kind not in {"method", "field"}:
+            continue
+        signal_tokens = {token.lower() for token in signal.tokens if token}
+        overlap = normalized_query.intersection(signal_tokens)
+        if len(overlap) >= _JAVA_CONTEXT_MIN_TOKEN_OVERLAP:
+            if signal.kind == "method":
+                parts["java_method_context_match"] = max(
+                    parts.get("java_method_context_match", 0.0),
+                    _JAVA_METHOD_CONTEXT_MATCH_BOOST,
+                )
+            if signal.kind == "field":
+                parts["java_field_context_match"] = max(
+                    parts.get("java_field_context_match", 0.0),
+                    _JAVA_FIELD_CONTEXT_MATCH_BOOST,
+                )
+            if role.name == "executor":
+                parts["java_executor_context_boost"] = max(
+                    parts.get("java_executor_context_boost", 0.0),
+                    _JAVA_EXECUTOR_CONTEXT_BOOST,
+                )
+    return parts
+
+
+def _should_apply_java_context_score(
+    chunk: DocumentChunk,
+    query_tokens: list[str],
+    role: _ChunkRole,
+    penalty: float,
+) -> bool:
+    if not query_tokens or penalty:
+        return False
+    if chunk.metadata.get("language") != "java" and chunk.file_path.suffix.lower() != ".java":
+        return False
+    if _java_context_local_token_overlap(chunk, query_tokens) < _JAVA_CONTEXT_MIN_TOKEN_OVERLAP:
+        return False
+    if role.name in {"executor", "data_type"}:
+        return True
+    if role.name != "generic":
+        return False
+    return _java_chunk_suggests_helper_or_filter(chunk)
+
+
+def _java_context_local_token_overlap(
+    chunk: DocumentChunk,
+    query_tokens: list[str],
+) -> int:
+    normalized_query = {
+        token.lower()
+        for token in query_tokens
+        if token and token.lower() not in _JAVA_CONTEXT_STRUCTURAL_TOKENS
+    }
+    if not normalized_query:
+        return 0
+    return len(normalized_query.intersection(_chunk_local_tokens(chunk)))
+
+
+def _java_chunk_suggests_helper_or_filter(chunk: DocumentChunk) -> bool:
+    path = chunk.file_path.as_posix().lower()
+    names = " ".join(symbol.name for symbol in chunk.symbols).lower()
+    content = chunk.content.lower()
+    haystack = f"{path} {names} {content}"
+    return "helper" in haystack or "filter" in haystack
+
+
 def _route_boost(chunk: DocumentChunk, query: str, tokens: list[str]) -> float:
     if "/" not in query or not tokens:
         return 0.0
+    query_route = _query_route(query)
     query_tokens = set(tokens)
     for token in chunk.lexical_tokens:
         if not token.startswith("/"):
+            continue
+        if query_route:
+            route = _normalize_route(token)
+            if route == query_route or query_route.startswith(route + "/"):
+                return 0.12
             continue
         if query_tokens.intersection(tokenize_query(token)):
             return 0.12
@@ -1980,6 +2300,10 @@ def _generated_or_test_penalty(chunk: DocumentChunk) -> float:
     if chunk.metadata.get("is_test") or "/test/" in path or path.endswith("test.java"):
         penalty += 0.10
     return penalty
+
+
+def _is_test_path(path: str) -> bool:
+    return "/test/" in path or path.endswith("test.java")
 
 
 def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
@@ -2021,6 +2345,20 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("relation detail penalty")
     if score_parts.get("token_coverage", 0.0) > 0:
         reasons.append("token coverage")
+    if score_parts.get("route_exact_match", 0.0) > 0:
+        reasons.append("exact Spring route match")
+    if score_parts.get("route_prefix_match", 0.0) > 0:
+        reasons.append("Spring route prefix match")
+    if score_parts.get("route_sibling_penalty", 0.0) < 0:
+        reasons.append("sibling Spring route penalty")
+    if score_parts.get("route_mismatch_penalty", 0.0) < 0:
+        reasons.append("non-matching Spring route penalty")
+    if score_parts.get("java_method_context_match", 0.0) > 0:
+        reasons.append("java method context match")
+    if score_parts.get("java_field_context_match", 0.0) > 0:
+        reasons.append("java field context match")
+    if score_parts.get("java_executor_context_boost", 0.0) > 0:
+        reasons.append("java executor context boost")
     if "/" in query and score_parts.get("route_boost", 0.0) > 0:
         reasons.append("route token match")
     elif score_parts.get("plugin_boost", 0.0) > 0:
