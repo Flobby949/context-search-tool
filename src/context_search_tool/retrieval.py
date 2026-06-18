@@ -52,6 +52,11 @@ _JAVA_CONTEXT_MIN_TOKEN_OVERLAP = 2
 _JAVA_METHOD_CONTEXT_MATCH_BOOST = 0.14
 _JAVA_FIELD_CONTEXT_MATCH_BOOST = 0.12
 _JAVA_EXECUTOR_CONTEXT_BOOST = 0.10
+_SPRING_PATH_ENDPOINT_BOOST = 0.45
+_SPRING_PATH_SERVICE_BOOST = 0.30
+_SPRING_PATH_SERVICE_INTERFACE_BOOST = 0.10
+_SPRING_PATH_EXECUTOR_BOOST = 0.28
+_SPRING_PATH_MAX_DEPTH = 2
 _JAVA_CONTEXT_STRUCTURAL_TOKENS = {
     "src",
     "main",
@@ -99,6 +104,14 @@ class _RelationSeed:
     score: float
     planner_seeded: bool
     original_seeded: bool
+
+
+@dataclass(frozen=True)
+class _SpringPathImplementor:
+    interface_name: str
+    simple_name: str
+    is_qualified: bool
+    chunk_id: str
 
 
 @dataclass(frozen=True)
@@ -1149,6 +1162,12 @@ def _rank_chunks(
     all_combined_scores: list[float] = []
     signal_cache: dict[str, list[CodeSignal]] = {}
     query_route = _query_route(query)
+    candidate_chunks = store.chunks_for_ids(list(candidates))
+    spring_path_parts = _spring_path_score_parts(
+        store,
+        candidate_chunks,
+        query_route,
+    )
     java_context_tokens = _java_context_query_tokens(tokens, query_route)
 
     def signals_for_ranked_chunk(chunk_id: str) -> list[CodeSignal]:
@@ -1160,9 +1179,8 @@ def _rank_chunks(
         return signal_cache[chunk_id]
 
     for candidate in candidates.values():
-        try:
-            chunk = store.chunk_for_id(candidate.chunk_id)
-        except KeyError:
+        chunk = candidate_chunks.get(candidate.chunk_id)
+        if chunk is None:
             continue
         signals: list[CodeSignal] | None = None
 
@@ -1172,7 +1190,10 @@ def _rank_chunks(
                 signals = signals_for_ranked_chunk(candidate.chunk_id)
             return signals
 
-        score_parts = dict(candidate.score_parts)
+        score_parts = _merge_score_parts(
+            dict(candidate.score_parts),
+            spring_path_parts.get(candidate.chunk_id, {}),
+        )
         coverage = _token_coverage(tokens, chunk)
         if coverage:
             score_parts["token_coverage"] = coverage
@@ -1690,6 +1711,10 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         + score_parts.get("java_method_context_match", 0.0)
         + score_parts.get("java_field_context_match", 0.0)
         + score_parts.get("java_executor_context_boost", 0.0)
+        + score_parts.get("spring_path_endpoint_match", 0.0)
+        + score_parts.get("spring_path_service_match", 0.0)
+        + score_parts.get("spring_path_service_interface_match", 0.0)
+        + score_parts.get("spring_path_executor_match", 0.0)
         + score_parts.get("penalty", 0.0)
     )
 
@@ -1984,6 +2009,7 @@ def _rerank_score(
 
     rerank_score += _route_rerank_adjustment(score_parts)
     rerank_score += score_parts.get("route_tail_context_match", 0.0)
+    rerank_score += _spring_path_rerank_adjustment(score_parts)
 
     if (
         role.name == "service_impl"
@@ -2057,6 +2083,15 @@ def _route_rerank_adjustment(score_parts: dict[str, float]) -> float:
     if score_parts.get("route_mismatch_penalty", 0.0) < 0:
         return score_parts["route_mismatch_penalty"]
     return 0.0
+
+
+def _spring_path_rerank_adjustment(score_parts: dict[str, float]) -> float:
+    return (
+        score_parts.get("spring_path_endpoint_match", 0.0)
+        + score_parts.get("spring_path_service_match", 0.0)
+        + score_parts.get("spring_path_service_interface_match", 0.0)
+        + score_parts.get("spring_path_executor_match", 0.0)
+    )
 
 
 def _rank_tier(
@@ -2307,6 +2342,387 @@ def _route_score_parts(
     return parts
 
 
+def _spring_path_score_parts(
+    store: SQLiteStore,
+    candidate_chunks: dict[str, DocumentChunk],
+    query_route: str,
+) -> dict[str, dict[str, float]]:
+    if not query_route or not candidate_chunks:
+        return {}
+
+    try:
+        signals_by_chunk = store.signals_for_chunks(list(candidate_chunks))
+    except sqlite3.Error:
+        return {}
+
+    parts_by_chunk: dict[str, dict[str, float]] = {}
+    visited_signal_depths: dict[str, int] = {}
+    frontier: list[tuple[str, int]] = []
+    implementors_by_interface = _spring_path_candidate_implementors_by_interface(
+        store,
+        candidate_chunks,
+        signals_by_chunk,
+    )
+
+    for chunk_id, signals in signals_by_chunk.items():
+        for signal in signals:
+            if signal.kind != "endpoint":
+                continue
+            path = signal.metadata.get("path")
+            if not isinstance(path, str) or _normalize_route(path) != query_route:
+                continue
+            parts_by_chunk[chunk_id] = _merge_score_parts(
+                parts_by_chunk.get(chunk_id, {}),
+                {"spring_path_endpoint_match": _SPRING_PATH_ENDPOINT_BOOST},
+            )
+            existing_depth = visited_signal_depths.get(signal.signal_id)
+            if existing_depth is not None and existing_depth <= 0:
+                continue
+            visited_signal_depths[signal.signal_id] = 0
+            frontier.append((signal.signal_id, 0))
+
+    while frontier:
+        active_frontier = [
+            (source_signal_id, depth)
+            for source_signal_id, depth in frontier
+            if depth < _SPRING_PATH_MAX_DEPTH
+        ]
+        if not active_frontier:
+            break
+
+        try:
+            relations_by_source = store.relations_for_sources(
+                [source_signal_id for source_signal_id, _ in active_frontier]
+            )
+        except sqlite3.Error:
+            break
+
+        relation_steps: list[tuple[str, int]] = []
+        target_names: list[str] = []
+        for source_signal_id, depth in active_frontier:
+            next_depth = depth + 1
+            for relation in relations_by_source.get(source_signal_id, []):
+                if relation.confidence < _MIN_RELATION_CONFIDENCE:
+                    continue
+                relation_steps.append((relation.target_name, next_depth))
+                target_names.append(relation.target_name)
+
+        if not relation_steps:
+            break
+
+        try:
+            chunks_by_target = store.chunks_matching_signal_or_symbols(
+                target_names,
+                MAX_EXPANSION_CANDIDATES,
+            )
+        except sqlite3.Error:
+            break
+
+        next_signal_depths: dict[str, int] = {}
+        for target_name, depth in relation_steps:
+            for chunk in _spring_path_direct_chunks_for_target(
+                chunks_by_target.get(target_name, []),
+                target_name,
+                candidate_chunks,
+                signals_by_chunk,
+            ):
+                role = _chunk_role(chunk)
+                _add_spring_path_reached_chunk(
+                    chunk,
+                    depth,
+                    parts_by_chunk,
+                )
+                for signal_id in _spring_path_matching_signal_ids(
+                    signals_by_chunk.get(chunk.chunk_id, []),
+                    target_name,
+                    allow_impl_owner=role.name == "service_impl",
+                ):
+                    _set_min_signal_depth(next_signal_depths, signal_id, depth)
+
+            for chunk_id in _spring_path_implementor_chunk_ids(
+                implementors_by_interface,
+                target_name,
+            ):
+                chunk = candidate_chunks.get(chunk_id)
+                if chunk is None:
+                    continue
+                _add_spring_path_reached_chunk(
+                    chunk,
+                    depth,
+                    parts_by_chunk,
+                )
+                for signal_id in _spring_path_matching_signal_ids(
+                    signals_by_chunk.get(chunk_id, []),
+                    target_name,
+                    allow_impl_owner=True,
+                ):
+                    _set_min_signal_depth(next_signal_depths, signal_id, depth)
+
+        next_frontier: list[tuple[str, int]] = []
+        for signal_id, depth in next_signal_depths.items():
+            if depth >= _SPRING_PATH_MAX_DEPTH:
+                continue
+            existing_depth = visited_signal_depths.get(signal_id)
+            if existing_depth is not None and existing_depth <= depth:
+                continue
+            visited_signal_depths[signal_id] = depth
+            next_frontier.append((signal_id, depth))
+        frontier = next_frontier
+
+    return parts_by_chunk
+
+
+def _spring_path_candidate_implementors_by_interface(
+    store: SQLiteStore,
+    candidate_chunks: dict[str, DocumentChunk],
+    signals_by_chunk: dict[str, list[CodeSignal]],
+) -> list[_SpringPathImplementor]:
+    signal_chunk_ids: dict[str, str] = {}
+    source_signal_ids: list[str] = []
+    for chunk_id, chunk in candidate_chunks.items():
+        if _chunk_role(chunk).name != "service_impl":
+            continue
+        for signal in signals_by_chunk.get(chunk_id, []):
+            signal_chunk_ids[signal.signal_id] = chunk_id
+            source_signal_ids.append(signal.signal_id)
+
+    if not source_signal_ids:
+        return []
+
+    try:
+        relations_by_source = store.relations_for_sources(source_signal_ids)
+    except sqlite3.Error:
+        return []
+
+    implementors: list[_SpringPathImplementor] = []
+    seen: set[tuple[str, str]] = set()
+    for source_signal_id, relations in relations_by_source.items():
+        chunk_id = signal_chunk_ids.get(source_signal_id)
+        if chunk_id is None:
+            continue
+        for relation in relations:
+            if (
+                relation.kind != "implements"
+                or relation.confidence < _MIN_RELATION_CONFIDENCE
+            ):
+                continue
+            interface_name = relation.target_name.strip()
+            if not interface_name:
+                continue
+            key = (interface_name, chunk_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            implementors.append(
+                _SpringPathImplementor(
+                    interface_name=interface_name,
+                    simple_name=_spring_path_simple_name(interface_name),
+                    is_qualified=_spring_path_name_is_qualified(interface_name),
+                    chunk_id=chunk_id,
+                )
+            )
+    return implementors
+
+
+def _spring_path_direct_chunks_for_target(
+    reached_chunks: list[DocumentChunk],
+    target_name: str,
+    candidate_chunks: dict[str, DocumentChunk],
+    signals_by_chunk: dict[str, list[CodeSignal]],
+) -> list[DocumentChunk]:
+    exact_chunks: list[DocumentChunk] = []
+    fallback_chunks: list[DocumentChunk] = []
+    for reached_chunk in reached_chunks:
+        chunk = candidate_chunks.get(reached_chunk.chunk_id)
+        if chunk is None:
+            continue
+        signals = signals_by_chunk.get(chunk.chunk_id, [])
+        if _spring_path_chunk_has_exact_target_match(chunk, signals, target_name):
+            exact_chunks.append(chunk)
+            continue
+        if _chunk_role(chunk).name != "service_impl":
+            continue
+        if _spring_path_matching_signal_ids(
+            signals,
+            target_name,
+            allow_impl_owner=True,
+        ):
+            fallback_chunks.append(chunk)
+
+    if exact_chunks:
+        return _dedupe_chunks(exact_chunks)
+
+    fallback_chunks = _dedupe_chunks(fallback_chunks)
+    if len(fallback_chunks) == 1:
+        return fallback_chunks
+    return []
+
+
+def _spring_path_chunk_has_exact_target_match(
+    chunk: DocumentChunk,
+    signals: list[CodeSignal],
+    target_name: str,
+) -> bool:
+    if any(signal.name == target_name for signal in signals):
+        return True
+    return any(symbol.name == target_name for symbol in chunk.symbols)
+
+
+def _dedupe_chunks(chunks: list[DocumentChunk]) -> list[DocumentChunk]:
+    seen: set[str] = set()
+    deduped: list[DocumentChunk] = []
+    for chunk in chunks:
+        if chunk.chunk_id in seen:
+            continue
+        seen.add(chunk.chunk_id)
+        deduped.append(chunk)
+    return deduped
+
+
+def _add_spring_path_reached_chunk(
+    chunk: DocumentChunk,
+    depth: int,
+    parts_by_chunk: dict[str, dict[str, float]],
+) -> None:
+    role_parts = _spring_path_role_score_parts(_chunk_role(chunk), depth)
+    if role_parts:
+        parts_by_chunk[chunk.chunk_id] = _merge_score_parts(
+            parts_by_chunk.get(chunk.chunk_id, {}),
+            role_parts,
+        )
+
+
+def _spring_path_implementor_chunk_ids(
+    implementors: list[_SpringPathImplementor],
+    target_name: str,
+) -> list[str]:
+    owner_name = _spring_path_target_owner_name(target_name)
+    if not owner_name:
+        return []
+
+    owner_is_qualified = _spring_path_name_is_qualified(owner_name)
+    if owner_is_qualified:
+        exact_matches = [
+            implementor.chunk_id
+            for implementor in implementors
+            if implementor.is_qualified and implementor.interface_name == owner_name
+        ]
+        if exact_matches:
+            return _dedupe(exact_matches)
+
+    simple_name = _spring_path_simple_name(owner_name)
+    simple_matches = [
+        implementor.chunk_id
+        for implementor in implementors
+        if implementor.simple_name == simple_name
+        and (not owner_is_qualified or not implementor.is_qualified)
+    ]
+    chunk_ids = _dedupe(simple_matches)
+    if len(chunk_ids) == 1:
+        return chunk_ids
+    return []
+
+
+def _spring_path_matching_signal_ids(
+    signals: list[CodeSignal],
+    target_name: str,
+    *,
+    allow_impl_owner: bool,
+) -> list[str]:
+    target_member = _spring_path_member_target(target_name)
+    matching_signal_ids: list[str] = []
+    for signal in signals:
+        if not signal.signal_id:
+            continue
+        if target_member is None:
+            if signal.name == target_name:
+                matching_signal_ids.append(signal.signal_id)
+            continue
+
+        signal_member = _spring_path_member_target(signal.name)
+        if signal_member is None:
+            continue
+        target_owner, target_method = target_member
+        signal_owner, signal_method = signal_member
+        if signal_method != target_method:
+            continue
+        if _spring_path_owner_matches(
+            signal_owner,
+            target_owner,
+            allow_impl_owner=allow_impl_owner,
+        ):
+            matching_signal_ids.append(signal.signal_id)
+    return _dedupe(matching_signal_ids)
+
+
+def _spring_path_member_target(name: str) -> tuple[str, str] | None:
+    stripped = name.strip()
+    if "." not in stripped:
+        return None
+    owner_name, member_name = stripped.rsplit(".", 1)
+    if not owner_name or not member_name or member_name[:1].isupper():
+        return None
+    return owner_name, member_name
+
+
+def _spring_path_target_owner_name(target_name: str) -> str:
+    member_target = _spring_path_member_target(target_name)
+    if member_target is not None:
+        return member_target[0]
+    return target_name.strip()
+
+
+def _spring_path_owner_matches(
+    signal_owner: str,
+    target_owner: str,
+    *,
+    allow_impl_owner: bool,
+) -> bool:
+    if signal_owner == target_owner:
+        return True
+
+    signal_simple = _spring_path_simple_name(signal_owner)
+    target_simple = _spring_path_simple_name(target_owner)
+    if signal_simple == target_simple:
+        return True
+    return allow_impl_owner and signal_simple == f"{target_simple}Impl"
+
+
+def _spring_path_simple_name(name: str) -> str:
+    return name.strip().rsplit(".", 1)[-1]
+
+
+def _spring_path_name_is_qualified(name: str) -> bool:
+    return "." in name.strip()
+
+
+def _set_min_signal_depth(
+    signal_depths: dict[str, int],
+    signal_id: str,
+    depth: int,
+) -> None:
+    existing_depth = signal_depths.get(signal_id)
+    if existing_depth is None or depth < existing_depth:
+        signal_depths[signal_id] = depth
+
+
+def _spring_path_role_score_parts(
+    role: _ChunkRole,
+    depth: int,
+) -> dict[str, float]:
+    if depth == 1 and role.name == "service_impl":
+        return {"spring_path_service_match": _SPRING_PATH_SERVICE_BOOST}
+    if depth == 1 and role.name == "service_interface":
+        return {
+            "spring_path_service_interface_match": (
+                _SPRING_PATH_SERVICE_INTERFACE_BOOST
+            )
+        }
+    if depth in {1, 2} and role.name == "executor":
+        return {"spring_path_executor_match": _SPRING_PATH_EXECUTOR_BOOST}
+    return {}
+
+
 def _route_tail_context_score_parts(
     chunk: DocumentChunk,
     query_route: str,
@@ -2512,6 +2928,14 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("java field context match")
     if score_parts.get("java_executor_context_boost", 0.0) > 0:
         reasons.append("java executor context boost")
+    if score_parts.get("spring_path_endpoint_match", 0.0) > 0:
+        reasons.append("Spring endpoint path graph match")
+    if score_parts.get("spring_path_service_match", 0.0) > 0:
+        reasons.append("Spring service path graph match")
+    if score_parts.get("spring_path_service_interface_match", 0.0) > 0:
+        reasons.append("Spring service interface path graph match")
+    if score_parts.get("spring_path_executor_match", 0.0) > 0:
+        reasons.append("Spring executor path graph match")
     if "/" in query and score_parts.get("route_boost", 0.0) > 0:
         reasons.append("route token match")
     elif score_parts.get("plugin_boost", 0.0) > 0:

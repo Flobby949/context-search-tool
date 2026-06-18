@@ -1817,6 +1817,1360 @@ def test_route_rerank_prefers_exact_controller_over_noisy_sibling(
     assert ranked[1].score_parts["route_sibling_penalty"] == -0.18
 
 
+def _spring_path_graph_case(
+    tmp_path: Path,
+) -> tuple[SQLiteStore, dict[str, RetrievalCandidate]]:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+
+    exact = DocumentChunk(
+        chunk_id="exact-controller",
+        file_path=Path("src/main/java/com/example/controller/AppCatalogController.java"),
+        start_line=1,
+        end_line=40,
+        content='@RequestMapping("/appCatalog") class AppCatalogController { String page() { return service.page(); } }',
+        chunk_type="symbol",
+        lexical_tokens=["app", "catalog", "page", "/appCatalog/page"],
+        metadata={"language": "java"},
+    )
+    sibling = DocumentChunk(
+        chunk_id="sibling-controller",
+        file_path=Path("src/main/java/com/example/controller/AppCatalogOpenController.java"),
+        start_line=1,
+        end_line=40,
+        content='@RequestMapping("/openApi/appCatalog") class AppCatalogOpenController { String page() { return openService.page(); } }',
+        chunk_type="symbol",
+        lexical_tokens=["open", "api", "app", "catalog", "page", "/openApi/appCatalog/page"],
+        metadata={"language": "java"},
+    )
+    service_impl = DocumentChunk(
+        chunk_id="service-impl",
+        file_path=Path("src/main/java/com/example/service/impl/CatalogQueryServiceImpl.java"),
+        start_line=1,
+        end_line=40,
+        content="class CatalogQueryServiceImpl { String page() { return executor.execute(); } }",
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "query", "service", "impl", "page"],
+        metadata={"language": "java"},
+    )
+    service_interface = DocumentChunk(
+        chunk_id="service-interface",
+        file_path=Path("src/main/java/com/example/service/CatalogQueryService.java"),
+        start_line=1,
+        end_line=20,
+        content="interface CatalogQueryService { String page(); }",
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "query", "service", "page"],
+        metadata={"language": "java"},
+    )
+    executor = DocumentChunk(
+        chunk_id="executor",
+        file_path=Path("src/main/java/com/example/executor/PageCatalogQueryExe.java"),
+        start_line=1,
+        end_line=40,
+        content="class PageCatalogQueryExe { String execute() { return canApplyFilter(); } }",
+        chunk_type="symbol",
+        lexical_tokens=["page", "catalog", "query", "exe", "can", "apply"],
+        metadata={"language": "java"},
+    )
+    open_service = DocumentChunk(
+        chunk_id="open-service",
+        file_path=Path("src/main/java/com/example/service/impl/OpenCatalogQueryServiceImpl.java"),
+        start_line=1,
+        end_line=40,
+        content="class OpenCatalogQueryServiceImpl { String page() { return null; } }",
+        chunk_type="symbol",
+        lexical_tokens=["open", "catalog", "query", "service", "impl", "page"],
+        metadata={"language": "java"},
+    )
+    chunks = (exact, sibling, service_impl, service_interface, executor, open_service)
+    for chunk in chunks:
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    store.replace_signals(
+        exact.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-exact-endpoint",
+                chunk_id=exact.chunk_id,
+                file_path=exact.file_path,
+                kind="endpoint",
+                name="POST /appCatalog/page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["app", "catalog", "page", "/appCatalog/page"],
+                metadata={"path": "/appCatalog/page"},
+            )
+        ],
+    )
+    store.replace_signals(
+        sibling.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-sibling-endpoint",
+                chunk_id=sibling.chunk_id,
+                file_path=sibling.file_path,
+                kind="endpoint",
+                name="POST /openApi/appCatalog/page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["open", "api", "app", "catalog", "page", "/openApi/appCatalog/page"],
+                metadata={"path": "/openApi/appCatalog/page"},
+            )
+        ],
+    )
+    store.replace_signals(
+        service_impl.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-service-impl",
+                chunk_id=service_impl.chunk_id,
+                file_path=service_impl.file_path,
+                kind="method",
+                name="CatalogQueryServiceImpl.page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["catalog", "query", "service", "page"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_signals(
+        service_interface.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-service-interface",
+                chunk_id=service_interface.chunk_id,
+                file_path=service_interface.file_path,
+                kind="method",
+                name="CatalogQueryService.page",
+                start_line=2,
+                end_line=2,
+                language="java",
+                tokens=["catalog", "query", "service", "page"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_signals(
+        executor.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-executor",
+                chunk_id=executor.chunk_id,
+                file_path=executor.file_path,
+                kind="method",
+                name="PageCatalogQueryExe.execute",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["page", "catalog", "query", "execute", "can", "apply"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_signals(
+        open_service.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-open-service",
+                chunk_id=open_service.chunk_id,
+                file_path=open_service.file_path,
+                kind="method",
+                name="OpenCatalogQueryServiceImpl.page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["open", "catalog", "query", "service", "page"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_relations(
+        exact.file_path,
+        [
+            CodeRelation(
+                relation_id="rel-exact-service-impl",
+                source_signal_id="sig-exact-endpoint",
+                target_name="CatalogQueryServiceImpl.page",
+                kind="calls",
+                confidence=1.0,
+                metadata={},
+            ),
+            CodeRelation(
+                relation_id="rel-exact-service-interface",
+                source_signal_id="sig-exact-endpoint",
+                target_name="CatalogQueryService.page",
+                kind="calls",
+                confidence=1.0,
+                metadata={},
+            ),
+        ],
+    )
+    store.replace_relations(
+        service_impl.file_path,
+        [
+            CodeRelation(
+                relation_id="rel-service-executor",
+                source_signal_id="sig-service-impl",
+                target_name="PageCatalogQueryExe.execute",
+                kind="calls",
+                confidence=1.0,
+                metadata={},
+            )
+        ],
+    )
+    store.replace_relations(
+        sibling.file_path,
+        [
+            CodeRelation(
+                relation_id="rel-sibling-open-service",
+                source_signal_id="sig-sibling-endpoint",
+                target_name="OpenCatalogQueryServiceImpl.page",
+                kind="calls",
+                confidence=1.0,
+                metadata={},
+            )
+        ],
+    )
+
+    candidates = {
+        "exact-controller": RetrievalCandidate(
+            chunk_id="exact-controller",
+            score=1.0,
+            source="direct",
+            score_parts={"semantic": 0.35, "path_symbol": 3.0, "signal": 0.6},
+        ),
+        "sibling-controller": RetrievalCandidate(
+            chunk_id="sibling-controller",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.65,
+                "path_symbol": 4.25,
+                "direct_text": 1.0,
+                "signal": 1.0,
+            },
+        ),
+        "service-impl": RetrievalCandidate(
+            chunk_id="service-impl",
+            score=0.2,
+            source="relation",
+            score_parts={"relation": 0.2, "original_relation": 0.2},
+        ),
+        "service-interface": RetrievalCandidate(
+            chunk_id="service-interface",
+            score=0.2,
+            source="relation",
+            score_parts={"relation": 0.2, "original_relation": 0.2},
+        ),
+        "executor": RetrievalCandidate(
+            chunk_id="executor",
+            score=0.2,
+            source="relation",
+            score_parts={"relation": 0.2, "original_relation": 0.2},
+        ),
+        "open-service": RetrievalCandidate(
+            chunk_id="open-service",
+            score=0.9,
+            source="direct",
+            score_parts={"semantic": 0.6, "path_symbol": 3.0, "signal": 0.6},
+        ),
+    }
+    return store, candidates
+
+
+def test_spring_path_graph_scores_exact_controller_service_and_executor(
+    tmp_path: Path,
+) -> None:
+    store, candidates = _spring_path_graph_case(tmp_path)
+
+    ranked = retrieval._rank_chunks(
+        store,
+        candidates,
+        ["app", "catalog", "page", "can", "apply"],
+        "/appCatalog/page canApply",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    ranked_ids = [item.chunk.chunk_id for item in ranked]
+    assert ranked_ids.index("exact-controller") < ranked_ids.index("sibling-controller")
+    assert by_id["exact-controller"].score_parts["spring_path_endpoint_match"] == 0.45
+    assert by_id["service-impl"].score_parts["spring_path_service_match"] == 0.30
+    assert by_id["executor"].score_parts["spring_path_executor_match"] == 0.28
+    assert "spring_path_endpoint_match" not in by_id["sibling-controller"].score_parts
+    assert "spring_path_service_match" not in by_id["open-service"].score_parts
+
+
+def test_spring_path_graph_scores_service_interface_below_implementation(
+    tmp_path: Path,
+) -> None:
+    store, candidates = _spring_path_graph_case(tmp_path)
+
+    ranked = retrieval._rank_chunks(
+        store,
+        candidates,
+        ["app", "catalog", "page", "can", "apply"],
+        "/appCatalog/page canApply",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert by_id["service-interface"].score_parts[
+        "spring_path_service_interface_match"
+    ] == 0.10
+    assert by_id["service-impl"].score_parts["spring_path_service_match"] == 0.30
+    assert by_id["service-impl"].rerank_score > by_id["service-interface"].rerank_score
+
+
+def test_spring_path_graph_bridges_interface_method_to_implementation(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+
+    controller = DocumentChunk(
+        chunk_id="controller",
+        file_path=Path("src/main/java/com/example/controller/CatalogController.java"),
+        start_line=1,
+        end_line=40,
+        content='@RequestMapping("/catalog") class CatalogController { String page() { return service.page(); } }',
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "page", "/catalog/page"],
+        metadata={"language": "java"},
+    )
+    sibling = DocumentChunk(
+        chunk_id="sibling-controller",
+        file_path=Path("src/main/java/com/example/controller/OpenCatalogController.java"),
+        start_line=1,
+        end_line=40,
+        content='@RequestMapping("/openApi/catalog") class OpenCatalogController { String page() { return openService.page(); } }',
+        chunk_type="symbol",
+        lexical_tokens=["open", "api", "catalog", "page", "/openApi/catalog/page"],
+        metadata={"language": "java"},
+    )
+    service_interface = DocumentChunk(
+        chunk_id="service-interface",
+        file_path=Path("src/main/java/com/example/service/CatalogQueryService.java"),
+        start_line=1,
+        end_line=20,
+        content="interface CatalogQueryService { String page(); }",
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "query", "service", "page"],
+        metadata={"language": "java"},
+    )
+    service_impl = DocumentChunk(
+        chunk_id="service-impl",
+        file_path=Path("src/main/java/com/example/service/impl/CatalogQueryServiceImpl.java"),
+        start_line=1,
+        end_line=40,
+        content="class CatalogQueryServiceImpl implements CatalogQueryService { String page() { return executor.execute(); } }",
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "query", "service", "impl", "page"],
+        metadata={"language": "java"},
+    )
+    executor = DocumentChunk(
+        chunk_id="executor",
+        file_path=Path("src/main/java/com/example/executor/CatalogPageQueryExe.java"),
+        start_line=1,
+        end_line=40,
+        content="class CatalogPageQueryExe { String execute() { return statusFilter(); } }",
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "page", "query", "exe", "status"],
+        metadata={"language": "java"},
+    )
+    open_service = DocumentChunk(
+        chunk_id="open-service",
+        file_path=Path("src/main/java/com/example/service/impl/OpenCatalogQueryServiceImpl.java"),
+        start_line=1,
+        end_line=40,
+        content="class OpenCatalogQueryServiceImpl implements OpenCatalogQueryService { String page() { return null; } }",
+        chunk_type="symbol",
+        lexical_tokens=["open", "catalog", "query", "service", "impl", "page"],
+        metadata={"language": "java"},
+    )
+    for chunk in (
+        controller,
+        sibling,
+        service_interface,
+        service_impl,
+        executor,
+        open_service,
+    ):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    store.replace_signals(
+        controller.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-controller-endpoint",
+                chunk_id=controller.chunk_id,
+                file_path=controller.file_path,
+                kind="endpoint",
+                name="POST /catalog/page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["catalog", "page", "/catalog/page"],
+                metadata={"path": "/catalog/page"},
+            )
+        ],
+    )
+    store.replace_signals(
+        sibling.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-sibling-endpoint",
+                chunk_id=sibling.chunk_id,
+                file_path=sibling.file_path,
+                kind="endpoint",
+                name="POST /openApi/catalog/page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["open", "api", "catalog", "page", "/openApi/catalog/page"],
+                metadata={"path": "/openApi/catalog/page"},
+            )
+        ],
+    )
+    store.replace_signals(
+        service_interface.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-interface-method",
+                chunk_id=service_interface.chunk_id,
+                file_path=service_interface.file_path,
+                kind="method",
+                name="CatalogQueryService.page",
+                start_line=2,
+                end_line=2,
+                language="java",
+                tokens=["catalog", "query", "service", "page"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_signals(
+        service_impl.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-impl-type",
+                chunk_id=service_impl.chunk_id,
+                file_path=service_impl.file_path,
+                kind="type",
+                name="CatalogQueryServiceImpl",
+                start_line=1,
+                end_line=1,
+                language="java",
+                tokens=["catalog", "query", "service", "impl"],
+                metadata={"type": "CatalogQueryServiceImpl"},
+            ),
+            CodeSignal(
+                signal_id="sig-impl-method",
+                chunk_id=service_impl.chunk_id,
+                file_path=service_impl.file_path,
+                kind="method",
+                name="CatalogQueryServiceImpl.page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["catalog", "query", "service", "page"],
+                metadata={},
+            ),
+        ],
+    )
+    store.replace_signals(
+        executor.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-executor-method",
+                chunk_id=executor.chunk_id,
+                file_path=executor.file_path,
+                kind="method",
+                name="CatalogPageQueryExe.execute",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["catalog", "page", "query", "execute", "status"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_signals(
+        open_service.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-open-type",
+                chunk_id=open_service.chunk_id,
+                file_path=open_service.file_path,
+                kind="type",
+                name="OpenCatalogQueryServiceImpl",
+                start_line=1,
+                end_line=1,
+                language="java",
+                tokens=["open", "catalog", "query", "service", "impl"],
+                metadata={"type": "OpenCatalogQueryServiceImpl"},
+            ),
+            CodeSignal(
+                signal_id="sig-open-method",
+                chunk_id=open_service.chunk_id,
+                file_path=open_service.file_path,
+                kind="method",
+                name="OpenCatalogQueryServiceImpl.page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["open", "catalog", "query", "service", "page"],
+                metadata={},
+            ),
+        ],
+    )
+    store.replace_relations(
+        controller.file_path,
+        [
+            CodeRelation(
+                relation_id="rel-controller-interface",
+                source_signal_id="sig-controller-endpoint",
+                target_name="CatalogQueryService.page",
+                kind="calls",
+                confidence=1.0,
+                metadata={},
+            )
+        ],
+    )
+    store.replace_relations(
+        service_impl.file_path,
+        [
+            CodeRelation(
+                relation_id="rel-impl-implements-interface",
+                source_signal_id="sig-impl-type",
+                target_name="CatalogQueryService",
+                kind="implements",
+                confidence=1.0,
+                metadata={"source_type": "CatalogQueryServiceImpl"},
+            ),
+            CodeRelation(
+                relation_id="rel-impl-executor",
+                source_signal_id="sig-impl-method",
+                target_name="CatalogPageQueryExe.execute",
+                kind="calls",
+                confidence=1.0,
+                metadata={},
+            ),
+        ],
+    )
+    store.replace_relations(
+        open_service.file_path,
+        [
+            CodeRelation(
+                relation_id="rel-open-implements-interface",
+                source_signal_id="sig-open-type",
+                target_name="OpenCatalogQueryService",
+                kind="implements",
+                confidence=1.0,
+                metadata={"source_type": "OpenCatalogQueryServiceImpl"},
+            )
+        ],
+    )
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "controller": RetrievalCandidate(
+                chunk_id="controller",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.35, "path_symbol": 3.0, "signal": 0.6},
+            ),
+            "sibling-controller": RetrievalCandidate(
+                chunk_id="sibling-controller",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.65, "path_symbol": 4.25, "signal": 1.0},
+            ),
+            "service-interface": RetrievalCandidate(
+                chunk_id="service-interface",
+                score=0.2,
+                source="relation",
+                score_parts={"relation": 0.2, "original_relation": 0.2},
+            ),
+            "service-impl": RetrievalCandidate(
+                chunk_id="service-impl",
+                score=0.2,
+                source="relation",
+                score_parts={"relation": 0.2, "original_relation": 0.2},
+            ),
+            "executor": RetrievalCandidate(
+                chunk_id="executor",
+                score=0.2,
+                source="relation",
+                score_parts={"relation": 0.2, "original_relation": 0.2},
+            ),
+            "open-service": RetrievalCandidate(
+                chunk_id="open-service",
+                score=0.9,
+                source="direct",
+                score_parts={"semantic": 0.6, "path_symbol": 3.0, "signal": 0.6},
+            ),
+        },
+        ["catalog", "page", "status"],
+        "/catalog/page status",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert by_id["controller"].score_parts["spring_path_endpoint_match"] == 0.45
+    assert by_id["service-interface"].score_parts[
+        "spring_path_service_interface_match"
+    ] == 0.10
+    assert by_id["service-impl"].score_parts["spring_path_service_match"] == 0.30
+    assert by_id["executor"].score_parts["spring_path_executor_match"] == 0.28
+    assert "spring_path_endpoint_match" not in by_id["sibling-controller"].score_parts
+    assert "spring_path_service_match" not in by_id["open-service"].score_parts
+
+
+def test_spring_path_graph_follows_only_matching_implementation_method(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+
+    controller = DocumentChunk(
+        chunk_id="controller",
+        file_path=Path("src/main/java/com/example/controller/CatalogController.java"),
+        start_line=1,
+        end_line=40,
+        content='@RequestMapping("/catalog") class CatalogController { String page() { return service.page(); } }',
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "page", "/catalog/page"],
+        metadata={"language": "java"},
+    )
+    service_interface = DocumentChunk(
+        chunk_id="service-interface",
+        file_path=Path("src/main/java/com/example/service/CatalogQueryService.java"),
+        start_line=1,
+        end_line=20,
+        content="interface CatalogQueryService { String page(); String export(); }",
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "query", "service", "page", "export"],
+        metadata={"language": "java"},
+    )
+    service_impl = DocumentChunk(
+        chunk_id="service-impl",
+        file_path=Path("src/main/java/com/example/service/impl/CatalogQueryServiceImpl.java"),
+        start_line=1,
+        end_line=60,
+        content="class CatalogQueryServiceImpl implements CatalogQueryService { String page() { return pageExe.execute(); } String export() { return exportExe.execute(); } }",
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "query", "service", "impl", "page", "export"],
+        metadata={"language": "java"},
+    )
+    page_executor = DocumentChunk(
+        chunk_id="page-executor",
+        file_path=Path("src/main/java/com/example/executor/CatalogPageQueryExe.java"),
+        start_line=1,
+        end_line=40,
+        content="class CatalogPageQueryExe { String execute() { return pageData(); } }",
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "page", "query", "exe"],
+        metadata={"language": "java"},
+    )
+    export_executor = DocumentChunk(
+        chunk_id="export-executor",
+        file_path=Path("src/main/java/com/example/executor/CatalogExportExe.java"),
+        start_line=1,
+        end_line=40,
+        content="class CatalogExportExe { String execute() { return exportData(); } }",
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "export", "exe"],
+        metadata={"language": "java"},
+    )
+    for chunk in (
+        controller,
+        service_interface,
+        service_impl,
+        page_executor,
+        export_executor,
+    ):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    store.replace_signals(
+        controller.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-controller-endpoint",
+                chunk_id=controller.chunk_id,
+                file_path=controller.file_path,
+                kind="endpoint",
+                name="POST /catalog/page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["catalog", "page", "/catalog/page"],
+                metadata={"path": "/catalog/page"},
+            )
+        ],
+    )
+    store.replace_signals(
+        service_interface.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-interface-page",
+                chunk_id=service_interface.chunk_id,
+                file_path=service_interface.file_path,
+                kind="method",
+                name="CatalogQueryService.page",
+                start_line=2,
+                end_line=2,
+                language="java",
+                tokens=["catalog", "query", "service", "page"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_signals(
+        service_impl.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-impl-type",
+                chunk_id=service_impl.chunk_id,
+                file_path=service_impl.file_path,
+                kind="type",
+                name="CatalogQueryServiceImpl",
+                start_line=1,
+                end_line=1,
+                language="java",
+                tokens=["catalog", "query", "service", "impl"],
+                metadata={"type": "CatalogQueryServiceImpl"},
+            ),
+            CodeSignal(
+                signal_id="sig-impl-page",
+                chunk_id=service_impl.chunk_id,
+                file_path=service_impl.file_path,
+                kind="method",
+                name="CatalogQueryServiceImpl.page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["catalog", "query", "service", "page"],
+                metadata={},
+            ),
+            CodeSignal(
+                signal_id="sig-impl-export",
+                chunk_id=service_impl.chunk_id,
+                file_path=service_impl.file_path,
+                kind="method",
+                name="CatalogQueryServiceImpl.export",
+                start_line=4,
+                end_line=4,
+                language="java",
+                tokens=["catalog", "query", "service", "export"],
+                metadata={},
+            ),
+        ],
+    )
+    store.replace_signals(
+        page_executor.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-page-executor",
+                chunk_id=page_executor.chunk_id,
+                file_path=page_executor.file_path,
+                kind="method",
+                name="CatalogPageQueryExe.execute",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["catalog", "page", "query", "execute"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_signals(
+        export_executor.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-export-executor",
+                chunk_id=export_executor.chunk_id,
+                file_path=export_executor.file_path,
+                kind="method",
+                name="CatalogExportExe.execute",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["catalog", "export", "execute"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_relations(
+        controller.file_path,
+        [
+            CodeRelation(
+                relation_id="rel-controller-interface-page",
+                source_signal_id="sig-controller-endpoint",
+                target_name="CatalogQueryService.page",
+                kind="calls",
+                confidence=1.0,
+                metadata={},
+            )
+        ],
+    )
+    store.replace_relations(
+        service_impl.file_path,
+        [
+            CodeRelation(
+                relation_id="rel-impl-implements-interface",
+                source_signal_id="sig-impl-type",
+                target_name="CatalogQueryService",
+                kind="implements",
+                confidence=1.0,
+                metadata={"source_type": "CatalogQueryServiceImpl"},
+            ),
+            CodeRelation(
+                relation_id="rel-page-executor",
+                source_signal_id="sig-impl-page",
+                target_name="CatalogPageQueryExe.execute",
+                kind="calls",
+                confidence=1.0,
+                metadata={},
+            ),
+            CodeRelation(
+                relation_id="rel-export-executor",
+                source_signal_id="sig-impl-export",
+                target_name="CatalogExportExe.execute",
+                kind="calls",
+                confidence=1.0,
+                metadata={},
+            ),
+        ],
+    )
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "controller": RetrievalCandidate(
+                chunk_id="controller",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.35, "path_symbol": 3.0, "signal": 0.6},
+            ),
+            "service-interface": RetrievalCandidate(
+                chunk_id="service-interface",
+                score=0.2,
+                source="relation",
+                score_parts={"relation": 0.2, "original_relation": 0.2},
+            ),
+            "service-impl": RetrievalCandidate(
+                chunk_id="service-impl",
+                score=0.2,
+                source="relation",
+                score_parts={"relation": 0.2, "original_relation": 0.2},
+            ),
+            "page-executor": RetrievalCandidate(
+                chunk_id="page-executor",
+                score=0.2,
+                source="relation",
+                score_parts={"relation": 0.2, "original_relation": 0.2},
+            ),
+            "export-executor": RetrievalCandidate(
+                chunk_id="export-executor",
+                score=0.2,
+                source="relation",
+                score_parts={"relation": 0.2, "original_relation": 0.2},
+            ),
+        },
+        ["catalog", "page"],
+        "/catalog/page",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert by_id["page-executor"].score_parts["spring_path_executor_match"] == 0.28
+    assert "spring_path_executor_match" not in by_id["export-executor"].score_parts
+
+
+def test_spring_path_graph_does_not_bridge_ambiguous_qualified_interfaces(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+
+    controller = DocumentChunk(
+        chunk_id="controller",
+        file_path=Path("src/main/java/com/example/controller/CatalogController.java"),
+        start_line=1,
+        end_line=40,
+        content='@RequestMapping("/catalog") class CatalogController { String page() { return service.page(); } }',
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "page", "/catalog/page"],
+        metadata={"language": "java"},
+    )
+    interface_chunk = DocumentChunk(
+        chunk_id="interface",
+        file_path=Path("src/main/java/com/foo/CatalogQueryService.java"),
+        start_line=1,
+        end_line=20,
+        content="interface CatalogQueryService { String page(); }",
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "query", "service", "page"],
+        metadata={"language": "java"},
+    )
+    foo_impl = DocumentChunk(
+        chunk_id="foo-impl",
+        file_path=Path("src/main/java/com/foo/impl/CatalogQueryServiceImpl.java"),
+        start_line=1,
+        end_line=40,
+        content="class CatalogQueryServiceImpl implements CatalogQueryService { String page() { return null; } }",
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "query", "service", "impl", "page"],
+        metadata={"language": "java"},
+    )
+    bar_impl = DocumentChunk(
+        chunk_id="bar-impl",
+        file_path=Path("src/main/java/com/bar/impl/CatalogQueryServiceImpl.java"),
+        start_line=1,
+        end_line=40,
+        content="class CatalogQueryServiceImpl implements CatalogQueryService { String page() { return null; } }",
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "query", "service", "impl", "page"],
+        metadata={"language": "java"},
+    )
+    for chunk in (controller, interface_chunk, foo_impl, bar_impl):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    store.replace_signals(
+        controller.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-controller-endpoint",
+                chunk_id=controller.chunk_id,
+                file_path=controller.file_path,
+                kind="endpoint",
+                name="POST /catalog/page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["catalog", "page", "/catalog/page"],
+                metadata={"path": "/catalog/page"},
+            )
+        ],
+    )
+    store.replace_signals(
+        interface_chunk.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-interface-method",
+                chunk_id=interface_chunk.chunk_id,
+                file_path=interface_chunk.file_path,
+                kind="method",
+                name="com.foo.CatalogQueryService.page",
+                start_line=2,
+                end_line=2,
+                language="java",
+                tokens=["catalog", "query", "service", "page"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_signals(
+        foo_impl.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-foo-type",
+                chunk_id=foo_impl.chunk_id,
+                file_path=foo_impl.file_path,
+                kind="type",
+                name="com.foo.CatalogQueryServiceImpl",
+                start_line=1,
+                end_line=1,
+                language="java",
+                tokens=["catalog", "query", "service", "impl"],
+                metadata={"type": "com.foo.CatalogQueryServiceImpl"},
+            ),
+            CodeSignal(
+                signal_id="sig-foo-method",
+                chunk_id=foo_impl.chunk_id,
+                file_path=foo_impl.file_path,
+                kind="method",
+                name="com.foo.CatalogQueryServiceImpl.page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["catalog", "query", "service", "page"],
+                metadata={},
+            ),
+        ],
+    )
+    store.replace_signals(
+        bar_impl.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-bar-type",
+                chunk_id=bar_impl.chunk_id,
+                file_path=bar_impl.file_path,
+                kind="type",
+                name="com.bar.CatalogQueryServiceImpl",
+                start_line=1,
+                end_line=1,
+                language="java",
+                tokens=["catalog", "query", "service", "impl"],
+                metadata={"type": "com.bar.CatalogQueryServiceImpl"},
+            ),
+            CodeSignal(
+                signal_id="sig-bar-method",
+                chunk_id=bar_impl.chunk_id,
+                file_path=bar_impl.file_path,
+                kind="method",
+                name="com.bar.CatalogQueryServiceImpl.page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["catalog", "query", "service", "page"],
+                metadata={},
+            ),
+        ],
+    )
+    store.replace_relations(
+        controller.file_path,
+        [
+            CodeRelation(
+                relation_id="rel-controller-interface-page",
+                source_signal_id="sig-controller-endpoint",
+                target_name="com.foo.CatalogQueryService.page",
+                kind="calls",
+                confidence=1.0,
+                metadata={},
+            )
+        ],
+    )
+    store.replace_relations(
+        foo_impl.file_path,
+        [
+            CodeRelation(
+                relation_id="rel-foo-implements",
+                source_signal_id="sig-foo-type",
+                target_name="com.foo.CatalogQueryService",
+                kind="implements",
+                confidence=1.0,
+                metadata={"source_type": "com.foo.CatalogQueryServiceImpl"},
+            )
+        ],
+    )
+    store.replace_relations(
+        bar_impl.file_path,
+        [
+            CodeRelation(
+                relation_id="rel-bar-implements",
+                source_signal_id="sig-bar-type",
+                target_name="com.bar.CatalogQueryService",
+                kind="implements",
+                confidence=1.0,
+                metadata={"source_type": "com.bar.CatalogQueryServiceImpl"},
+            )
+        ],
+    )
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "controller": RetrievalCandidate(
+                chunk_id="controller",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.35, "path_symbol": 3.0, "signal": 0.6},
+            ),
+            "interface": RetrievalCandidate(
+                chunk_id="interface",
+                score=0.2,
+                source="relation",
+                score_parts={"relation": 0.2, "original_relation": 0.2},
+            ),
+            "foo-impl": RetrievalCandidate(
+                chunk_id="foo-impl",
+                score=0.2,
+                source="relation",
+                score_parts={"relation": 0.2, "original_relation": 0.2},
+            ),
+            "bar-impl": RetrievalCandidate(
+                chunk_id="bar-impl",
+                score=0.2,
+                source="relation",
+                score_parts={"relation": 0.2, "original_relation": 0.2},
+            ),
+        },
+        ["catalog", "page"],
+        "/catalog/page",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert by_id["foo-impl"].score_parts["spring_path_service_match"] == 0.30
+    assert "spring_path_service_match" not in by_id["bar-impl"].score_parts
+
+
+def test_spring_path_graph_qualified_target_ignores_wrong_qualified_implementor(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+
+    controller = DocumentChunk(
+        chunk_id="controller",
+        file_path=Path("src/main/java/com/example/controller/CatalogController.java"),
+        start_line=1,
+        end_line=40,
+        content='@RequestMapping("/catalog") class CatalogController { String page() { return service.page(); } }',
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "page", "/catalog/page"],
+        metadata={"language": "java"},
+    )
+    bar_impl = DocumentChunk(
+        chunk_id="bar-impl",
+        file_path=Path("src/main/java/com/bar/impl/CatalogQueryServiceImpl.java"),
+        start_line=1,
+        end_line=40,
+        content="class CatalogQueryServiceImpl implements CatalogQueryService { String page() { return null; } }",
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "query", "service", "impl", "page"],
+        metadata={"language": "java"},
+    )
+    for chunk in (controller, bar_impl):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    store.replace_signals(
+        controller.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-controller-endpoint",
+                chunk_id=controller.chunk_id,
+                file_path=controller.file_path,
+                kind="endpoint",
+                name="POST /catalog/page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["catalog", "page", "/catalog/page"],
+                metadata={"path": "/catalog/page"},
+            )
+        ],
+    )
+    store.replace_signals(
+        bar_impl.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-bar-type",
+                chunk_id=bar_impl.chunk_id,
+                file_path=bar_impl.file_path,
+                kind="type",
+                name="com.bar.CatalogQueryServiceImpl",
+                start_line=1,
+                end_line=1,
+                language="java",
+                tokens=["catalog", "query", "service", "impl"],
+                metadata={"type": "com.bar.CatalogQueryServiceImpl"},
+            ),
+            CodeSignal(
+                signal_id="sig-bar-method",
+                chunk_id=bar_impl.chunk_id,
+                file_path=bar_impl.file_path,
+                kind="method",
+                name="com.bar.CatalogQueryServiceImpl.page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["catalog", "query", "service", "page"],
+                metadata={},
+            ),
+        ],
+    )
+    store.replace_relations(
+        controller.file_path,
+        [
+            CodeRelation(
+                relation_id="rel-controller-interface-page",
+                source_signal_id="sig-controller-endpoint",
+                target_name="com.foo.CatalogQueryService.page",
+                kind="calls",
+                confidence=1.0,
+                metadata={},
+            )
+        ],
+    )
+    store.replace_relations(
+        bar_impl.file_path,
+        [
+            CodeRelation(
+                relation_id="rel-bar-implements",
+                source_signal_id="sig-bar-type",
+                target_name="com.bar.CatalogQueryService",
+                kind="implements",
+                confidence=1.0,
+                metadata={"source_type": "com.bar.CatalogQueryServiceImpl"},
+            )
+        ],
+    )
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "controller": RetrievalCandidate(
+                chunk_id="controller",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.35, "path_symbol": 3.0, "signal": 0.6},
+            ),
+            "bar-impl": RetrievalCandidate(
+                chunk_id="bar-impl",
+                score=0.2,
+                source="relation",
+                score_parts={"relation": 0.2, "original_relation": 0.2},
+            ),
+        },
+        ["catalog", "page"],
+        "/catalog/page",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert by_id["controller"].score_parts["spring_path_endpoint_match"] == 0.45
+    assert "spring_path_service_match" not in by_id["bar-impl"].score_parts
+
+
+def test_spring_path_graph_skips_ambiguous_direct_impl_fallback(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+
+    controller = DocumentChunk(
+        chunk_id="controller",
+        file_path=Path("src/main/java/com/example/controller/CatalogController.java"),
+        start_line=1,
+        end_line=40,
+        content='@RequestMapping("/catalog") class CatalogController { String page() { return service.page(); } }',
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "page", "/catalog/page"],
+        metadata={"language": "java"},
+    )
+    foo_impl = DocumentChunk(
+        chunk_id="foo-impl",
+        file_path=Path("src/main/java/com/foo/impl/CatalogQueryServiceImpl.java"),
+        start_line=1,
+        end_line=40,
+        content="class CatalogQueryServiceImpl { String page() { return null; } }",
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "query", "service", "impl", "page"],
+        metadata={"language": "java"},
+    )
+    bar_impl = DocumentChunk(
+        chunk_id="bar-impl",
+        file_path=Path("src/main/java/com/bar/impl/CatalogQueryServiceImpl.java"),
+        start_line=1,
+        end_line=40,
+        content="class CatalogQueryServiceImpl { String page() { return null; } }",
+        chunk_type="symbol",
+        lexical_tokens=["catalog", "query", "service", "impl", "page"],
+        metadata={"language": "java"},
+    )
+    for chunk in (controller, foo_impl, bar_impl):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    store.replace_signals(
+        controller.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-controller-endpoint",
+                chunk_id=controller.chunk_id,
+                file_path=controller.file_path,
+                kind="endpoint",
+                name="POST /catalog/page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["catalog", "page", "/catalog/page"],
+                metadata={"path": "/catalog/page"},
+            )
+        ],
+    )
+    store.replace_signals(
+        foo_impl.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-foo-method",
+                chunk_id=foo_impl.chunk_id,
+                file_path=foo_impl.file_path,
+                kind="method",
+                name="CatalogQueryServiceImpl.page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["catalog", "query", "service", "page"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_signals(
+        bar_impl.file_path,
+        [
+            CodeSignal(
+                signal_id="sig-bar-method",
+                chunk_id=bar_impl.chunk_id,
+                file_path=bar_impl.file_path,
+                kind="method",
+                name="CatalogQueryServiceImpl.page",
+                start_line=3,
+                end_line=3,
+                language="java",
+                tokens=["catalog", "query", "service", "page"],
+                metadata={},
+            )
+        ],
+    )
+    store.replace_relations(
+        controller.file_path,
+        [
+            CodeRelation(
+                relation_id="rel-controller-interface-page",
+                source_signal_id="sig-controller-endpoint",
+                target_name="CatalogQueryService.page",
+                kind="calls",
+                confidence=1.0,
+                metadata={},
+            )
+        ],
+    )
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "controller": RetrievalCandidate(
+                chunk_id="controller",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.35, "path_symbol": 3.0, "signal": 0.6},
+            ),
+            "foo-impl": RetrievalCandidate(
+                chunk_id="foo-impl",
+                score=0.2,
+                source="relation",
+                score_parts={"relation": 0.2, "original_relation": 0.2},
+            ),
+            "bar-impl": RetrievalCandidate(
+                chunk_id="bar-impl",
+                score=0.2,
+                source="relation",
+                score_parts={"relation": 0.2, "original_relation": 0.2},
+            ),
+        },
+        ["catalog", "page"],
+        "/catalog/page",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert by_id["controller"].score_parts["spring_path_endpoint_match"] == 0.45
+    assert "spring_path_service_match" not in by_id["foo-impl"].score_parts
+    assert "spring_path_service_match" not in by_id["bar-impl"].score_parts
+
+
 def test_query_combines_route_tokens_and_ranking_reasons(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
