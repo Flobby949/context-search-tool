@@ -4,7 +4,7 @@ import argparse
 import functools
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -57,28 +57,54 @@ STORE_METHODS = [
 class Timing:
     seconds: float = 0.0
     calls: int = 0
+    details: dict[str, int] = field(default_factory=dict)
 
 
 Original = tuple[Any, str, Any]
+DetailCollector = Callable[[Timing, tuple[Any, ...], dict[str, Any], Any], None]
 
 
 def _timed(
     name: str,
     original: Callable[..., Any],
     timings: dict[str, Timing],
+    collect_details: DetailCollector | None = None,
 ) -> Callable[..., Any]:
     @functools.wraps(original)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         start = time.perf_counter()
+        result: Any = None
+        completed = False
         try:
-            return original(*args, **kwargs)
+            result = original(*args, **kwargs)
+            completed = True
+            return result
         finally:
             elapsed = time.perf_counter() - start
             timing = timings[name]
             timing.seconds += elapsed
             timing.calls += 1
+            if completed and collect_details is not None:
+                collect_details(timing, args, kwargs, result)
 
     return wrapper
+
+
+def _collect_grouped_chunk_details(
+    timing: Timing,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    result: Any,
+) -> None:
+    target_names = args[1] if len(args) > 1 else kwargs.get("target_names", [])
+    timing.details["targets"] = timing.details.get("targets", 0) + len(target_names)
+
+    row_counts = [len(chunks) for chunks in result.values()]
+    timing.details["rows"] = timing.details.get("rows", 0) + sum(row_counts)
+    timing.details["max_rows"] = max(
+        timing.details.get("max_rows", 0),
+        max(row_counts, default=0),
+    )
 
 
 def _wrap_retrieval_functions(timings: dict[str, Timing]) -> list[Original]:
@@ -101,7 +127,16 @@ def _wrap_store_methods(timings: dict[str, Timing]) -> list[Original]:
             continue
         timing_name = f"store.{name}"
         timings[timing_name] = Timing()
-        setattr(SQLiteStore, name, _timed(timing_name, original, timings))
+        collect_details = (
+            _collect_grouped_chunk_details
+            if name == "chunks_matching_signal_or_symbols"
+            else None
+        )
+        setattr(
+            SQLiteStore,
+            name,
+            _timed(timing_name, original, timings, collect_details),
+        )
         originals.append((SQLiteStore, name, original))
     return originals
 
@@ -116,7 +151,13 @@ def _print_timings(timings: dict[str, Timing]) -> None:
         timings.items(),
         key=lambda item: (-item[1].seconds, item[0]),
     ):
-        print(f"{name}: {timing.seconds * 1000:.1f}ms calls={timing.calls}")
+        details = "".join(
+            f" {detail_name}={detail_value}"
+            for detail_name, detail_value in timing.details.items()
+        )
+        print(
+            f"{name}: {timing.seconds * 1000:.1f}ms calls={timing.calls}{details}"
+        )
 
 
 def _print_top_results(results: list[Any]) -> None:
