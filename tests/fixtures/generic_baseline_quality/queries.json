@@ -1,0 +1,112 @@
+[
+  {
+    "repo_key": "imagebed",
+    "path_env": "CST_SMOKE_IMAGEBED_REPO",
+    "repo_dir_name": "imagebed",
+    "queries": [
+      {
+        "id": "go-upload-handler",
+        "query": "UploadHandler MultiUpload multipart file storage Save",
+        "expected_top_k": [
+          {"path": "handler/upload.go", "top_k": 5}
+        ],
+        "absent_top_k": [
+          {"glob": "templates/*", "top_k": 5}
+        ]
+      },
+      {
+        "id": "go-auth-middleware",
+        "query": "AuthMiddleware Authorization Bearer token AdminMiddleware",
+        "expected_top_k": [
+          {"path": "middleware/auth.go", "top_k": 5}
+        ]
+      },
+      {
+        "id": "go-storage-implementations",
+        "query": "NewS3Storage NewOSSStorage NewLocalStorage initStorage",
+        "expected_top_k": [
+          {"glob": "storage/*.go", "top_k": 8}
+        ],
+        "absent_top_k": [
+          {"path": "templates/index.html", "top_k": 5}
+        ],
+        "outranks": [
+          {
+            "source": "storage/*.go",
+            "noise": "templates/index.html",
+            "top_k": 8
+          }
+        ],
+        "known_gap": "main.go is useful for initStorage queries, but first-round hard assertions focus on storage implementation files and template demotion."
+      },
+      {
+        "id": "go-delete-handler",
+        "query": "DeleteHandler delete object storage remove image",
+        "expected_top_k": [
+          {"path": "handler/delete.go", "top_k": 5}
+        ]
+      },
+      {
+        "id": "go-route-registration",
+        "query": "router upload delete middleware route group main",
+        "expected_top_k": [
+          {"path": "main.go", "top_k": 5}
+        ],
+        "absent_top_k": [
+          {"glob": "*.md", "top_k": 5}
+        ]
+      }
+    ]
+  },
+  {
+    "repo_key": "env_change",
+    "path_env": "CST_SMOKE_ENV_CHANGE_REPO",
+    "repo_dir_name": "env-change",
+    "queries": [
+      {
+        "id": "tauri-commands",
+        "query": "tauri command apply_dev restore_clean command handler",
+        "expected_top_k": [
+          {"path": "src-tauri/src/commands.rs", "top_k": 5}
+        ],
+        "absent_top_k": [
+          {"glob": "src-tauri/gen/schemas/*.json", "top_k": 8}
+        ]
+      },
+      {
+        "id": "engine-apply-restore",
+        "query": "apply_dev restore_clean file_swap session conflict engine",
+        "expected_top_k": [
+          {"path": "src-tauri/src/engine.rs", "top_k": 5}
+        ],
+        "absent_top_k": [
+          {"glob": "src-tauri/gen/schemas/*.json", "top_k": 8}
+        ]
+      },
+      {
+        "id": "frontend-invoke",
+        "query": "invoke apply_dev restore_clean frontend ProjectSwitcher",
+        "expected_top_k": [
+          {"path": "src/main.ts", "top_k": 5}
+        ],
+        "absent_top_k": [
+          {"path": "vite.config.ts", "top_k": 3}
+        ]
+      },
+      {
+        "id": "settings-persistence",
+        "query": "settings persistence save load project config app settings",
+        "expected_top_k": [
+          {"path": "src-tauri/src/settings.rs", "top_k": 5}
+        ],
+        "outranks": [
+          {
+            "source": "src-tauri/src/settings.rs",
+            "noise": "vite.config.ts",
+            "top_k": 8
+          }
+        ]
+      }
+    ]
+  }
+]
