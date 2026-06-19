@@ -270,6 +270,7 @@ exclude = ["target/", "build/"]
 
 - `.git/`
 - `.context-search/`
+- 常见依赖和构建目录，如 `node_modules/`、`vendor/`、`.venv/`、`dist/`、`build/`、`target/`
 - `.gitignore` 匹配的路径
 - `exclude` 匹配的路径
 - 超过 `max_file_bytes` 的文件
@@ -277,9 +278,11 @@ exclude = ["target/", "build/"]
 
 ### Generic Language Baseline
 
-If a project uses a language without a dedicated plugin, CST still indexes supported source files as generic chunks. `stats` may show `Symbols: 0`; that is expected when no plugin emits symbols. Code-like queries should still find files by path terms, identifiers, comments, strings, and surrounding source text.
+常见源码后缀会被通用索引覆盖，即使没有对应语言或框架插件，也会按 generic chunk 和 token 进入检索。`cst stats` 可能显示 `Symbols: 0`；这只表示没有插件产出符号，不代表源码没有索引。代码型查询仍会使用路径词、标识符、注释、字符串和邻近源码文本。
 
-If `cst stats` shows only README/config files for a normal source repository, check whether the source suffix is listed in the scanner language map and add a scanner regression test before tuning ranking.
+为了让源码结果保持优先，代码导向查询可能会降低 generated schema、已索引 lockfile、template、普通 docs 和 config 的排序权重。`README`、`RISKS`、`pom` 这类文件仍可能作为 evidence anchors 出现，用来解释命中背景，但不一定作为 primary results 排在前面。
+
+框架插件是可选增强层：例如 Java/Spring 插件会补充 endpoint、comment、usage 和 relation 信号；没有插件时，CST 仍保留通用源码检索基线。如果 `cst stats` 对正常源码仓库只显示 README/config 文件，先检查源码后缀是否在 scanner language map 中，并补 scanner 回归测试，再调整排序。
 
 ### Embedding Provider
 
@@ -491,6 +494,12 @@ python -m pip install -e ".[dev]"
 
 ```bash
 pytest -v
+```
+
+真实项目通用基线 smoke（需要 `CST_SMOKE_REPOS_DIR` 指向已准备好的真实项目目录）：
+
+```bash
+CST_SMOKE_REPOS_DIR=/Users/flobby/vibe_coding /opt/homebrew/Caskroom/miniforge/base/bin/python -m pytest tests/test_generic_baseline_quality.py -m "slow and integration" -q
 ```
 
 项目模块：
