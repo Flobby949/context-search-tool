@@ -4303,6 +4303,29 @@ def test_generic_noise_generated_schema_demotes_below_source(
     assert by_id["engine"].score_parts["file_role_source_boost"] == pytest.approx(0.03)
 
 
+def test_generic_noise_root_gen_schema_receives_generated_schema_penalty(
+    tmp_path: Path,
+) -> None:
+    schema = _generic_noise_chunk(
+        "root-schema",
+        "gen/schemas/apply_dev.json",
+        '{"command": "apply_dev", "engine": true}',
+        ["apply", "dev", "command", "engine", "schema"],
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [schema],
+        {"root-schema": {"lexical": 0.8, "direct_text": 0.8}},
+        ["apply", "dev", "command", "engine"],
+        "apply_dev command engine",
+    )
+
+    parts = ranked[0].score_parts
+    assert parts["generated_schema_penalty"] < 0
+    assert parts["penalty"] == pytest.approx(-0.20)
+
+
 def test_generic_noise_overlapping_high_noise_uses_strongest_aggregate_penalty(
     tmp_path: Path,
 ) -> None:
@@ -5446,7 +5469,7 @@ def test_anchor_expansion_skips_generated_schema_same_file_noise(
     store.initialize()
     seed = DocumentChunk(
         chunk_id="schema-seed",
-        file_path=Path("src-tauri/gen/schemas/desktop-schema.json"),
+        file_path=Path("gen/schemas/desktop-schema.json"),
         start_line=1,
         end_line=80,
         content='{"command": "apply_dev"}',
@@ -5455,7 +5478,7 @@ def test_anchor_expansion_skips_generated_schema_same_file_noise(
     )
     same_file_noise = DocumentChunk(
         chunk_id="schema-noise",
-        file_path=Path("src-tauri/gen/schemas/desktop-schema.json"),
+        file_path=Path("gen/schemas/desktop-schema.json"),
         start_line=81,
         end_line=160,
         content='{"command": "restore_clean"}',

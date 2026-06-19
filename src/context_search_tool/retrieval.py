@@ -2918,9 +2918,10 @@ def _looks_implementation_query(query: str, tokens: list[str]) -> bool:
 
 
 def _is_generated_schema_path(path: str, suffix: str) -> bool:
-    if "/generated/" in path:
+    parts = [part for part in path.split("/") if part]
+    if "generated" in parts:
         return True
-    if "/gen/" not in path:
+    if "gen" not in parts:
         return False
     return suffix in {".json", ".yml", ".yaml"} or "schema" in path
 
