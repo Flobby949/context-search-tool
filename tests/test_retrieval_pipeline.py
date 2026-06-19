@@ -4227,6 +4227,275 @@ def test_rank_chunks_exposes_numeric_diagnostic_score_parts(tmp_path: Path) -> N
     assert isinstance(parts["role_boost"], float)
 
 
+def _generic_noise_chunk(
+    chunk_id: str,
+    path: str,
+    content: str,
+    tokens: list[str],
+    metadata: dict[str, object] | None = None,
+) -> DocumentChunk:
+    return DocumentChunk(
+        chunk_id=chunk_id,
+        file_path=Path(path),
+        start_line=1,
+        end_line=10,
+        content=content,
+        chunk_type="symbol",
+        lexical_tokens=tokens,
+        metadata=metadata or {},
+    )
+
+
+def _rank_generic_noise_chunks(
+    tmp_path: Path,
+    chunks: list[DocumentChunk],
+    score_parts: dict[str, dict[str, float]],
+    tokens: list[str],
+    query: str,
+) -> list[retrieval._RankedChunk]:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    for chunk in chunks:
+        store.replace_chunks(chunk.file_path, [chunk])
+    candidates = {
+        chunk.chunk_id: RetrievalCandidate(
+            chunk_id=chunk.chunk_id,
+            score=1.0,
+            source="test",
+            score_parts=score_parts[chunk.chunk_id],
+        )
+        for chunk in chunks
+    }
+    return retrieval._rank_chunks(store, candidates, tokens, query)
+
+
+def test_generic_noise_generated_schema_demotes_below_source(
+    tmp_path: Path,
+) -> None:
+    schema = _generic_noise_chunk(
+        "schema",
+        "src-tauri/gen/schemas/apply_dev.json",
+        '{"command": "apply_dev", "engine": true}',
+        ["apply", "dev", "command", "engine", "schema"],
+    )
+    source = _generic_noise_chunk(
+        "engine",
+        "src-tauri/src/engine.rs",
+        "fn apply_dev_command_engine() {}",
+        ["apply", "dev", "command", "engine"],
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [schema, source],
+        {
+            "schema": {"lexical": 0.8, "direct_text": 0.8},
+            "engine": {"lexical": 0.8, "direct_text": 0.8},
+        },
+        ["apply", "dev", "command", "engine"],
+        "apply_dev command engine",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "engine"
+    assert by_id["schema"].score_parts["generated_schema_penalty"] < 0
+    assert by_id["schema"].score_parts["penalty"] < 0
+    assert by_id["engine"].score_parts["file_role_source_boost"] == pytest.approx(0.03)
+
+
+def test_generic_noise_overlapping_high_noise_uses_strongest_aggregate_penalty(
+    tmp_path: Path,
+) -> None:
+    schema_test = _generic_noise_chunk(
+        "schema-test",
+        "src-tauri/gen/schemas/apply_dev.json",
+        '{"command": "apply_dev", "engine": true}',
+        ["apply", "dev", "command", "engine", "schema"],
+        {"is_test": True},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [schema_test],
+        {"schema-test": {"lexical": 0.8, "direct_text": 0.8}},
+        ["apply", "dev", "command", "engine"],
+        "apply_dev command engine",
+    )
+
+    parts = ranked[0].score_parts
+    assert parts["test_penalty"] < 0
+    assert parts["generated_schema_penalty"] < 0
+    assert parts["penalty"] == pytest.approx(-0.20)
+
+
+def test_generic_noise_lockfile_test_overlap_uses_strongest_aggregate_penalty(
+    tmp_path: Path,
+) -> None:
+    lockfile_test = _generic_noise_chunk(
+        "lockfile-test",
+        "package-lock.json",
+        '{"packages": {"": {"main": "src/main.ts"}}}',
+        ["main", "package", "lock"],
+        {"is_test": True},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [lockfile_test],
+        {"lockfile-test": {"lexical": 0.8, "direct_text": 0.7}},
+        ["main", "command", "storage"],
+        "main command storage implementation",
+    )
+
+    parts = ranked[0].score_parts
+    assert parts["test_penalty"] < 0
+    assert parts["lockfile_penalty"] < 0
+    assert parts["penalty"] == pytest.approx(-0.20)
+
+
+def test_generic_noise_negative_only_scores_do_not_invert_penalty_order(
+    tmp_path: Path,
+) -> None:
+    lockfile = _generic_noise_chunk(
+        "lockfile",
+        "package-lock.json",
+        '{"packages": {"": {"main": "src/main.ts"}}}',
+        ["main", "package", "lock"],
+    )
+    test_chunk = _generic_noise_chunk(
+        "test",
+        "src/engine_spec.rs",
+        "fn apply_dev_command_engine_test() {}",
+        ["apply", "dev", "command", "engine"],
+        {"is_test": True},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [lockfile, test_chunk],
+        {
+            "lockfile": {"semantic": 0.10},
+            "test": {"semantic": 0.10},
+        },
+        [],
+        "weak semantic only",
+    )
+
+    assert ranked[0].chunk.chunk_id == "test"
+    assert ranked[1].chunk.chunk_id == "lockfile"
+    assert ranked[0].score_parts["penalty"] == pytest.approx(-0.10)
+    assert ranked[1].score_parts["penalty"] == pytest.approx(-0.20)
+
+
+def test_generic_noise_indexed_lockfile_demotes_below_source(
+    tmp_path: Path,
+) -> None:
+    lockfile = _generic_noise_chunk(
+        "lockfile",
+        "package-lock.json",
+        '{"packages": {"": {"main": "src/main.ts"}}}',
+        ["main", "package", "lock"],
+    )
+    source = _generic_noise_chunk(
+        "source",
+        "src/main.ts",
+        "export function invokeMainCommand() { return storage.apply(); }",
+        ["main", "command", "storage", "apply"],
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [lockfile, source],
+        {
+            "lockfile": {"lexical": 0.8, "direct_text": 0.7},
+            "source": {"lexical": 0.8, "direct_text": 0.7},
+        },
+        ["main", "command", "storage"],
+        "main command storage implementation",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "source"
+    assert by_id["lockfile"].score_parts["lockfile_penalty"] < 0
+    assert by_id["lockfile"].score_parts["penalty"] < 0
+
+
+def test_generic_noise_template_demotes_below_storage_source(
+    tmp_path: Path,
+) -> None:
+    template = _generic_noise_chunk(
+        "template",
+        "templates/index.html",
+        "<form action='/storage/local'>storage implementation</form>",
+        ["storage", "local", "implementation"],
+    )
+    source = _generic_noise_chunk(
+        "storage",
+        "storage/local.go",
+        "func NewLocalStorage() Storage { return LocalStorage{} }",
+        ["storage", "local", "implementation"],
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [template, source],
+        {
+            "template": {"lexical": 0.8, "direct_text": 0.7},
+            "storage": {"lexical": 0.8, "direct_text": 0.7},
+        },
+        ["storage", "implementation"],
+        "storage implementation",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "storage"
+    assert by_id["template"].score_parts["template_penalty"] < 0
+    assert by_id["template"].score_parts["penalty"] < 0
+
+
+def test_generic_noise_metadata_test_flag_demotes_test_chunk(
+    tmp_path: Path,
+) -> None:
+    test_chunk = _generic_noise_chunk(
+        "test",
+        "src/engine_spec.rs",
+        "fn apply_dev_command_engine_test() {}",
+        ["apply", "dev", "command", "engine"],
+        {"is_test": True},
+    )
+    source = _generic_noise_chunk(
+        "source",
+        "src/engine.rs",
+        "fn apply_dev_command_engine() {}",
+        ["apply", "dev", "command", "engine"],
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [test_chunk, source],
+        {
+            "test": {"lexical": 0.8, "direct_text": 0.7},
+            "source": {"lexical": 0.8, "direct_text": 0.7},
+        },
+        ["apply", "dev", "command", "engine"],
+        "apply_dev command engine",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "source"
+    assert by_id["test"].score_parts["test_penalty"] < 0
+    assert by_id["test"].score_parts["penalty"] < 0
+
+
+def test_generic_noise_combined_score_ignores_diagnostic_penalties() -> None:
+    aggregate_only = retrieval._combined_score({"lexical": 1.0, "penalty": -0.20})
+    with_diagnostic = retrieval._combined_score(
+        {"lexical": 1.0, "penalty": -0.20, "lockfile_penalty": -0.20}
+    )
+
+    assert with_diagnostic == aggregate_only
+
+
 def test_role_rerank_prefers_service_impl_over_handler_for_business_query(tmp_path: Path) -> None:
     store = SQLiteStore(tmp_path / "index.sqlite")
     store.initialize()

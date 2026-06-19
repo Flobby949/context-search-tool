@@ -66,6 +66,19 @@ _JAVA_CONTEXT_STRUCTURAL_TOKENS = {
     "org",
     "net",
 }
+_SOURCE_SUFFIXES = {
+    ".go", ".rs", ".java", ".kt", ".kts", ".scala", ".py", ".pyw",
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".c", ".h",
+    ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx", ".cs", ".swift",
+    ".php", ".rb", ".lua", ".dart", ".sh", ".bash", ".zsh", ".fish",
+}
+_TEMPLATE_SUFFIXES = {".html", ".vue", ".svelte"}
+_DOC_SUFFIXES = {".md", ".mdx", ".rst"}
+_CONFIG_SUFFIXES = {
+    ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".conf",
+    ".properties", ".env", ".xml",
+}
+_INDEXED_LOCKFILE_NAMES = {"package-lock.json", "pnpm-lock.yaml", "pnpm-lock.yml"}
 
 
 @dataclass(frozen=True)
@@ -97,6 +110,15 @@ class _ChunkRole:
     priority: int
     boost: float
     penalty: float = 0.0
+
+
+@dataclass(frozen=True)
+class _GenericFileRole:
+    name: str
+    noise_level: str
+    source_boost: float = 0.0
+    penalty: float = 0.0
+    penalty_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -1206,9 +1228,11 @@ def _rank_chunks(
         if route_boost:
             score_parts["route_boost"] = route_boost
 
-        penalty = _generated_or_test_penalty(chunk)
-        if penalty:
-            score_parts["penalty"] = -penalty
+        score_parts = _merge_score_parts(
+            score_parts,
+            _generic_noise_score_parts(chunk, query, tokens),
+        )
+        penalty = abs(min(score_parts.get("penalty", 0.0), 0.0))
 
         if query_route and _chunk_looks_route_relevant(
             chunk,
@@ -1715,6 +1739,7 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         + score_parts.get("spring_path_service_match", 0.0)
         + score_parts.get("spring_path_service_interface_match", 0.0)
         + score_parts.get("spring_path_executor_match", 0.0)
+        + score_parts.get("file_role_source_boost", 0.0)
         + score_parts.get("penalty", 0.0)
     )
 
@@ -1893,13 +1918,13 @@ def normalize_score(scores: list[float]) -> list[float]:
 
     max_score = max(cleaned_scores)
 
-    if max_score == 0.0:
+    if max_score <= 0.0:
         return [0.0] * len(cleaned_scores)
 
     if len(cleaned_scores) == 1:
         return [1.0]
 
-    return [s / max_score for s in cleaned_scores]
+    return [max(s, 0.0) / max_score for s in cleaned_scores]
 
 
 def _generic_hint_penalty(chunk: DocumentChunk, score_parts: dict[str, float]) -> float:
@@ -2859,14 +2884,127 @@ def _route_boost(chunk: DocumentChunk, query: str, tokens: list[str]) -> float:
     return 0.0
 
 
+def _looks_implementation_query(query: str, tokens: list[str]) -> bool:
+    if "/" in query:
+        return True
+    implementation_terms = {
+        "handler", "middleware", "command", "engine", "service", "controller",
+        "storage", "upload", "delete", "apply", "restore", "invoke", "route",
+        "function", "class", "method",
+    }
+    return bool({token.lower() for token in tokens}.intersection(implementation_terms))
+
+
+def _is_generated_schema_path(path: str, suffix: str) -> bool:
+    if "/generated/" in path:
+        return True
+    if "/gen/" not in path:
+        return False
+    return suffix in {".json", ".yml", ".yaml"} or "schema" in path
+
+
+def _generic_file_role(
+    chunk: DocumentChunk,
+    query: str,
+    tokens: list[str],
+) -> _GenericFileRole:
+    path = chunk.file_path.as_posix().lower()
+    suffix = chunk.file_path.suffix.lower()
+    name = chunk.file_path.name.lower()
+    is_implementation_query = _looks_implementation_query(query, tokens)
+
+    if _is_test_path(path) or chunk.metadata.get("is_test"):
+        return _GenericFileRole("test", "high", penalty=0.10, penalty_key="test_penalty")
+    if chunk.metadata.get("is_generated") or _is_generated_schema_path(path, suffix):
+        return _GenericFileRole(
+            "generated_schema",
+            "high",
+            penalty=0.20,
+            penalty_key="generated_schema_penalty",
+        )
+    if name in _INDEXED_LOCKFILE_NAMES:
+        return _GenericFileRole(
+            "lockfile",
+            "high",
+            penalty=0.20,
+            penalty_key="lockfile_penalty",
+        )
+    if suffix in _TEMPLATE_SUFFIXES:
+        penalty = 0.08 if is_implementation_query else 0.0
+        return _GenericFileRole(
+            "template",
+            "medium" if penalty else "low",
+            penalty=penalty,
+            penalty_key="template_penalty" if penalty else "",
+        )
+    if suffix in _DOC_SUFFIXES:
+        penalty = 0.03 if is_implementation_query else 0.0
+        return _GenericFileRole(
+            "doc",
+            "low",
+            penalty=penalty,
+            penalty_key="doc_penalty" if penalty else "",
+        )
+    if suffix in _CONFIG_SUFFIXES:
+        penalty = 0.03 if is_implementation_query else 0.0
+        return _GenericFileRole(
+            "config",
+            "low",
+            penalty=penalty,
+            penalty_key="config_penalty" if penalty else "",
+        )
+    if suffix in _SOURCE_SUFFIXES:
+        return _GenericFileRole("source", "none", source_boost=0.03)
+    return _GenericFileRole("unknown", "none")
+
+
+def _generic_noise_score_parts(
+    chunk: DocumentChunk,
+    query: str,
+    tokens: list[str],
+) -> dict[str, float]:
+    path = chunk.file_path.as_posix().lower()
+    suffix = chunk.file_path.suffix.lower()
+    name = chunk.file_path.name.lower()
+    parts: dict[str, float] = {}
+
+    legacy_penalty = _generated_or_test_penalty(chunk)
+    if legacy_penalty:
+        parts["penalty"] = -legacy_penalty
+    if _is_test_path(path) or chunk.metadata.get("is_test"):
+        parts = _merge_score_parts(
+            parts,
+            {"penalty": -0.10, "test_penalty": -0.10},
+        )
+    if chunk.metadata.get("is_generated") or _is_generated_schema_path(path, suffix):
+        parts = _merge_score_parts(
+            parts,
+            {"penalty": -0.20, "generated_schema_penalty": -0.20},
+        )
+    if name in _INDEXED_LOCKFILE_NAMES:
+        parts = _merge_score_parts(
+            parts,
+            {"penalty": -0.20, "lockfile_penalty": -0.20},
+        )
+
+    role = _generic_file_role(chunk, query, tokens)
+    role_parts: dict[str, float] = {}
+    if role.penalty and role.penalty_key:
+        role_parts["penalty"] = -role.penalty
+        role_parts[role.penalty_key] = -role.penalty
+    if role.source_boost:
+        role_parts["file_role_source_boost"] = role.source_boost
+    return _merge_score_parts(parts, role_parts)
+
+
 def _generated_or_test_penalty(chunk: DocumentChunk) -> float:
     path = chunk.file_path.as_posix().lower()
-    penalty = 0.0
+    penalties: list[float] = []
     if chunk.metadata.get("is_generated") or "generated" in path:
-        penalty += 0.20
+        penalties.append(0.20)
     if chunk.metadata.get("is_test") or "/test/" in path or path.endswith("test.java"):
-        penalty += 0.10
-    return penalty
+        penalties.append(0.10)
+    return max(penalties, default=0.0)
 
 
 def _is_test_path(path: str) -> bool:
@@ -2940,6 +3078,20 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("route token match")
     elif score_parts.get("plugin_boost", 0.0) > 0:
         reasons.append("java plugin boost")
+    if score_parts.get("file_role_source_boost", 0.0) > 0:
+        reasons.append("source file role boost")
+    if score_parts.get("generated_schema_penalty", 0.0) < 0:
+        reasons.append("generated schema penalty")
+    if score_parts.get("lockfile_penalty", 0.0) < 0:
+        reasons.append("lockfile penalty")
+    if score_parts.get("template_penalty", 0.0) < 0:
+        reasons.append("template penalty")
+    if score_parts.get("config_penalty", 0.0) < 0:
+        reasons.append("config penalty")
+    if score_parts.get("doc_penalty", 0.0) < 0:
+        reasons.append("doc penalty")
+    if score_parts.get("test_penalty", 0.0) < 0:
+        reasons.append("test penalty")
     if score_parts.get("penalty", 0.0) < 0:
         reasons.append("generated/test penalty")
     return reasons

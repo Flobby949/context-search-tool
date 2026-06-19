@@ -553,6 +553,27 @@ def test_normalize_score_basic():
     assert normalize_score([]) == []
 
 
+def test_normalize_score_all_negative_scores_become_zero():
+    """Negative-only raw scores should not become positive ranking strength."""
+    from context_search_tool.retrieval import normalize_score
+
+    assert normalize_score([-0.145, -0.045]) == [0.0, 0.0]
+
+
+def test_normalize_score_mixed_negative_and_positive_clamps_negative_entries():
+    """Mixed raw scores stay within [0, 1] and negatives normalize to zero."""
+    from context_search_tool.retrieval import normalize_score
+
+    assert normalize_score([-0.5, 0.5, 1.0]) == [0.0, 0.5, 1.0]
+
+
+def test_normalize_score_single_negative_score_becomes_zero():
+    """A single negative raw score has no positive normalized strength."""
+    from context_search_tool.retrieval import normalize_score
+
+    assert normalize_score([-0.1]) == [0.0]
+
+
 def test_normalize_score_edge_cases():
     """Test score normalization with edge cases."""
     from context_search_tool.retrieval import normalize_score
@@ -712,4 +733,3 @@ def test_direct_text_boundary_special_characters() -> None:
     # Verify that the decorator name and path are both captured
     assert "@getmapping" in probes
     assert "/api/users" in probes
-
