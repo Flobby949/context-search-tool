@@ -90,6 +90,21 @@ _LANGUAGES_BY_SUFFIX = {
 }
 
 
+_DEFAULT_SKIPPED_DIRS = {
+    "node_modules",
+    "vendor",
+    ".venv",
+    "__pycache__",
+    "dist",
+    "build",
+    "target",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    "coverage",
+}
+
+
 @dataclass(frozen=True)
 class ScannedFile:
     path: Path
@@ -147,6 +162,10 @@ def _is_internal_path(path: Path) -> bool:
     return any(part.startswith(".") for part in path.parts)
 
 
+def _is_default_skipped_path(relative_path: Path) -> bool:
+    return any(part in _DEFAULT_SKIPPED_DIRS for part in relative_path.parts)
+
+
 def _is_skipped_path(
     path: Path,
     repo: Path,
@@ -158,6 +177,7 @@ def _is_skipped_path(
     directory_posix = f"{relative_posix}/"
     return (
         _is_internal_path(relative_path)
+        or _is_default_skipped_path(relative_path)
         or gitignore_spec.match_file(relative_posix)
         or gitignore_spec.match_file(directory_posix)
         or exclude_spec.match_file(relative_posix)

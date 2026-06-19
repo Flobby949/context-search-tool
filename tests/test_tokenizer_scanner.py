@@ -177,6 +177,50 @@ def test_scanner_skips_all_hidden_paths_by_default(tmp_path: Path) -> None:
     ]
 
 
+def test_scanner_skips_default_dependency_and_build_directories(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "src").mkdir()
+    (repo / "src" / "App.ts").write_text("export const app = true\n", encoding="utf-8")
+
+    for dirname in ("node_modules", "vendor", ".venv", "dist", "build", "target"):
+        directory = repo / dirname
+        directory.mkdir()
+        (directory / "Noise.ts").write_text(
+            "export const noise = true\n",
+            encoding="utf-8",
+        )
+
+    files = scan_workspace(repo, DEFAULT_CONFIG)
+
+    assert [item.path for item in files] == [Path("src/App.ts")]
+
+
+def test_scanner_include_patterns_do_not_override_default_skips(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "src").mkdir()
+    (repo / "src" / "App.ts").write_text("export const app = true\n", encoding="utf-8")
+    (repo / "node_modules").mkdir()
+    (repo / "node_modules" / "Noise.ts").write_text(
+        "export const noise = true\n",
+        encoding="utf-8",
+    )
+    config = replace(
+        DEFAULT_CONFIG,
+        index=replace(
+            DEFAULT_CONFIG.index,
+            include=["src/**/*.ts", "node_modules/**/*.ts"],
+        ),
+    )
+
+    files = scan_workspace(repo, config)
+
+    assert [item.path for item in files] == [Path("src/App.ts")]
+
+
 def test_scanner_respects_include_patterns(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
