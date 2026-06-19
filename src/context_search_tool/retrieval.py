@@ -213,6 +213,8 @@ def query_repository(
         store,
         list(direct_candidates.values()),
         config,
+        query=query,
+        tokens=original_tokens,
     )
     relation_seed_candidates = _merge_candidates(
         [
@@ -718,6 +720,8 @@ def _anchor_expansion_candidates(
     store: SQLiteStore,
     seed_candidates: list[RetrievalCandidate],
     config: ToolConfig,
+    query: str = "",
+    tokens: list[str] | None = None,
 ) -> list[RetrievalCandidate]:
     direct_seeds = [
         candidate
@@ -730,6 +734,7 @@ def _anchor_expansion_candidates(
     limit = max(config.retrieval.final_top_k * 3, config.retrieval.final_top_k)
     expanded: dict[str, RetrievalCandidate] = {}
     seed_ids = {candidate.chunk_id for candidate in direct_seeds}
+    query_tokens = tokens or []
 
     for candidate in sorted(
         direct_seeds,
@@ -752,6 +757,8 @@ def _anchor_expansion_candidates(
             anchor_chunk,
             anchor_score,
             limit,
+            query,
+            query_tokens,
         )
         if _is_document_or_config_anchor(anchor_chunk.file_path):
             _add_directory_anchor_candidates(
@@ -775,10 +782,14 @@ def _add_same_file_anchor_candidates(
     anchor_chunk: DocumentChunk,
     anchor_score: float,
     limit: int,
+    query: str,
+    tokens: list[str],
 ) -> None:
     score = anchor_score * 0.80
     for chunk in store.chunks_for_file(anchor_chunk.file_path, limit):
         if chunk.chunk_id in seed_ids:
+            continue
+        if _should_skip_same_file_anchor_candidate(chunk, query, tokens):
             continue
         _put_anchor_candidate(
             expanded,
@@ -788,6 +799,17 @@ def _add_same_file_anchor_candidates(
         )
         if len(expanded) >= limit:
             return
+
+
+def _should_skip_same_file_anchor_candidate(
+    chunk: DocumentChunk,
+    query: str,
+    tokens: list[str],
+) -> bool:
+    role = _generic_file_role(chunk, query, tokens)
+    return role.name == "generated_schema" or (
+        role.name == "template" and role.penalty > 0
+    )
 
 
 def _add_directory_anchor_candidates(

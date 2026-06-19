@@ -5439,6 +5439,135 @@ def test_evidence_anchors_still_seed_directory_expansion(tmp_path: Path) -> None
     }
 
 
+def test_anchor_expansion_skips_generated_schema_same_file_noise(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    seed = DocumentChunk(
+        chunk_id="schema-seed",
+        file_path=Path("src-tauri/gen/schemas/desktop-schema.json"),
+        start_line=1,
+        end_line=80,
+        content='{"command": "apply_dev"}',
+        chunk_type="file",
+        lexical_tokens=["command", "apply", "dev"],
+    )
+    same_file_noise = DocumentChunk(
+        chunk_id="schema-noise",
+        file_path=Path("src-tauri/gen/schemas/desktop-schema.json"),
+        start_line=81,
+        end_line=160,
+        content='{"command": "restore_clean"}',
+        chunk_type="file",
+        lexical_tokens=["command", "restore", "clean"],
+    )
+    store.replace_chunks(seed.file_path, [seed, same_file_noise])
+
+    expanded = retrieval._anchor_expansion_candidates(
+        store,
+        [
+            RetrievalCandidate(
+                chunk_id="schema-seed",
+                score=1.0,
+                source="direct_text",
+                score_parts={"direct_text": 1.0},
+            )
+        ],
+        ToolConfig(retrieval=RetrievalConfig(final_top_k=5)),
+        query="tauri command apply_dev restore_clean command handler",
+        tokens=["tauri", "command", "apply", "dev", "restore", "clean", "handler"],
+    )
+
+    assert "schema-noise" not in {candidate.chunk_id for candidate in expanded}
+
+
+def test_anchor_expansion_skips_template_same_file_noise_for_implementation_query(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    seed = DocumentChunk(
+        chunk_id="template-seed",
+        file_path=Path("templates/index.html"),
+        start_line=1,
+        end_line=80,
+        content="<form>NewLocalStorage</form>",
+        chunk_type="file",
+        lexical_tokens=["new", "local", "storage"],
+    )
+    same_file_noise = DocumentChunk(
+        chunk_id="template-noise",
+        file_path=Path("templates/index.html"),
+        start_line=81,
+        end_line=160,
+        content="<section>NewS3Storage</section>",
+        chunk_type="file",
+        lexical_tokens=["new", "s3", "storage"],
+    )
+    store.replace_chunks(seed.file_path, [seed, same_file_noise])
+
+    expanded = retrieval._anchor_expansion_candidates(
+        store,
+        [
+            RetrievalCandidate(
+                chunk_id="template-seed",
+                score=1.0,
+                source="direct_text",
+                score_parts={"direct_text": 1.0},
+            )
+        ],
+        ToolConfig(retrieval=RetrievalConfig(final_top_k=5)),
+        query="NewS3Storage NewOSSStorage NewLocalStorage initStorage",
+        tokens=["new", "s3", "storage", "oss", "local", "init"],
+    )
+
+    assert "template-noise" not in {candidate.chunk_id for candidate in expanded}
+
+
+def test_anchor_expansion_keeps_template_same_file_anchor_for_content_query(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    seed = DocumentChunk(
+        chunk_id="template-seed",
+        file_path=Path("templates/index.html"),
+        start_line=1,
+        end_line=80,
+        content="<title>Gallery</title>",
+        chunk_type="file",
+        lexical_tokens=["gallery"],
+    )
+    same_file_content = DocumentChunk(
+        chunk_id="template-content",
+        file_path=Path("templates/index.html"),
+        start_line=81,
+        end_line=160,
+        content="<section>Hero copy</section>",
+        chunk_type="file",
+        lexical_tokens=["hero", "copy"],
+    )
+    store.replace_chunks(seed.file_path, [seed, same_file_content])
+
+    expanded = retrieval._anchor_expansion_candidates(
+        store,
+        [
+            RetrievalCandidate(
+                chunk_id="template-seed",
+                score=1.0,
+                source="direct_text",
+                score_parts={"direct_text": 1.0},
+            )
+        ],
+        ToolConfig(retrieval=RetrievalConfig(final_top_k=5)),
+        query="gallery hero copy",
+        tokens=["gallery", "hero", "copy"],
+    )
+
+    assert "template-content" in {candidate.chunk_id for candidate in expanded}
+
+
 @pytest.mark.parametrize(
     ("path", "content", "expected_role", "expected_priority", "expected_boost", "expected_penalty"),
     [
