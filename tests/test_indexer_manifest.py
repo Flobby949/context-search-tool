@@ -46,6 +46,73 @@ def test_index_repository_creates_expected_index_files(tmp_path: Path) -> None:
     assert load_manifest(repo).total_chunks >= 1
 
 
+def test_index_repository_indexes_go_source_with_generic_chunks(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "handler" / "upload.go"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+package handler
+
+type UploadHandler struct {}
+
+func (h *UploadHandler) Upload() string {
+    return "upload"
+}
+
+func (h *UploadHandler) MultiUpload() string {
+    return "multi"
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = index_repository(repo, DEFAULT_CONFIG)
+
+    assert summary.files_seen == 1
+    assert summary.files_indexed == 1
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    stats = store.stats()
+    assert stats["source_files"] == 1
+    assert stats["active_chunks"] >= 1
+    chunk = store.chunk_for_line(Path("handler/upload.go"), 5)
+    assert chunk.chunk_type == "generic"
+    assert chunk.metadata["language"] == "go"
+    assert "upload" in chunk.lexical_tokens
+    assert "handler" in chunk.lexical_tokens
+
+
+def test_index_repository_indexes_rust_source_with_generic_chunks(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "src" / "lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+pub struct ImageStore;
+
+impl ImageStore {
+    pub fn delete_by_filename(&self, filename: &str) -> bool {
+        !filename.is_empty()
+    }
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = index_repository(repo, DEFAULT_CONFIG)
+
+    assert summary.files_seen == 1
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    chunk = store.chunk_for_line(Path("src/lib.rs"), 4)
+    assert chunk.metadata["language"] == "rust"
+    assert "delete" in chunk.lexical_tokens
+    assert "filename" in chunk.lexical_tokens
+
+
 def test_index_repository_skips_unchanged_files(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

@@ -99,6 +99,52 @@ def test_scanner_respects_gitignore_and_context_search(tmp_path: Path) -> None:
     assert len(files[0].sha256) == 64
 
 
+def test_scanner_recognizes_common_source_language_suffixes(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    files = {
+        "cmd/server/main.go": ("package main\nfunc main() {}\n", "go"),
+        "src/lib.rs": ("pub fn handle_upload() {}\n", "rust"),
+        "src/App.kt": ("class App\n", "kotlin"),
+        "src/Program.cs": ("class Program {}\n", "csharp"),
+        "src/server.cpp": ("int main() { return 0; }\n", "cpp"),
+        "include/server.hpp": ("class Server {};\n", "cpp"),
+        "src/legacy.c": ("int legacy(void) { return 0; }\n", "c"),
+        "include/legacy.h": ("int legacy(void);\n", "c"),
+        "src/index.php": ("<?php function upload() {}\n", "php"),
+        "lib/task.rb": ("def upload_image\nend\n", "ruby"),
+        "scripts/deploy.sh": ("#!/usr/bin/env bash\necho deploy\n", "shell"),
+        "sql/schema.sql": ("create table images(id bigint);\n", "sql"),
+        "Sources/App.swift": ("struct App {}\n", "swift"),
+        "Resources/Info.plist": ("<plist><dict></dict></plist>\n", "xml"),
+        "App.xcodeproj/project.pbxproj": ("// !$*UTF8*$!\n", "xcodeproj"),
+        "App.xcodeproj/xcshareddata/xcschemes/App.xcscheme": (
+            "<Scheme></Scheme>\n",
+            "xml",
+        ),
+        "App.xcodeproj/project.xcworkspace/contents.xcworkspacedata": (
+            "<Workspace></Workspace>\n",
+            "xml",
+        ),
+        "src/App.scala": ("class App\n", "scala"),
+        "lib/main.dart": ("void main() {}\n", "dart"),
+        "src/plugin.lua": ("function upload() end\n", "lua"),
+        "src/App.vue": ("<script setup>const upload = true</script>\n", "vue"),
+        "src/Widget.svelte": ("<script>let upload = true;</script>\n", "svelte"),
+    }
+    for relative_path, (content, _language) in files.items():
+        path = repo / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    scanned = scan_workspace(repo, DEFAULT_CONFIG)
+
+    languages_by_path = {item.path.as_posix(): item.language for item in scanned}
+    assert languages_by_path == {
+        relative_path: language for relative_path, (_content, language) in files.items()
+    }
+
+
 def test_scanner_skips_all_hidden_paths_by_default(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -216,3 +262,29 @@ def test_scanner_prunes_ignored_and_excluded_directories(
     files = scan_workspace(repo, config)
 
     assert [item.path for item in files] == [Path("A.java")]
+
+
+def test_scanner_broad_language_support_still_skips_ignored_binary_and_oversized_files(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".gitignore").write_text("ignored.go\n", encoding="utf-8")
+    (repo / "visible.go").write_text(
+        "package main\nfunc visible() {}\n",
+        encoding="utf-8",
+    )
+    (repo / "ignored.go").write_text(
+        "package main\nfunc ignored() {}\n",
+        encoding="utf-8",
+    )
+    (repo / "binary.go").write_bytes(b"package main\x00func binary() {}\n")
+    (repo / "large.go").write_text(
+        "x" * (DEFAULT_CONFIG.index.max_file_bytes + 1),
+        encoding="utf-8",
+    )
+
+    files = scan_workspace(repo, DEFAULT_CONFIG)
+
+    assert [item.path for item in files] == [Path("visible.go")]
+    assert files[0].language == "go"

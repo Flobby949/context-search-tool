@@ -40,6 +40,207 @@ class FakePlanner:
         return self.query_plan
 
 
+def _write_go_imagebed_fixture(repo: Path) -> None:
+    (repo / "handler").mkdir(parents=True)
+    (repo / "middleware").mkdir(parents=True)
+    (repo / "storage").mkdir(parents=True)
+    (repo / "main.go").write_text(
+        """
+package main
+
+func initStorage(storageType string) string {
+    switch storageType {
+    case "local":
+        return NewLocalStorage("./uploads")
+    case "oss":
+        return NewOSSStorage("endpoint", "bucket")
+    case "s3":
+        return NewS3Storage("region", "bucket")
+    default:
+        return NewLocalStorage("./uploads")
+    }
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (repo / "handler" / "upload.go").write_text(
+        """
+package handler
+
+type UploadHandler struct {}
+
+func (h *UploadHandler) Upload() string {
+    return "multipart file upload storage Save"
+}
+
+func (h *UploadHandler) MultiUpload() string {
+    return "multipart files batch upload"
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (repo / "middleware" / "auth.go").write_text(
+        """
+package middleware
+
+func AuthMiddleware() string {
+    return "Authorization Bearer token query form"
+}
+
+func AdminMiddleware() string {
+    return "admin token only"
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (repo / "storage" / "storage.go").write_text(
+        """
+package storage
+
+type Storage interface {
+    Save(path string) error
+    Delete(path string) error
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (repo / "storage" / "local.go").write_text(
+        """
+package storage
+
+func NewLocalStorage(basePath string) string {
+    return "local"
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (repo / "storage" / "oss.go").write_text(
+        """
+package storage
+
+func NewOSSStorage(endpoint string, bucket string) string {
+    return "oss"
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (repo / "storage" / "s3.go").write_text(
+        """
+package storage
+
+func NewS3Storage(region string, bucket string) string {
+    return "s3"
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_generic_retrieval_finds_go_upload_handler_without_language_plugin(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_go_imagebed_fixture(repo)
+
+    index_repository(repo, DEFAULT_CONFIG)
+    bundle = query_repository(
+        repo,
+        "UploadHandler MultiUpload multipart file storage Save",
+        DEFAULT_CONFIG,
+        context_lines=2,
+    )
+
+    paths = [result.file_path.as_posix() for result in bundle.results[:5]]
+    assert "handler/upload.go" in paths
+
+
+def test_generic_retrieval_finds_go_auth_middleware_without_language_plugin(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_go_imagebed_fixture(repo)
+
+    index_repository(repo, DEFAULT_CONFIG)
+    bundle = query_repository(
+        repo,
+        "AuthMiddleware Authorization Bearer token AdminMiddleware",
+        DEFAULT_CONFIG,
+        context_lines=2,
+    )
+
+    paths = [result.file_path.as_posix() for result in bundle.results[:5]]
+    assert "middleware/auth.go" in paths
+
+
+def test_generic_retrieval_finds_go_storage_backends_without_language_plugin(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_go_imagebed_fixture(repo)
+
+    index_repository(repo, DEFAULT_CONFIG)
+    bundle = query_repository(
+        repo,
+        "initStorage NewLocalStorage NewOSSStorage NewS3Storage storage type",
+        DEFAULT_CONFIG,
+        context_lines=2,
+    )
+
+    paths = [result.file_path.as_posix() for result in bundle.results[:6]]
+    assert "main.go" in paths
+    assert any(
+        path in paths
+        for path in ["storage/local.go", "storage/oss.go", "storage/s3.go"]
+    )
+
+
+def test_generic_retrieval_finds_rust_source_without_language_plugin(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "src" / "lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+pub struct ImageStore;
+
+impl ImageStore {
+    pub fn delete_by_filename(&self, filename: &str) -> bool {
+        !filename.is_empty()
+    }
+
+    pub fn upload_image(&self, path: &str) -> bool {
+        !path.is_empty()
+    }
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    index_repository(repo, DEFAULT_CONFIG)
+    bundle = query_repository(
+        repo,
+        "ImageStore delete_by_filename filename upload_image",
+        DEFAULT_CONFIG,
+        context_lines=2,
+    )
+
+    paths = [result.file_path.as_posix() for result in bundle.results[:5]]
+    assert "src/lib.rs" in paths
+
+
 def test_query_without_index_does_not_call_planner(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
