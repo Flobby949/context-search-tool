@@ -18,6 +18,7 @@ from context_search_tool.project_scope import (
     unit_for_path,
 )
 from context_search_tool.sqlite_store import SQLiteStore
+from context_search_tool.tokenizer import tokenize_query
 
 
 def test_marker_detection_finds_root_and_child_units_with_deepest_match(
@@ -490,6 +491,66 @@ def test_pom_xml_and_evidence_anchor_paths_do_not_get_mismatch_penalty() -> None
     ) == {}
 
 
+def test_literal_project_name_query_penalizes_other_projects() -> None:
+    units = (
+        ProjectUnit(Path("collector"), "collector", "go", ("go",), ("go.mod",), 0.9),
+        ProjectUnit(Path("backend"), "backend", "java", ("java",), ("pom.xml",), 0.9),
+    )
+    query = "collector FundService fund service"
+    scope = infer_query_scope(query, tokenize_query(query), units)
+    collector_chunk = _chunk(
+        "collector/internal/service/fund_service.go",
+        project_scope_metadata_version=PROJECT_SCOPE_METADATA_VERSION,
+        project_root="collector",
+        project_name="collector",
+        project_kind="go",
+        project_languages=["go"],
+    )
+    backend_chunk = _chunk(
+        "backend/src/main/java/com/example/FundService.java",
+        project_scope_metadata_version=PROJECT_SCOPE_METADATA_VERSION,
+        project_root="backend",
+        project_name="backend",
+        project_kind="java",
+        project_languages=["java"],
+    )
+
+    collector_parts = project_scope_score_parts(collector_chunk, scope, project_unit_count=2)
+    backend_parts = project_scope_score_parts(backend_chunk, scope, project_unit_count=2)
+
+    assert scope.project_names == ("collector",)
+    assert scope.confidence >= 0.60
+    assert collector_parts == {
+        "project_scope_boost": 0.10,
+        "project_kind_boost": 0.06,
+        "project_language_boost": 0.04,
+    }
+    assert backend_parts == {"project_scope_mismatch_penalty": -0.06}
+
+
+def test_camelcase_class_query_does_not_become_literal_project_scope() -> None:
+    units = (
+        ProjectUnit(Path("collector"), "collector", "go", ("go",), ("go.mod",), 0.9),
+        ProjectUnit(Path("backend"), "backend", "java", ("java",), ("pom.xml",), 0.9),
+    )
+    query = "CollectorServiceClient"
+    scope = infer_query_scope(query, tokenize_query(query), units)
+
+    assert scope.project_names == ()
+    assert project_scope_score_parts(
+        _chunk(
+            "backend/src/main/java/com/example/CollectorServiceClient.java",
+            project_scope_metadata_version=PROJECT_SCOPE_METADATA_VERSION,
+            project_root="backend",
+            project_name="backend",
+            project_kind="java",
+            project_languages=["java"],
+        ),
+        scope,
+        project_unit_count=2,
+    ) == {}
+
+
 def test_missing_and_stale_metadata_are_neutral_for_score_parts() -> None:
     scope = infer_query_scope(
         "frontend auth.store.ts vue",
@@ -592,6 +653,7 @@ def test_low_confidence_and_mixed_scope_do_not_trigger_mismatch_penalty() -> Non
         ),
     )
 
+    assert low_confidence_scope.confidence < 0.60
     assert project_scope_score_parts(
         _chunk(
             "backend/src/Auth.java",

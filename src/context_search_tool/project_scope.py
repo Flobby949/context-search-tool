@@ -173,44 +173,51 @@ def infer_query_scope(
     project_units: Iterable[ProjectUnit],
 ) -> QueryScope:
     units = tuple(project_units)
-    text = " ".join([query, *tokens])
-    text_lower = text.lower()
-    words = set(re.findall(r"[a-z0-9_@+-]+", text_lower))
+    raw_text_lower = query.lower()
+    raw_words = set(re.findall(r"[a-z0-9_@+-]+", raw_text_lower))
+    token_words = {token.lower() for token in tokens if token}
+    words = raw_words | token_words
     words -= _BUSINESS_SHARED_WORDS
+    raw_words -= _BUSINESS_SHARED_WORDS
+    raw_path_hints = _path_hints(raw_text_lower)
 
     project_names: set[str] = set()
     kinds: set[str] = set()
     languages: set[str] = set()
     path_prefixes: list[str] = []
     file_hints: list[str] = []
+    has_literal_project_mention = False
 
     for unit in units:
         name = unit.name.lower()
         kind = unit.kind.lower()
         root = _root_to_metadata(unit.root).lower()
-        if name and name in words:
+        if name and name in raw_words:
             project_names.add(unit.name)
+            has_literal_project_mention = True
         if kind and kind in words:
             kinds.add(unit.kind)
             languages.update(unit.languages)
-        if root and any(prefix == root or prefix.startswith(f"{root}/") for prefix in _path_hints(text_lower)):
+        if root and any(prefix == root or prefix.startswith(f"{root}/") for prefix in raw_path_hints):
             project_names.add(unit.name)
+            has_literal_project_mention = True
 
-    for path_hint in _path_hints(text_lower):
+    for path_hint in raw_path_hints:
         if _looks_like_layout_path(path_hint):
             _append_unique(path_prefixes, path_hint)
             first = path_hint.split("/", 1)[0]
             for unit in units:
                 if first in {unit.name.lower(), _root_to_metadata(unit.root).lower()}:
                     project_names.add(unit.name)
+                    has_literal_project_mention = True
 
-    for filename in _filename_hints(text_lower):
+    for filename in _filename_hints(raw_text_lower):
         if filename in _MARKER_NAMES_LOWER or "." in filename:
             _append_unique(file_hints, filename)
         _add_scope_for_filename(filename, kinds, languages)
 
     for marker in ("package.json", "go.mod", "pom.xml"):
-        if marker in text_lower:
+        if marker in raw_text_lower:
             _append_unique(file_hints, marker)
             _add_scope_for_filename(marker, kinds, languages)
 
@@ -229,6 +236,8 @@ def infer_query_scope(
         + len(file_hints)
     )
     confidence = min(1.0, 0.25 + signal_count * 0.10) if signal_count else 0.0
+    if has_literal_project_mention and project_names:
+        confidence = max(confidence, 0.60)
 
     return QueryScope(
         project_names=tuple(sorted(project_names)),

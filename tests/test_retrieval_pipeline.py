@@ -4969,6 +4969,444 @@ def test_role_rerank_prefers_service_impl_over_handler_for_business_query(tmp_pa
     assert ranked[0].score_parts["role_priority"] < ranked[1].score_parts["role_priority"]
 
 
+def test_role_rerank_exact_handler_file_hint_beats_same_subproject_noise(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    collector_metadata = {
+        "project_scope_metadata_version": 1,
+        "project_root": "collector",
+        "project_name": "collector",
+        "project_kind": "go",
+        "project_languages": ["go"],
+    }
+    backend_metadata = {
+        "project_scope_metadata_version": 1,
+        "project_root": "investment-assistant-backend",
+        "project_name": "investment-assistant-backend",
+        "project_kind": "java",
+        "project_languages": ["java"],
+    }
+    handler = DocumentChunk(
+        chunk_id="collect-handler",
+        file_path=Path("collector/internal/api/handler/collect_handler.go"),
+        start_line=1,
+        end_line=40,
+        content=(
+            "package handler\n"
+            "type CollectHandler struct{}\n"
+            "func (h *CollectHandler) CollectNav() string { return \"gin\" }\n"
+            "func (h *CollectHandler) BatchCollectNav() string { return \"gin\" }\n"
+        ),
+        chunk_type="symbol",
+        lexical_tokens=[
+            "collector",
+            "collect",
+            "handler",
+            "collecthandler",
+            "collectnav",
+            "batchcollectnav",
+            "gin",
+        ],
+        metadata=collector_metadata,
+    )
+    service_noise = DocumentChunk(
+        chunk_id="fund-service",
+        file_path=Path("collector/internal/service/fund_service.go"),
+        start_line=1,
+        end_line=40,
+        content=(
+            "package service\n"
+            "func BatchCollectNav() string { return \"collector fund nav gin\" }\n"
+        ),
+        chunk_type="symbol",
+        lexical_tokens=[
+            "collector",
+            "fund",
+            "service",
+            "batchcollectnav",
+            "collectnav",
+            "gin",
+        ],
+        metadata=collector_metadata,
+    )
+    repository_noise = DocumentChunk(
+        chunk_id="nav-repo",
+        file_path=Path("collector/internal/repository/nav_repo.go"),
+        start_line=1,
+        end_line=40,
+        content=(
+            "package repository\n"
+            "func SaveNav() string { return \"collector collect nav gin\" }\n"
+        ),
+        chunk_type="symbol",
+        lexical_tokens=["collector", "repository", "collect", "nav", "gin"],
+        metadata=collector_metadata,
+    )
+    backend_noise = DocumentChunk(
+        chunk_id="backend-fund-service",
+        file_path=Path(
+            "investment-assistant-backend/src/main/java/com/investment/application/fund/FundAppService.java"
+        ),
+        start_line=1,
+        end_line=40,
+        content="class FundAppService { String CollectNav() { return \"fund\"; } }",
+        chunk_type="symbol",
+        lexical_tokens=["fund", "service", "collectnav"],
+        metadata=backend_metadata,
+    )
+    for chunk in (handler, service_noise, repository_noise, backend_noise):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    candidates = {
+        "collect-handler": RetrievalCandidate(
+            chunk_id="collect-handler",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.55,
+                "lexical": 0.45,
+                "path_symbol": 4.75,
+                "direct_text": 1.0,
+            },
+        ),
+        "fund-service": RetrievalCandidate(
+            chunk_id="fund-service",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.70,
+                "lexical": 1.0,
+                "path_symbol": 1.5,
+                "direct_text": 1.0,
+            },
+        ),
+        "nav-repo": RetrievalCandidate(
+            chunk_id="nav-repo",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.58,
+                "lexical": 0.8,
+                "path_symbol": 1.0,
+                "direct_text": 1.0,
+            },
+        ),
+        "backend-fund-service": RetrievalCandidate(
+            chunk_id="backend-fund-service",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.6,
+                "lexical": 0.45,
+                "path_symbol": 1.0,
+                "direct_text": 0.5,
+            },
+        ),
+    }
+    query = "collector CollectHandler collect_handler.go CollectNav BatchCollectNav gin"
+
+    ranked = retrieval._rank_chunks(
+        store,
+        candidates,
+        retrieval.tokenize_query(query),
+        query,
+    )
+
+    assert ranked[0].chunk.chunk_id == "collect-handler"
+    assert ranked[0].score_parts["project_path_hint_boost"] == 0.08
+    assert ranked[0].score_parts["file_path_exact_match_boost"] == 0.40
+    assert ranked[0].score_parts["role_exact_match_boost"] == 0.08
+    assert "role_penalty" not in ranked[0].score_parts
+
+
+def test_role_rerank_go_service_file_hint_beats_same_subproject_repository_noise(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    collector_metadata = {
+        "project_scope_metadata_version": 1,
+        "project_root": "collector",
+        "project_name": "collector",
+        "project_kind": "go",
+        "project_languages": ["go"],
+    }
+    backend_metadata = {
+        "project_scope_metadata_version": 1,
+        "project_root": "investment-assistant-backend",
+        "project_name": "investment-assistant-backend",
+        "project_kind": "java",
+        "project_languages": ["java"],
+    }
+    service = DocumentChunk(
+        chunk_id="fund-service",
+        file_path=Path("collector/internal/service/fund_service.go"),
+        start_line=1,
+        end_line=40,
+        content=(
+            "package service\n"
+            "type FundService struct{}\n"
+            "func (s *FundService) CollectNav() string { return \"fund service\" }\n"
+            "func (s *FundService) BatchCollectNav() string { return \"fund service\" }\n"
+        ),
+        chunk_type="symbol",
+        lexical_tokens=[
+            "collector",
+            "fund",
+            "service",
+            "fundservice",
+            "collectnav",
+            "batchcollectnav",
+        ],
+        metadata=collector_metadata,
+    )
+    fund_repo = DocumentChunk(
+        chunk_id="fund-repo",
+        file_path=Path("collector/internal/repository/fund_repo.go"),
+        start_line=1,
+        end_line=40,
+        content=(
+            "package repository\n"
+            "func CollectNav() string { return \"collector fund service\" }\n"
+        ),
+        chunk_type="symbol",
+        lexical_tokens=["collector", "fund", "repository", "collectnav", "service"],
+        metadata=collector_metadata,
+    )
+    nav_repo = DocumentChunk(
+        chunk_id="nav-repo",
+        file_path=Path("collector/internal/repository/nav_repo.go"),
+        start_line=1,
+        end_line=40,
+        content=(
+            "package repository\n"
+            "func BatchCollectNav() string { return \"collector nav fund service\" }\n"
+        ),
+        chunk_type="symbol",
+        lexical_tokens=["collector", "nav", "repository", "batchcollectnav", "service"],
+        metadata=collector_metadata,
+    )
+    backend_noise = DocumentChunk(
+        chunk_id="backend-fund-service",
+        file_path=Path(
+            "investment-assistant-backend/src/main/java/com/investment/application/fund/FundAppService.java"
+        ),
+        start_line=1,
+        end_line=40,
+        content="class FundAppService { String collectNav() { return \"fund\"; } }",
+        chunk_type="symbol",
+        lexical_tokens=["fund", "service", "collectnav"],
+        metadata=backend_metadata,
+    )
+    for chunk in (service, fund_repo, nav_repo, backend_noise):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    candidates = {
+        "fund-service": RetrievalCandidate(
+            chunk_id="fund-service",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.45,
+                "lexical": 0.35,
+                "path_symbol": 4.5,
+                "direct_text": 1.0,
+            },
+        ),
+        "fund-repo": RetrievalCandidate(
+            chunk_id="fund-repo",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.65,
+                "lexical": 0.95,
+                "path_symbol": 3.0,
+                "direct_text": 1.0,
+            },
+        ),
+        "nav-repo": RetrievalCandidate(
+            chunk_id="nav-repo",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.60,
+                "lexical": 0.85,
+                "path_symbol": 2.75,
+                "direct_text": 1.0,
+            },
+        ),
+        "backend-fund-service": RetrievalCandidate(
+            chunk_id="backend-fund-service",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.4,
+                "lexical": 0.4,
+                "path_symbol": 1.0,
+                "direct_text": 0.5,
+            },
+        ),
+    }
+    query = "collector FundService fund_service.go CollectNav BatchCollectNav fund service"
+
+    ranked = retrieval._rank_chunks(
+        store,
+        candidates,
+        retrieval.tokenize_query(query),
+        query,
+    )
+
+    assert ranked[0].chunk.chunk_id == "fund-service"
+    assert ranked[0].score_parts["file_path_exact_match_boost"] == 0.40
+    assert ranked[0].score_parts["role_exact_match_boost"] == 0.35
+    assert "impl_match_boost" not in ranked[0].score_parts
+    assert "relation_role_boost" not in ranked[0].score_parts
+
+
+def test_role_rerank_explicit_source_file_path_hint_beats_service_noise(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    collector_metadata = {
+        "project_scope_metadata_version": 1,
+        "project_root": "collector",
+        "project_name": "collector",
+        "project_kind": "go",
+        "project_languages": ["go"],
+    }
+    backend_metadata = {
+        "project_scope_metadata_version": 1,
+        "project_root": "investment-assistant-backend",
+        "project_name": "investment-assistant-backend",
+        "project_kind": "java",
+        "project_languages": ["java"],
+    }
+    source = DocumentChunk(
+        chunk_id="eastmoney-nav",
+        file_path=Path("collector/internal/source/eastmoney/nav.go"),
+        start_line=1,
+        end_line=40,
+        content=(
+            "package eastmoney\n"
+            "func FetchFundNav() string { return \"collector eastmoney nav.go fetch fund nav\" }\n"
+        ),
+        chunk_type="symbol",
+        lexical_tokens=[
+            "collector",
+            "eastmoney",
+            "fetch",
+            "fund",
+            "go",
+            "nav",
+        ],
+        metadata=collector_metadata,
+    )
+    fund_service = DocumentChunk(
+        chunk_id="fund-service",
+        file_path=Path("collector/internal/service/fund_service.go"),
+        start_line=1,
+        end_line=40,
+        content=(
+            "package service\n"
+            "func FetchFundNav() string { return \"collector fund nav service\" }\n"
+        ),
+        chunk_type="symbol",
+        lexical_tokens=["collector", "fetch", "fund", "nav", "service"],
+        metadata=collector_metadata,
+    )
+    nav_service = DocumentChunk(
+        chunk_id="nav-service",
+        file_path=Path("collector/internal/service/nav_service.go"),
+        start_line=1,
+        end_line=40,
+        content=(
+            "package service\n"
+            "func Nav() string { return \"collector fund nav fetch service\" }\n"
+        ),
+        chunk_type="symbol",
+        lexical_tokens=["collector", "fetch", "fund", "nav", "service"],
+        metadata=collector_metadata,
+    )
+    backend_noise = DocumentChunk(
+        chunk_id="backend-fund-service",
+        file_path=Path(
+            "investment-assistant-backend/src/main/java/com/investment/application/fund/FundAppService.java"
+        ),
+        start_line=1,
+        end_line=40,
+        content="class FundAppService { String fetchFundNav() { return \"fund\"; } }",
+        chunk_type="symbol",
+        lexical_tokens=["fetch", "fund", "nav", "service"],
+        metadata=backend_metadata,
+    )
+    for chunk in (source, fund_service, nav_service, backend_noise):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    candidates = {
+        "eastmoney-nav": RetrievalCandidate(
+            chunk_id="eastmoney-nav",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.45,
+                "lexical": 0.35,
+                "path_symbol": 4.5,
+                "direct_text": 1.0,
+            },
+        ),
+        "fund-service": RetrievalCandidate(
+            chunk_id="fund-service",
+            score=1.0,
+            source="direct,relation",
+            score_parts={
+                "semantic": 0.70,
+                "lexical": 1.0,
+                "path_symbol": 2.0,
+                "direct_text": 1.0,
+                "original_relation": 0.2,
+                "relation": 0.2,
+            },
+        ),
+        "nav-service": RetrievalCandidate(
+            chunk_id="nav-service",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.65,
+                "lexical": 0.95,
+                "path_symbol": 2.0,
+                "direct_text": 1.0,
+            },
+        ),
+        "backend-fund-service": RetrievalCandidate(
+            chunk_id="backend-fund-service",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.4,
+                "lexical": 0.4,
+                "path_symbol": 1.0,
+                "direct_text": 0.5,
+            },
+        ),
+    }
+    query = "collector eastmoney nav.go fetch fund nav"
+
+    ranked = retrieval._rank_chunks(
+        store,
+        candidates,
+        retrieval.tokenize_query(query),
+        query,
+    )
+
+    assert ranked[0].chunk.chunk_id == "eastmoney-nav"
+    assert ranked[0].score_parts["project_path_hint_boost"] == 0.08
+    assert ranked[0].score_parts["file_path_exact_match_boost"] == 0.40
+
+
 def test_service_impl_exact_match_boost_keeps_impl_near_entrypoints(tmp_path: Path) -> None:
     store = SQLiteStore(tmp_path / "index.sqlite")
     store.initialize()
@@ -6004,6 +6442,9 @@ def test_anchor_expansion_keeps_template_same_file_anchor_for_content_query(
         ("src/main/java/com/example/service/SimpleService.java", "interface SimpleService {}", "service_interface", 4, 0.06, 0.0),
         ("src/main/java/com/example/service/AuthService.java", "interface AuthService { // AuthServiceImpl handles this }", "service_interface", 4, 0.06, 0.0),
         ("src/main/java/com/example/service/impl/AuthServiceImpl.java", "class AuthServiceImpl {}", "service_impl", 1, 0.12, 0.0),
+        ("src/main/java/com/example/service/AppInfoServiceImpl.java", "class AppInfoServiceImpl {}", "service_impl", 1, 0.12, 0.0),
+        ("src/main/java/com/example/service/NavService.java", "class NavService {}", "service", 2, 0.0, 0.0),
+        ("collector/internal/service/fund_service.go", "type FundService struct{}", "service", 2, 0.0, 0.0),
         ("src/main/java/com/example/catalog/PageAppCatalogQueryExe.java", "class PageAppCatalogQueryExe {}", "executor", 2, 0.12, 0.0),
         ("src/main/java/com/example/catalog/FooExe.java", "class FooExe {}", "executor", 2, 0.12, 0.0),
         ("src/main/java/com/example/catalog/ExecuteHelper.java", "class ExecuteHelper { void execute() {} }", "generic", 5, 0.0, 0.0),

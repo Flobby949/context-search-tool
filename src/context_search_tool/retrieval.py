@@ -1664,6 +1664,7 @@ def _merge_expanded_result(
         "role_priority",
         "role_boost",
         "role_penalty",
+        "file_path_exact_match_boost",
         "role_exact_match_boost",
         "impl_match_boost",
         "relation_role_boost",
@@ -1732,15 +1733,17 @@ def _chunk_role(chunk: DocumentChunk) -> _ChunkRole:
         return _ChunkRole("generic", 5, 0.0)
     if "controller" in path or "controller" in names:
         return _ChunkRole("entrypoint", 0, 0.18)
+    if "/service/" in path and "interface " in content:
+        return _ChunkRole("service_interface", 4, 0.06)
     if "/service/impl/" in path or "serviceimpl" in path_and_names:
         return _ChunkRole("service_impl", 1, 0.12)
+    if "/service/" in path:
+        return _ChunkRole("service", 2, 0.0)
     class_names = [chunk.file_path.stem.lower(), *(symbol.name.lower() for symbol in chunk.symbols)]
     if any(name.endswith(("queryexe", "qryexe", "executor", "queryexecutor", "exe")) for name in class_names):
         return _ChunkRole("executor", 2, 0.12)
     if any(token in path for token in ("/dto/", "/vo/", "/query/", "/entity/")):
         return _ChunkRole("data_type", 3, 0.04)
-    if "/service/" in path and "interface " in content:
-        return _ChunkRole("service_interface", 4, 0.06)
     if "/mapper/" in path or "mapper" in names:
         return _ChunkRole("mapper", 4, 0.03)
     if any(token in haystack for token in ("handler", "listener", "callback", "connector", "webhook")):
@@ -2068,9 +2071,14 @@ def _rerank_score(
         rerank_score += role.boost
         if role.boost:
             score_parts["role_boost"] = role.boost
-    if role.penalty:
-        rerank_score -= role.penalty
-        score_parts["role_penalty"] = -role.penalty
+    role_penalty = (
+        0.0
+        if _has_explicit_handler_path_evidence(role, score_parts)
+        else role.penalty
+    )
+    if role_penalty:
+        rerank_score -= role_penalty
+        score_parts["role_penalty"] = -role_penalty
 
     if _is_non_readme_markdown_document(chunk.file_path):
         rerank_score -= _NON_README_DOCUMENT_DISPLAY_PENALTY
@@ -2084,6 +2092,13 @@ def _rerank_score(
     if role_exact_boost:
         rerank_score += role_exact_boost
         score_parts["role_exact_match_boost"] = role_exact_boost
+
+    file_path_exact_boost = 0.0
+    if not has_project_scope_mismatch:
+        file_path_exact_boost = _file_path_exact_match_boost(score_parts)
+    if file_path_exact_boost:
+        rerank_score += file_path_exact_boost
+        score_parts["file_path_exact_match_boost"] = file_path_exact_boost
 
     rerank_score += _route_rerank_adjustment(score_parts)
     rerank_score += score_parts.get("route_tail_context_match", 0.0)
@@ -2156,9 +2171,37 @@ def _role_exact_match_boost(
         return 0.12
     if role.name == "service_impl" and path_symbol >= 4.0 and token_coverage >= 0.5:
         return 0.35
+    if role.name == "service" and path_symbol >= 4.0 and token_coverage >= 0.5:
+        return 0.35
     if role.name == "data_type" and path_symbol >= 2.0 and token_coverage >= 0.2:
         return 0.24
+    if _has_explicit_handler_path_evidence(role, score_parts):
+        return 0.08
     return 0.0
+
+
+def _file_path_exact_match_boost(score_parts: dict[str, float]) -> float:
+    if (
+        score_parts.get("project_path_hint_boost", 0.0) > 0
+        and score_parts.get("path_symbol", 0.0) >= 4.0
+        and score_parts.get("token_coverage", 0.0) >= 0.5
+        and score_parts.get("direct_text", 0.0) >= 0.60
+    ):
+        return 0.40
+    return 0.0
+
+
+def _has_explicit_handler_path_evidence(
+    role: _ChunkRole,
+    score_parts: dict[str, float],
+) -> bool:
+    return (
+        role.name == "handler"
+        and score_parts.get("project_path_hint_boost", 0.0) > 0
+        and score_parts.get("path_symbol", 0.0) >= 4.0
+        and score_parts.get("token_coverage", 0.0) >= 0.5
+        and score_parts.get("direct_text", 0.0) >= 0.60
+    )
 
 
 def _route_rerank_adjustment(score_parts: dict[str, float]) -> float:
@@ -3104,6 +3147,8 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("business role boost")
     if score_parts.get("role_penalty", 0.0) < 0:
         reasons.append("detail role penalty")
+    if score_parts.get("file_path_exact_match_boost", 0.0) > 0:
+        reasons.append("exact file path hint boost")
     if score_parts.get("role_exact_match_boost", 0.0) > 0:
         reasons.append("role exact match boost")
     if score_parts.get("impl_match_boost", 0.0) > 0:
