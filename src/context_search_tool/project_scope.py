@@ -94,7 +94,7 @@ def detect_project_units(repo: Path, relative_paths: list[Path]) -> tuple[Projec
     observed_paths = [Path(path) for path in relative_paths]
 
     for path in observed_paths:
-        if path.name in _MARKER_NAMES:
+        if path.name in _MARKER_NAMES and not _has_skipped_path_part(path):
             markers_by_root.setdefault(path.parent, set()).add(path.name)
 
     for marker_path in _discover_marker_files(repo):
@@ -428,6 +428,10 @@ def _path_belongs_to_package_unit(path: Path, root: Path) -> bool:
     if len(path.parts) == 1:
         return True
     return bool(path.parts) and path.parts[0] in _ROOT_PACKAGE_SOURCE_DIRS
+
+
+def _has_skipped_path_part(path: Path) -> bool:
+    return any(part in _SKIP_DIRS for part in path.parts)
 
 
 def _is_root(path: Path) -> bool:

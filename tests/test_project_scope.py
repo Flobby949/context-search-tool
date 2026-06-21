@@ -95,6 +95,24 @@ def test_marker_discovery_skips_ignored_and_symlinked_directories(
     )
 
 
+def test_relative_path_markers_skip_ignored_directories(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    units = detect_project_units(
+        repo,
+        [
+            Path("node_modules/lib/package.json"),
+            Path("target/generated/pom.xml"),
+            Path("build/package.json"),
+        ],
+    )
+
+    assert units == (
+        ProjectUnit(Path(""), repo.name, "unknown", (), (), 0.0),
+    )
+
+
 def test_root_package_json_does_not_inherit_nested_frontend_files(
     tmp_path: Path,
 ) -> None:
