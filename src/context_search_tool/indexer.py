@@ -17,6 +17,14 @@ from context_search_tool.models import DocumentChunk, SourceFile
 from context_search_tool.models import CodeRelation, CodeSignal
 from context_search_tool.paths import ensure_index_layout
 from context_search_tool.plugins import LanguagePlugin, PluginExtraction, default_plugins
+from context_search_tool.project_scope import (
+    PROJECT_SCOPE_METADATA_VERSION,
+    PROJECT_SCOPE_METADATA_VERSION_KEY,
+    ProjectUnit,
+    detect_project_units,
+    project_metadata,
+    unit_for_path,
+)
 from context_search_tool.scanner import ScannedFile, scan_workspace
 from context_search_tool.sqlite_store import SQLiteStore
 from context_search_tool.vector_store import NumpyVectorStore
@@ -58,10 +66,15 @@ def index_repository(repo: Path, config: ToolConfig) -> IndexSummary:
     store = SQLiteStore(index_dir / "index.sqlite")
     store.initialize()
     stale_signal_schema = not signal_schema_is_current(store)
+    stale_project_scope_metadata = not project_scope_metadata_is_current(store)
     if stale_signal_schema:
         store.clear_signal_data()
 
     scanned_files = scan_workspace(repo, config)
+    project_units = detect_project_units(
+        repo,
+        [scanned_file.path for scanned_file in scanned_files],
+    )
     scanned_paths = {scanned_file.path for scanned_file in scanned_files}
     indexed_paths = store.source_file_paths()
     deleted_paths = indexed_paths - scanned_paths
@@ -75,13 +88,18 @@ def index_repository(repo: Path, config: ToolConfig) -> IndexSummary:
         existing = store.source_file_for_path(scanned_file.path)
         if (
             not stale_signal_schema
+            and not stale_project_scope_metadata
             and existing is not None
             and existing.sha256 == scanned_file.sha256
         ):
             files_skipped += 1
             continue
 
-        prepared_file = _prepare_file(scanned_file, plugins)
+        prepared_file = _prepare_file(
+            scanned_file,
+            plugins,
+            unit_for_path(scanned_file.path, project_units),
+        )
         prepared_files.append(prepared_file)
         changed_chunks.extend(prepared_file.chunks)
 
@@ -110,6 +128,10 @@ def index_repository(repo: Path, config: ToolConfig) -> IndexSummary:
 
     _ensure_config_file(index_dir, config)
     store.set_metadata(SIGNAL_SCHEMA_VERSION_KEY, str(CURRENT_SIGNAL_SCHEMA_VERSION))
+    store.set_metadata(
+        PROJECT_SCOPE_METADATA_VERSION_KEY,
+        str(PROJECT_SCOPE_METADATA_VERSION),
+    )
     store.set_metadata("indexed_at", str(int(time.time())))
 
     stats = store.stats()
@@ -144,6 +166,16 @@ def signal_schema_is_current(store: SQLiteStore) -> bool:
         return False
 
 
+def project_scope_metadata_is_current(store: SQLiteStore) -> bool:
+    version = store.get_metadata(PROJECT_SCOPE_METADATA_VERSION_KEY)
+    if version is None:
+        return False
+    try:
+        return int(version) >= PROJECT_SCOPE_METADATA_VERSION
+    except ValueError:
+        return False
+
+
 def _ensure_config_file(index_dir: Path, config: ToolConfig) -> None:
     if not (index_dir / "config.toml").exists():
         (index_dir / "config.toml").write_text(
@@ -155,12 +187,14 @@ def _ensure_config_file(index_dir: Path, config: ToolConfig) -> None:
 def _prepare_file(
     scanned_file: ScannedFile,
     plugins: list[LanguagePlugin],
+    project_unit: ProjectUnit,
 ) -> _PreparedFile:
     content = scanned_file.absolute_path.read_text(encoding="utf-8", errors="replace")
     extraction = _extract(scanned_file, content, plugins)
     metadata = dict(scanned_file.metadata)
     if extraction.metadata:
         metadata["plugin"] = extraction.metadata
+    project_fields = project_metadata(project_unit)
 
     source_file = SourceFile(
         path=scanned_file.path,
@@ -170,7 +204,7 @@ def _prepare_file(
         mtime_ns=scanned_file.mtime_ns,
         is_generated=scanned_file.is_generated,
         is_test=scanned_file.is_test,
-        metadata=metadata,
+        metadata={**metadata, **project_fields},
     )
 
     chunks = [
@@ -180,6 +214,7 @@ def _prepare_file(
                 [*chunk.lexical_tokens, *_localized_plugin_tokens(chunk, extraction)]
             ),
             embedding_id=chunk.chunk_id,
+            metadata={**chunk.metadata, **project_fields},
         )
         for chunk in chunk_text(
             scanned_file.path,

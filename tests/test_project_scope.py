@@ -1,6 +1,10 @@
+import sqlite3
 from pathlib import Path
 
+from context_search_tool.config import DEFAULT_CONFIG
+from context_search_tool.indexer import index_repository
 from context_search_tool.models import DocumentChunk
+from context_search_tool.paths import index_dir_for
 from context_search_tool.project_scope import (
     PROJECT_SCOPE_METADATA_VERSION,
     PROJECT_SCOPE_METADATA_VERSION_KEY,
@@ -13,6 +17,7 @@ from context_search_tool.project_scope import (
     project_units_from_chunk_metadata,
     unit_for_path,
 )
+from context_search_tool.sqlite_store import SQLiteStore
 
 
 def test_marker_detection_finds_root_and_child_units_with_deepest_match(
@@ -174,6 +179,124 @@ def test_project_metadata_is_json_compatible() -> None:
         "project_markers": ["package.json"],
     }
     assert project_metadata(root_unit)["project_root"] == ""
+
+
+def test_indexer_writes_project_metadata_to_chunks(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "frontend" / "src").mkdir(parents=True)
+    (repo / "frontend" / "package.json").write_text(
+        '{"dependencies":{"vite":"latest","vue":"latest","@vitejs/plugin-vue":"latest"}}\n',
+        encoding="utf-8",
+    )
+    (repo / "frontend" / "src" / "main.ts").write_text(
+        "import App from './App.vue'\n",
+        encoding="utf-8",
+    )
+    (repo / "frontend" / "src" / "App.vue").write_text(
+        "<script setup lang=\"ts\">const title = 'Dashboard'</script>\n",
+        encoding="utf-8",
+    )
+
+    index_repository(repo, DEFAULT_CONFIG)
+
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+    source_file = store.source_file_for_path(Path("frontend/src/App.vue"))
+    assert source_file is not None
+    assert source_file.metadata["project_root"] == "frontend"
+    assert source_file.metadata["project_kind"] == "frontend"
+    assert source_file.metadata["project_languages"] == ["typescript", "vue"]
+    assert (
+        source_file.metadata[PROJECT_SCOPE_METADATA_VERSION_KEY]
+        == PROJECT_SCOPE_METADATA_VERSION
+    )
+
+    chunks = store.chunks_for_file(Path("frontend/src/App.vue"), limit=10)
+    assert chunks
+    assert chunks[0].metadata["project_root"] == "frontend"
+    assert chunks[0].metadata["project_kind"] == "frontend"
+    assert chunks[0].metadata["project_languages"] == ["typescript", "vue"]
+    assert (
+        chunks[0].metadata[PROJECT_SCOPE_METADATA_VERSION_KEY]
+        == PROJECT_SCOPE_METADATA_VERSION
+    )
+    assert store.get_metadata(PROJECT_SCOPE_METADATA_VERSION_KEY) == str(
+        PROJECT_SCOPE_METADATA_VERSION
+    )
+
+
+def test_indexer_rewrites_unchanged_chunks_when_project_scope_metadata_version_is_stale(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "collector" / "internal" / "scheduler").mkdir(parents=True)
+    (repo / "collector" / "go.mod").write_text("module collector\n", encoding="utf-8")
+    (repo / "collector" / "internal" / "scheduler" / "scheduler.go").write_text(
+        "package scheduler\n\nfunc Run() {}\n",
+        encoding="utf-8",
+    )
+    index_repository(repo, DEFAULT_CONFIG)
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+    store.set_metadata(PROJECT_SCOPE_METADATA_VERSION_KEY, "0")
+
+    summary = index_repository(repo, DEFAULT_CONFIG)
+
+    assert summary.files_skipped == 0
+    assert summary.files_indexed >= 1
+    chunks = store.chunks_for_file(
+        Path("collector/internal/scheduler/scheduler.go"),
+        limit=10,
+    )
+    assert chunks
+    assert chunks[0].metadata["project_root"] == "collector"
+    assert chunks[0].metadata["project_kind"] == "go"
+    assert (
+        chunks[0].metadata[PROJECT_SCOPE_METADATA_VERSION_KEY]
+        == PROJECT_SCOPE_METADATA_VERSION
+    )
+    assert store.get_metadata(PROJECT_SCOPE_METADATA_VERSION_KEY) == str(
+        PROJECT_SCOPE_METADATA_VERSION
+    )
+
+
+def test_indexer_rewrites_unchanged_chunks_when_project_scope_metadata_version_is_absent(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "backend" / "src" / "main" / "java" / "com" / "example").mkdir(
+        parents=True
+    )
+    (repo / "backend" / "pom.xml").write_text("<project />\n", encoding="utf-8")
+    java_path = Path("backend/src/main/java/com/example/AuthController.java")
+    (repo / java_path).write_text(
+        "package com.example;\n\nclass AuthController {}\n",
+        encoding="utf-8",
+    )
+    index_repository(repo, DEFAULT_CONFIG)
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+    with sqlite3.connect(index_dir_for(repo) / "index.sqlite") as connection:
+        connection.execute(
+            "DELETE FROM index_metadata WHERE key = ?",
+            (PROJECT_SCOPE_METADATA_VERSION_KEY,),
+        )
+
+    summary = index_repository(repo, DEFAULT_CONFIG)
+
+    assert summary.files_skipped == 0
+    assert summary.files_indexed >= 1
+    chunks = store.chunks_for_file(java_path, limit=10)
+    assert chunks
+    assert chunks[0].metadata["project_root"] == "backend"
+    assert chunks[0].metadata["project_kind"] == "java"
+    assert (
+        chunks[0].metadata[PROJECT_SCOPE_METADATA_VERSION_KEY]
+        == PROJECT_SCOPE_METADATA_VERSION
+    )
+    assert store.get_metadata(PROJECT_SCOPE_METADATA_VERSION_KEY) == str(
+        PROJECT_SCOPE_METADATA_VERSION
+    )
 
 
 def test_infer_query_scope_ignores_shared_business_words() -> None:
