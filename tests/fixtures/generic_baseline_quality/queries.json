@@ -108,5 +108,64 @@
         ]
       }
     ]
+  },
+  {
+    "repo_key": "investment_assistant",
+    "path_env": "CST_SMOKE_INVESTMENT_ASSISTANT_REPO",
+    "repo_dir_name": "Investment-Assistant",
+    "queries": [
+      {
+        "id": "frontend-auth-store",
+        "query": "frontend useAuthStore login register fetchCurrentUser Pinia",
+        "expected_top_k": [
+          {"path": "frontend/src/stores/modules/auth.store.ts", "top_k": 5}
+        ],
+        "absent_top_k": [
+          {"glob": "investment-assistant-backend/src/main/java/com/investment/application/auth/*.java", "top_k": 3}
+        ]
+      },
+      {
+        "id": "collector-handler",
+        "query": "collector CollectHandler collect_handler.go CollectNav BatchCollectNav gin",
+        "expected_top_k": [
+          {"path": "collector/internal/api/handler/collect_handler.go", "top_k": 5}
+        ]
+      },
+      {
+        "id": "frontend-sse-composable",
+        "query": "frontend useSseConnection EventSource chat composable",
+        "expected_top_k": [
+          {"path": "frontend/src/views/chat/composables/useSseConnection.ts", "top_k": 5}
+        ]
+      },
+      {
+        "id": "collector-fund-service",
+        "query": "collector FundService CollectNav BatchCollectNav fund service",
+        "expected_top_k": [
+          {"path": "collector/internal/service/fund_service.go", "top_k": 5}
+        ]
+      },
+      {
+        "id": "collector-nav-fetcher",
+        "query": "collector eastmoney nav.go fetch fund nav",
+        "expected_top_k": [
+          {"path": "collector/internal/source/eastmoney/nav.go", "top_k": 5}
+        ]
+      },
+      {
+        "id": "collector-scheduler",
+        "query": "collector scheduler.go Scheduler AddTask cron heartbeat",
+        "expected_top_k": [
+          {"path": "collector/internal/scheduler/scheduler.go", "top_k": 5}
+        ]
+      },
+      {
+        "id": "java-ai-sse-controller",
+        "query": "java AIController chatWithSse SseServer SseChatRequest userId message",
+        "expected_top_k": [
+          {"path": "investment-assistant-backend/src/main/java/com/investment/interfaces/rest/AIController.java", "top_k": 5}
+        ]
+      }
+    ]
   }
 ]

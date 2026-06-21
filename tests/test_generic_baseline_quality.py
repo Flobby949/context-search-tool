@@ -6,9 +6,12 @@ from pathlib import Path, PureWindowsPath
 
 import pytest
 
+from context_search_tool import retrieval
 from context_search_tool.config import DEFAULT_CONFIG
 from context_search_tool.indexer import index_repository
+from context_search_tool.paths import index_dir_for
 from context_search_tool.retrieval import query_repository
+from context_search_tool.sqlite_store import SQLiteStore
 
 
 FIXTURE_PATH = (
@@ -153,6 +156,16 @@ def _assert_expected_top_k(query_spec: dict, top_paths: list[str]) -> None:
         }
 
 
+def _assert_expected_candidates(query_spec: dict, candidate_paths: set[str]) -> None:
+    for expected in query_spec.get("expected_top_k", []):
+        assert any(_matches(expected, path) for path in candidate_paths), {
+            "query_id": query_spec["id"],
+            "query": query_spec["query"],
+            "candidate_paths": sorted(candidate_paths),
+            "expected": expected,
+        }
+
+
 def _assert_expected_any_top_k(query_spec: dict, top_paths: list[str]) -> None:
     expected_any = query_spec.get("expected_any_top_k", [])
     if not expected_any:
@@ -231,13 +244,67 @@ def _assert_anchor_expected(query_spec: dict, bundle) -> None:
             }
 
 
+def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
+    config = DEFAULT_CONFIG
+    index_dir = index_dir_for(repo)
+    store = SQLiteStore(index_dir / "index.sqlite")
+    original_tokens = retrieval._dedupe(retrieval.tokenize_query(query))
+    deleted_ids = store.deleted_chunk_ids()
+    initial_candidates = retrieval._initial_candidates(
+        index_dir,
+        store,
+        query,
+        original_tokens,
+        config,
+        deleted_ids,
+    )
+    signal_candidates = retrieval._signal_candidates(store, original_tokens, config)
+    direct_candidates = retrieval._merge_candidates(
+        [
+            *initial_candidates,
+            *signal_candidates,
+        ]
+    )
+    anchor_candidates = retrieval._anchor_expansion_candidates(
+        store,
+        list(direct_candidates.values()),
+        config,
+        query=query,
+        tokens=original_tokens,
+    )
+    relation_seed_candidates = retrieval._merge_candidates(
+        [
+            *direct_candidates.values(),
+            *anchor_candidates,
+        ]
+    )
+    relation_candidates = retrieval._relation_expansion_candidates(
+        store,
+        list(relation_seed_candidates.values()),
+        config,
+    )
+    candidates = retrieval._merge_candidates(
+        [
+            *direct_candidates.values(),
+            *anchor_candidates,
+            *relation_candidates,
+        ]
+    )
+    chunks = store.chunks_for_ids(list(candidates))
+    return {chunk.file_path.as_posix() for chunk in chunks.values()}
+
+
 def _repo_snapshot(repo: Path) -> list[str]:
     return sorted(path.relative_to(repo).as_posix() for path in repo.rglob("*"))
 
 
 def test_generic_baseline_quality_queries_load() -> None:
     repo_specs = _load_repo_specs()
-    assert {spec["repo_key"] for spec in repo_specs} == {"imagebed", "env_change"}
+    assert {spec["repo_key"] for spec in repo_specs} == {
+        "imagebed",
+        "env_change",
+        "investment_assistant",
+    }
     for repo_spec in repo_specs:
         _assert_repo_spec(repo_spec)
 
@@ -502,6 +569,13 @@ def test_generic_baseline_real_project_quality(
     index_repository(repo, DEFAULT_CONFIG)
 
     for query_spec in repo_spec["queries"]:
+        if repo_spec["repo_key"] == "investment_assistant":
+            candidate_paths = _candidate_pool_paths_before_rerank(
+                repo,
+                query_spec["query"],
+            )
+            _assert_expected_candidates(query_spec, candidate_paths)
+
         bundle = query_repository(repo, query_spec["query"], DEFAULT_CONFIG)
         top_paths = [result.file_path.as_posix() for result in bundle.results]
         _assert_expected_top_k(query_spec, top_paths)
