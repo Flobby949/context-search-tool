@@ -528,6 +528,28 @@ def test_literal_project_name_query_penalizes_other_projects() -> None:
     assert backend_parts == {"project_scope_mismatch_penalty": -0.06}
 
 
+def test_literal_project_name_query_penalizes_same_kind_sibling() -> None:
+    units = (
+        ProjectUnit(Path("collector"), "collector", "go", ("go",), ("go.mod",), 0.9),
+        ProjectUnit(Path("worker"), "worker", "go", ("go",), ("go.mod",), 0.9),
+    )
+    query = "collector FundService fund service"
+    scope = infer_query_scope(query, tokenize_query(query), units)
+    worker_chunk = _chunk(
+        "worker/internal/service/fund_service.go",
+        project_scope_metadata_version=PROJECT_SCOPE_METADATA_VERSION,
+        project_root="worker",
+        project_name="worker",
+        project_kind="go",
+        project_languages=["go"],
+    )
+
+    worker_parts = project_scope_score_parts(worker_chunk, scope, project_unit_count=2)
+
+    assert scope.project_names == ("collector",)
+    assert worker_parts == {"project_scope_mismatch_penalty": -0.06}
+
+
 def test_camelcase_class_query_does_not_become_literal_project_scope() -> None:
     units = (
         ProjectUnit(Path("collector"), "collector", "go", ("go",), ("go.mod",), 0.9),
@@ -603,6 +625,7 @@ def test_duplicate_filename_does_not_boost_conflicting_project() -> None:
         project_unit_count=2,
     )
 
+    assert "project_file_hint_boost" not in parts
     assert "project_path_hint_boost" not in parts
     assert parts == {"project_scope_mismatch_penalty": -0.06}
 
@@ -630,7 +653,7 @@ def test_filename_only_query_can_boost_matching_file_without_conflict() -> None:
         project_unit_count=2,
     ) == {
         "project_language_boost": 0.04,
-        "project_path_hint_boost": 0.08,
+        "project_file_hint_boost": 0.08,
     }
 
 

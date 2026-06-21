@@ -268,6 +268,15 @@ def project_scope_score_parts(
     chunk_filename = chunk.file_path.name.lower()
     parts: dict[str, float] = {}
 
+    if query_scope.project_names and chunk_name not in query_scope.project_names:
+        if (
+            query_scope.confidence < 0.60
+            or _is_mixed_scope(query_scope)
+            or _is_evidence_or_project_anchor(chunk)
+        ):
+            return {}
+        return {"project_scope_mismatch_penalty": -0.06}
+
     if chunk_name and chunk_name in query_scope.project_names:
         parts["project_scope_boost"] = 0.10
     if chunk_kind and chunk_kind in query_scope.kinds:
@@ -282,7 +291,7 @@ def project_scope_score_parts(
         chunk_kind,
         chunk_languages,
     ):
-        parts["project_path_hint_boost"] = 0.08
+        parts["project_file_hint_boost"] = 0.08
 
     if parts:
         return parts

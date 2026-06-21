@@ -541,6 +541,29 @@ def test_monorepo_scope_does_not_overconstrain_unscoped_business_query(
     )
 
 
+def test_query_repository_exposes_explicit_file_hint_reason(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_monorepo_scope_fixture(repo)
+    index_repository(repo, DEFAULT_CONFIG)
+
+    bundle = query_repository(
+        repo,
+        "collector CollectHandler collect_handler.go CollectNav BatchCollectNav gin",
+        DEFAULT_CONFIG,
+        context_lines=2,
+    )
+
+    matching_result = next(
+        result
+        for result in bundle.results
+        if result.file_path.as_posix() == "collector/internal/api/handler/collect_handler.go"
+    )
+
+    assert "explicit file hint match" in matching_result.reasons
+    assert "exact file path hint boost" not in matching_result.reasons
+
+
 def test_generic_retrieval_finds_rust_source_without_language_plugin(
     tmp_path: Path,
 ) -> None:
@@ -656,6 +679,7 @@ def test_reasons_include_project_scope_diagnostics() -> None:
             "project_kind_boost": 0.06,
             "project_language_boost": 0.04,
             "project_path_hint_boost": 0.08,
+            "project_file_hint_boost": 0.08,
             "project_scope_mismatch_penalty": -0.06,
         },
         "frontend upload flow",
@@ -665,6 +689,7 @@ def test_reasons_include_project_scope_diagnostics() -> None:
     assert "project kind match" in reasons
     assert "project language match" in reasons
     assert "project path hint match" in reasons
+    assert "project file hint match" in reasons
     assert "project scope mismatch penalty" in reasons
 
 
@@ -4631,6 +4656,51 @@ def test_rank_chunks_exposes_numeric_diagnostic_score_parts(tmp_path: Path) -> N
     assert isinstance(parts["role_boost"], float)
 
 
+def test_chunk_role_prefers_service_impl_over_service_interface_content() -> None:
+    chunk = DocumentChunk(
+        chunk_id="auth-service-impl",
+        file_path=Path("src/main/java/com/example/service/impl/AuthServiceImpl.java"),
+        start_line=1,
+        end_line=10,
+        content="class AuthServiceImpl { /* delegates to interface AuthService */ }",
+        chunk_type="symbol",
+        lexical_tokens=["auth", "service", "impl"],
+        metadata={"language": "java"},
+    )
+
+    assert retrieval._chunk_role(chunk).name == "service_impl"
+
+
+def test_chunk_role_prefers_executor_over_generic_service_directory() -> None:
+    chunk = DocumentChunk(
+        chunk_id="page-app-catalog-query-exe",
+        file_path=Path("src/main/java/com/example/service/PageAppCatalogQueryExe.java"),
+        start_line=1,
+        end_line=10,
+        content="class PageAppCatalogQueryExe { Page execute() { return null; } }",
+        chunk_type="symbol",
+        lexical_tokens=["page", "app", "catalog", "query", "exe"],
+        metadata={"language": "java"},
+    )
+
+    assert retrieval._chunk_role(chunk).name == "executor"
+
+
+def test_chunk_role_prefers_data_type_over_generic_service_directory() -> None:
+    chunk = DocumentChunk(
+        chunk_id="auth-dto",
+        file_path=Path("src/main/java/com/example/service/dto/AuthDto.java"),
+        start_line=1,
+        end_line=10,
+        content="class AuthDto { String token; }",
+        chunk_type="symbol",
+        lexical_tokens=["auth", "dto", "token"],
+        metadata={"language": "java"},
+    )
+
+    assert retrieval._chunk_role(chunk).name == "data_type"
+
+
 def _generic_noise_chunk(
     chunk_id: str,
     path: str,
@@ -5115,8 +5185,8 @@ def test_role_rerank_exact_handler_file_hint_beats_same_subproject_noise(
     )
 
     assert ranked[0].chunk.chunk_id == "collect-handler"
-    assert ranked[0].score_parts["project_path_hint_boost"] == 0.08
-    assert ranked[0].score_parts["file_path_exact_match_boost"] == 0.40
+    assert ranked[0].score_parts["project_file_hint_boost"] == 0.08
+    assert ranked[0].score_parts["file_hint_match_boost"] == 0.40
     assert ranked[0].score_parts["role_exact_match_boost"] == 0.08
     assert "role_penalty" not in ranked[0].score_parts
 
@@ -5259,7 +5329,7 @@ def test_role_rerank_go_service_file_hint_beats_same_subproject_repository_noise
     )
 
     assert ranked[0].chunk.chunk_id == "fund-service"
-    assert ranked[0].score_parts["file_path_exact_match_boost"] == 0.40
+    assert ranked[0].score_parts["file_hint_match_boost"] == 0.40
     assert ranked[0].score_parts["role_exact_match_boost"] == 0.35
     assert "impl_match_boost" not in ranked[0].score_parts
     assert "relation_role_boost" not in ranked[0].score_parts
@@ -5403,8 +5473,8 @@ def test_role_rerank_explicit_source_file_path_hint_beats_service_noise(
     )
 
     assert ranked[0].chunk.chunk_id == "eastmoney-nav"
-    assert ranked[0].score_parts["project_path_hint_boost"] == 0.08
-    assert ranked[0].score_parts["file_path_exact_match_boost"] == 0.40
+    assert ranked[0].score_parts["project_file_hint_boost"] == 0.08
+    assert ranked[0].score_parts["file_hint_match_boost"] == 0.40
 
 
 def test_service_impl_exact_match_boost_keeps_impl_near_entrypoints(tmp_path: Path) -> None:
