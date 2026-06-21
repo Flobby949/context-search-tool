@@ -465,6 +465,11 @@ def test_generic_retrieval_finds_go_storage_backends_without_language_plugin(
             "investment-assistant-backend/src/main/java/com/example/AuthController.java",
             False,
         ),
+        (
+            "investment-assistant-backend java AuthController login register UserAppService",
+            "investment-assistant-backend/src/main/java/com/example/AuthController.java",
+            True,
+        ),
     ],
 )
 def test_monorepo_scope_rerank_surfaces_scoped_subproject_files(
@@ -494,6 +499,13 @@ def test_monorepo_scope_rerank_surfaces_scoped_subproject_files(
     )
     if requires_project_score_part:
         assert any(key.startswith("project_") for key in matching_result.score_parts)
+        matching_index = top_results.index(matching_result)
+        mismatch_indexes = [
+            index
+            for index, result in enumerate(top_results)
+            if "project_scope_mismatch_penalty" in result.score_parts
+        ]
+        assert all(matching_index < index for index in mismatch_indexes)
 
 
 def test_monorepo_scope_does_not_overconstrain_unscoped_business_query(
@@ -507,6 +519,13 @@ def test_monorepo_scope_does_not_overconstrain_unscoped_business_query(
     bundle = query_repository(repo, "portfolio service", DEFAULT_CONFIG, context_lines=2)
     top_results = bundle.results[:5]
     top_paths = [result.file_path.as_posix() for result in top_results]
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+    top_project_roots = {
+        str(chunk.metadata.get("project_root", ""))
+        for result in top_results
+        for chunk in store.chunks_for_file(result.file_path, 1)
+        if "project_root" in chunk.metadata
+    }
 
     assert any(
         path in top_paths
@@ -515,6 +534,7 @@ def test_monorepo_scope_does_not_overconstrain_unscoped_business_query(
             "frontend/src/views/portfolio/index.vue",
         ]
     )
+    assert len(top_project_roots) >= 2
     assert all(
         "project_scope_mismatch_penalty" not in result.score_parts
         for result in top_results

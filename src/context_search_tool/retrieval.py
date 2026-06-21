@@ -1372,7 +1372,11 @@ def _rank_chunks(
         score_parts["rerank_score"] = float(item['rerank_score'])
         score_parts["evidence_priority"] = float(item['evidence_priority'])
         score_parts["role_priority"] = float(item['role'].priority)
-        score_parts["role_boost"] = float(item['role'].boost)
+        score_parts["role_boost"] = (
+            0.0
+            if _has_project_scope_mismatch(score_parts)
+            else float(item['role'].boost)
+        )
 
     # Build final _RankedChunk objects
     final_ranked = [
@@ -2038,6 +2042,7 @@ def _rerank_score(
         Final rerank score
     """
     rerank_score = normalized_score
+    has_project_scope_mismatch = _has_project_scope_mismatch(score_parts)
 
     # Boosts
     if score_parts.get("penalty", 0.0) < 0:
@@ -2047,18 +2052,25 @@ def _rerank_score(
     elif _has_weak_original_direct_evidence(score_parts):
         rerank_score += 0.05
 
-    if flags.get("has_endpoint_signal", False) or flags.get("is_controller", False):
+    if (
+        not has_project_scope_mismatch
+        and (
+            flags.get("has_endpoint_signal", False)
+            or flags.get("is_controller", False)
+        )
+    ):
         rerank_score += 0.15
 
-    if flags.get("has_relation_support", False):
+    if not has_project_scope_mismatch and flags.get("has_relation_support", False):
         rerank_score += 0.1
 
-    rerank_score += role.boost
+    if not has_project_scope_mismatch:
+        rerank_score += role.boost
+        if role.boost:
+            score_parts["role_boost"] = role.boost
     if role.penalty:
         rerank_score -= role.penalty
         score_parts["role_penalty"] = -role.penalty
-    if role.boost:
-        score_parts["role_boost"] = role.boost
 
     if _is_non_readme_markdown_document(chunk.file_path):
         rerank_score -= _NON_README_DOCUMENT_DISPLAY_PENALTY
@@ -2066,7 +2078,9 @@ def _rerank_score(
             "non_readme_document_penalty"
         ] = -_NON_README_DOCUMENT_DISPLAY_PENALTY
 
-    role_exact_boost = _role_exact_match_boost(role, score_parts)
+    role_exact_boost = 0.0
+    if not has_project_scope_mismatch:
+        role_exact_boost = _role_exact_match_boost(role, score_parts)
     if role_exact_boost:
         rerank_score += role_exact_boost
         score_parts["role_exact_match_boost"] = role_exact_boost
@@ -2077,20 +2091,25 @@ def _rerank_score(
     rerank_score += project_scope_rerank_adjustment(score_parts)
 
     if (
-        role.name == "service_impl"
+        not has_project_scope_mismatch
+        and role.name == "service_impl"
         and score_parts.get("path_symbol", 0.0) >= 1.0
         and score_parts.get("token_coverage", 0.0) >= 0.25
     ):
         rerank_score += 0.18
         score_parts["impl_match_boost"] = 0.18
 
-    if flags.get("has_relation_support", False) and role.name in {
-        "service_impl",
-        "executor",
-        "data_type",
-        "service_interface",
-        "mapper",
-    }:
+    if (
+        not has_project_scope_mismatch
+        and flags.get("has_relation_support", False)
+        and role.name in {
+            "service_impl",
+            "executor",
+            "data_type",
+            "service_interface",
+            "mapper",
+        }
+    ):
         rerank_score += 0.08
         score_parts["relation_role_boost"] = 0.08
     if flags.get("has_relation_support", False) and role.name in {
@@ -2121,6 +2140,10 @@ def _rerank_score(
         rerank_score = min(rerank_score, planner_ceiling)
 
     return rerank_score
+
+
+def _has_project_scope_mismatch(score_parts: dict[str, float]) -> bool:
+    return score_parts.get("project_scope_mismatch_penalty", 0.0) < 0
 
 
 def _role_exact_match_boost(
