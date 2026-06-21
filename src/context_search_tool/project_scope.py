@@ -58,6 +58,12 @@ _BUSINESS_SHARED_WORDS = {
     "user",
     "order",
 }
+_ROOT_PACKAGE_SOURCE_DIRS = {
+    "app",
+    "components",
+    "pages",
+    "src",
+}
 _FILENAME_RE = re.compile(r"(?i)(?<![\w.-])[\w-]+(?:\.[\w-]+)+(?![\w.-])")
 _PATH_RE = re.compile(r"(?i)(?<![\w.-])[\w.-]+(?:/[\w.-]+)+(?![\w.-])")
 
@@ -145,6 +151,8 @@ def project_units_from_chunk_metadata(
     seen_roots: set[str] = set()
     for chunk in chunks:
         metadata = chunk.metadata
+        if not _has_current_metadata(metadata):
+            continue
         root = str(metadata.get("project_root", ""))
         if root in seen_roots:
             continue
@@ -178,9 +186,13 @@ def infer_query_scope(
 
     for unit in units:
         name = unit.name.lower()
+        kind = unit.kind.lower()
         root = _root_to_metadata(unit.root).lower()
         if name and name in words:
             project_names.add(unit.name)
+        if kind and kind in words:
+            kinds.add(unit.kind)
+            languages.update(unit.languages)
         if root and any(prefix == root or prefix.startswith(f"{root}/") for prefix in _path_hints(text_lower)):
             project_names.add(unit.name)
 
@@ -237,6 +249,9 @@ def project_scope_score_parts(
         return {}
 
     metadata = chunk.metadata
+    if not _has_current_metadata(metadata):
+        return {}
+
     chunk_name = str(metadata.get("project_name", ""))
     chunk_kind = str(metadata.get("project_kind", ""))
     chunk_languages = set(_string_tuple(metadata.get("project_languages", ())))
@@ -252,7 +267,12 @@ def project_scope_score_parts(
         parts["project_language_boost"] = 0.04
     if any(chunk_path.startswith(f"{prefix}/") or chunk_path == prefix for prefix in query_scope.path_prefixes):
         parts["project_path_hint_boost"] = 0.08
-    elif chunk_filename in query_scope.file_hints:
+    elif chunk_filename in query_scope.file_hints and not _scope_conflicts_with_chunk(
+        query_scope,
+        chunk_name,
+        chunk_kind,
+        chunk_languages,
+    ):
         parts["project_path_hint_boost"] = 0.08
 
     if parts:
@@ -285,6 +305,8 @@ def _discover_marker_files(repo: Path) -> Iterable[Path]:
         except OSError:
             continue
         for entry in entries:
+            if entry.is_symlink():
+                continue
             if entry.is_dir():
                 if entry.name not in _SKIP_DIRS:
                     stack.append(entry)
@@ -338,18 +360,20 @@ def _classify_package_json_unit(
 ) -> tuple[str, tuple[str, ...]]:
     package_text = _read_text(repo / root / "package.json")
     package_lower = package_text.lower()
-    nearby_paths = [path for path in observed_paths if _path_is_under(path, root)]
+    nearby_paths = [
+        path for path in observed_paths if _path_belongs_to_package_unit(path, root)
+    ]
     has_vue = (
         "vue" in package_lower
         or "@vitejs/plugin-vue" in package_lower
         or any(path.suffix == ".vue" for path in nearby_paths)
-        or _has_nearby_suffix(repo / root, ".vue")
+        or _has_nearby_suffix(repo / root, ".vue", root_is_repo=_is_root(root))
     )
     has_vite = "vite" in package_lower
     has_ts = (
         any(path.suffix in {".ts", ".tsx"} for path in nearby_paths)
-        or _has_nearby_suffix(repo / root, ".ts")
-        or _has_nearby_suffix(repo / root, ".tsx")
+        or _has_nearby_suffix(repo / root, ".ts", root_is_repo=_is_root(root))
+        or _has_nearby_suffix(repo / root, ".tsx", root_is_repo=_is_root(root))
     )
 
     languages: list[str] = []
@@ -369,7 +393,7 @@ def _read_text(path: Path) -> str:
         return ""
 
 
-def _has_nearby_suffix(root: Path, suffix: str) -> bool:
+def _has_nearby_suffix(root: Path, suffix: str, root_is_repo: bool = False) -> bool:
     if not root.exists():
         return False
     stack = [root]
@@ -380,8 +404,12 @@ def _has_nearby_suffix(root: Path, suffix: str) -> bool:
         except OSError:
             continue
         for entry in entries:
+            if entry.is_symlink():
+                continue
             if entry.is_dir():
-                if entry.name not in _SKIP_DIRS:
+                if entry.name in _SKIP_DIRS:
+                    continue
+                if current != root or not root_is_repo or entry.name in _ROOT_PACKAGE_SOURCE_DIRS:
                     stack.append(entry)
             elif entry.suffix == suffix:
                 return True
@@ -392,6 +420,14 @@ def _path_is_under(path: Path, root: Path) -> bool:
     if _is_root(root):
         return True
     return path == root or root in path.parents
+
+
+def _path_belongs_to_package_unit(path: Path, root: Path) -> bool:
+    if not _is_root(root):
+        return _path_is_under(path, root)
+    if len(path.parts) == 1:
+        return True
+    return bool(path.parts) and path.parts[0] in _ROOT_PACKAGE_SOURCE_DIRS
 
 
 def _is_root(path: Path) -> bool:
@@ -406,6 +442,10 @@ def _string_tuple(value: object) -> tuple[str, ...]:
     if isinstance(value, (list, tuple)):
         return tuple(item for item in value if isinstance(item, str))
     return ()
+
+
+def _has_current_metadata(metadata: dict[str, Any]) -> bool:
+    return metadata.get(PROJECT_SCOPE_METADATA_VERSION_KEY) == PROJECT_SCOPE_METADATA_VERSION
 
 
 def _path_hints(text: str) -> list[str]:
@@ -475,6 +515,19 @@ def _is_mixed_scope(query_scope: QueryScope) -> bool:
         or len(query_scope.kinds) > 1
         or len(query_scope.path_prefixes) > 1
     )
+
+
+def _scope_conflicts_with_chunk(
+    query_scope: QueryScope,
+    chunk_name: str,
+    chunk_kind: str,
+    chunk_languages: set[str],
+) -> bool:
+    if query_scope.project_names and chunk_name not in query_scope.project_names:
+        return True
+    if query_scope.kinds and chunk_kind not in query_scope.kinds:
+        return True
+    return bool(query_scope.languages and not chunk_languages.intersection(query_scope.languages))
 
 
 def _is_evidence_or_project_anchor(chunk: DocumentChunk) -> bool:
