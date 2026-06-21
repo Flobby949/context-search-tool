@@ -243,7 +243,7 @@ def test_indexer_rewrites_unchanged_chunks_when_project_scope_metadata_version_i
     summary = index_repository(repo, DEFAULT_CONFIG)
 
     assert summary.files_skipped == 0
-    assert summary.files_indexed >= 1
+    assert summary.files_indexed == 1
     chunks = store.chunks_for_file(
         Path("collector/internal/scheduler/scheduler.go"),
         limit=10,
@@ -268,7 +268,10 @@ def test_indexer_rewrites_unchanged_chunks_when_project_scope_metadata_version_i
     (repo / "backend" / "src" / "main" / "java" / "com" / "example").mkdir(
         parents=True
     )
-    (repo / "backend" / "pom.xml").write_text("<project />\n", encoding="utf-8")
+    (repo / "backend" / "build.gradle").write_text(
+        "plugins { id 'java' }\n",
+        encoding="utf-8",
+    )
     java_path = Path("backend/src/main/java/com/example/AuthController.java")
     (repo / java_path).write_text(
         "package com.example;\n\nclass AuthController {}\n",
@@ -285,11 +288,44 @@ def test_indexer_rewrites_unchanged_chunks_when_project_scope_metadata_version_i
     summary = index_repository(repo, DEFAULT_CONFIG)
 
     assert summary.files_skipped == 0
-    assert summary.files_indexed >= 1
+    assert summary.files_indexed == 1
     chunks = store.chunks_for_file(java_path, limit=10)
     assert chunks
     assert chunks[0].metadata["project_root"] == "backend"
     assert chunks[0].metadata["project_kind"] == "java"
+    assert (
+        chunks[0].metadata[PROJECT_SCOPE_METADATA_VERSION_KEY]
+        == PROJECT_SCOPE_METADATA_VERSION
+    )
+    assert store.get_metadata(PROJECT_SCOPE_METADATA_VERSION_KEY) == str(
+        PROJECT_SCOPE_METADATA_VERSION
+    )
+
+
+def test_indexer_rewrites_unchanged_chunks_when_project_scope_metadata_version_is_invalid(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "collector" / "internal" / "scheduler").mkdir(parents=True)
+    (repo / "collector" / "go.mod").write_text("module collector\n", encoding="utf-8")
+    scheduler_path = Path("collector/internal/scheduler/scheduler.go")
+    (repo / scheduler_path).write_text(
+        "package scheduler\n\nfunc Run() {}\n",
+        encoding="utf-8",
+    )
+    index_repository(repo, DEFAULT_CONFIG)
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+    store.set_metadata(PROJECT_SCOPE_METADATA_VERSION_KEY, "not-an-int")
+
+    summary = index_repository(repo, DEFAULT_CONFIG)
+
+    assert summary.files_skipped == 0
+    assert summary.files_indexed == 1
+    chunks = store.chunks_for_file(scheduler_path, limit=10)
+    assert chunks
+    assert chunks[0].metadata["project_root"] == "collector"
+    assert chunks[0].metadata["project_kind"] == "go"
     assert (
         chunks[0].metadata[PROJECT_SCOPE_METADATA_VERSION_KEY]
         == PROJECT_SCOPE_METADATA_VERSION
