@@ -143,6 +143,239 @@ func NewS3Storage(region string, bucket string) string {
     )
 
 
+def _write_monorepo_scope_fixture(repo: Path) -> None:
+    frontend = repo / "frontend"
+    collector = repo / "collector"
+    backend = repo / "investment-assistant-backend"
+
+    (frontend / "src" / "stores" / "modules").mkdir(parents=True)
+    (frontend / "src" / "views" / "portfolio").mkdir(parents=True)
+    (frontend / "package.json").write_text(
+        """
+{
+  "dependencies": {
+    "@vitejs/plugin-vue": "latest",
+    "pinia": "latest",
+    "vite": "latest",
+    "vue": "latest"
+  }
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (frontend / "src" / "stores" / "modules" / "auth.store.ts").write_text(
+        """
+import { defineStore } from "pinia";
+
+export const useAuthStore = defineStore("auth", {
+  actions: {
+    async login(username: string, password: string) {
+      return { username, password, domain: "frontend auth portfolio fund position" };
+    },
+    async register(email: string) {
+      return { email, feature: "frontend auth register portfolio fund position" };
+    },
+    async fetchCurrentUser() {
+      return { name: "frontend auth portfolio fund position user" };
+    },
+  },
+});
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (frontend / "src" / "views" / "portfolio" / "index.vue").write_text(
+        """
+<script setup lang="ts">
+async function fetchPortfolios() {
+  return ["frontend portfolio fund position"];
+}
+
+async function fetchPositions() {
+  return ["frontend portfolio fund position detail"];
+}
+</script>
+
+<template>
+  <section>portfolio fund position</section>
+</template>
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    (collector / "internal" / "api" / "handler").mkdir(parents=True)
+    (collector / "internal" / "scheduler").mkdir(parents=True)
+    (collector / "go.mod").write_text(
+        """
+module example.com/collector
+
+go 1.22
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (collector / "internal" / "api" / "handler" / "collect_handler.go").write_text(
+        """
+package handler
+
+type CollectHandler struct{}
+
+func (h *CollectHandler) CollectNav() string {
+    return "collector gin fund portfolio nav"
+}
+
+func (h *CollectHandler) BatchCollectNav() string {
+    return "collector gin batch fund portfolio"
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (collector / "internal" / "scheduler" / "scheduler.go").write_text(
+        """
+package scheduler
+
+type Scheduler struct{}
+
+func (s *Scheduler) AddTask(name string) string {
+    return "collector cron heartbeat fund portfolio " + name
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    (backend / "src" / "main" / "java" / "com" / "example").mkdir(parents=True)
+    (backend / "pom.xml").write_text(
+        """
+<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>investment-assistant-backend</artifactId>
+</project>
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (
+        backend
+        / "src"
+        / "main"
+        / "java"
+        / "com"
+        / "example"
+        / "AuthController.java"
+    ).write_text(
+        """
+package com.example;
+
+class AuthController {
+    private final UserAppService userAppService = new UserAppService();
+
+    String login(String username) {
+        return userAppService.register(username);
+    }
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (
+        backend
+        / "src"
+        / "main"
+        / "java"
+        / "com"
+        / "example"
+        / "PortfolioAppService.java"
+    ).write_text(
+        """
+package com.example;
+
+class PortfolioAppService {
+    String fetchPortfolios() {
+        return "backend portfolio fund position auth service";
+    }
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (
+        backend
+        / "src"
+        / "main"
+        / "java"
+        / "com"
+        / "example"
+        / "UserAppService.java"
+    ).write_text(
+        """
+package com.example;
+
+class UserAppService {
+    String register(String username) {
+        return "backend auth login register fetchCurrentUser " + username;
+    }
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
+    config = DEFAULT_CONFIG
+    index_dir = index_dir_for(repo)
+    store = SQLiteStore(index_dir / "index.sqlite")
+    original_tokens = retrieval._dedupe(retrieval.tokenize_query(query))
+    deleted_ids = store.deleted_chunk_ids()
+    initial_candidates = retrieval._initial_candidates(
+        index_dir,
+        store,
+        query,
+        original_tokens,
+        config,
+        deleted_ids,
+    )
+    signal_candidates = retrieval._signal_candidates(store, original_tokens, config)
+    direct_candidates = retrieval._merge_candidates(
+        [
+            *initial_candidates,
+            *signal_candidates,
+        ]
+    )
+    anchor_candidates = retrieval._anchor_expansion_candidates(
+        store,
+        list(direct_candidates.values()),
+        config,
+        query=query,
+        tokens=original_tokens,
+    )
+    relation_seed_candidates = retrieval._merge_candidates(
+        [
+            *direct_candidates.values(),
+            *anchor_candidates,
+        ]
+    )
+    relation_candidates = retrieval._relation_expansion_candidates(
+        store,
+        list(relation_seed_candidates.values()),
+        config,
+    )
+    candidates = retrieval._merge_candidates(
+        [
+            *direct_candidates.values(),
+            *anchor_candidates,
+            *relation_candidates,
+        ]
+    )
+    chunks = store.chunks_for_ids(list(candidates))
+    return {chunk.file_path.as_posix() for chunk in chunks.values()}
+
+
 def test_generic_retrieval_finds_go_upload_handler_without_language_plugin(
     tmp_path: Path,
 ) -> None:
@@ -201,6 +434,90 @@ def test_generic_retrieval_finds_go_storage_backends_without_language_plugin(
     assert any(
         path in paths
         for path in ["storage/local.go", "storage/oss.go", "storage/s3.go"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_path", "requires_project_score_part"),
+    [
+        (
+            "frontend useAuthStore login register fetchCurrentUser Pinia",
+            "frontend/src/stores/modules/auth.store.ts",
+            True,
+        ),
+        (
+            "frontend portfolio index.vue fetchPortfolios fetchPositions",
+            "frontend/src/views/portfolio/index.vue",
+            True,
+        ),
+        (
+            "collector CollectHandler CollectNav BatchCollectNav gin",
+            "collector/internal/api/handler/collect_handler.go",
+            True,
+        ),
+        (
+            "collector scheduler.go type Scheduler AddTask heartbeat cron",
+            "collector/internal/scheduler/scheduler.go",
+            True,
+        ),
+        (
+            "AuthController login register UserAppService",
+            "investment-assistant-backend/src/main/java/com/example/AuthController.java",
+            False,
+        ),
+    ],
+)
+def test_monorepo_scope_rerank_surfaces_scoped_subproject_files(
+    tmp_path: Path,
+    query: str,
+    expected_path: str,
+    requires_project_score_part: bool,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_monorepo_scope_fixture(repo)
+    index_repository(repo, DEFAULT_CONFIG)
+
+    candidate_paths = _candidate_pool_paths_before_rerank(repo, query)
+    assert expected_path in candidate_paths, (
+        f"query={query!r} expected_path={expected_path!r} "
+        f"candidate_paths={sorted(candidate_paths)!r}"
+    )
+
+    bundle = query_repository(repo, query, DEFAULT_CONFIG, context_lines=2)
+    top_results = bundle.results[:5]
+    top_paths = [result.file_path.as_posix() for result in top_results]
+    assert expected_path in top_paths
+
+    matching_result = next(
+        result for result in top_results if result.file_path.as_posix() == expected_path
+    )
+    if requires_project_score_part:
+        assert any(key.startswith("project_") for key in matching_result.score_parts)
+
+
+def test_monorepo_scope_does_not_overconstrain_unscoped_business_query(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_monorepo_scope_fixture(repo)
+    index_repository(repo, DEFAULT_CONFIG)
+
+    bundle = query_repository(repo, "portfolio service", DEFAULT_CONFIG, context_lines=2)
+    top_results = bundle.results[:5]
+    top_paths = [result.file_path.as_posix() for result in top_results]
+
+    assert any(
+        path in top_paths
+        for path in [
+            "investment-assistant-backend/src/main/java/com/example/PortfolioAppService.java",
+            "frontend/src/views/portfolio/index.vue",
+        ]
+    )
+    assert all(
+        "project_scope_mismatch_penalty" not in result.score_parts
+        for result in top_results
     )
 
 
