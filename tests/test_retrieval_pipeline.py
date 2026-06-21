@@ -264,6 +264,73 @@ def test_query_without_index_does_not_call_planner(tmp_path: Path) -> None:
     assert bundle.planner.status == "disabled"
 
 
+def test_project_scope_score_parts_affect_rerank_score() -> None:
+    chunk = DocumentChunk(
+        chunk_id="generic",
+        file_path=Path("src/generic.ts"),
+        start_line=1,
+        end_line=1,
+        content="export const generic = true",
+        chunk_type="text",
+        symbols=[],
+        lexical_tokens=["generic"],
+        embedding_id="generic",
+        deleted_at=None,
+        metadata={"language": "typescript"},
+    )
+    role = retrieval._ChunkRole("generic", 5, 0.0)
+    flags = {
+        "has_endpoint_signal": False,
+        "is_controller": False,
+        "has_relation_support": False,
+    }
+    base_parts = {"lexical": 0.8}
+    scoped_parts = {
+        "lexical": 0.8,
+        "project_scope_boost": 0.10,
+        "project_kind_boost": 0.06,
+        "project_language_boost": 0.04,
+    }
+
+    base_score = retrieval._rerank_score(
+        0.5,
+        base_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+    scoped_score = retrieval._rerank_score(
+        0.5,
+        scoped_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+
+    assert scoped_score == pytest.approx(base_score + 0.20)
+
+
+def test_reasons_include_project_scope_diagnostics() -> None:
+    reasons = retrieval._reasons(
+        {
+            "project_scope_boost": 0.10,
+            "project_kind_boost": 0.06,
+            "project_language_boost": 0.04,
+            "project_path_hint_boost": 0.08,
+            "project_scope_mismatch_penalty": -0.06,
+        },
+        "frontend upload flow",
+    )
+
+    assert "project scope match" in reasons
+    assert "project kind match" in reasons
+    assert "project language match" in reasons
+    assert "project path hint match" in reasons
+    assert "project scope mismatch penalty" in reasons
+
+
 def test_query_expands_signal_relations_before_weak_lexical_matches(
     tmp_path: Path,
 ) -> None:

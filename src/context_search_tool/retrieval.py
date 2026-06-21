@@ -21,6 +21,12 @@ from context_search_tool.models import (
     RetrievalSummary,
 )
 from context_search_tool.paths import index_dir_for
+from context_search_tool.project_scope import (
+    infer_query_scope,
+    project_scope_rerank_adjustment,
+    project_scope_score_parts,
+    project_units_from_chunk_metadata,
+)
 from context_search_tool.query_planner import (
     QueryPlanner,
     expand_query_plan_tokens,
@@ -1207,6 +1213,8 @@ def _rank_chunks(
     signal_cache: dict[str, list[CodeSignal]] = {}
     query_route = _query_route(query)
     candidate_chunks = store.chunks_for_ids(list(candidates))
+    project_units = project_units_from_chunk_metadata(tuple(candidate_chunks.values()))
+    query_scope = infer_query_scope(query, tokens, project_units)
     spring_path_parts = _spring_path_score_parts(
         store,
         candidate_chunks,
@@ -1276,6 +1284,15 @@ def _rank_chunks(
             score_parts.update(
                 _java_context_score_parts(get_signals(), java_context_tokens, role)
             )
+
+        score_parts = _merge_score_parts(
+            score_parts,
+            project_scope_score_parts(
+                chunk,
+                query_scope,
+                project_unit_count=len(project_units),
+            ),
+        )
 
         score = _combined_score(score_parts)
         all_combined_scores.append(score)
@@ -2057,6 +2074,7 @@ def _rerank_score(
     rerank_score += _route_rerank_adjustment(score_parts)
     rerank_score += score_parts.get("route_tail_context_match", 0.0)
     rerank_score += _spring_path_rerank_adjustment(score_parts)
+    rerank_score += project_scope_rerank_adjustment(score_parts)
 
     if (
         role.name == "service_impl"
@@ -3097,6 +3115,16 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("Spring service interface path graph match")
     if score_parts.get("spring_path_executor_match", 0.0) > 0:
         reasons.append("Spring executor path graph match")
+    if score_parts.get("project_scope_boost", 0.0) > 0:
+        reasons.append("project scope match")
+    if score_parts.get("project_kind_boost", 0.0) > 0:
+        reasons.append("project kind match")
+    if score_parts.get("project_language_boost", 0.0) > 0:
+        reasons.append("project language match")
+    if score_parts.get("project_path_hint_boost", 0.0) > 0:
+        reasons.append("project path hint match")
+    if score_parts.get("project_scope_mismatch_penalty", 0.0) < 0:
+        reasons.append("project scope mismatch penalty")
     if "/" in query and score_parts.get("route_boost", 0.0) > 0:
         reasons.append("route token match")
     elif score_parts.get("plugin_boost", 0.0) > 0:
