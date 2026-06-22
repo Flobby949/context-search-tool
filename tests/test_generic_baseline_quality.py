@@ -71,6 +71,13 @@ def _assert_outrank_item(item: object) -> None:
     _assert_positive_integer(item.get("top_k"))
 
 
+def _assert_preferred_rank_item(item: object) -> None:
+    assert isinstance(item, dict)
+    _assert_matcher_item(item)
+    _assert_positive_integer(item.get("max_rank"))
+    assert item["max_rank"] <= item["top_k"]
+
+
 def _assert_query_spec(query_spec: object) -> None:
     assert isinstance(query_spec, dict)
     for key in ("id", "query"):
@@ -80,6 +87,12 @@ def _assert_query_spec(query_spec: object) -> None:
     for key in ("expected_top_k", "absent_top_k", "expected_any_top_k"):
         if key in query_spec:
             _assert_matcher_list(query_spec[key])
+
+    if "preferred_rank" in query_spec:
+        assert isinstance(query_spec["preferred_rank"], list)
+        assert query_spec["preferred_rank"]
+        for item in query_spec["preferred_rank"]:
+            _assert_preferred_rank_item(item)
 
     if "outranks" in query_spec:
         assert isinstance(query_spec["outranks"], list)
@@ -153,6 +166,33 @@ def _assert_expected_top_k(query_spec: dict, top_paths: list[str]) -> None:
             "query": query_spec["query"],
             "top_paths": top_paths,
             "expected": expected,
+        }
+
+
+def _preferred_rank_position(preferred: dict, top_paths: list[str]) -> int | None:
+    scoped_paths = top_paths[: preferred["top_k"]]
+    for index, path in enumerate(scoped_paths, start=1):
+        if _matches(preferred, path):
+            return index
+    return None
+
+
+def _assert_preferred_rank(query_spec: dict, top_paths: list[str]) -> None:
+    for preferred in query_spec.get("preferred_rank", []):
+        rank = _preferred_rank_position(preferred, top_paths)
+        if rank is None:
+            assert False, {
+                "query_id": query_spec["id"],
+                "query": query_spec["query"],
+                "top_paths": top_paths,
+                "preferred": preferred,
+            }
+        assert rank <= preferred["max_rank"], {
+            "query_id": query_spec["id"],
+            "query": query_spec["query"],
+            "top_paths": top_paths,
+            "preferred": preferred,
+            "actual_rank": rank,
         }
 
 
@@ -464,6 +504,34 @@ def test_generic_baseline_quality_rejects_invalid_fixture_shapes() -> None:
                 }
             ],
         },
+        {
+            "repo_key": "imagebed",
+            "path_env": "CST_SMOKE_IMAGEBED_REPO",
+            "repo_dir_name": "imagebed",
+            "queries": [
+                {
+                    "id": "bad",
+                    "query": "bad",
+                    "preferred_rank": [
+                        {"path": "handler/upload.go", "top_k": 5, "max_rank": 0}
+                    ],
+                }
+            ],
+        },
+        {
+            "repo_key": "imagebed",
+            "path_env": "CST_SMOKE_IMAGEBED_REPO",
+            "repo_dir_name": "imagebed",
+            "queries": [
+                {
+                    "id": "bad",
+                    "query": "bad",
+                    "preferred_rank": [
+                        {"path": "handler/upload.go", "top_k": 3, "max_rank": 4}
+                    ],
+                }
+            ],
+        },
     ]
 
     for repo_spec in invalid_specs:
@@ -579,6 +647,7 @@ def test_generic_baseline_real_project_quality(
         bundle = query_repository(repo, query_spec["query"], DEFAULT_CONFIG)
         top_paths = [result.file_path.as_posix() for result in bundle.results]
         _assert_expected_top_k(query_spec, top_paths)
+        _assert_preferred_rank(query_spec, top_paths)
         _assert_expected_any_top_k(query_spec, top_paths)
         _assert_absent_top_k(query_spec, top_paths)
         _assert_outranks(query_spec, top_paths)

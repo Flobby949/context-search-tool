@@ -10,6 +10,9 @@
         "expected_top_k": [
           {"path": "handler/upload.go", "top_k": 5}
         ],
+        "preferred_rank": [
+          {"path": "handler/upload.go", "top_k": 5, "max_rank": 1}
+        ],
         "absent_top_k": [
           {"glob": "templates/*", "top_k": 5}
         ]
@@ -19,6 +22,9 @@
         "query": "AuthMiddleware Authorization Bearer token AdminMiddleware",
         "expected_top_k": [
           {"path": "middleware/auth.go", "top_k": 5}
+        ],
+        "preferred_rank": [
+          {"path": "middleware/auth.go", "top_k": 5, "max_rank": 1}
         ]
       },
       {
@@ -44,6 +50,9 @@
         "query": "DeleteHandler delete object storage remove image",
         "expected_top_k": [
           {"path": "handler/delete.go", "top_k": 5}
+        ],
+        "preferred_rank": [
+          {"path": "handler/delete.go", "top_k": 5, "max_rank": 1}
         ]
       },
       {
@@ -51,6 +60,9 @@
         "query": "router upload delete middleware route group main",
         "expected_top_k": [
           {"path": "main.go", "top_k": 5}
+        ],
+        "preferred_rank": [
+          {"path": "main.go", "top_k": 5, "max_rank": 1}
         ],
         "absent_top_k": [
           {"glob": "*.md", "top_k": 5}
@@ -69,6 +81,9 @@
         "expected_top_k": [
           {"path": "src-tauri/src/commands.rs", "top_k": 5}
         ],
+        "preferred_rank": [
+          {"path": "src-tauri/src/commands.rs", "top_k": 5, "max_rank": 1}
+        ],
         "absent_top_k": [
           {"glob": "src-tauri/gen/schemas/*.json", "top_k": 8}
         ]
@@ -78,6 +93,9 @@
         "query": "apply_dev restore_clean file_swap session conflict engine",
         "expected_top_k": [
           {"path": "src-tauri/src/engine.rs", "top_k": 5}
+        ],
+        "preferred_rank": [
+          {"path": "src-tauri/src/engine.rs", "top_k": 5, "max_rank": 1}
         ],
         "absent_top_k": [
           {"glob": "src-tauri/gen/schemas/*.json", "top_k": 8}
@@ -89,6 +107,9 @@
         "expected_top_k": [
           {"path": "src/main.ts", "top_k": 5}
         ],
+        "preferred_rank": [
+          {"path": "src/main.ts", "top_k": 5, "max_rank": 1}
+        ],
         "absent_top_k": [
           {"path": "vite.config.ts", "top_k": 3}
         ]
@@ -98,6 +119,9 @@
         "query": "settings persistence save load project config app settings",
         "expected_top_k": [
           {"path": "src-tauri/src/settings.rs", "top_k": 5}
+        ],
+        "preferred_rank": [
+          {"path": "src-tauri/src/settings.rs", "top_k": 5, "max_rank": 1}
         ],
         "outranks": [
           {
@@ -120,6 +144,9 @@
         "expected_top_k": [
           {"path": "frontend/src/stores/modules/auth.store.ts", "top_k": 5}
         ],
+        "preferred_rank": [
+          {"path": "frontend/src/stores/modules/auth.store.ts", "top_k": 5, "max_rank": 3}
+        ],
         "absent_top_k": [
           {"glob": "investment-assistant-backend/src/main/java/com/investment/application/auth/*.java", "top_k": 3}
         ]
@@ -129,6 +156,9 @@
         "query": "collector CollectHandler collect_handler.go CollectNav BatchCollectNav gin",
         "expected_top_k": [
           {"path": "collector/internal/api/handler/collect_handler.go", "top_k": 5}
+        ],
+        "preferred_rank": [
+          {"path": "collector/internal/api/handler/collect_handler.go", "top_k": 5, "max_rank": 1}
         ]
       },
       {
@@ -136,6 +166,9 @@
         "query": "frontend useSseConnection EventSource chat composable",
         "expected_top_k": [
           {"path": "frontend/src/views/chat/composables/useSseConnection.ts", "top_k": 5}
+        ],
+        "preferred_rank": [
+          {"path": "frontend/src/views/chat/composables/useSseConnection.ts", "top_k": 5, "max_rank": 3}
         ]
       },
       {
@@ -143,6 +176,9 @@
         "query": "collector FundService CollectNav BatchCollectNav fund service",
         "expected_top_k": [
           {"path": "collector/internal/service/fund_service.go", "top_k": 5}
+        ],
+        "preferred_rank": [
+          {"path": "collector/internal/service/fund_service.go", "top_k": 5, "max_rank": 2}
         ]
       },
       {
@@ -150,6 +186,9 @@
         "query": "collector eastmoney nav.go fetch fund nav",
         "expected_top_k": [
           {"path": "collector/internal/source/eastmoney/nav.go", "top_k": 5}
+        ],
+        "preferred_rank": [
+          {"path": "collector/internal/source/eastmoney/nav.go", "top_k": 5, "max_rank": 1}
         ]
       },
       {
@@ -157,6 +196,9 @@
         "query": "collector scheduler.go Scheduler AddTask cron heartbeat",
         "expected_top_k": [
           {"path": "collector/internal/scheduler/scheduler.go", "top_k": 5}
+        ],
+        "preferred_rank": [
+          {"path": "collector/internal/scheduler/scheduler.go", "top_k": 5, "max_rank": 1}
         ]
       },
       {
@@ -164,6 +206,9 @@
         "query": "java AIController chatWithSse SseServer SseChatRequest userId message",
         "expected_top_k": [
           {"path": "investment-assistant-backend/src/main/java/com/investment/interfaces/rest/AIController.java", "top_k": 5}
+        ],
+        "preferred_rank": [
+          {"path": "investment-assistant-backend/src/main/java/com/investment/interfaces/rest/AIController.java", "top_k": 5, "max_rank": 1}
         ]
       }
     ]
