@@ -61,10 +61,12 @@ This plan focuses on generic code intent and path-role ranking. It must not opti
 - Create: `src/context_search_tool/identifier_intent.py`
   - Extract query identifiers, filenames, suffix hints, and role hints from raw query text and existing tokenized terms.
 - Create: `src/context_search_tool/path_roles.py`
-  - Classify language-neutral file roles from relative path, suffix, and chunk content.
+  - Classify language-neutral query-intent path roles from relative path, suffix, and chunk content.
+  - This must not become a second business-role ontology competing with `retrieval._chunk_role`; Task 3 documents the boundary and Task 5 adds overlap regressions.
 - Modify: `src/context_search_tool/retrieval.py`
   - Compute query intent once per ranked candidate set.
   - Merge identifier and path-role score parts before `_rerank_score`.
+  - Use one shared role-compatibility helper for path-role boosts and mismatch penalties.
   - Add explainable reasons for the new score parts.
   - Keep `_combined_score` unchanged.
 - Modify: `tests/test_generic_baseline_quality.py`
@@ -90,7 +92,7 @@ This plan focuses on generic code intent and path-role ranking. It must not opti
   - `imagebed`
   - `env-change`
   - `Investment-Assistant`
-- Current real-smoke Top1 count improves from the observed `11/16` without weakening any existing absent/noise assertions.
+- A reproducible rank-distribution diagnostic shows current real-smoke Top1 count improves from the observed `11/16` without weakening any existing absent/noise assertions.
 - `fast_context_search` remains a qualitative comparator only; CST tests do not depend on fast-context output.
 
 ## 5. Implementation Tasks
@@ -184,26 +186,31 @@ Add these invalid specs inside `test_generic_baseline_quality_rejects_invalid_fi
 Add this helper near `_assert_expected_top_k`:
 
 ```python
+def _preferred_rank_position(preferred: dict, top_paths: list[str]) -> int | None:
+    scoped_paths = top_paths[: preferred["top_k"]]
+    for index, path in enumerate(scoped_paths, start=1):
+        if _matches(preferred, path):
+            return index
+    return None
+
+
 def _assert_preferred_rank(query_spec: dict, top_paths: list[str]) -> None:
     for preferred in query_spec.get("preferred_rank", []):
-        scoped_paths = top_paths[: preferred["top_k"]]
-        for index, path in enumerate(scoped_paths, start=1):
-            if _matches(preferred, path):
-                assert index <= preferred["max_rank"], {
-                    "query_id": query_spec["id"],
-                    "query": query_spec["query"],
-                    "top_paths": top_paths,
-                    "preferred": preferred,
-                    "actual_rank": index,
-                }
-                break
-        else:
+        rank = _preferred_rank_position(preferred, top_paths)
+        if rank is None:
             assert False, {
                 "query_id": query_spec["id"],
                 "query": query_spec["query"],
                 "top_paths": top_paths,
                 "preferred": preferred,
             }
+        assert rank <= preferred["max_rank"], {
+            "query_id": query_spec["id"],
+            "query": query_spec["query"],
+            "top_paths": top_paths,
+            "preferred": preferred,
+            "actual_rank": rank,
+        }
 ```
 
 Call it in `test_generic_baseline_real_project_quality` immediately after `_assert_expected_top_k(query_spec, top_paths)`:
@@ -266,7 +273,9 @@ CST_SMOKE_REPOS_DIR=/Users/flobby/vibe_coding /opt/homebrew/Caskroom/miniforge/b
 
 Expected before implementation: failures only from the new `preferred_rank` assertions listed as milestone targets. Existing `expected_top_k`, `absent_top_k`, and `outranks` assertions must remain passing.
 
-- [ ] **Step 7: Commit Task 1**
+- [ ] **Step 7: Commit Task 1 as a local red-phase checkpoint**
+
+This commit is expected to contain failing slow/integration `preferred_rank` assertions until the rerank implementation lands. Do not push it alone or declare CI green from this checkpoint.
 
 ```bash
 git add tests/test_generic_baseline_quality.py tests/fixtures/generic_baseline_quality/queries.json
@@ -552,7 +561,11 @@ def classify_path_role(path: Path, content: str = "") -> PathRole:
         return PathRole("service_interface", 35)
     if stem.endswith(("queryexe", "qryexe", "executor", "queryexecutor", "exe")):
         return PathRole("executor", 20)
-    if any(part in {"dto", "vo", "entity", "model", "models", "types", "type"} for part in parts):
+    if (
+        any(part in {"dto", "vo", "entity", "model", "models", "types", "type"} for part in parts)
+        or stem in {"type", "types"}
+        or name.endswith((".types.ts", ".types.tsx"))
+    ):
         return PathRole("data_type", 45)
     if any(part in {"store", "stores", "state"} for part in parts) or name.endswith(".store.ts"):
         return PathRole("state_store", 20)
@@ -596,6 +609,8 @@ def _is_test_path(path: str, name: str, parts: tuple[str, ...]) -> bool:
         or "/src/test/" in path
     )
 ```
+
+`path_roles.py` is only for query-intent path-role hints. It does not replace the existing `_chunk_role()` business-role classifier in `retrieval.py`; any overlapping role semantics must be covered by Task 5 regressions before tuning scores.
 
 - [ ] **Step 4: Run path-role tests**
 
@@ -690,7 +705,12 @@ def test_identifier_intent_ranks_state_store_above_related_frontend_files(
     )
 
     assert ranked[0].chunk.chunk_id == "auth-store"
+    score_parts_by_chunk = {item.chunk.chunk_id: item.score_parts for item in ranked}
     assert ranked[0].score_parts["identifier_exact_match_boost"] > 0
+    assert (
+        score_parts_by_chunk["auth-store"]["identifier_exact_match_boost"]
+        > score_parts_by_chunk["auth-service"].get("identifier_exact_match_boost", 0.0)
+    )
     assert ranked[0].score_parts["path_role_hint_boost"] > 0
 ```
 
@@ -760,7 +780,12 @@ def test_identifier_intent_ranks_composable_above_chat_types_and_views(
     )
 
     assert ranked[0].chunk.chunk_id == "sse-composable"
+    score_parts_by_chunk = {item.chunk.chunk_id: item.score_parts for item in ranked}
     assert ranked[0].score_parts["identifier_exact_match_boost"] > 0
+    assert (
+        score_parts_by_chunk["sse-composable"]["identifier_exact_match_boost"]
+        > score_parts_by_chunk["chat-view"].get("identifier_exact_match_boost", 0.0)
+    )
     assert ranked[0].score_parts["path_role_hint_boost"] > 0
 ```
 
@@ -814,7 +839,12 @@ def test_identifier_intent_ranks_rust_frontend_entry_when_query_names_frontend(
     )
 
     assert ranked[0].chunk.chunk_id == "frontend-main"
+    score_parts_by_chunk = {item.chunk.chunk_id: item.score_parts for item in ranked}
     assert ranked[0].score_parts["identifier_exact_match_boost"] > 0
+    assert (
+        score_parts_by_chunk["frontend-main"]["identifier_exact_match_boost"]
+        > score_parts_by_chunk["commands"].get("identifier_exact_match_boost", 0.0)
+    )
 ```
 
 - [ ] **Step 2: Run synthetic tests and verify failure**
@@ -882,32 +912,52 @@ def _identifier_exact_match_score(
 ) -> float:
     if not intent.identifiers and not intent.file_hints:
         return 0.0
-    haystack = " ".join(
-        [
-            chunk.file_path.as_posix(),
-            chunk.file_path.stem,
-            chunk.content,
-            " ".join(symbol.name for symbol in chunk.symbols),
-        ]
-    ).lower()
+
+    path_text = chunk.file_path.as_posix().lower()
+    stem_text = chunk.file_path.stem.lower()
+    content_text = chunk.content.lower()
+    symbol_names = {symbol.name.lower() for symbol in chunk.symbols}
+    score = 0.0
+
     for file_hint in intent.file_hints:
-        if file_hint.lower() in haystack:
-            return 0.35
+        normalized = file_hint.lower()
+        if normalized in path_text:
+            score = max(score, 0.40)
+        elif normalized in content_text:
+            score = max(score, 0.30)
+
+    matched_identifiers = 0
     for identifier in intent.identifiers:
         normalized = identifier.lower()
-        if normalized in haystack:
-            return 0.30
-    return 0.0
+        if normalized in symbol_names or normalized == stem_text or normalized in path_text:
+            matched_identifiers += 1
+            score = max(score, 0.30)
+        elif normalized in content_text:
+            matched_identifiers += 1
+            score = max(score, 0.20)
+
+    if matched_identifiers > 1:
+        score += min(0.10, 0.05 * (matched_identifiers - 1))
+
+    return min(score, 0.40)
 
 
 def _path_role_hint_score(path_role: PathRole, intent: IdentifierIntent) -> float:
-    if path_role.name in intent.role_hints:
+    if _path_role_matches_intent(path_role, intent.role_hints):
+        if path_role.name == "service_interface":
+            return 0.08
         return 0.14
-    if path_role.name == "service_impl" and "service" in intent.role_hints:
-        return 0.14
-    if path_role.name == "service_interface" and "service" in intent.role_hints:
-        return 0.08
     return 0.0
+
+
+def _path_role_matches_intent(path_role: PathRole, role_hints: tuple[str, ...]) -> bool:
+    if path_role.name in role_hints:
+        return True
+    compatible_hints = {
+        "service_impl": {"service"},
+        "service_interface": {"service"},
+    }
+    return bool(compatible_hints.get(path_role.name, set()).intersection(role_hints))
 
 
 def _strong_role_mismatch(
@@ -930,7 +980,10 @@ def _strong_role_mismatch(
         "repository",
         "source_adapter",
     }
-    return bool(set(intent.role_hints).intersection(high_confidence_roles)) and path_role.name not in intent.role_hints
+    return (
+        bool(set(intent.role_hints).intersection(high_confidence_roles))
+        and not _path_role_matches_intent(path_role, intent.role_hints)
+    )
 ```
 
 - [ ] **Step 5: Add rerank score application**
@@ -1042,7 +1095,65 @@ def test_identifier_role_boosts_preserve_java_executor_over_service_directory_la
     assert ranked[0].score_parts["identifier_exact_match_boost"] > 0
 ```
 
-- [ ] **Step 2: Add no-hard-filter cross-role test**
+- [ ] **Step 2: Add Java service role compatibility regression**
+
+Add:
+
+```python
+def test_path_role_service_hint_treats_java_impl_as_service_without_mismatch(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    service_impl = DocumentChunk(
+        chunk_id="service-impl",
+        file_path=Path("src/main/java/com/example/service/impl/AuthServiceImpl.java"),
+        start_line=1,
+        end_line=80,
+        content="class AuthServiceImpl implements AuthService { User currentUser() { return null; } }",
+        chunk_type="symbol",
+        lexical_tokens=["auth", "service", "impl", "current", "user"],
+        metadata={"language": "java"},
+    )
+    service_interface = DocumentChunk(
+        chunk_id="service-interface",
+        file_path=Path("src/main/java/com/example/service/AuthService.java"),
+        start_line=1,
+        end_line=40,
+        content="interface AuthService { User currentUser(); }",
+        chunk_type="symbol",
+        lexical_tokens=["auth", "service", "current", "user"],
+        metadata={"language": "java"},
+    )
+    for chunk in (service_impl, service_interface):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "service-impl": RetrievalCandidate(
+                chunk_id="service-impl",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.55, "path_symbol": 3.0, "direct_text": 0.8},
+            ),
+            "service-interface": RetrievalCandidate(
+                chunk_id="service-interface",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.60, "path_symbol": 2.0, "direct_text": 0.6},
+            ),
+        },
+        retrieval.tokenize_query("auth service current user"),
+        "auth service current user",
+    )
+
+    assert ranked[0].chunk.chunk_id == "service-impl"
+    assert ranked[0].score_parts["path_role_hint_boost"] > 0
+    assert "path_role_mismatch_penalty" not in ranked[0].score_parts
+```
+
+- [ ] **Step 3: Add no-hard-filter cross-role test**
 
 Add:
 
@@ -1083,7 +1194,7 @@ def test_path_role_mismatch_penalty_does_not_hide_strong_identifier_match(
     assert "path_role_mismatch_penalty" not in ranked[0].score_parts
 ```
 
-- [ ] **Step 3: Run full retrieval pipeline tests**
+- [ ] **Step 4: Run full retrieval pipeline tests**
 
 Run:
 
@@ -1093,7 +1204,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit Task 5**
+- [ ] **Step 5: Commit Task 5**
 
 ```bash
 git add tests/test_retrieval_pipeline.py src/context_search_tool/retrieval.py
@@ -1131,7 +1242,64 @@ Expected after implementation:
 - Existing `outranks` assertions pass.
 - New `preferred_rank` assertions pass.
 
-- [ ] **Step 3: If preferred-rank failures remain, inspect score parts before tuning**
+- [ ] **Step 3: Capture preferred-rank distribution**
+
+Run this read-only diagnostic to make the Top1/Top3/Top5 improvement reproducible:
+
+```bash
+CST_SMOKE_REPOS_DIR=/Users/flobby/vibe_coding /opt/homebrew/Caskroom/miniforge/base/bin/python - <<'PY'
+import tempfile
+from pathlib import Path
+
+from context_search_tool.config import DEFAULT_CONFIG
+from context_search_tool.indexer import index_repository
+from context_search_tool.retrieval import query_repository
+from tests.test_generic_baseline_quality import (
+    _copy_repo_for_smoke,
+    _load_repo_specs,
+    _preferred_rank_position,
+    _repo_for_spec,
+)
+
+combined = {"total": 0, "top1": 0, "top3": 0, "top5": 0}
+
+for repo_spec in _load_repo_specs():
+    source_repo = _repo_for_spec(repo_spec)
+    if source_repo is None or not source_repo.exists():
+        print(f"{repo_spec['repo_key']}: skipped")
+        continue
+
+    workspace = Path(tempfile.mkdtemp(prefix=f"cst-rank-dist-{repo_spec['repo_key']}-"))
+    repo = _copy_repo_for_smoke(source_repo, workspace)
+    index_repository(repo, DEFAULT_CONFIG)
+
+    repo_counts = {"total": 0, "top1": 0, "top3": 0, "top5": 0}
+    for query_spec in repo_spec["queries"]:
+        bundle = query_repository(repo, query_spec["query"], DEFAULT_CONFIG)
+        top_paths = [result.file_path.as_posix() for result in bundle.results]
+        for preferred in query_spec.get("preferred_rank", []):
+            repo_counts["total"] += 1
+            combined["total"] += 1
+            rank = _preferred_rank_position(preferred, top_paths)
+            if rank == 1:
+                repo_counts["top1"] += 1
+                combined["top1"] += 1
+            if rank is not None and rank <= 3:
+                repo_counts["top3"] += 1
+                combined["top3"] += 1
+            if rank is not None and rank <= 5:
+                repo_counts["top5"] += 1
+                combined["top5"] += 1
+
+    print(f"{repo_spec['repo_key']}: {repo_counts}")
+
+print(f"combined: {combined}")
+PY
+```
+
+Expected: combined Top1 count is higher than the captured pre-implementation baseline (`11/16` if the preferred-rank target count is unchanged). Copy the per-repo and combined counts into the final task summary.
+
+- [ ] **Step 4: If preferred-rank failures remain, inspect score parts before tuning**
 
 For each failing query, run this diagnostic script after replacing `REPO_DIR_NAME` and `QUERY_TEXT`:
 
@@ -1176,7 +1344,7 @@ PY
 
 Only tune if the failure is a generic pattern visible in at least one synthetic test or more than one real fixture shape.
 
-- [ ] **Step 4: Run fast-context comparison as qualitative evidence**
+- [ ] **Step 5: Run fast-context comparison as qualitative evidence**
 
 Use fast-context on the same queries that gained `preferred_rank` targets. Use lightweight mode:
 
@@ -1190,7 +1358,7 @@ Use fast-context on the same queries that gained `preferred_rank` targets. Use l
 
 Record the comparison in the final task summary. Do not add fast-context output to tests.
 
-- [ ] **Step 5: Commit Task 6 if tuning was required**
+- [ ] **Step 6: Commit Task 6 if tuning was required**
 
 If production or fixture corrections were needed:
 
@@ -1265,8 +1433,10 @@ Before merging:
 
 - [ ] No production code mentions real repository names such as `Investment-Assistant`, `imagebed`, or `env-change`.
 - [ ] New rank improvements are driven by generic identifier, filename, path-role, or project-scope evidence.
+- [ ] Query-intent path roles do not diverge silently from existing `_chunk_role()` behavior on overlapping Java/service/view/source cases.
 - [ ] `expected_top_k` continues to protect recall.
 - [ ] `preferred_rank` protects precision without replacing recall assertions.
+- [ ] Rank-distribution diagnostic output is captured in the final summary, including Top1/Top3/Top5 counts.
 - [ ] Planner-disabled behavior remains deterministic.
 - [ ] Java/Spring executor/service/controller behavior is preserved.
 - [ ] Single-project repos and root-indexed monorepos both pass real smoke.
