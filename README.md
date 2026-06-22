@@ -284,6 +284,8 @@ exclude = ["target/", "build/"]
 
 框架插件是可选增强层：例如 Java/Spring 插件会补充 endpoint、comment、usage 和 relation 信号；没有插件时，CST 仍保留通用源码检索基线。如果 `cst stats` 对正常源码仓库只显示 README/config 文件，先检查源码后缀是否在 scanner language map 中，并补 scanner 回归测试，再调整排序。
 
+CST also treats explicit code intent as a generic ranking signal. Queries that name identifiers such as `UploadHandler`, `useAuthStore`, `apply_dev`, filenames such as `nav.go`, or broad path roles such as `handler`, `service`, `store`, `composable`, `command`, and `engine` receive explainable rerank support. These are language-neutral baseline signals, not framework plugins.
+
 ### Monorepo Root Indexing
 
 CST 可以直接索引 monorepo 根目录，并使用 `package.json`、`go.mod`、`pom.xml` 等通用 project markers 识别子项目边界。查询时匹配到的 project scope 会作为 soft rerank signal 使用，因此 frontend、collector 这类查询即使和 backend 共享业务词，也可以优先浮出自己子项目里的文件。
