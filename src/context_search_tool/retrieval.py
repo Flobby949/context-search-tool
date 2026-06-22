@@ -80,6 +80,7 @@ _SOURCE_SUFFIXES = {
     ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx", ".cs", ".swift",
     ".php", ".rb", ".lua", ".dart", ".sh", ".bash", ".zsh", ".fish",
 }
+_FRONTEND_ENTRYPOINT_NAMES = {"main.ts", "main.tsx", "main.js", "main.jsx"}
 _TEMPLATE_SUFFIXES = {".html", ".vue", ".svelte"}
 _DOC_SUFFIXES = {".md", ".mdx", ".rst"}
 _CONFIG_SUFFIXES = {
@@ -1298,6 +1299,10 @@ def _rank_chunks(
         )
         score_parts = _merge_score_parts(
             score_parts,
+            _frontend_entrypoint_scope_score_parts(chunk, query_scope, score_parts),
+        )
+        score_parts = _merge_score_parts(
+            score_parts,
             _identifier_intent_score_parts(chunk, identifier_intent),
         )
 
@@ -2216,6 +2221,41 @@ def _identifier_intent_score_parts(
         parts["path_role_mismatch_penalty"] = -0.08
 
     return parts
+
+
+def _frontend_entrypoint_scope_score_parts(
+    chunk: DocumentChunk,
+    query_scope,
+    score_parts: dict[str, float],
+) -> dict[str, float]:
+    if "frontend" not in query_scope.kinds:
+        return {}
+    if _has_project_scope_mismatch(score_parts):
+        return {}
+    if not any(
+        score_parts.get(key, 0.0) > 0
+        for key in (
+            "project_scope_boost",
+            "project_kind_boost",
+            "project_language_boost",
+            "project_path_hint_boost",
+        )
+    ):
+        return {}
+
+    path = chunk.file_path.as_posix().lower()
+    if chunk.file_path.name.lower() not in _FRONTEND_ENTRYPOINT_NAMES:
+        return {}
+    if not (path.startswith("src/") or "/src/" in path):
+        return {}
+    if (
+        score_parts.get("path_symbol", 0.0) < 1.0
+        or score_parts.get("direct_text", 0.0) < 0.60
+        or score_parts.get("token_coverage", 0.0) < 0.50
+    ):
+        return {}
+
+    return {"path_role_hint_boost": 0.14}
 
 
 def _identifier_exact_match_score(

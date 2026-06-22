@@ -5370,25 +5370,52 @@ def test_identifier_intent_ranks_rust_frontend_entry_when_query_names_frontend(
 ) -> None:
     store = SQLiteStore(tmp_path / "index.sqlite")
     store.initialize()
+    frontend_metadata = {
+        "project_scope_metadata_version": 1,
+        "project_root": "",
+        "project_name": "env-switcher",
+        "project_kind": "frontend",
+        "project_languages": ["typescript"],
+        "project_markers": ["package.json"],
+    }
+    rust_metadata = {
+        "project_scope_metadata_version": 1,
+        "project_root": "src-tauri",
+        "project_name": "src-tauri",
+        "project_kind": "rust",
+        "project_languages": ["rust"],
+        "project_markers": ["Cargo.toml"],
+    }
     frontend = DocumentChunk(
         chunk_id="frontend-main",
         file_path=Path("src/main.ts"),
         start_line=1,
         end_line=120,
-        content="function ProjectSwitcher() { invoke('apply_dev'); invoke('restore_clean'); }",
+        content=(
+            "import { invoke } from '@tauri-apps/api/core'; "
+            "document.querySelector('#apply-dev')?.addEventListener('click', async () => "
+            "{ await runCommand('apply_dev'); }); "
+            "document.querySelector('#restore-clean')?.addEventListener('click', async () => "
+            "{ await runCommand('restore_clean'); }); "
+            "async function runCommand(command: string) { await invoke(command); }"
+        ),
         chunk_type="symbol",
         lexical_tokens=["frontend", "project", "switcher", "invoke", "apply", "dev", "restore", "clean"],
-        metadata={"language": "typescript"},
+        metadata=frontend_metadata,
     )
     commands = DocumentChunk(
         chunk_id="commands",
         file_path=Path("src-tauri/src/commands.rs"),
         start_line=1,
         end_line=120,
-        content="pub fn apply_dev() {} pub fn restore_clean() {}",
+        content=(
+            "use crate::engine::ProjectSwitcher; "
+            "pub fn apply_dev() { ProjectSwitcher::new().apply_dev(); } "
+            "pub fn restore_clean() { ProjectSwitcher::new().restore_clean(); }"
+        ),
         chunk_type="symbol",
         lexical_tokens=["tauri", "command", "apply", "dev", "restore", "clean"],
-        metadata={"language": "rust"},
+        metadata=rust_metadata,
     )
     for chunk in (frontend, commands):
         store.replace_chunks(chunk.file_path, [chunk])
@@ -5400,13 +5427,22 @@ def test_identifier_intent_ranks_rust_frontend_entry_when_query_names_frontend(
                 chunk_id="frontend-main",
                 score=1.0,
                 source="direct",
-                score_parts={"semantic": 0.45, "path_symbol": 3.5, "direct_text": 0.8},
+                score_parts={
+                    "semantic": 0.04,
+                    "lexical": 1.58,
+                    "path_symbol": 1.5,
+                    "direct_text": 1.0,
+                },
             ),
             "commands": RetrievalCandidate(
                 chunk_id="commands",
                 score=1.0,
                 source="direct",
-                score_parts={"semantic": 0.60, "path_symbol": 3.75, "direct_text": 1.0},
+                score_parts={
+                    "lexical": 1.71,
+                    "path_symbol": 1.5,
+                    "direct_text": 1.0,
+                },
             ),
         },
         retrieval.tokenize_query("invoke apply_dev restore_clean frontend ProjectSwitcher"),
@@ -5416,10 +5452,8 @@ def test_identifier_intent_ranks_rust_frontend_entry_when_query_names_frontend(
     assert ranked[0].chunk.chunk_id == "frontend-main"
     score_parts_by_chunk = {item.chunk.chunk_id: item.score_parts for item in ranked}
     assert ranked[0].score_parts["identifier_exact_match_boost"] > 0
-    assert (
-        score_parts_by_chunk["frontend-main"]["identifier_exact_match_boost"]
-        > score_parts_by_chunk["commands"].get("identifier_exact_match_boost", 0.0)
-    )
+    assert score_parts_by_chunk["commands"]["identifier_exact_match_boost"] > 0
+    assert ranked[0].score_parts["path_role_hint_boost"] > 0
 
 
 def test_role_rerank_exact_handler_file_hint_beats_same_subproject_noise(
