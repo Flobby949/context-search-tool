@@ -4721,13 +4721,13 @@ def test_identifier_role_boosts_preserve_java_executor_over_service_directory_la
                 chunk_id="executor",
                 score=1.0,
                 source="direct",
-                score_parts={"semantic": 0.50, "path_symbol": 4.0, "direct_text": 1.0},
+                score_parts={"semantic": 0.40, "path_symbol": 2.0, "direct_text": 0.6},
             ),
             "service": RetrievalCandidate(
                 chunk_id="service",
                 score=1.0,
                 source="direct",
-                score_parts={"semantic": 0.60, "path_symbol": 2.0, "direct_text": 0.6},
+                score_parts={"semantic": 0.70, "path_symbol": 5.0, "direct_text": 0.9},
             ),
         },
         retrieval.tokenize_query("PageAppCatalogQueryExe fillCanApplyFilter"),
@@ -4736,6 +4736,12 @@ def test_identifier_role_boosts_preserve_java_executor_over_service_directory_la
 
     assert ranked[0].chunk.chunk_id == "executor"
     assert ranked[0].score_parts["identifier_exact_match_boost"] > 0
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+    assert (
+        by_id["executor"].rerank_score
+        - by_id["executor"].score_parts["identifier_exact_match_boost"]
+        < by_id["service"].rerank_score
+    )
 
 
 def test_path_role_service_hint_treats_java_impl_as_service_without_mismatch(
@@ -4773,13 +4779,13 @@ def test_path_role_service_hint_treats_java_impl_as_service_without_mismatch(
                 chunk_id="service-impl",
                 score=1.0,
                 source="direct",
-                score_parts={"semantic": 0.55, "path_symbol": 3.0, "direct_text": 0.8},
+                score_parts={"semantic": 0.35, "path_symbol": 1.5, "direct_text": 0.6},
             ),
             "service-interface": RetrievalCandidate(
                 chunk_id="service-interface",
                 score=1.0,
                 source="direct",
-                score_parts={"semantic": 0.60, "path_symbol": 2.0, "direct_text": 0.6},
+                score_parts={"semantic": 0.65, "path_symbol": 5.0, "direct_text": 0.7},
             ),
         },
         retrieval.tokenize_query("auth service current user"),
@@ -4789,6 +4795,13 @@ def test_path_role_service_hint_treats_java_impl_as_service_without_mismatch(
     assert ranked[0].chunk.chunk_id == "service-impl"
     assert ranked[0].score_parts["path_role_hint_boost"] > 0
     assert "path_role_mismatch_penalty" not in ranked[0].score_parts
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+    assert (
+        by_id["service-impl"].rerank_score
+        - by_id["service-impl"].score_parts["path_role_hint_boost"]
+        < by_id["service-interface"].rerank_score
+        - by_id["service-interface"].score_parts["path_role_hint_boost"]
+    )
 
 
 def test_path_role_mismatch_penalty_does_not_hide_strong_identifier_match(
@@ -4806,7 +4819,18 @@ def test_path_role_mismatch_penalty_does_not_hide_strong_identifier_match(
         lexical_tokens=["use", "auth", "store", "register"],
         metadata={"language": "vue"},
     )
-    store.replace_chunks(view.file_path, [view])
+    store_chunk = DocumentChunk(
+        chunk_id="store",
+        file_path=Path("frontend/src/stores/modules/auth.store.ts"),
+        start_line=1,
+        end_line=80,
+        content="export const authStore = { register() { return null } }",
+        chunk_type="symbol",
+        lexical_tokens=["auth", "store", "register"],
+        metadata={"language": "typescript"},
+    )
+    for chunk in (view, store_chunk):
+        store.replace_chunks(chunk.file_path, [chunk])
 
     ranked = retrieval._rank_chunks(
         store,
@@ -4815,8 +4839,14 @@ def test_path_role_mismatch_penalty_does_not_hide_strong_identifier_match(
                 chunk_id="view",
                 score=1.0,
                 source="direct",
-                score_parts={"semantic": 0.55, "path_symbol": 2.5, "direct_text": 1.0},
-            )
+                score_parts={"semantic": 0.50, "path_symbol": 2.25, "direct_text": 0.8},
+            ),
+            "store": RetrievalCandidate(
+                chunk_id="store",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.55, "path_symbol": 2.5, "direct_text": 0.85},
+            ),
         },
         retrieval.tokenize_query("useAuthStore register"),
         "useAuthStore register",
@@ -4825,6 +4855,13 @@ def test_path_role_mismatch_penalty_does_not_hide_strong_identifier_match(
     assert ranked[0].chunk.chunk_id == "view"
     assert ranked[0].score_parts["identifier_exact_match_boost"] > 0
     assert "path_role_mismatch_penalty" not in ranked[0].score_parts
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+    assert (
+        by_id["view"].rerank_score
+        - by_id["view"].score_parts["identifier_exact_match_boost"]
+        < by_id["store"].rerank_score
+    )
+    assert by_id["view"].rerank_score - 0.08 < by_id["store"].rerank_score
 
 
 def test_chunk_role_prefers_data_type_over_generic_service_directory() -> None:
