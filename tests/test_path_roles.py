@@ -10,6 +10,13 @@ def test_path_roles_classify_frontend_state_and_composable_files() -> None:
     assert classify_path_role(Path("src/views/auth/register.vue")).name == "view"
 
 
+def test_path_roles_do_not_treat_user_or_usage_as_composable() -> None:
+    assert classify_path_role(Path("src/main/java/com/example/service/UserService.java")).name == "service"
+    assert classify_path_role(Path("src/main/java/com/example/controller/UserController.java")).name == "entrypoint"
+    assert classify_path_role(Path("src/utils/usage.ts")).name == "source"
+    assert classify_path_role(Path("src/views/chat/composables/useSseConnection.ts")).name == "composable"
+
+
 def test_path_roles_classify_backend_and_collector_files() -> None:
     assert classify_path_role(Path("handler/upload.go")).name == "handler"
     assert classify_path_role(Path("middleware/auth.go")).name == "middleware"

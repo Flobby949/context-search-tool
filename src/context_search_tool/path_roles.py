@@ -15,6 +15,7 @@ def classify_path_role(path: Path, content: str = "") -> PathRole:
     parts = tuple(part for part in normalized.split("/") if part)
     name = path.name.lower()
     stem = path.stem.lower()
+    original_stem = path.stem
     content_lower = content.lower()
 
     if _is_test_path(normalized, name, parts):
@@ -40,7 +41,7 @@ def classify_path_role(path: Path, content: str = "") -> PathRole:
         return PathRole("data_type", 45)
     if any(part in {"store", "stores", "state"} for part in parts) or name.endswith(".store.ts"):
         return PathRole("state_store", 20)
-    if any(part in {"composable", "composables", "hook", "hooks"} for part in parts) or stem.startswith("use"):
+    if any(part in {"composable", "composables", "hook", "hooks"} for part in parts) or _is_frontend_use_hook(path, original_stem):
         return PathRole("composable", 20)
     if any(part in {"controller", "controllers"} for part in parts) or "controller" in stem:
         return PathRole("entrypoint", 10)
@@ -78,4 +79,13 @@ def _is_test_path(path: str, name: str, parts: tuple[str, ...]) -> bool:
         or "tests" in parts
         or name.endswith(("_test.go", ".test.ts", ".spec.ts", "test.java"))
         or "/src/test/" in path
+    )
+
+
+def _is_frontend_use_hook(path: Path, stem: str) -> bool:
+    return (
+        path.suffix.lower() in {".ts", ".tsx", ".js", ".jsx", ".vue", ".svelte"}
+        and len(stem) > 3
+        and stem.startswith("use")
+        and stem[3].isupper()
     )
