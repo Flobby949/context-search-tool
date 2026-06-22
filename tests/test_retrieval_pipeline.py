@@ -4686,6 +4686,147 @@ def test_chunk_role_prefers_executor_over_generic_service_directory() -> None:
     assert retrieval._chunk_role(chunk).name == "executor"
 
 
+def test_identifier_role_boosts_preserve_java_executor_over_service_directory_label(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    executor = DocumentChunk(
+        chunk_id="executor",
+        file_path=Path("src/main/java/com/example/service/PageAppCatalogQueryExe.java"),
+        start_line=1,
+        end_line=60,
+        content="class PageAppCatalogQueryExe { String fillCanApplyFilter() { return \"\"; } }",
+        chunk_type="symbol",
+        lexical_tokens=["page", "app", "catalog", "query", "exe", "can", "apply"],
+        metadata={"language": "java"},
+    )
+    service = DocumentChunk(
+        chunk_id="service",
+        file_path=Path("src/main/java/com/example/service/AppCatalogService.java"),
+        start_line=1,
+        end_line=60,
+        content="interface AppCatalogService { String page(); }",
+        chunk_type="symbol",
+        lexical_tokens=["app", "catalog", "service", "page"],
+        metadata={"language": "java"},
+    )
+    for chunk in (executor, service):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "executor": RetrievalCandidate(
+                chunk_id="executor",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.50, "path_symbol": 4.0, "direct_text": 1.0},
+            ),
+            "service": RetrievalCandidate(
+                chunk_id="service",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.60, "path_symbol": 2.0, "direct_text": 0.6},
+            ),
+        },
+        retrieval.tokenize_query("PageAppCatalogQueryExe fillCanApplyFilter"),
+        "PageAppCatalogQueryExe fillCanApplyFilter",
+    )
+
+    assert ranked[0].chunk.chunk_id == "executor"
+    assert ranked[0].score_parts["identifier_exact_match_boost"] > 0
+
+
+def test_path_role_service_hint_treats_java_impl_as_service_without_mismatch(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    service_impl = DocumentChunk(
+        chunk_id="service-impl",
+        file_path=Path("src/main/java/com/example/service/impl/AuthServiceImpl.java"),
+        start_line=1,
+        end_line=80,
+        content="class AuthServiceImpl implements AuthService { User currentUser() { return null; } }",
+        chunk_type="symbol",
+        lexical_tokens=["auth", "service", "impl", "current", "user"],
+        metadata={"language": "java"},
+    )
+    service_interface = DocumentChunk(
+        chunk_id="service-interface",
+        file_path=Path("src/main/java/com/example/service/AuthService.java"),
+        start_line=1,
+        end_line=40,
+        content="interface AuthService { User currentUser(); }",
+        chunk_type="symbol",
+        lexical_tokens=["auth", "service", "current", "user"],
+        metadata={"language": "java"},
+    )
+    for chunk in (service_impl, service_interface):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "service-impl": RetrievalCandidate(
+                chunk_id="service-impl",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.55, "path_symbol": 3.0, "direct_text": 0.8},
+            ),
+            "service-interface": RetrievalCandidate(
+                chunk_id="service-interface",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.60, "path_symbol": 2.0, "direct_text": 0.6},
+            ),
+        },
+        retrieval.tokenize_query("auth service current user"),
+        "auth service current user",
+    )
+
+    assert ranked[0].chunk.chunk_id == "service-impl"
+    assert ranked[0].score_parts["path_role_hint_boost"] > 0
+    assert "path_role_mismatch_penalty" not in ranked[0].score_parts
+
+
+def test_path_role_mismatch_penalty_does_not_hide_strong_identifier_match(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    view = DocumentChunk(
+        chunk_id="view",
+        file_path=Path("frontend/src/views/auth/register.vue"),
+        start_line=1,
+        end_line=80,
+        content="<script setup>function useAuthStore() { return null }</script>",
+        chunk_type="symbol",
+        lexical_tokens=["use", "auth", "store", "register"],
+        metadata={"language": "vue"},
+    )
+    store.replace_chunks(view.file_path, [view])
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "view": RetrievalCandidate(
+                chunk_id="view",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.55, "path_symbol": 2.5, "direct_text": 1.0},
+            )
+        },
+        retrieval.tokenize_query("useAuthStore register"),
+        "useAuthStore register",
+    )
+
+    assert ranked[0].chunk.chunk_id == "view"
+    assert ranked[0].score_parts["identifier_exact_match_boost"] > 0
+    assert "path_role_mismatch_penalty" not in ranked[0].score_parts
+
+
 def test_chunk_role_prefers_data_type_over_generic_service_directory() -> None:
     chunk = DocumentChunk(
         chunk_id="auth-dto",
