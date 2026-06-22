@@ -3277,9 +3277,9 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
     if score_parts.get("role_exact_match_boost", 0.0) > 0:
         reasons.append("role exact match boost")
     if score_parts.get("identifier_exact_match_boost", 0.0) > 0:
-        reasons.append("identifier exact match boost")
+        reasons.append("explicit identifier match")
     if score_parts.get("path_role_hint_boost", 0.0) > 0:
-        reasons.append("path role hint boost")
+        reasons.append("path role hint match")
     if score_parts.get("path_role_mismatch_penalty", 0.0) < 0:
         reasons.append("path role mismatch penalty")
     if score_parts.get("impl_match_boost", 0.0) > 0:

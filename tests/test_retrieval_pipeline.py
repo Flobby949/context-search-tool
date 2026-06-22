@@ -7475,6 +7475,23 @@ def test_reasons_include_role_diagnostics() -> None:
     assert "detail role penalty" in reasons
 
 
+def test_reasons_include_identifier_path_role_public_labels() -> None:
+    reasons = retrieval._reasons(
+        {
+            "identifier_exact_match_boost": 0.4,
+            "path_role_hint_boost": 0.14,
+            "path_role_mismatch_penalty": -0.08,
+        },
+        "frontend useAuthStore Pinia",
+    )
+
+    assert reasons == [
+        "explicit identifier match",
+        "path role hint match",
+        "path role mismatch penalty",
+    ]
+
+
 def test_rerank_planner_only_relation_cannot_beat_strong_original_direct(
     tmp_path: Path,
 ) -> None:
