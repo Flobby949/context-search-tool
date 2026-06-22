@@ -10,6 +10,7 @@ from pathlib import Path
 from context_search_tool.chunker import expand_lines
 from context_search_tool.config import ToolConfig
 from context_search_tool.embeddings import provider_from_config
+from context_search_tool.identifier_intent import IdentifierIntent, infer_identifier_intent
 from context_search_tool.manifest import assert_manifest_compatible
 from context_search_tool.models import (
     CodeSignal,
@@ -20,6 +21,7 @@ from context_search_tool.models import (
     RetrievalResult,
     RetrievalSummary,
 )
+from context_search_tool.path_roles import PathRole, classify_path_role
 from context_search_tool.paths import index_dir_for
 from context_search_tool.project_scope import (
     infer_query_scope,
@@ -1215,6 +1217,7 @@ def _rank_chunks(
     candidate_chunks = store.chunks_for_ids(list(candidates))
     project_units = project_units_from_chunk_metadata(tuple(candidate_chunks.values()))
     query_scope = infer_query_scope(query, tokens, project_units)
+    identifier_intent = infer_identifier_intent(query, tokens)
     spring_path_parts = _spring_path_score_parts(
         store,
         candidate_chunks,
@@ -1292,6 +1295,10 @@ def _rank_chunks(
                 query_scope,
                 project_unit_count=len(project_units),
             ),
+        )
+        score_parts = _merge_score_parts(
+            score_parts,
+            _identifier_intent_score_parts(chunk, identifier_intent),
         )
 
         score = _combined_score(score_parts)
@@ -2100,6 +2107,14 @@ def _rerank_score(
         rerank_score += file_hint_boost
         score_parts["file_hint_match_boost"] = file_hint_boost
 
+    if not has_project_scope_mismatch:
+        if score_parts.get("identifier_exact_match_boost", 0.0) > 0:
+            rerank_score += score_parts["identifier_exact_match_boost"]
+        if score_parts.get("path_role_hint_boost", 0.0) > 0:
+            rerank_score += score_parts["path_role_hint_boost"]
+        if score_parts.get("path_role_mismatch_penalty", 0.0) < 0:
+            rerank_score += score_parts["path_role_mismatch_penalty"]
+
     rerank_score += _route_rerank_adjustment(score_parts)
     rerank_score += score_parts.get("route_tail_context_match", 0.0)
     rerank_score += _spring_path_rerank_adjustment(score_parts)
@@ -2178,6 +2193,109 @@ def _role_exact_match_boost(
     if _has_explicit_handler_path_evidence(role, score_parts):
         return 0.08
     return 0.0
+
+
+def _identifier_intent_score_parts(
+    chunk: DocumentChunk,
+    intent: IdentifierIntent,
+) -> dict[str, float]:
+    parts: dict[str, float] = {}
+    path_role = classify_path_role(chunk.file_path, chunk.content)
+    identifier_score = _identifier_exact_match_score(chunk, intent)
+    if identifier_score:
+        parts["identifier_exact_match_boost"] = identifier_score
+
+    role_score = _path_role_hint_score(path_role, intent)
+    if role_score:
+        parts["path_role_hint_boost"] = role_score
+
+    if _strong_role_mismatch(path_role, intent, identifier_score):
+        parts["path_role_mismatch_penalty"] = -0.08
+
+    return parts
+
+
+def _identifier_exact_match_score(
+    chunk: DocumentChunk,
+    intent: IdentifierIntent,
+) -> float:
+    if not intent.identifiers and not intent.file_hints:
+        return 0.0
+
+    path_text = chunk.file_path.as_posix().lower()
+    stem_text = chunk.file_path.stem.lower()
+    content_text = chunk.content.lower()
+    symbol_names = {symbol.name.lower() for symbol in chunk.symbols}
+    score = 0.0
+
+    for file_hint in intent.file_hints:
+        normalized = file_hint.lower()
+        if normalized in path_text:
+            score = max(score, 0.40)
+        elif normalized in content_text:
+            score = max(score, 0.30)
+
+    matched_identifiers = 0
+    for identifier in intent.identifiers:
+        normalized = identifier.lower()
+        if normalized in symbol_names or normalized == stem_text or normalized in path_text:
+            matched_identifiers += 1
+            score = max(score, 0.30)
+        elif normalized in content_text:
+            matched_identifiers += 1
+            score = max(score, 0.20)
+
+    if matched_identifiers > 1:
+        repeated_identifier_bonus = 0.05 * (matched_identifiers - 1)
+        if matched_identifiers > 2:
+            repeated_identifier_bonus += 0.05
+        score += min(0.15, repeated_identifier_bonus)
+
+    return min(score, 0.40)
+
+
+def _path_role_hint_score(path_role: PathRole, intent: IdentifierIntent) -> float:
+    if _path_role_matches_intent(path_role, intent.role_hints):
+        if path_role.name == "service_interface":
+            return 0.08
+        return 0.14
+    return 0.0
+
+
+def _path_role_matches_intent(path_role: PathRole, role_hints: tuple[str, ...]) -> bool:
+    if path_role.name in role_hints:
+        return True
+    compatible_hints = {
+        "service_impl": {"service"},
+        "service_interface": {"service"},
+    }
+    return bool(compatible_hints.get(path_role.name, set()).intersection(role_hints))
+
+
+def _strong_role_mismatch(
+    path_role: PathRole,
+    intent: IdentifierIntent,
+    identifier_score: float,
+) -> bool:
+    if identifier_score > 0:
+        return False
+    if not intent.role_hints:
+        return False
+    high_confidence_roles = {
+        "state_store",
+        "composable",
+        "command",
+        "engine",
+        "handler",
+        "middleware",
+        "service",
+        "repository",
+        "source_adapter",
+    }
+    return (
+        bool(set(intent.role_hints).intersection(high_confidence_roles))
+        and not _path_role_matches_intent(path_role, intent.role_hints)
+    )
 
 
 def _file_hint_match_boost(score_parts: dict[str, float]) -> float:
@@ -3158,6 +3276,12 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("explicit file hint match")
     if score_parts.get("role_exact_match_boost", 0.0) > 0:
         reasons.append("role exact match boost")
+    if score_parts.get("identifier_exact_match_boost", 0.0) > 0:
+        reasons.append("identifier exact match boost")
+    if score_parts.get("path_role_hint_boost", 0.0) > 0:
+        reasons.append("path role hint boost")
+    if score_parts.get("path_role_mismatch_penalty", 0.0) < 0:
+        reasons.append("path role mismatch penalty")
     if score_parts.get("impl_match_boost", 0.0) > 0:
         reasons.append("service implementation exact match boost")
     if score_parts.get("relation_role_boost", 0.0) > 0:

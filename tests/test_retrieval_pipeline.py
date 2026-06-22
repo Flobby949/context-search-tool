@@ -5039,6 +5039,211 @@ def test_role_rerank_prefers_service_impl_over_handler_for_business_query(tmp_pa
     assert ranked[0].score_parts["role_priority"] < ranked[1].score_parts["role_priority"]
 
 
+def test_identifier_intent_ranks_state_store_above_related_frontend_files(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    auth_store = DocumentChunk(
+        chunk_id="auth-store",
+        file_path=Path("frontend/src/stores/modules/auth.store.ts"),
+        start_line=1,
+        end_line=80,
+        content="export const useAuthStore = defineStore('auth', { actions: { login() {}, register() {}, fetchCurrentUser() {} } })",
+        chunk_type="symbol",
+        lexical_tokens=["use", "auth", "store", "login", "register", "fetch", "current", "user"],
+        metadata={"language": "typescript"},
+    )
+    auth_service = DocumentChunk(
+        chunk_id="auth-service",
+        file_path=Path("frontend/src/api/services/auth.service.ts"),
+        start_line=1,
+        end_line=60,
+        content="export function login() {} export function register() {} export function fetchCurrentUser() {}",
+        chunk_type="symbol",
+        lexical_tokens=["auth", "service", "login", "register", "fetch", "current", "user"],
+        metadata={"language": "typescript"},
+    )
+    register_view = DocumentChunk(
+        chunk_id="register-view",
+        file_path=Path("frontend/src/views/auth/register.vue"),
+        start_line=1,
+        end_line=60,
+        content="<script setup>useAuthStore().register()</script>",
+        chunk_type="symbol",
+        lexical_tokens=["auth", "register", "use", "store"],
+        metadata={"language": "vue"},
+    )
+    for chunk in (auth_store, auth_service, register_view):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "auth-store": RetrievalCandidate(
+                chunk_id="auth-store",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.45, "path_symbol": 4.25, "direct_text": 1.0},
+            ),
+            "auth-service": RetrievalCandidate(
+                chunk_id="auth-service",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.65, "path_symbol": 3.5, "direct_text": 1.0},
+            ),
+            "register-view": RetrievalCandidate(
+                chunk_id="register-view",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.60, "path_symbol": 2.5, "direct_text": 0.8},
+            ),
+        },
+        retrieval.tokenize_query("frontend useAuthStore login register fetchCurrentUser Pinia"),
+        "frontend useAuthStore login register fetchCurrentUser Pinia",
+    )
+
+    assert ranked[0].chunk.chunk_id == "auth-store"
+    score_parts_by_chunk = {item.chunk.chunk_id: item.score_parts for item in ranked}
+    assert ranked[0].score_parts["identifier_exact_match_boost"] > 0
+    assert (
+        score_parts_by_chunk["auth-store"]["identifier_exact_match_boost"]
+        > score_parts_by_chunk["auth-service"].get("identifier_exact_match_boost", 0.0)
+    )
+    assert ranked[0].score_parts["path_role_hint_boost"] > 0
+
+
+def test_identifier_intent_ranks_composable_above_chat_types_and_views(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    composable = DocumentChunk(
+        chunk_id="sse-composable",
+        file_path=Path("frontend/src/views/chat/composables/useSseConnection.ts"),
+        start_line=1,
+        end_line=120,
+        content="export function useSseConnection() { return new EventSource('/chat') }",
+        chunk_type="symbol",
+        lexical_tokens=["use", "sse", "connection", "eventsource", "chat", "composable"],
+        metadata={"language": "typescript"},
+    )
+    types = DocumentChunk(
+        chunk_id="chat-types",
+        file_path=Path("frontend/src/views/chat/types.ts"),
+        start_line=1,
+        end_line=60,
+        content="export interface ChatMessage { id: string; content: string }",
+        chunk_type="symbol",
+        lexical_tokens=["chat", "types", "message"],
+        metadata={"language": "typescript"},
+    )
+    view = DocumentChunk(
+        chunk_id="chat-view",
+        file_path=Path("frontend/src/views/chat/index.vue"),
+        start_line=1,
+        end_line=100,
+        content="<script setup>useSseConnection()</script>",
+        chunk_type="symbol",
+        lexical_tokens=["chat", "use", "sse", "connection"],
+        metadata={"language": "vue"},
+    )
+    for chunk in (composable, types, view):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "sse-composable": RetrievalCandidate(
+                chunk_id="sse-composable",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.45, "path_symbol": 4.5, "direct_text": 1.0},
+            ),
+            "chat-types": RetrievalCandidate(
+                chunk_id="chat-types",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.62, "path_symbol": 3.0, "direct_text": 0.6},
+            ),
+            "chat-view": RetrievalCandidate(
+                chunk_id="chat-view",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.60, "path_symbol": 3.0, "direct_text": 0.8},
+            ),
+        },
+        retrieval.tokenize_query("frontend useSseConnection EventSource chat composable"),
+        "frontend useSseConnection EventSource chat composable",
+    )
+
+    assert ranked[0].chunk.chunk_id == "sse-composable"
+    score_parts_by_chunk = {item.chunk.chunk_id: item.score_parts for item in ranked}
+    assert ranked[0].score_parts["identifier_exact_match_boost"] > 0
+    assert (
+        score_parts_by_chunk["sse-composable"]["identifier_exact_match_boost"]
+        > score_parts_by_chunk["chat-view"].get("identifier_exact_match_boost", 0.0)
+    )
+    assert ranked[0].score_parts["path_role_hint_boost"] > 0
+
+
+def test_identifier_intent_ranks_rust_frontend_entry_when_query_names_frontend(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    frontend = DocumentChunk(
+        chunk_id="frontend-main",
+        file_path=Path("src/main.ts"),
+        start_line=1,
+        end_line=120,
+        content="function ProjectSwitcher() { invoke('apply_dev'); invoke('restore_clean'); }",
+        chunk_type="symbol",
+        lexical_tokens=["frontend", "project", "switcher", "invoke", "apply", "dev", "restore", "clean"],
+        metadata={"language": "typescript"},
+    )
+    commands = DocumentChunk(
+        chunk_id="commands",
+        file_path=Path("src-tauri/src/commands.rs"),
+        start_line=1,
+        end_line=120,
+        content="pub fn apply_dev() {} pub fn restore_clean() {}",
+        chunk_type="symbol",
+        lexical_tokens=["tauri", "command", "apply", "dev", "restore", "clean"],
+        metadata={"language": "rust"},
+    )
+    for chunk in (frontend, commands):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "frontend-main": RetrievalCandidate(
+                chunk_id="frontend-main",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.45, "path_symbol": 3.5, "direct_text": 0.8},
+            ),
+            "commands": RetrievalCandidate(
+                chunk_id="commands",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.60, "path_symbol": 3.75, "direct_text": 1.0},
+            ),
+        },
+        retrieval.tokenize_query("invoke apply_dev restore_clean frontend ProjectSwitcher"),
+        "invoke apply_dev restore_clean frontend ProjectSwitcher",
+    )
+
+    assert ranked[0].chunk.chunk_id == "frontend-main"
+    score_parts_by_chunk = {item.chunk.chunk_id: item.score_parts for item in ranked}
+    assert ranked[0].score_parts["identifier_exact_match_boost"] > 0
+    assert (
+        score_parts_by_chunk["frontend-main"]["identifier_exact_match_boost"]
+        > score_parts_by_chunk["commands"].get("identifier_exact_match_boost", 0.0)
+    )
+
+
 def test_role_rerank_exact_handler_file_hint_beats_same_subproject_noise(
     tmp_path: Path,
 ) -> None:
