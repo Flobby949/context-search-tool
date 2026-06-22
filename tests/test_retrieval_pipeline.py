@@ -8174,6 +8174,9 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
             "impl_match_boost": 0.18,
             "relation_role_boost": 0.08,
             "relation_detail_penalty": -0.06,
+            "identifier_exact_match_boost": 0.40,
+            "path_role_hint_boost": 0.14,
+            "path_role_mismatch_penalty": -0.08,
         },
         reasons=["reason from left"],
         followup_keywords=["left"],
@@ -8222,6 +8225,9 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
     assert "impl_match_boost" not in merged.score_parts
     assert "relation_role_boost" not in merged.score_parts
     assert "relation_detail_penalty" not in merged.score_parts
+    assert "identifier_exact_match_boost" not in merged.score_parts
+    assert "path_role_hint_boost" not in merged.score_parts
+    assert "path_role_mismatch_penalty" not in merged.score_parts
 
 
 def test_merge_score_parts_preserves_stronger_penalty() -> None:
