@@ -33,6 +33,22 @@ def test_identifier_intent_extracts_go_service_and_handler_roles() -> None:
     assert intent.role_hints == ("service",)
 
 
+def test_identifier_intent_extracts_acronym_prefixed_pascal_case() -> None:
+    intent = infer_identifier_intent(
+        "java AIController HTTPServer URLParser SSEClient REST chatWithSse",
+        ["java", "ai", "controller", "http", "server", "url", "parser", "sse", "client", "rest", "chat", "with", "sse"],
+    )
+
+    assert intent.identifiers == (
+        "AIController",
+        "HTTPServer",
+        "SSEClient",
+        "URLParser",
+        "chatWithSse",
+    )
+    assert "REST" not in intent.identifiers
+
+
 def test_identifier_intent_ignores_plain_business_words() -> None:
     intent = infer_identifier_intent(
         "auth portfolio fund service",

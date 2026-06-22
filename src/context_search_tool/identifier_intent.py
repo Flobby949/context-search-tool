@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 
 
-_CAMEL_OR_PASCAL_RE = re.compile(r"\b[A-Z]?[a-z]+(?:[A-Z][A-Za-z0-9]*)+\b")
+_CAMEL_OR_PASCAL_RE = re.compile(r"\b(?:[A-Z]{2,}(?=[A-Z][a-z])[A-Za-z0-9]*|[A-Z]?[a-z]+(?:[A-Z][A-Za-z0-9]*)+)\b")
 _SNAKE_IDENTIFIER_RE = re.compile(r"\b[a-z][a-z0-9]+(?:_[a-z0-9]+)+\b")
 _FILE_HINT_RE = re.compile(r"(?i)(?<![\w.-])[\w-]+(?:\.[\w-]+)+(?![\w.-])")
 
