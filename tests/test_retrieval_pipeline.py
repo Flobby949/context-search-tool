@@ -5095,6 +5095,51 @@ def test_generic_noise_indexed_lockfile_demotes_below_source(
     assert by_id["lockfile"].score_parts["penalty"] < 0
 
 
+@pytest.mark.parametrize(
+    "lockfile_path",
+    [
+        "Cargo.lock",
+        "go.sum",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "pnpm-lock.yml",
+        "yarn.lock",
+    ],
+)
+def test_generic_noise_indexed_common_lockfiles_demote_below_source(
+    tmp_path: Path,
+    lockfile_path: str,
+) -> None:
+    lockfile = _generic_noise_chunk(
+        "lockfile",
+        lockfile_path,
+        "storage save upload lock dependency",
+        ["storage", "save", "upload", "lock"],
+    )
+    source = _generic_noise_chunk(
+        "source",
+        "storage/local.go",
+        "type LocalStorage struct{} func (s *LocalStorage) Save() {}",
+        ["storage", "local", "save", "upload"],
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [lockfile, source],
+        {
+            "lockfile": {"lexical": 0.8, "direct_text": 0.7},
+            "source": {"lexical": 0.8, "direct_text": 0.7},
+        },
+        ["storage", "save", "upload"],
+        "storage save upload implementation",
+    )
+
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+    assert ranked[0].chunk.chunk_id == "source"
+    assert by_id["lockfile"].score_parts["lockfile_penalty"] < 0
+    assert by_id["lockfile"].score_parts["penalty"] == pytest.approx(-0.20)
+
+
 def test_generic_noise_template_demotes_below_storage_source(
     tmp_path: Path,
 ) -> None:
@@ -5215,6 +5260,102 @@ def test_role_rerank_prefers_service_impl_over_handler_for_business_query(tmp_pa
 
     assert ranked[0].chunk.chunk_id == "access-service-impl"
     assert ranked[0].score_parts["role_priority"] < ranked[1].score_parts["role_priority"]
+
+
+def test_rerank_sort_uses_role_priority_for_noise_level_score_ties() -> None:
+    generic = DocumentChunk(
+        chunk_id="settings",
+        file_path=Path("src-tauri/src/settings.rs"),
+        start_line=1,
+        end_line=77,
+        content="settings persistence save load project config app settings",
+        chunk_type="generic",
+    )
+    detail = DocumentChunk(
+        chunk_id="commands",
+        file_path=Path("src-tauri/src/commands.rs"),
+        start_line=1,
+        end_line=238,
+        content="commands settings persistence save load project config app settings",
+        chunk_type="generic",
+    )
+    near_tie_preferred_role = retrieval._RankedChunk(
+        chunk=generic,
+        score=0.92,
+        score_parts={"role_priority": 5.0, "rerank_score": 1.07985},
+        reasons=[],
+        rank_tier=0,
+        rerank_score=1.07985,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+    near_tie_detail_role = retrieval._RankedChunk(
+        chunk=detail,
+        score=1.05,
+        score_parts={"role_priority": 6.0, "rerank_score": 1.08},
+        reasons=[],
+        rank_tier=0,
+        rerank_score=1.08,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+    clear_winner = retrieval._RankedChunk(
+        chunk=detail,
+        score=1.05,
+        score_parts={"role_priority": 6.0, "rerank_score": 1.09},
+        reasons=[],
+        rank_tier=0,
+        rerank_score=1.09,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+
+    near_tie = sorted(
+        [near_tie_detail_role, near_tie_preferred_role],
+        key=retrieval._ranked_chunk_sort_key,
+    )
+    clear_gap = sorted(
+        [clear_winner, near_tie_preferred_role],
+        key=retrieval._ranked_chunk_sort_key,
+    )
+    expanded_near_tie_preferred_role = retrieval._ExpandedResult(
+        chunk_ids=["settings"],
+        file_path=Path("src-tauri/src/settings.rs"),
+        start_line=1,
+        end_line=77,
+        content="settings persistence save load project config app settings",
+        score=0.92,
+        score_parts={"role_priority": 5.0, "rerank_score": 1.07985},
+        reasons=[],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=1.07985,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+    expanded_near_tie_detail_role = retrieval._ExpandedResult(
+        chunk_ids=["commands"],
+        file_path=Path("src-tauri/src/commands.rs"),
+        start_line=1,
+        end_line=238,
+        content="commands settings persistence save load project config app settings",
+        score=1.05,
+        score_parts={"role_priority": 6.0, "rerank_score": 1.08},
+        reasons=[],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=1.08,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+    expanded_near_tie = sorted(
+        [expanded_near_tie_detail_role, expanded_near_tie_preferred_role],
+        key=retrieval._expanded_result_sort_key,
+    )
+
+    assert near_tie[0].chunk.chunk_id == "settings"
+    assert clear_gap[0].chunk.chunk_id == "commands"
+    assert expanded_near_tie[0].file_path == Path("src-tauri/src/settings.rs")
 
 
 def test_identifier_intent_ranks_state_store_above_related_frontend_files(

@@ -195,6 +195,9 @@ def _prepare_file(
     if extraction.metadata:
         metadata["plugin"] = extraction.metadata
     project_fields = project_metadata(project_unit)
+    scanner_fields = {
+        "is_test": scanned_file.is_test,
+    }
 
     source_file = SourceFile(
         path=scanned_file.path,
@@ -214,7 +217,7 @@ def _prepare_file(
                 [*chunk.lexical_tokens, *_localized_plugin_tokens(chunk, extraction)]
             ),
             embedding_id=chunk.chunk_id,
-            metadata={**chunk.metadata, **project_fields},
+            metadata={**chunk.metadata, **scanner_fields, **project_fields},
         )
         for chunk in chunk_text(
             scanned_file.path,

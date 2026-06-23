@@ -89,6 +89,15 @@ _LANGUAGES_BY_SUFFIX = {
     ".properties": "properties",
 }
 
+_LOCKFILE_NAMES = {
+    "cargo.lock",
+    "go.sum",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "pnpm-lock.yml",
+    "yarn.lock",
+}
+
 
 _DEFAULT_SKIPPED_DIRS = {
     "node_modules",
@@ -215,18 +224,49 @@ def _scan_file(path: Path, repo: Path, config: ToolConfig) -> ScannedFile | None
     except OSError:
         return None
 
+    relative_path = path.relative_to(repo)
     return ScannedFile(
-        path=path.relative_to(repo),
+        path=relative_path,
         absolute_path=path,
         language=language,
         sha256=hashlib.sha256(content).hexdigest(),
         size=stat.st_size,
         mtime_ns=stat.st_mtime_ns,
+        is_test=_is_test_path(relative_path),
     )
 
 
 def _language_for_path(path: Path) -> str:
+    if path.name.lower() in _LOCKFILE_NAMES:
+        return "lockfile"
     return _LANGUAGES_BY_SUFFIX.get(path.suffix.lower(), "")
+
+
+def _is_test_path(relative_path: Path) -> bool:
+    normalized = relative_path.as_posix().lower()
+    parts = tuple(part.lower() for part in relative_path.parts)
+    name = relative_path.name.lower()
+    return (
+        "test" in parts
+        or "tests" in parts
+        or "/src/test/" in normalized
+        or name.endswith(
+            (
+                "_test.go",
+                "_test.rs",
+                "_spec.rs",
+                ".test.ts",
+                ".spec.ts",
+                ".test.tsx",
+                ".spec.tsx",
+                ".test.js",
+                ".spec.js",
+                ".test.jsx",
+                ".spec.jsx",
+                "test.java",
+            )
+        )
+    )
 
 
 def _looks_binary(path: Path) -> bool:

@@ -113,6 +113,25 @@ impl ImageStore {
     assert "filename" in chunk.lexical_tokens
 
 
+def test_index_repository_propagates_scanner_test_metadata_to_chunks(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "service" / "upload_test.go"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "package service\nfunc TestUpload() {}\n",
+        encoding="utf-8",
+    )
+
+    summary = index_repository(repo, DEFAULT_CONFIG)
+
+    assert summary.files_seen == 1
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    chunk = store.chunk_for_line(Path("service/upload_test.go"), 2)
+    assert chunk.metadata["language"] == "go"
+    assert chunk.metadata["is_test"]
+
+
 def test_index_repository_skips_unchanged_files(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

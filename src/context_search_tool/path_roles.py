@@ -20,7 +20,14 @@ def classify_path_role(path: Path, content: str = "") -> PathRole:
 
     if _is_test_path(normalized, name, parts):
         return PathRole("test", 90)
-    if name in {"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "cargo.lock", "go.sum"}:
+    if name in {
+        "cargo.lock",
+        "go.sum",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "pnpm-lock.yml",
+        "yarn.lock",
+    }:
         return PathRole("lockfile", 90)
     if name in {"vite.config.ts", "vite.config.js", "webpack.config.js", "tsconfig.json"}:
         return PathRole("config", 70)
@@ -79,8 +86,23 @@ def _is_test_path(path: str, name: str, parts: tuple[str, ...]) -> bool:
     return (
         "test" in parts
         or "tests" in parts
-        or name.endswith(("_test.go", ".test.ts", ".spec.ts", "test.java"))
         or "/src/test/" in path
+        or name.endswith(
+            (
+                "_test.go",
+                "_test.rs",
+                "_spec.rs",
+                ".test.ts",
+                ".spec.ts",
+                ".test.tsx",
+                ".spec.tsx",
+                ".test.js",
+                ".spec.js",
+                ".test.jsx",
+                ".spec.jsx",
+                "test.java",
+            )
+        )
     )
 
 

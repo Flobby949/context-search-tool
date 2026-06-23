@@ -88,7 +88,15 @@ _CONFIG_SUFFIXES = {
     ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".conf",
     ".properties", ".env", ".xml",
 }
-_INDEXED_LOCKFILE_NAMES = {"package-lock.json", "pnpm-lock.yaml", "pnpm-lock.yml"}
+_RERANK_SORT_DECIMALS = 3
+_INDEXED_LOCKFILE_NAMES = {
+    "cargo.lock",
+    "go.sum",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "pnpm-lock.yml",
+    "yarn.lock",
+}
 
 
 @dataclass(frozen=True)
@@ -1428,15 +1436,22 @@ def _rank_chunks(
 
     return sorted(
         final_ranked,
-        key=lambda item: (
-            -item.rerank_score,        # Descending: larger is better
-            item.evidence_priority,    # Ascending: 0 (original_direct) is highest priority
-            item.score_parts.get("role_priority", 99.0),
-            -item.score,               # Descending: combined_score tiebreaker
-            item.chunk.file_path.as_posix(),
-            item.chunk.start_line,
-            item.chunk.chunk_id,
-        ),
+        key=_ranked_chunk_sort_key,
+    )
+
+
+def _ranked_chunk_sort_key(
+    item: _RankedChunk,
+) -> tuple[float, int, float, float, float, str, int, str]:
+    return (
+        -round(item.rerank_score, _RERANK_SORT_DECIMALS),
+        item.evidence_priority,
+        item.score_parts.get("role_priority", 99.0),
+        -item.rerank_score,
+        -item.score,
+        item.chunk.file_path.as_posix(),
+        item.chunk.start_line,
+        item.chunk.chunk_id,
     )
 
 
@@ -1655,14 +1670,21 @@ def _merge_overlapping_results(results: list[_ExpandedResult]) -> list[_Expanded
 
     return sorted(
         merged,
-        key=lambda item: (
-            -item.rerank_score,
-            item.evidence_priority,
-            item.score_parts.get("role_priority", 99.0),
-            -item.score,
-            item.file_path.as_posix(),
-            item.start_line,
-        ),
+        key=_expanded_result_sort_key,
+    )
+
+
+def _expanded_result_sort_key(
+    item: _ExpandedResult,
+) -> tuple[float, int, float, float, float, str, int]:
+    return (
+        -round(item.rerank_score, _RERANK_SORT_DECIMALS),
+        item.evidence_priority,
+        item.score_parts.get("role_priority", 99.0),
+        -item.rerank_score,
+        -item.score,
+        item.file_path.as_posix(),
+        item.start_line,
     )
 
 
@@ -1675,18 +1697,7 @@ def _merge_expanded_result(
     overlap = max(0, left.end_line - right.start_line + 1)
     content_lines = [*left_lines, *right_lines[overlap:]]
 
-    # Winner selection based on rerank_score (with tiebreak)
-    if left.rerank_score != right.rerank_score:
-        winner = left if left.rerank_score > right.rerank_score else right
-    else:
-        # Tiebreak by complete sort key
-        winner = min(left, right, key=lambda x: (
-            x.evidence_priority,
-            x.score_parts.get("role_priority", 99.0),
-            -x.score,
-            x.file_path.as_posix(),
-            x.start_line
-        ))
+    winner = min(left, right, key=_expanded_result_sort_key)
 
     # Merge score_parts: max for most fields, winner value for rerank-related fields
     merged_score_parts = _merge_score_parts(left.score_parts, right.score_parts)
