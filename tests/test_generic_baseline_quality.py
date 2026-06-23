@@ -78,6 +78,13 @@ def _assert_preferred_rank_item(item: object) -> None:
     assert item["max_rank"] <= item["top_k"]
 
 
+def _assert_forbidden_above_item(item: object) -> None:
+    assert isinstance(item, dict)
+    _assert_matcher_item(item)
+    _assert_positive_integer(item.get("max_rank"))
+    assert item["max_rank"] <= item["top_k"]
+
+
 def _assert_query_spec(query_spec: object) -> None:
     assert isinstance(query_spec, dict)
     for key in ("id", "query"):
@@ -93,6 +100,12 @@ def _assert_query_spec(query_spec: object) -> None:
         assert query_spec["preferred_rank"]
         for item in query_spec["preferred_rank"]:
             _assert_preferred_rank_item(item)
+
+    if "forbidden_above" in query_spec:
+        assert isinstance(query_spec["forbidden_above"], list)
+        assert query_spec["forbidden_above"]
+        for item in query_spec["forbidden_above"]:
+            _assert_forbidden_above_item(item)
 
     if "outranks" in query_spec:
         assert isinstance(query_spec["outranks"], list)
@@ -194,6 +207,21 @@ def _assert_preferred_rank(query_spec: dict, top_paths: list[str]) -> None:
             "preferred": preferred,
             "actual_rank": rank,
         }
+
+
+def _assert_forbidden_above(query_spec: dict, top_paths: list[str]) -> None:
+    for forbidden in query_spec.get("forbidden_above", []):
+        scoped_paths = top_paths[: forbidden["top_k"]]
+        for rank, path in enumerate(scoped_paths, start=1):
+            if rank > forbidden["max_rank"]:
+                break
+            assert not _matches(forbidden, path), {
+                "query_id": query_spec["id"],
+                "query": query_spec["query"],
+                "top_paths": top_paths,
+                "forbidden": forbidden,
+                "actual_rank": rank,
+            }
 
 
 def _assert_expected_candidates(query_spec: dict, candidate_paths: set[str]) -> None:
@@ -532,6 +560,34 @@ def test_generic_baseline_quality_rejects_invalid_fixture_shapes() -> None:
                 }
             ],
         },
+        {
+            "repo_key": "imagebed",
+            "path_env": "CST_SMOKE_IMAGEBED_REPO",
+            "repo_dir_name": "imagebed",
+            "queries": [
+                {
+                    "id": "bad",
+                    "query": "bad",
+                    "forbidden_above": [
+                        {"glob": "cmd/typora/**", "top_k": 5, "max_rank": 0}
+                    ],
+                }
+            ],
+        },
+        {
+            "repo_key": "imagebed",
+            "path_env": "CST_SMOKE_IMAGEBED_REPO",
+            "repo_dir_name": "imagebed",
+            "queries": [
+                {
+                    "id": "bad",
+                    "query": "bad",
+                    "forbidden_above": [
+                        {"glob": "cmd/typora/**", "top_k": 3, "max_rank": 4}
+                    ],
+                }
+            ],
+        },
     ]
 
     for repo_spec in invalid_specs:
@@ -651,4 +707,5 @@ def test_generic_baseline_real_project_quality(
         _assert_expected_any_top_k(query_spec, top_paths)
         _assert_absent_top_k(query_spec, top_paths)
         _assert_outranks(query_spec, top_paths)
+        _assert_forbidden_above(query_spec, top_paths)
         _assert_anchor_expected(query_spec, bundle)
