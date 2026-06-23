@@ -58,3 +58,13 @@ def test_identifier_intent_ignores_plain_business_words() -> None:
     assert intent.identifiers == ()
     assert intent.file_hints == ()
     assert intent.role_hints == ("service",)
+
+
+def test_identifier_intent_extracts_storage_role() -> None:
+    intent = infer_identifier_intent(
+        "UploadHandler MultiUpload multipart file storage Save",
+        ["upload", "handler", "multi", "upload", "multipart", "file", "storage", "save"],
+    )
+
+    assert intent.identifiers == ("MultiUpload", "UploadHandler")
+    assert intent.role_hints == ("handler", "storage")

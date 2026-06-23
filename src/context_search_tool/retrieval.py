@@ -2370,6 +2370,7 @@ def _strong_role_mismatch(
         "service",
         "repository",
         "source_adapter",
+        "storage",
     }
     return (
         bool(set(intent.role_hints).intersection(high_confidence_roles))

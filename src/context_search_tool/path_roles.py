@@ -55,6 +55,8 @@ def classify_path_role(path: Path, content: str = "") -> PathRole:
         return PathRole("handler", 25)
     if any(part in {"middleware", "middlewares"} for part in parts) or "middleware" in stem:
         return PathRole("middleware", 25)
+    if any(part in {"storage", "storages"} for part in parts):
+        return PathRole("storage", 30)
     if any(part in {"service", "services"} for part in parts):
         return PathRole("service", 30)
     if any(part in {"repository", "repositories", "repo", "repos"} for part in parts) or stem.endswith("_repo"):

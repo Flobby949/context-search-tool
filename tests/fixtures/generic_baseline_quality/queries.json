@@ -8,13 +8,15 @@
         "id": "go-upload-handler",
         "query": "UploadHandler MultiUpload multipart file storage Save",
         "expected_top_k": [
-          {"path": "handler/upload.go", "top_k": 5}
+          {"path": "handler/upload.go", "top_k": 5},
+          {"glob": "storage/*.go", "top_k": 5}
         ],
         "preferred_rank": [
           {"path": "handler/upload.go", "top_k": 5, "max_rank": 1}
         ],
         "absent_top_k": [
-          {"glob": "templates/*", "top_k": 5}
+          {"glob": "templates/*", "top_k": 5},
+          {"path": "cmd/typora/main.go", "top_k": 5}
         ]
       },
       {

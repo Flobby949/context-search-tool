@@ -5365,6 +5365,60 @@ def test_identifier_intent_ranks_composable_above_chat_types_and_views(
     assert ranked[0].score_parts["path_role_hint_boost"] > 0
 
 
+def test_identifier_intent_ranks_storage_source_above_unrelated_cli_entrypoint(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    storage = DocumentChunk(
+        chunk_id="local-storage",
+        file_path=Path("storage/local.go"),
+        start_line=1,
+        end_line=80,
+        content="type LocalStorage struct{} func (s *LocalStorage) Save(file multipart.File) error { return nil }",
+        chunk_type="symbol",
+        lexical_tokens=["local", "storage", "save", "file", "multipart"],
+        metadata={"language": "go"},
+    )
+    typora = DocumentChunk(
+        chunk_id="typora-main",
+        file_path=Path("cmd/typora/main.go"),
+        start_line=1,
+        end_line=80,
+        content="func main() { uploadFromTypora(); saveFile(); }",
+        chunk_type="symbol",
+        lexical_tokens=["typora", "upload", "save", "file", "main"],
+        metadata={"language": "go"},
+    )
+    for chunk in (storage, typora):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "local-storage": RetrievalCandidate(
+                chunk_id="local-storage",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.42, "path_symbol": 2.0, "direct_text": 0.8},
+            ),
+            "typora-main": RetrievalCandidate(
+                chunk_id="typora-main",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.50, "path_symbol": 2.0, "direct_text": 0.8},
+            ),
+        },
+        retrieval.tokenize_query("UploadHandler MultiUpload multipart file storage Save"),
+        "UploadHandler MultiUpload multipart file storage Save",
+    )
+
+    score_parts_by_chunk = {item.chunk.chunk_id: item.score_parts for item in ranked}
+    assert ranked[0].chunk.chunk_id == "local-storage"
+    assert score_parts_by_chunk["local-storage"]["path_role_hint_boost"] == pytest.approx(0.14)
+    assert score_parts_by_chunk["typora-main"]["path_role_mismatch_penalty"] == pytest.approx(-0.08)
+
+
 def test_identifier_intent_ranks_rust_frontend_entry_when_query_names_frontend(
     tmp_path: Path,
 ) -> None:
