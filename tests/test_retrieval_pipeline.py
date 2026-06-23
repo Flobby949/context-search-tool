@@ -8504,3 +8504,96 @@ def test_merge_overlapping_results_uses_role_priority_tiebreak() -> None:
     merged = _merge_overlapping_results([handler, service])
 
     assert [item.chunk_ids[0] for item in merged] == ["service", "handler"]
+
+
+def test_cohort_rerank_demotes_cross_project_unit_candidates_against_top1_anchor(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    collector_metadata = {
+        "language": "go",
+        "project_name": "collector",
+        "project_kind": "go",
+        "project_languages": ["go"],
+        "project_root": "collector",
+        "project_scope_metadata_version": 1,
+    }
+    backend_metadata = {
+        "language": "java",
+        "project_name": "investment-assistant-backend",
+        "project_kind": "java",
+        "project_languages": ["java"],
+        "project_root": "investment-assistant-backend",
+        "project_scope_metadata_version": 1,
+    }
+    fund_service = DocumentChunk(
+        chunk_id="fund-service",
+        file_path=Path("collector/internal/service/fund_service.go"),
+        start_line=1,
+        end_line=80,
+        content="func (s *FundService) CollectNav() {} func (s *FundService) BatchCollectNav() {}",
+        chunk_type="symbol",
+        lexical_tokens=["fund", "service", "collect", "nav", "batch"],
+        metadata=collector_metadata,
+    )
+    fund_data_client = DocumentChunk(
+        chunk_id="fund-data-client",
+        file_path=Path("investment-assistant-backend/src/main/java/com/investment/infra/external/FundDataClient.java"),
+        start_line=1,
+        end_line=60,
+        content="class FundDataClient { void fetch(CollectNav nav) {} }",
+        chunk_type="symbol",
+        lexical_tokens=["fund", "data", "client", "collect", "nav"],
+        metadata=backend_metadata,
+    )
+    nav_service = DocumentChunk(
+        chunk_id="nav-service",
+        file_path=Path("collector/internal/service/nav_service.go"),
+        start_line=1,
+        end_line=60,
+        content="func (s *NavService) CollectNav() {}",
+        chunk_type="symbol",
+        lexical_tokens=["nav", "service", "collect"],
+        metadata=collector_metadata,
+    )
+    for chunk in (fund_service, fund_data_client, nav_service):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "fund-service": RetrievalCandidate(
+                chunk_id="fund-service",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.50, "path_symbol": 4.5, "direct_text": 1.0},
+            ),
+            "fund-data-client": RetrievalCandidate(
+                chunk_id="fund-data-client",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.50, "path_symbol": 4.25, "direct_text": 1.0},
+            ),
+            "nav-service": RetrievalCandidate(
+                chunk_id="nav-service",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.45, "path_symbol": 4.0, "direct_text": 0.8},
+            ),
+        },
+        retrieval.tokenize_query("FundService CollectNav BatchCollectNav fund service"),
+        "FundService CollectNav BatchCollectNav fund service",
+    )
+
+    assert ranked[0].chunk.chunk_id == "fund-service"
+    score_parts_by_chunk = {item.chunk.chunk_id: item.score_parts for item in ranked}
+    assert "cohort_mismatch_penalty" not in score_parts_by_chunk["fund-service"]
+    assert "cohort_mismatch_penalty" not in score_parts_by_chunk["nav-service"]
+    assert (
+        score_parts_by_chunk["fund-data-client"]["cohort_mismatch_penalty"]
+        == pytest.approx(-retrieval._COHORT_MISMATCH_PENALTY)
+    )
+    reasons_by_chunk = {item.chunk.chunk_id: item.reasons for item in ranked}
+    assert "cross-project cohort mismatch penalty" in reasons_by_chunk["fund-data-client"]
+    assert "cross-project cohort mismatch penalty" not in reasons_by_chunk["fund-service"]

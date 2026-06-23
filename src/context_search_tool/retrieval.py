@@ -24,6 +24,7 @@ from context_search_tool.models import (
 from context_search_tool.path_roles import PathRole, classify_path_role
 from context_search_tool.paths import index_dir_for
 from context_search_tool.project_scope import (
+    QueryScope,
     infer_query_scope,
     project_scope_rerank_adjustment,
     project_scope_score_parts,
@@ -1390,6 +1391,26 @@ def _rank_chunks(
             else float(item['role'].boost)
         )
 
+    # Cohort coherence: in multi-unit repos, demote candidates outside the
+    # Top1 anchor's project unit so cross-unit lexical or call-reference
+    # matches do not interleave with the anchor's cohort. The anchor is the
+    # prerank Top1 by rerank_score; it is never penalized, so Top1 is stable.
+    # Conservative: skipped for mixed-scope queries and for chunks lacking
+    # explicit project metadata. Does not enter _combined_score.
+    if len(project_units) > 1:
+        anchor_item = max(ranked, key=lambda item: item['rerank_score'])
+        anchor_unit = _chunk_project_unit(anchor_item['chunk'])
+        if anchor_unit and not _query_scope_is_mixed(query_scope):
+            for item in ranked:
+                if item is anchor_item:
+                    continue
+                candidate_unit = _chunk_project_unit(item['chunk'])
+                if candidate_unit and candidate_unit != anchor_unit:
+                    item['rerank_score'] -= _COHORT_MISMATCH_PENALTY
+                    cohort_parts = item['score_parts']
+                    cohort_parts["cohort_mismatch_penalty"] = -_COHORT_MISMATCH_PENALTY
+                    cohort_parts["rerank_score"] = float(item['rerank_score'])
+
     # Build final _RankedChunk objects
     final_ranked = [
         _RankedChunk(
@@ -2182,6 +2203,21 @@ def _rerank_score(
 
 def _has_project_scope_mismatch(score_parts: dict[str, float]) -> bool:
     return score_parts.get("project_scope_mismatch_penalty", 0.0) < 0
+
+
+_COHORT_MISMATCH_PENALTY = 0.05
+
+
+def _chunk_project_unit(chunk: DocumentChunk) -> str:
+    return str(chunk.metadata.get("project_name", ""))
+
+
+def _query_scope_is_mixed(query_scope: QueryScope) -> bool:
+    return (
+        len(query_scope.project_names) > 1
+        or len(query_scope.kinds) > 1
+        or len(query_scope.path_prefixes) > 1
+    )
 
 
 def _role_exact_match_boost(
@@ -3325,6 +3361,8 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("path role hint match")
     if score_parts.get("path_role_mismatch_penalty", 0.0) < 0:
         reasons.append("path role mismatch penalty")
+    if score_parts.get("cohort_mismatch_penalty", 0.0) < 0:
+        reasons.append("cross-project cohort mismatch penalty")
     if score_parts.get("impl_match_boost", 0.0) > 0:
         reasons.append("service implementation exact match boost")
     if score_parts.get("relation_role_boost", 0.0) > 0:

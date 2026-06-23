@@ -181,7 +181,7 @@
           {"path": "collector/internal/service/fund_service.go", "top_k": 5, "max_rank": 2}
         ],
         "forbidden_above": [
-          {"glob": "investment-assistant-backend/**/*.java", "top_k": 5, "max_rank": 3}
+          {"glob": "investment-assistant-backend/**/*.java", "top_k": 5, "max_rank": 2}
         ]
       },
       {
