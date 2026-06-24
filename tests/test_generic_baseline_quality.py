@@ -143,7 +143,9 @@ def _repo_for_spec(repo_spec: dict) -> Path | None:
 
     base = os.environ.get("CST_SMOKE_REPOS_DIR")
     if base:
-        return Path(base) / repo_spec["repo_dir_name"]
+        base_repo = Path(base) / repo_spec["repo_dir_name"]
+        if base_repo.exists():
+            return base_repo
 
     fixture_repo = (
         Path(__file__).parent
@@ -387,22 +389,65 @@ def test_generic_baseline_quality_queries_load() -> None:
         _assert_repo_spec(repo_spec)
 
 
+def _program_tool_repo_spec() -> dict:
+    return {
+        "repo_key": "program_tool",
+        "path_env": "CST_SMOKE_PROGRAM_TOOL_REPO",
+        "repo_dir_name": "program-tool",
+    }
+
+
+def _program_tool_fixture_repo() -> Path:
+    return Path(__file__).parent / "fixtures" / "real_projects" / "program_tool"
+
+
 def test_repo_for_spec_resolves_committed_program_tool_fixture(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("CST_SMOKE_PROGRAM_TOOL_REPO", raising=False)
     monkeypatch.delenv("CST_SMOKE_REPOS_DIR", raising=False)
-    repo_spec = {
-        "repo_key": "program_tool",
-        "path_env": "CST_SMOKE_PROGRAM_TOOL_REPO",
-        "repo_dir_name": "program-tool",
-    }
-    fixture_repo = (
-        Path(__file__).parent / "fixtures" / "real_projects" / "program_tool"
-    )
+    fixture_repo = _program_tool_fixture_repo()
 
-    assert _repo_for_spec(repo_spec) == fixture_repo
+    assert _repo_for_spec(_program_tool_repo_spec()) == fixture_repo
     assert (fixture_repo / "package.json").exists()
+
+
+def test_repo_for_spec_prefers_explicit_path_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    direct_repo = tmp_path / "direct-program-tool"
+    smoke_repo = tmp_path / "smoke-repos" / "program-tool"
+    direct_repo.mkdir()
+    smoke_repo.mkdir(parents=True)
+    monkeypatch.setenv("CST_SMOKE_PROGRAM_TOOL_REPO", str(direct_repo))
+    monkeypatch.setenv("CST_SMOKE_REPOS_DIR", str(smoke_repo.parent))
+
+    assert _repo_for_spec(_program_tool_repo_spec()) == direct_repo
+
+
+def test_repo_for_spec_prefers_existing_smoke_dir_repo_over_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    smoke_repo = tmp_path / "smoke-repos" / "program-tool"
+    smoke_repo.mkdir(parents=True)
+    monkeypatch.delenv("CST_SMOKE_PROGRAM_TOOL_REPO", raising=False)
+    monkeypatch.setenv("CST_SMOKE_REPOS_DIR", str(smoke_repo.parent))
+
+    assert _repo_for_spec(_program_tool_repo_spec()) == smoke_repo
+
+
+def test_repo_for_spec_falls_back_to_fixture_when_smoke_dir_repo_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    missing_smoke_repos = tmp_path / "smoke-repos"
+    missing_smoke_repos.mkdir()
+    monkeypatch.delenv("CST_SMOKE_PROGRAM_TOOL_REPO", raising=False)
+    monkeypatch.setenv("CST_SMOKE_REPOS_DIR", str(missing_smoke_repos))
+
+    assert _repo_for_spec(_program_tool_repo_spec()) == _program_tool_fixture_repo()
 
 
 def test_generic_baseline_quality_rejects_invalid_fixture_shapes() -> None:
