@@ -206,7 +206,7 @@ def frontend_score_parts(path: str | PurePosixPath, query: str, *, enabled: bool
         parts["frontend_support_boost"] = 0.12
 
     if role == "lockfile" and not _has_lockfile_terms(query):
-        _add_penalty(parts, "frontend_lockfile_penalty", -0.50)
+        _add_penalty(parts, "frontend_lockfile_penalty", -0.80)
     if role == "scratch_temp" and not _has_scratch_terms(query):
         _add_penalty(parts, "frontend_scratch_temp_penalty", -0.60)
     if (

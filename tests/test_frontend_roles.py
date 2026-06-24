@@ -246,8 +246,8 @@ def test_frontend_score_parts_use_targeted_noise_penalties() -> None:
         enabled=True,
     )
 
-    assert lockfile_parts["frontend_lockfile_penalty"] == pytest.approx(-0.50)
-    assert lockfile_parts["penalty"] == pytest.approx(-0.50)
+    assert lockfile_parts["frontend_lockfile_penalty"] == pytest.approx(-0.80)
+    assert lockfile_parts["penalty"] == pytest.approx(-0.80)
     assert scratch_parts["frontend_scratch_temp_penalty"] == pytest.approx(-0.60)
     assert scratch_parts["penalty"] == pytest.approx(-0.60)
     assert type_parts["frontend_type_decl_penalty"] == pytest.approx(-0.12)

@@ -5063,7 +5063,77 @@ def test_frontend_score_parts_demote_temp_and_lockfiles_for_feature_queries(
     assert ranked_ids.index("scratch") > ranked_ids.index("image-view")
     assert ranked_ids.index("lockfile") > ranked_ids.index("image-view")
     assert by_id["scratch"].score_parts["frontend_scratch_temp_penalty"] == pytest.approx(-0.60)
-    assert by_id["lockfile"].score_parts["frontend_lockfile_penalty"] == pytest.approx(-0.50)
+    assert by_id["lockfile"].score_parts["frontend_lockfile_penalty"] == pytest.approx(-0.80)
+
+
+def test_frontend_score_parts_push_strong_lockfile_out_of_feature_top_neighborhood(
+    tmp_path: Path,
+) -> None:
+    query = "image scan reader generate decode camera"
+    view = _generic_noise_chunk(
+        "image-view",
+        "src/views/image/ImageTool.vue",
+        "<template>image scan reader generate decode camera</template>",
+        ["image", "scan", "reader", "generate", "decode", "camera"],
+        {"language": "vue"},
+    )
+    utility = _generic_noise_chunk(
+        "image-utility",
+        "src/utils/imageCodec.ts",
+        "export function imageCodec() { return 'image scan reader generate decode camera'; }",
+        ["image", "scan", "reader", "generate", "decode", "camera"],
+        {"language": "typescript"},
+    )
+    service = _generic_noise_chunk(
+        "image-service",
+        "src/services/imageReader.ts",
+        "export function readImage() { return 'image scan reader camera'; }",
+        ["image", "scan", "reader", "camera"],
+        {"language": "typescript"},
+    )
+    component = _generic_noise_chunk(
+        "image-component",
+        "src/components/ImageReaderPanel.vue",
+        "<template>image reader camera preview</template>",
+        ["image", "reader", "camera", "preview"],
+        {"language": "vue"},
+    )
+    store = _generic_noise_chunk(
+        "image-store",
+        "src/stores/image.ts",
+        "export const imageState = { reader: true, camera: true }",
+        ["image", "reader", "camera"],
+        {"language": "typescript"},
+    )
+    lockfile = _generic_noise_chunk(
+        "lockfile",
+        "package-lock.json",
+        '{"packages": {"image-reader": {"keywords": ["scan", "generate", "decode", "camera"]}}}',
+        ["image", "reader", "scan", "generate", "decode", "camera", "package", "lock"],
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [view, utility, service, component, store, lockfile],
+        {
+            "image-view": {"semantic": 0.40, "lexical": 0.45, "path_symbol": 2.0, "direct_text": 0.60},
+            "image-utility": {"semantic": 0.45, "lexical": 0.45, "path_symbol": 2.0, "direct_text": 0.55},
+            "image-service": {"semantic": 0.42, "lexical": 0.42, "path_symbol": 2.0, "direct_text": 0.55},
+            "image-component": {"semantic": 0.34, "lexical": 0.34, "path_symbol": 1.5, "direct_text": 0.45},
+            "image-store": {"semantic": 0.32, "lexical": 0.32, "path_symbol": 1.5, "direct_text": 0.40},
+            "lockfile": {"semantic": 0.95, "lexical": 0.95, "path_symbol": 2.0, "direct_text": 1.0},
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    ranked_ids = [item.chunk.chunk_id for item in ranked]
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert "lockfile" not in ranked_ids[:5]
+    assert ranked_ids.index("image-view") < ranked_ids.index("lockfile")
+    assert ranked_ids.index("image-utility") < ranked_ids.index("lockfile")
+    assert ranked_ids.index("image-service") < ranked_ids.index("lockfile")
+    assert by_id["lockfile"].score_parts["frontend_lockfile_penalty"] == pytest.approx(-0.80)
 
 
 def test_frontend_score_parts_are_absent_in_java_only_candidate_pool(
@@ -5106,7 +5176,7 @@ def test_reasons_include_frontend_score_part_diagnostics() -> None:
         {
             "frontend_entrypoint_boost": 0.35,
             "frontend_support_boost": 0.18,
-            "frontend_lockfile_penalty": -0.50,
+            "frontend_lockfile_penalty": -0.80,
             "frontend_scratch_temp_penalty": -0.60,
             "frontend_type_decl_penalty": -0.12,
         },
