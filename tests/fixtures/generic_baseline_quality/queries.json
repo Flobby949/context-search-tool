@@ -217,5 +217,87 @@
         ]
       }
     ]
+  },
+  {
+    "repo_key": "program_tool",
+    "path_env": "CST_SMOKE_PROGRAM_TOOL_REPO",
+    "repo_dir_name": "program-tool",
+    "queries": [
+      {
+        "id": "watermark-remover",
+        "query": "watermark remover remove image watermark detection mask canvas inpaint",
+        "expected_top_k": [
+          {"path": "src/views/image/WatermarkRemover.vue", "top_k": 5},
+          {"path": "src/services/watermarkDetection.ts", "top_k": 5}
+        ],
+        "preferred_rank": [
+          {"path": "src/views/image/WatermarkRemover.vue", "top_k": 5, "max_rank": 1}
+        ],
+        "forbidden_above": [
+          {"path": "src/utils/imageUtils.ts", "top_k": 5, "max_rank": 1}
+        ]
+      },
+      {
+        "id": "mqtt-tool",
+        "query": "MQTT connect subscribe publish topic qos websocket logs",
+        "expected_top_k": [
+          {"path": "src/views/communication/MqttTool.vue", "top_k": 3},
+          {"path": "src/utils/mqttUtils.ts", "top_k": 3},
+          {"path": "src/types/index.ts", "top_k": 5}
+        ]
+      },
+      {
+        "id": "qrcode-tool",
+        "query": "QRCode generate scan camera decode paste image qrcode-reader",
+        "expected_top_k": [
+          {"path": "src/views/qrcode/QRCodeTool.vue", "top_k": 3},
+          {"path": "src/utils/qrcodeUtils.ts", "top_k": 3},
+          {"path": "src/types/qrcode-reader.d.ts", "top_k": 5}
+        ],
+        "preferred_rank": [
+          {"path": "src/views/qrcode/QRCodeTool.vue", "top_k": 5, "max_rank": 1}
+        ],
+        "absent_top_k": [
+          {"path": "package-lock.json", "top_k": 5}
+        ]
+      },
+      {
+        "id": "json-to-entity",
+        "query": "JSON to entity generate Java TypeScript CSharp Python class interface",
+        "expected_top_k": [
+          {"path": "src/utils/jsonToEntity.ts", "top_k": 3},
+          {"path": "src/views/json/JsonToEntity.vue", "top_k": 3}
+        ],
+        "preferred_rank": [
+          {"path": "src/utils/jsonToEntity.ts", "top_k": 5, "max_rank": 1}
+        ],
+        "absent_top_k": [
+          {"glob": "temp/*", "top_k": 5},
+          {"path": "package-lock.json", "top_k": 5}
+        ]
+      },
+      {
+        "id": "app-layout-theme",
+        "query": "AppLayout theme sidebar tool categories dark light Pinia",
+        "expected_top_k": [
+          {"path": "src/components/AppLayout.vue", "top_k": 3},
+          {"path": "src/stores/app.ts", "top_k": 3}
+        ],
+        "preferred_rank": [
+          {"path": "src/components/AppLayout.vue", "top_k": 5, "max_rank": 1}
+        ]
+      },
+      {
+        "id": "ai-chat",
+        "query": "AI chat markdown history export highlight code conversation",
+        "expected_top_k": [
+          {"path": "src/views/ai/AiChat.vue", "top_k": 3},
+          {"path": "src/utils/markdownUtils.ts", "top_k": 5}
+        ],
+        "preferred_rank": [
+          {"path": "src/views/ai/AiChat.vue", "top_k": 5, "max_rank": 1}
+        ]
+      }
+    ]
   }
 ]

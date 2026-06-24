@@ -145,6 +145,15 @@ def _repo_for_spec(repo_spec: dict) -> Path | None:
     if base:
         return Path(base) / repo_spec["repo_dir_name"]
 
+    fixture_repo = (
+        Path(__file__).parent
+        / "fixtures"
+        / "real_projects"
+        / str(repo_spec["repo_key"])
+    )
+    if fixture_repo.exists():
+        return fixture_repo
+
     return None
 
 
@@ -372,9 +381,28 @@ def test_generic_baseline_quality_queries_load() -> None:
         "imagebed",
         "env_change",
         "investment_assistant",
+        "program_tool",
     }
     for repo_spec in repo_specs:
         _assert_repo_spec(repo_spec)
+
+
+def test_repo_for_spec_resolves_committed_program_tool_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CST_SMOKE_PROGRAM_TOOL_REPO", raising=False)
+    monkeypatch.delenv("CST_SMOKE_REPOS_DIR", raising=False)
+    repo_spec = {
+        "repo_key": "program_tool",
+        "path_env": "CST_SMOKE_PROGRAM_TOOL_REPO",
+        "repo_dir_name": "program-tool",
+    }
+    fixture_repo = (
+        Path(__file__).parent / "fixtures" / "real_projects" / "program_tool"
+    )
+
+    assert _repo_for_spec(repo_spec) == fixture_repo
+    assert (fixture_repo / "package.json").exists()
 
 
 def test_generic_baseline_quality_rejects_invalid_fixture_shapes() -> None:
