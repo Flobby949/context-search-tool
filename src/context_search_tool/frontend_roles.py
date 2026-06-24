@@ -104,7 +104,8 @@ _SCRATCH_QUERY_TOKENS = {
     "temp",
     "tmp",
 }
-_TYPE_PATH_GENERIC_TOKENS = {"src", "type", "types", "d", "ts"}
+_FRONTEND_SOURCE_SUFFIXES = {".astro", ".js", ".jsx", ".svelte", ".ts", ".tsx", ".vue"}
+_TYPE_PATH_GENERIC_TOKENS = {"d", "index", "src", "ts", "type", "types"}
 _SEPARATOR_RE = re.compile(r"[\\/._-]+")
 _ACRONYM_BOUNDARY_RE = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
@@ -123,14 +124,22 @@ def classify_frontend_role(path: str | PurePosixPath) -> FrontendRole:
         return FrontendRole("lockfile")
     if parts and parts[0] in {"temp", "tmp", ".cache"}:
         return FrontendRole("scratch_temp")
+    if not _has_frontend_source_suffix(normalized):
+        return FrontendRole("other")
     if _is_type_decl(frontend_path, frontend_parts):
         return FrontendRole("type_decl")
     if _is_under(frontend_parts, "src", "router") or _is_under(frontend_parts, "src", "routes"):
         return FrontendRole("route_config")
-    if _is_under(frontend_parts, "src", "views") or _is_under(frontend_parts, "src", "pages"):
+    if (
+        _is_under(frontend_parts, "src", "views")
+        or _is_under(frontend_parts, "src", "pages")
+        or _is_under(frontend_parts, "pages")
+    ):
         return FrontendRole("view_page")
     if (
-        frontend_path == "src/components/applayout.vue"
+        frontend_path == "src/app.tsx"
+        or frontend_path == "src/app.jsx"
+        or frontend_path == "src/components/applayout.vue"
         or _is_under(frontend_parts, "src", "components", "layout")
         or _is_under(frontend_parts, "src", "layouts")
     ):
@@ -171,8 +180,8 @@ def frontend_repo_enabled(paths: Iterable[str | PurePosixPath]) -> bool:
 
 def frontend_candidate_scope_enabled(paths: Iterable[str | PurePosixPath]) -> bool:
     roles = {classify_frontend_role(path).name for path in paths}
+    entry_roles = {"layout_component", "view_page"}
     support_roles = {
-        "layout_component",
         "shared_component",
         "store",
         "service",
@@ -180,7 +189,7 @@ def frontend_candidate_scope_enabled(paths: Iterable[str | PurePosixPath]) -> bo
         "route_config",
         "type_decl",
     }
-    return "view_page" in roles and bool(roles & support_roles)
+    return bool(roles & entry_roles) and bool(roles & support_roles)
 
 
 def frontend_score_parts(path: str | PurePosixPath, query: str, *, enabled: bool) -> dict[str, float]:
@@ -239,6 +248,10 @@ def _frontend_path_parts(parts: tuple[str, ...]) -> tuple[str, ...]:
 
 def _is_type_decl(path: str, parts: tuple[str, ...]) -> bool:
     return _is_under(parts, "src", "types") or (path.startswith("src/") and path.endswith(".d.ts"))
+
+
+def _has_frontend_source_suffix(path: str) -> bool:
+    return any(path.endswith(suffix) for suffix in _FRONTEND_SOURCE_SUFFIXES)
 
 
 def _is_under(parts: tuple[str, ...], *prefix: str) -> bool:

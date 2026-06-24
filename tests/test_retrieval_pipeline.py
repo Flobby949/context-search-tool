@@ -5171,6 +5171,41 @@ def test_frontend_score_parts_are_absent_in_java_only_candidate_pool(
     )
 
 
+def test_frontend_score_parts_are_absent_in_python_like_view_service_pool(
+    tmp_path: Path,
+) -> None:
+    view = _generic_noise_chunk(
+        "python-view",
+        "src/views/users.py",
+        "def user_page(): return 'image scan reader generate decode camera'",
+        ["image", "scan", "reader", "generate", "decode", "camera"],
+        {"language": "python"},
+    )
+    service = _generic_noise_chunk(
+        "python-service",
+        "src/services/users.py",
+        "def user_service(): return 'image scan reader generate decode camera'",
+        ["image", "scan", "reader", "generate", "decode", "camera"],
+        {"language": "python"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [view, service],
+        {
+            "python-view": {"semantic": 0.60, "lexical": 0.60, "path_symbol": 2.0},
+            "python-service": {"semantic": 0.55, "lexical": 0.55, "path_symbol": 2.0},
+        },
+        retrieval.tokenize_query("image scan reader generate decode camera"),
+        "image scan reader generate decode camera",
+    )
+
+    assert all(
+        not any(key.startswith("frontend_") for key in item.score_parts)
+        for item in ranked
+    )
+
+
 def test_reasons_include_frontend_score_part_diagnostics() -> None:
     reasons = retrieval._reasons(
         {
@@ -5380,6 +5415,31 @@ def test_generic_noise_explicit_dependency_query_does_not_penalize_lockfile(
         {"lockfile": {"lexical": 0.8, "direct_text": 0.7}},
         retrieval.tokenize_query("package dependency lock versions"),
         "package dependency lock versions",
+    )
+
+    parts = ranked[0].score_parts
+    assert "lockfile_penalty" not in parts
+    assert "penalty" not in parts
+
+
+@pytest.mark.parametrize("query", ["go.sum", "go sum"])
+def test_generic_noise_explicit_go_sum_query_does_not_penalize_lockfile(
+    tmp_path: Path,
+    query: str,
+) -> None:
+    lockfile = _generic_noise_chunk(
+        "lockfile",
+        "go.sum",
+        "example.com/image/reader v1.2.3 h1:checksum",
+        ["go", "sum", "checksum", "module"],
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [lockfile],
+        {"lockfile": {"lexical": 0.8, "direct_text": 0.7}},
+        retrieval.tokenize_query(query),
+        query,
     )
 
     parts = ranked[0].score_parts

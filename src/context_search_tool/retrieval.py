@@ -3241,8 +3241,13 @@ def _looks_implementation_query(query: str, tokens: list[str]) -> bool:
     return bool({token.lower() for token in tokens}.intersection(implementation_terms))
 
 
-def _has_lockfile_query_terms(tokens: list[str]) -> bool:
-    return bool({token.lower() for token in tokens} & _LOCKFILE_QUERY_TOKENS)
+def _has_explicit_lockfile_query(tokens: list[str], name: str) -> bool:
+    token_set = {token.lower() for token in tokens}
+    if token_set & _LOCKFILE_QUERY_TOKENS:
+        return True
+    return name == "go.sum" and (
+        "gosum" in token_set or {"go", "sum"}.issubset(token_set)
+    )
 
 
 def _is_generated_schema_path(path: str, suffix: str) -> bool:
@@ -3274,7 +3279,7 @@ def _generic_file_role(
             penalty_key="generated_schema_penalty",
         )
     if name in _INDEXED_LOCKFILE_NAMES:
-        penalty = 0.0 if _has_lockfile_query_terms(tokens) else 0.20
+        penalty = 0.0 if _has_explicit_lockfile_query(tokens, name) else 0.20
         return _GenericFileRole(
             "lockfile",
             "high",
@@ -3333,7 +3338,7 @@ def _generic_noise_score_parts(
             parts,
             {"penalty": -0.20, "generated_schema_penalty": -0.20},
         )
-    if name in _INDEXED_LOCKFILE_NAMES and not _has_lockfile_query_terms(tokens):
+    if name in _INDEXED_LOCKFILE_NAMES and not _has_explicit_lockfile_query(tokens, name):
         parts = _merge_score_parts(
             parts,
             {"penalty": -0.20, "lockfile_penalty": -0.20},

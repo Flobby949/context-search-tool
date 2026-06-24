@@ -52,6 +52,8 @@ def test_classify_frontend_role_covers_lockfiles(path: str) -> None:
         ("tmp/buildProbe.js", "scratch_temp"),
         (".cache/vite/deps/chunk.js", "scratch_temp"),
         ("src/routes/index.ts", "route_config"),
+        ("pages/index.tsx", "view_page"),
+        ("src/App.tsx", "layout_component"),
         ("src/components/layout/Sidebar.vue", "layout_component"),
         ("src/layouts/MainLayout.vue", "layout_component"),
         ("src/store/app.ts", "store"),
@@ -200,6 +202,28 @@ def test_frontend_candidate_scope_enabled_rejects_java_only_pool() -> None:
     )
 
 
+def test_frontend_candidate_scope_enabled_rejects_python_like_view_service_pool() -> None:
+    assert not frontend_roles.frontend_candidate_scope_enabled(
+        [
+            "src/views/users.py",
+            "src/services/users.py",
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ["pages/index.tsx", "src/utils/image.ts"],
+        ["src/App.tsx", "src/services/api.ts"],
+    ],
+)
+def test_frontend_candidate_scope_enabled_accepts_common_frontend_layouts(
+    paths: list[str],
+) -> None:
+    assert frontend_roles.frontend_candidate_scope_enabled(paths)
+
+
 def test_frontend_score_parts_disabled_returns_empty() -> None:
     assert (
         frontend_roles.frontend_score_parts(
@@ -291,3 +315,14 @@ def test_frontend_score_parts_do_not_penalize_explicit_scratch_queries() -> None
 
     assert "frontend_scratch_temp_penalty" not in parts
     assert "penalty" not in parts
+
+
+def test_frontend_score_parts_penalize_generic_index_type_path_for_feature_query() -> None:
+    parts = frontend_roles.frontend_score_parts(
+        "src/types/index.ts",
+        "index page route",
+        enabled=True,
+    )
+
+    assert parts["frontend_type_decl_penalty"] == pytest.approx(-0.12)
+    assert parts["penalty"] == pytest.approx(-0.12)
