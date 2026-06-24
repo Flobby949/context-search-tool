@@ -2,8 +2,10 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+from context_search_tool import frontend_roles
 from context_search_tool.frontend_roles import (
     FrontendIntent,
+    FrontendRole,
     classify_frontend_role,
     frontend_repo_enabled,
     infer_frontend_intent,
@@ -63,6 +65,10 @@ def test_classify_frontend_role_covers_plan_mapping(path: str, expected: str) ->
     assert classify_frontend_role(path).name == expected
 
 
+def test_classify_frontend_role_normalizes_windows_and_uppercase_paths() -> None:
+    assert classify_frontend_role(r"SRC\VIEWS\QRCODE\QRCodeTool.vue").name == "view_page"
+
+
 def test_infer_frontend_intent_for_qrcode_feature_query() -> None:
     intent = infer_frontend_intent("QRCode generate scan camera decode paste image qrcode-reader")
 
@@ -86,6 +92,18 @@ def test_infer_frontend_intent_for_layout_theme_query() -> None:
     assert intent.state >= 0.35
 
 
+def test_infer_frontend_intent_splits_pascal_case_terms() -> None:
+    intent = infer_frontend_intent("AppLayout")
+
+    assert intent.feature_entrypoint > 0
+
+
+def test_infer_frontend_intent_splits_path_and_camel_case_terms() -> None:
+    intent = infer_frontend_intent("src/utils/jsonToEntity.ts")
+
+    assert intent.utility_implementation > intent.feature_entrypoint
+
+
 def test_infer_frontend_intent_is_additive_and_clamped() -> None:
     weak_intent = infer_frontend_intent("layout")
     strong_intent = infer_frontend_intent("layout theme sidebar tool qrcode mqtt watermark chat")
@@ -102,6 +120,13 @@ def test_infer_frontend_intent_is_additive_and_clamped() -> None:
         saturated_intent.state,
     ):
         assert 0.0 <= score <= 1.0
+
+
+def test_frontend_role_is_immutable() -> None:
+    role = FrontendRole(name="view_page")
+
+    with pytest.raises(FrozenInstanceError):
+        role.name = "other"  # type: ignore[misc]
 
 
 def test_frontend_intent_is_immutable() -> None:
@@ -125,6 +150,42 @@ def test_frontend_repo_enabled_rejects_java_only_paths() -> None:
     assert not frontend_repo_enabled(
         [
             "pom.xml",
+            "src/main/java/com/example/App.java",
+            "src/test/java/com/example/AppTest.java",
+        ]
+    )
+
+
+def test_frontend_repo_enabled_requires_repo_inventory_evidence() -> None:
+    assert not frontend_repo_enabled(
+        [
+            "src/views/qrcode/QRCodeTool.vue",
+            "src/utils/qrcodeUtils.ts",
+        ]
+    )
+
+
+def test_frontend_candidate_scope_enabled_for_view_and_utility_pool() -> None:
+    assert frontend_roles.frontend_candidate_scope_enabled(
+        [
+            "src/views/qrcode/QRCodeTool.vue",
+            "src/utils/qrcodeUtils.ts",
+        ]
+    )
+
+
+def test_frontend_candidate_scope_enabled_for_view_and_component_pool() -> None:
+    assert frontend_roles.frontend_candidate_scope_enabled(
+        [
+            "src/views/qrcode/QRCodeTool.vue",
+            "src/components/ImageUploader.vue",
+        ]
+    )
+
+
+def test_frontend_candidate_scope_enabled_rejects_java_only_pool() -> None:
+    assert not frontend_roles.frontend_candidate_scope_enabled(
+        [
             "src/main/java/com/example/App.java",
             "src/test/java/com/example/AppTest.java",
         ]

@@ -67,6 +67,9 @@ _STATE_TOKENS = {
     "light",
     "history",
 }
+_SEPARATOR_RE = re.compile(r"[\\/._-]+")
+_ACRONYM_BOUNDARY_RE = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
+_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
@@ -125,6 +128,20 @@ def frontend_repo_enabled(paths: Iterable[str | PurePosixPath]) -> bool:
     return has_package_json and has_view_or_page and has_component
 
 
+def frontend_candidate_scope_enabled(paths: Iterable[str | PurePosixPath]) -> bool:
+    roles = {classify_frontend_role(path).name for path in paths}
+    support_roles = {
+        "layout_component",
+        "shared_component",
+        "store",
+        "service",
+        "utility",
+        "route_config",
+        "type_decl",
+    }
+    return "view_page" in roles and bool(roles & support_roles)
+
+
 def _normalize_path(path: str | PurePosixPath) -> str:
     raw_path = path.as_posix() if isinstance(path, PurePosixPath) else str(path)
     normalized = raw_path.replace("\\", "/").lower()
@@ -142,7 +159,15 @@ def _is_under(parts: tuple[str, ...], *prefix: str) -> bool:
 
 
 def _tokenize(query: str) -> tuple[str, ...]:
-    return tuple(_TOKEN_RE.findall(query.lower()))
+    tokens: list[str] = []
+    for segment in _SEPARATOR_RE.sub(" ", query).split():
+        split_segment = _ACRONYM_BOUNDARY_RE.sub(" ", segment)
+        split_segment = _CAMEL_BOUNDARY_RE.sub(" ", split_segment)
+        segment_tokens = tuple(_TOKEN_RE.findall(split_segment.lower()))
+        if len(segment_tokens) > 1:
+            tokens.append("".join(segment_tokens))
+        tokens.extend(segment_tokens)
+    return tuple(tokens)
 
 
 def _score_tokens(tokens: tuple[str, ...], group: set[str], weight: float) -> float:
