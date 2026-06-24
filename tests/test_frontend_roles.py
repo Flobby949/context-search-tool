@@ -326,3 +326,80 @@ def test_frontend_score_parts_penalize_generic_index_type_path_for_feature_query
 
     assert parts["frontend_type_decl_penalty"] == pytest.approx(-0.12)
     assert parts["penalty"] == pytest.approx(-0.12)
+
+
+def test_extract_static_imports_returns_static_frontend_specifiers() -> None:
+    content = """
+import { detect } from "@/services/imageDetection"
+import { resize } from "@/utils/imageUtils";
+import type { ImageReader } from "@/types/image-reader"
+import "@/styles/main"
+
+const loader = () => import("@/services/lazyImageDetection")
+""".strip()
+
+    assert frontend_roles.extract_static_imports(content) == (
+        "@/services/imageDetection",
+        "@/utils/imageUtils",
+        "@/types/image-reader",
+        "@/styles/main",
+    )
+
+
+def test_resolve_frontend_import_handles_alias_type_and_relative_imports(
+    tmp_path,
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "src" / "services").mkdir(parents=True)
+    (repo / "src" / "types").mkdir(parents=True)
+    (repo / "src" / "views" / "image").mkdir(parents=True)
+    (repo / "src" / "services" / "imageDetection.ts").write_text(
+        "export function detect() {}",
+        encoding="utf-8",
+    )
+    (repo / "src" / "types" / "image-reader.d.ts").write_text(
+        "export interface ImageReader {}",
+        encoding="utf-8",
+    )
+    (repo / "src" / "views" / "image" / "localMask.ts").write_text(
+        "export const localMask = true",
+        encoding="utf-8",
+    )
+
+    importer = "src/views/image/ImageTool.vue"
+
+    assert (
+        frontend_roles.resolve_frontend_import(
+            repo,
+            importer,
+            "@/services/imageDetection",
+        )
+        == "src/services/imageDetection.ts"
+    )
+    assert (
+        frontend_roles.resolve_frontend_import(
+            repo,
+            importer,
+            "@/types/image-reader",
+        )
+        == "src/types/image-reader.d.ts"
+    )
+    assert (
+        frontend_roles.resolve_frontend_import(repo, importer, "./localMask")
+        == "src/views/image/localMask.ts"
+    )
+
+
+@pytest.mark.parametrize("specifier", ["vue", "pinia", "axios"])
+def test_resolve_frontend_import_rejects_package_imports(
+    tmp_path,
+    specifier: str,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    assert frontend_roles.resolve_frontend_import(
+        repo,
+        "src/views/image/ImageTool.vue",
+        specifier,
+    ) is None

@@ -5225,6 +5225,83 @@ def test_reasons_include_frontend_score_part_diagnostics() -> None:
     assert "frontend type declaration penalty" in reasons
 
 
+def test_query_repository_boosts_frontend_direct_import_cohort_without_adding_candidates(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "src" / "views" / "image").mkdir(parents=True)
+    (repo / "src" / "services").mkdir(parents=True)
+    (repo / "src" / "utils").mkdir(parents=True)
+    (repo / "package.json").write_text(
+        '{"dependencies": {"vue": "latest"}}',
+        encoding="utf-8",
+    )
+    (repo / "src" / "views" / "image" / "ImageEditor.vue").write_text(
+        """
+<script setup lang="ts">
+import { detectImageMask } from "@/services/imageDetection"
+import { loadSession } from "@/services/sessionApi"
+
+const copy = "image remover detection mask canvas inpaint";
+</script>
+
+<template><section>image remover detection mask canvas inpaint</section></template>
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (repo / "src" / "services" / "imageDetection.ts").write_text(
+        """
+export function detectImageMask(canvas: HTMLCanvasElement) {
+  return `detection mask canvas ${canvas.width}`;
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (repo / "src" / "services" / "sessionApi.ts").write_text(
+        "export function loadSession() { return 'user preferences'; }\n",
+        encoding="utf-8",
+    )
+    (repo / "src" / "utils" / "canvasTools.ts").write_text(
+        """
+export function normalizeCanvasMask() {
+  return "image remover canvas helper";
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=20,
+            final_top_k=10,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    query = "image remover detection mask canvas inpaint"
+
+    index_repository(repo, config)
+    bundle = query_repository(repo, query, config)
+
+    paths = [result.file_path.as_posix() for result in bundle.results]
+    service_result = next(
+        result
+        for result in bundle.results
+        if result.file_path.as_posix() == "src/services/imageDetection.ts"
+    )
+    utility_index = paths.index("src/utils/canvasTools.ts")
+    service_index = paths.index("src/services/imageDetection.ts")
+
+    assert service_index < utility_index
+    assert service_result.score_parts["frontend_import_support_boost"] == pytest.approx(0.16)
+    assert "frontend import support boost" in service_result.reasons
+    assert "src/services/sessionApi.ts" not in paths
+
+
 def test_generic_noise_generated_schema_demotes_below_source(
     tmp_path: Path,
 ) -> None:

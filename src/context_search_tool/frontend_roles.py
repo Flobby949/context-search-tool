@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 
@@ -105,6 +105,16 @@ _SCRATCH_QUERY_TOKENS = {
     "tmp",
 }
 _FRONTEND_SOURCE_SUFFIXES = {".astro", ".js", ".jsx", ".svelte", ".ts", ".tsx", ".vue"}
+_IMPORT_FROM_RE = re.compile(
+    r"^\s*import\s+(?:type\s+)?[^;\n]*?\s+from\s+[\"']([^\"']+)[\"']",
+    re.MULTILINE,
+)
+_SIDE_EFFECT_IMPORT_RE = re.compile(
+    r"^\s*import\s+[\"']([^\"']+)[\"']",
+    re.MULTILINE,
+)
+_IMPORT_FILE_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".vue", ".d.ts")
+_IMPORT_INDEX_FILES = ("index.ts", "index.tsx", "index.js", "index.vue")
 _TYPE_PATH_GENERIC_TOKENS = {"d", "index", "src", "ts", "type", "types"}
 _SEPARATOR_RE = re.compile(r"[\\/._-]+")
 _ACRONYM_BOUNDARY_RE = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
@@ -192,6 +202,50 @@ def frontend_candidate_scope_enabled(paths: Iterable[str | PurePosixPath]) -> bo
     return bool(roles & entry_roles) and bool(roles & support_roles)
 
 
+def extract_static_imports(content: str) -> tuple[str, ...]:
+    matches: list[tuple[int, str]] = []
+    for regex in (_IMPORT_FROM_RE, _SIDE_EFFECT_IMPORT_RE):
+        matches.extend(
+            (match.start(), match.group(1)) for match in regex.finditer(content)
+        )
+
+    seen: set[str] = set()
+    specifiers: list[str] = []
+    for _, specifier in sorted(matches, key=lambda item: item[0]):
+        if specifier in seen:
+            continue
+        seen.add(specifier)
+        specifiers.append(specifier)
+    return tuple(specifiers)
+
+
+def resolve_frontend_import(
+    repo: Path,
+    importer: str | Path,
+    specifier: str,
+) -> str | None:
+    normalized = specifier.strip()
+    if not normalized:
+        return None
+
+    repo = repo.resolve()
+    importer_path = _repo_relative_importer_path(repo, importer)
+    if normalized.startswith("@/") or normalized.startswith("~/"):
+        import_path = normalized[2:]
+        if _has_parent_ref(import_path):
+            return None
+        base_path = _frontend_source_root(importer_path) / import_path
+    elif normalized.startswith("./") or normalized.startswith("../"):
+        base_path = importer_path.parent / normalized
+    else:
+        return None
+
+    for candidate in _frontend_import_candidates(repo, base_path):
+        if candidate.is_file() and _is_relative_to(candidate.resolve(), repo):
+            return candidate.resolve().relative_to(repo).as_posix()
+    return None
+
+
 def frontend_score_parts(path: str | PurePosixPath, query: str, *, enabled: bool) -> dict[str, float]:
     if not enabled:
         return {}
@@ -252,6 +306,46 @@ def _is_type_decl(path: str, parts: tuple[str, ...]) -> bool:
 
 def _has_frontend_source_suffix(path: str) -> bool:
     return any(path.endswith(suffix) for suffix in _FRONTEND_SOURCE_SUFFIXES)
+
+
+def _repo_relative_importer_path(repo: Path, importer: str | Path) -> Path:
+    importer_path = Path(importer)
+    if importer_path.is_absolute():
+        try:
+            return importer_path.resolve().relative_to(repo)
+        except ValueError:
+            return Path(importer_path.name)
+    return importer_path
+
+
+def _frontend_source_root(importer_path: Path) -> Path:
+    parts = importer_path.parts
+    if "src" not in parts:
+        return Path("src")
+    src_index = parts.index("src")
+    return Path(*parts[: src_index + 1])
+
+
+def _has_parent_ref(path: str) -> bool:
+    return any(part == ".." for part in PurePosixPath(path).parts)
+
+
+def _frontend_import_candidates(repo: Path, base_path: Path) -> tuple[Path, ...]:
+    candidates = [repo / base_path]
+    candidates.extend(
+        repo / Path(f"{base_path.as_posix()}{suffix}")
+        for suffix in _IMPORT_FILE_SUFFIXES
+    )
+    candidates.extend(repo / base_path / index_file for index_file in _IMPORT_INDEX_FILES)
+    return tuple(candidates)
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
 
 
 def _is_under(parts: tuple[str, ...], *prefix: str) -> bool:

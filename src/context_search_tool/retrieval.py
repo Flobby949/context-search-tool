@@ -11,8 +11,11 @@ from context_search_tool.chunker import expand_lines
 from context_search_tool.config import ToolConfig
 from context_search_tool.embeddings import provider_from_config
 from context_search_tool.frontend_roles import (
+    classify_frontend_role,
+    extract_static_imports,
     frontend_candidate_scope_enabled,
     frontend_score_parts,
+    resolve_frontend_import,
 )
 from context_search_tool.identifier_intent import IdentifierIntent, infer_identifier_intent
 from context_search_tool.manifest import assert_manifest_compatible
@@ -111,6 +114,23 @@ _LOCKFILE_QUERY_TOKENS = {
     "packages",
     "version",
     "versions",
+}
+_FRONTEND_IMPORT_SCAN_TOP_K = 10
+_FRONTEND_IMPORT_SCAN_FILE_LIMIT = 3
+_FRONTEND_IMPORT_MAX_FILE_BYTES = 50_000
+_FRONTEND_IMPORT_SUPPORT_BOOST = 0.16
+_FRONTEND_IMPORT_ANCHOR_EPSILON = 10 ** -_RERANK_SORT_DECIMALS
+_FRONTEND_IMPORT_ANCHOR_ROLES = {
+    "view_page",
+    "layout_component",
+    "shared_component",
+}
+_FRONTEND_IMPORT_SUPPORT_ROLES = {
+    "service",
+    "utility",
+    "store",
+    "type_decl",
+    "shared_component",
 }
 
 
@@ -277,6 +297,7 @@ def query_repository(
         )
 
     ranked_chunks = _rank_chunks(store, candidates, original_tokens, query)
+    ranked_chunks = _apply_frontend_import_cohort_rerank(repo, ranked_chunks, query)
     expanded = _expand_ranked_chunks(repo, ranked_chunks, config, context_lines, full_file)
     visible_results, evidence_anchors = _split_code_results_and_evidence_anchors(
         expanded,
@@ -1475,6 +1496,87 @@ def _ranked_chunk_sort_key(
         item.chunk.start_line,
         item.chunk.chunk_id,
     )
+
+
+def _apply_frontend_import_cohort_rerank(
+    repo: Path,
+    ranked_chunks: list[_RankedChunk],
+    query: str,
+) -> list[_RankedChunk]:
+    import_anchor_scores: dict[str, float] = {}
+    files_read = 0
+
+    for ranked in ranked_chunks[:_FRONTEND_IMPORT_SCAN_TOP_K]:
+        if files_read >= _FRONTEND_IMPORT_SCAN_FILE_LIMIT:
+            break
+        anchor_role = classify_frontend_role(ranked.chunk.file_path).name
+        if anchor_role not in _FRONTEND_IMPORT_ANCHOR_ROLES:
+            continue
+
+        try:
+            content = _read_frontend_import_anchor(repo / ranked.chunk.file_path)
+        except OSError:
+            continue
+
+        files_read += 1
+        anchor_path = ranked.chunk.file_path.as_posix()
+        for specifier in extract_static_imports(content):
+            resolved = resolve_frontend_import(repo, ranked.chunk.file_path, specifier)
+            if resolved and resolved != anchor_path:
+                import_anchor_scores[resolved] = max(
+                    ranked.rerank_score,
+                    import_anchor_scores.get(resolved, float("-inf")),
+                )
+
+    if not import_anchor_scores:
+        return ranked_chunks
+
+    adjusted: list[_RankedChunk] = []
+    for ranked in ranked_chunks:
+        path = ranked.chunk.file_path.as_posix()
+        role = classify_frontend_role(ranked.chunk.file_path).name
+        if path not in import_anchor_scores or role not in _FRONTEND_IMPORT_SUPPORT_ROLES:
+            adjusted.append(ranked)
+            continue
+
+        score_parts = dict(ranked.score_parts)
+        existing_boost = score_parts.get("frontend_import_support_boost", 0.0)
+        boost_delta = max(0.0, _FRONTEND_IMPORT_SUPPORT_BOOST - existing_boost)
+        if boost_delta <= 0:
+            adjusted.append(ranked)
+            continue
+
+        anchor_ceiling = import_anchor_scores[path] - _FRONTEND_IMPORT_ANCHOR_EPSILON
+        rerank_score = min(ranked.rerank_score + boost_delta, anchor_ceiling)
+        applied_boost = rerank_score - ranked.rerank_score
+        if applied_boost <= 0:
+            adjusted.append(ranked)
+            continue
+
+        score_parts["frontend_import_support_boost"] = applied_boost
+        score_parts["rerank_score"] = rerank_score
+        adjusted.append(
+            _RankedChunk(
+                chunk=ranked.chunk,
+                score=ranked.score,
+                score_parts=score_parts,
+                reasons=_reasons(score_parts, query),
+                rank_tier=ranked.rank_tier,
+                rerank_score=rerank_score,
+                evidence_class=ranked.evidence_class,
+                evidence_priority=ranked.evidence_priority,
+            )
+        )
+
+    return sorted(adjusted, key=_ranked_chunk_sort_key)
+
+
+def _read_frontend_import_anchor(path: Path) -> str:
+    with path.open("rb") as handle:
+        return handle.read(_FRONTEND_IMPORT_MAX_FILE_BYTES).decode(
+            "utf-8",
+            errors="replace",
+        )
 
 
 def _expand_ranked_chunks(
@@ -3463,6 +3565,8 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("frontend entrypoint boost")
     if score_parts.get("frontend_support_boost", 0.0) > 0:
         reasons.append("frontend support boost")
+    if score_parts.get("frontend_import_support_boost", 0.0) > 0:
+        reasons.append("frontend import support boost")
     if score_parts.get("frontend_lockfile_penalty", 0.0) < 0:
         reasons.append("frontend lockfile penalty")
     if score_parts.get("frontend_scratch_temp_penalty", 0.0) < 0:
