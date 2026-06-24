@@ -106,9 +106,9 @@ def test_infer_frontend_intent_splits_path_and_camel_case_terms() -> None:
 
 def test_infer_frontend_intent_is_additive_and_clamped() -> None:
     weak_intent = infer_frontend_intent("layout")
-    strong_intent = infer_frontend_intent("layout theme sidebar tool qrcode mqtt watermark chat")
+    strong_intent = infer_frontend_intent("layout theme sidebar tool route navigation reader scanner camera image")
     saturated_intent = infer_frontend_intent(
-        "tool page view component layout chat qrcode mqtt watermark sidebar theme "
+        "tool page view component layout route navigation reader scanner camera image upload download sidebar theme "
         "generate decode encode parse format convert entity class interface typescript java csharp python "
         "pinia store state theme sidebar dark light history"
     )
@@ -120,6 +120,14 @@ def test_infer_frontend_intent_is_additive_and_clamped() -> None:
         saturated_intent.state,
     ):
         assert 0.0 <= score <= 1.0
+
+
+def test_frontend_intent_scoring_tokens_exclude_fixture_domains() -> None:
+    forbidden_tokens = {"qrcode", "mqtt", "watermark", "chat"}
+
+    assert forbidden_tokens.isdisjoint(frontend_roles._FEATURE_ENTRYPOINT_TOKENS)
+    assert forbidden_tokens.isdisjoint(frontend_roles._UTILITY_IMPLEMENTATION_TOKENS)
+    assert forbidden_tokens.isdisjoint(frontend_roles._STATE_TOKENS)
 
 
 def test_frontend_role_is_immutable() -> None:
