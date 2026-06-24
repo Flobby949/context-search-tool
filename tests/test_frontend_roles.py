@@ -198,3 +198,74 @@ def test_frontend_candidate_scope_enabled_rejects_java_only_pool() -> None:
             "src/test/java/com/example/AppTest.java",
         ]
     )
+
+
+def test_frontend_score_parts_disabled_returns_empty() -> None:
+    assert (
+        frontend_roles.frontend_score_parts(
+            "src/views/image/ImageTool.vue",
+            "image canvas remove scan reader upload preview",
+            enabled=False,
+        )
+        == {}
+    )
+
+
+def test_frontend_score_parts_boost_entrypoint_and_support_roles() -> None:
+    feature_parts = frontend_roles.frontend_score_parts(
+        "src/views/image/ImageTool.vue",
+        "image canvas remove scan reader upload preview",
+        enabled=True,
+    )
+    utility_parts = frontend_roles.frontend_score_parts(
+        "src/utils/entityFactory.ts",
+        "entity generate TypeScript class interface parse convert",
+        enabled=True,
+    )
+
+    assert feature_parts["frontend_entrypoint_boost"] == pytest.approx(0.35)
+    assert "frontend_support_boost" not in feature_parts
+    assert utility_parts["frontend_support_boost"] == pytest.approx(0.18)
+    assert "frontend_entrypoint_boost" not in utility_parts
+
+
+def test_frontend_score_parts_use_targeted_noise_penalties() -> None:
+    lockfile_parts = frontend_roles.frontend_score_parts(
+        "package-lock.json",
+        "image canvas remove scan reader upload preview",
+        enabled=True,
+    )
+    scratch_parts = frontend_roles.frontend_score_parts(
+        "temp/imageProbe.ts",
+        "image canvas remove scan reader upload preview",
+        enabled=True,
+    )
+    type_parts = frontend_roles.frontend_score_parts(
+        "src/types/entity.d.ts",
+        "image canvas remove scan reader upload preview",
+        enabled=True,
+    )
+
+    assert lockfile_parts["frontend_lockfile_penalty"] == pytest.approx(-0.50)
+    assert lockfile_parts["penalty"] == pytest.approx(-0.50)
+    assert scratch_parts["frontend_scratch_temp_penalty"] == pytest.approx(-0.60)
+    assert scratch_parts["penalty"] == pytest.approx(-0.60)
+    assert type_parts["frontend_type_decl_penalty"] == pytest.approx(-0.12)
+    assert type_parts["penalty"] == pytest.approx(-0.12)
+
+
+def test_frontend_score_parts_do_not_penalize_explicit_type_or_lock_queries() -> None:
+    type_parts = frontend_roles.frontend_score_parts(
+        "src/types/entity.d.ts",
+        "entity type declaration d.ts",
+        enabled=True,
+    )
+    lockfile_parts = frontend_roles.frontend_score_parts(
+        "package-lock.json",
+        "package dependency lock versions",
+        enabled=True,
+    )
+
+    assert type_parts["frontend_support_boost"] > 0
+    assert "frontend_type_decl_penalty" not in type_parts
+    assert "frontend_lockfile_penalty" not in lockfile_parts

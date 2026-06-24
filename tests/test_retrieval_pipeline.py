@@ -4921,6 +4921,205 @@ def _rank_generic_noise_chunks(
     return retrieval._rank_chunks(store, candidates, tokens, query)
 
 
+def test_frontend_score_parts_rank_feature_entrypoint_over_broad_utility(
+    tmp_path: Path,
+) -> None:
+    query = "image canvas remove scan reader upload preview"
+    view = _generic_noise_chunk(
+        "image-view",
+        "src/views/image/ImageTool.vue",
+        "<template>image canvas remove scan reader upload preview</template>",
+        ["image", "canvas", "remove", "scan", "reader", "upload", "preview"],
+        {"language": "vue"},
+    )
+    utility = _generic_noise_chunk(
+        "image-helper",
+        "src/utils/imageHelpers.ts",
+        "export function broadImageUtility() { return 'image canvas helper transform'; }",
+        ["image", "canvas", "helper", "utility", "transform"],
+        {"language": "typescript"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [view, utility],
+        {
+            "image-view": {
+                "semantic": 0.40,
+                "lexical": 0.45,
+                "path_symbol": 2.0,
+                "direct_text": 0.60,
+            },
+            "image-helper": {
+                "semantic": 0.45,
+                "lexical": 0.40,
+                "path_symbol": 2.0,
+                "direct_text": 0.60,
+            },
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "image-view"
+    assert by_id["image-view"].score_parts["frontend_entrypoint_boost"] == pytest.approx(0.35)
+    assert "frontend_support_boost" not in by_id["image-helper"].score_parts
+
+
+def test_frontend_score_parts_keep_implementation_utility_above_view(
+    tmp_path: Path,
+) -> None:
+    query = "entity generate TypeScript class interface parse convert"
+    view = _generic_noise_chunk(
+        "entity-view",
+        "src/views/entity/EntityBuilder.vue",
+        "<template>entity generate form preview</template>",
+        ["entity", "generate", "form", "preview"],
+        {"language": "vue"},
+    )
+    utility = _generic_noise_chunk(
+        "entity-utility",
+        "src/utils/converter.ts",
+        "export function buildEntity() { return 'generate TypeScript class interface parse convert entity'; }",
+        ["entity", "generate", "typescript", "class", "interface", "parse", "convert"],
+        {"language": "typescript"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [view, utility],
+        {
+            "entity-view": {
+                "semantic": 0.55,
+                "lexical": 0.50,
+                "path_symbol": 2.0,
+                "direct_text": 0.70,
+            },
+            "entity-utility": {
+                "semantic": 0.42,
+                "lexical": 0.42,
+                "path_symbol": 3.0,
+                "direct_text": 0.50,
+            },
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "entity-utility"
+    assert by_id["entity-utility"].score_parts["frontend_support_boost"] == pytest.approx(0.18)
+    assert "frontend_entrypoint_boost" not in by_id["entity-view"].score_parts
+
+
+def test_frontend_score_parts_demote_temp_and_lockfiles_for_feature_queries(
+    tmp_path: Path,
+) -> None:
+    query = "image canvas remove scan reader upload preview"
+    view = _generic_noise_chunk(
+        "image-view",
+        "src/views/image/ImageTool.vue",
+        "<template>image canvas remove scan reader upload preview</template>",
+        ["image", "canvas", "remove", "scan", "reader", "upload", "preview"],
+        {"language": "vue"},
+    )
+    utility = _generic_noise_chunk(
+        "image-helper",
+        "src/utils/imageHelpers.ts",
+        "export function imageHelper() { return 'image helper'; }",
+        ["image", "helper"],
+        {"language": "typescript"},
+    )
+    scratch = _generic_noise_chunk(
+        "scratch",
+        "temp/imageProbe.ts",
+        "image canvas remove scan reader upload preview scratch copy",
+        ["image", "canvas", "remove", "scan", "reader", "upload", "preview"],
+        {"language": "typescript"},
+    )
+    lockfile = _generic_noise_chunk(
+        "lockfile",
+        "package-lock.json",
+        '{"packages": {"image-reader": {"version": "1.0.0"}}}',
+        ["image", "reader", "upload", "package", "lock"],
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [view, utility, scratch, lockfile],
+        {
+            "image-view": {"semantic": 0.40, "lexical": 0.45, "path_symbol": 2.0, "direct_text": 0.60},
+            "image-helper": {"semantic": 0.35, "lexical": 0.35, "path_symbol": 2.5, "direct_text": 0.45},
+            "scratch": {"semantic": 0.75, "lexical": 0.75, "path_symbol": 2.0, "direct_text": 0.90},
+            "lockfile": {"semantic": 0.65, "lexical": 0.65, "path_symbol": 2.0, "direct_text": 0.85},
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+    ranked_ids = [item.chunk.chunk_id for item in ranked]
+
+    assert ranked_ids.index("scratch") > ranked_ids.index("image-view")
+    assert ranked_ids.index("lockfile") > ranked_ids.index("image-view")
+    assert by_id["scratch"].score_parts["frontend_scratch_temp_penalty"] == pytest.approx(-0.60)
+    assert by_id["lockfile"].score_parts["frontend_lockfile_penalty"] == pytest.approx(-0.50)
+
+
+def test_frontend_score_parts_are_absent_in_java_only_candidate_pool(
+    tmp_path: Path,
+) -> None:
+    controller = _generic_noise_chunk(
+        "controller",
+        "src/main/java/com/example/ImageController.java",
+        "class ImageController { String scanReaderUpload() { return service.run(); } }",
+        ["image", "scan", "reader", "upload"],
+        {"language": "java"},
+    )
+    service = _generic_noise_chunk(
+        "service",
+        "src/main/java/com/example/ImageService.java",
+        "class ImageService { String removeCanvas() { return \"image canvas remove\"; } }",
+        ["image", "canvas", "remove"],
+        {"language": "java"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [controller, service],
+        {
+            "controller": {"semantic": 0.60, "lexical": 0.60, "path_symbol": 2.0},
+            "service": {"semantic": 0.55, "lexical": 0.55, "path_symbol": 2.0},
+        },
+        ["image", "canvas", "remove", "scan", "reader", "upload"],
+        "image canvas remove scan reader upload",
+    )
+
+    assert all(
+        not any(key.startswith("frontend_") for key in item.score_parts)
+        for item in ranked
+    )
+
+
+def test_reasons_include_frontend_score_part_diagnostics() -> None:
+    reasons = retrieval._reasons(
+        {
+            "frontend_entrypoint_boost": 0.35,
+            "frontend_support_boost": 0.18,
+            "frontend_lockfile_penalty": -0.50,
+            "frontend_scratch_temp_penalty": -0.60,
+            "frontend_type_decl_penalty": -0.12,
+        },
+        "image canvas remove scan reader upload preview",
+    )
+
+    assert "frontend entrypoint boost" in reasons
+    assert "frontend support boost" in reasons
+    assert "frontend lockfile penalty" in reasons
+    assert "frontend scratch temp penalty" in reasons
+    assert "frontend type declaration penalty" in reasons
+
+
 def test_generic_noise_generated_schema_demotes_below_source(
     tmp_path: Path,
 ) -> None:

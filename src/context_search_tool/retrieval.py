@@ -10,6 +10,10 @@ from pathlib import Path
 from context_search_tool.chunker import expand_lines
 from context_search_tool.config import ToolConfig
 from context_search_tool.embeddings import provider_from_config
+from context_search_tool.frontend_roles import (
+    frontend_candidate_scope_enabled,
+    frontend_score_parts,
+)
 from context_search_tool.identifier_intent import IdentifierIntent, infer_identifier_intent
 from context_search_tool.manifest import assert_manifest_compatible
 from context_search_tool.models import (
@@ -1228,6 +1232,9 @@ def _rank_chunks(
     project_units = project_units_from_chunk_metadata(tuple(candidate_chunks.values()))
     query_scope = infer_query_scope(query, tokens, project_units)
     identifier_intent = infer_identifier_intent(query, tokens)
+    frontend_enabled = frontend_candidate_scope_enabled(
+        chunk.file_path for chunk in candidate_chunks.values()
+    )
     spring_path_parts = _spring_path_score_parts(
         store,
         candidate_chunks,
@@ -1313,6 +1320,10 @@ def _rank_chunks(
         score_parts = _merge_score_parts(
             score_parts,
             _identifier_intent_score_parts(chunk, identifier_intent),
+        )
+        score_parts = _merge_score_parts(
+            score_parts,
+            frontend_score_parts(chunk.file_path, query, enabled=frontend_enabled),
         )
 
         score = _combined_score(score_parts)
@@ -1833,6 +1844,8 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         + score_parts.get("spring_path_service_interface_match", 0.0)
         + score_parts.get("spring_path_executor_match", 0.0)
         + score_parts.get("file_role_source_boost", 0.0)
+        + score_parts.get("frontend_entrypoint_boost", 0.0)
+        + score_parts.get("frontend_support_boost", 0.0)
         + score_parts.get("penalty", 0.0)
     )
 
@@ -3425,6 +3438,16 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("java plugin boost")
     if score_parts.get("file_role_source_boost", 0.0) > 0:
         reasons.append("source file role boost")
+    if score_parts.get("frontend_entrypoint_boost", 0.0) > 0:
+        reasons.append("frontend entrypoint boost")
+    if score_parts.get("frontend_support_boost", 0.0) > 0:
+        reasons.append("frontend support boost")
+    if score_parts.get("frontend_lockfile_penalty", 0.0) < 0:
+        reasons.append("frontend lockfile penalty")
+    if score_parts.get("frontend_scratch_temp_penalty", 0.0) < 0:
+        reasons.append("frontend scratch temp penalty")
+    if score_parts.get("frontend_type_decl_penalty", 0.0) < 0:
+        reasons.append("frontend type declaration penalty")
     if score_parts.get("generated_schema_penalty", 0.0) < 0:
         reasons.append("generated schema penalty")
     if score_parts.get("lockfile_penalty", 0.0) < 0:

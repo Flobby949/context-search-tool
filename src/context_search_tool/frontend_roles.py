@@ -72,6 +72,30 @@ _STATE_TOKENS = {
     "light",
     "history",
 }
+_LOCKFILE_QUERY_TOKENS = {
+    "bun",
+    "dependencies",
+    "dependency",
+    "lock",
+    "lockfile",
+    "lockfiles",
+    "npm",
+    "package",
+    "packages",
+    "pnpm",
+    "version",
+    "versions",
+    "yarn",
+}
+_TYPE_QUERY_TOKENS = {
+    "declaration",
+    "declarations",
+    "type",
+    "typedef",
+    "types",
+    "typing",
+    "typings",
+}
 _SEPARATOR_RE = re.compile(r"[\\/._-]+")
 _ACRONYM_BOUNDARY_RE = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
@@ -82,34 +106,36 @@ def classify_frontend_role(path: str | PurePosixPath) -> FrontendRole:
     normalized = _normalize_path(path)
     pure_path = PurePosixPath(normalized)
     parts = pure_path.parts
+    frontend_parts = _frontend_path_parts(parts)
+    frontend_path = "/".join(frontend_parts)
     name = pure_path.name
 
     if name in _LOCKFILES:
         return FrontendRole("lockfile")
     if parts and parts[0] in {"temp", "tmp", ".cache"}:
         return FrontendRole("scratch_temp")
-    if _is_type_decl(normalized, parts):
+    if _is_type_decl(frontend_path, frontend_parts):
         return FrontendRole("type_decl")
-    if _is_under(parts, "src", "router") or _is_under(parts, "src", "routes"):
+    if _is_under(frontend_parts, "src", "router") or _is_under(frontend_parts, "src", "routes"):
         return FrontendRole("route_config")
-    if _is_under(parts, "src", "views") or _is_under(parts, "src", "pages"):
+    if _is_under(frontend_parts, "src", "views") or _is_under(frontend_parts, "src", "pages"):
         return FrontendRole("view_page")
     if (
-        normalized == "src/components/applayout.vue"
-        or _is_under(parts, "src", "components", "layout")
-        or _is_under(parts, "src", "layouts")
+        frontend_path == "src/components/applayout.vue"
+        or _is_under(frontend_parts, "src", "components", "layout")
+        or _is_under(frontend_parts, "src", "layouts")
     ):
         return FrontendRole("layout_component")
-    if _is_under(parts, "src", "components"):
+    if _is_under(frontend_parts, "src", "components"):
         return FrontendRole("shared_component")
-    if _is_under(parts, "src", "stores") or _is_under(parts, "src", "store"):
+    if _is_under(frontend_parts, "src", "stores") or _is_under(frontend_parts, "src", "store"):
         return FrontendRole("store")
-    if _is_under(parts, "src", "services") or _is_under(parts, "src", "api"):
+    if _is_under(frontend_parts, "src", "services") or _is_under(frontend_parts, "src", "api"):
         return FrontendRole("service")
     if (
-        _is_under(parts, "src", "utils")
-        or _is_under(parts, "src", "lib")
-        or _is_under(parts, "src", "helpers")
+        _is_under(frontend_parts, "src", "utils")
+        or _is_under(frontend_parts, "src", "lib")
+        or _is_under(frontend_parts, "src", "helpers")
     ):
         return FrontendRole("utility")
 
@@ -127,9 +153,10 @@ def infer_frontend_intent(query: str) -> FrontendIntent:
 
 def frontend_repo_enabled(paths: Iterable[str | PurePosixPath]) -> bool:
     normalized_paths = tuple(_normalize_path(path) for path in paths)
+    roles = {classify_frontend_role(path).name for path in normalized_paths}
     has_package_json = any(path == "package.json" or path.endswith("/package.json") for path in normalized_paths)
-    has_view_or_page = any(path.startswith(("src/views/", "src/pages/")) for path in normalized_paths)
-    has_component = any(path.startswith("src/components/") for path in normalized_paths)
+    has_view_or_page = "view_page" in roles
+    has_component = bool(roles & {"layout_component", "shared_component"})
     return has_package_json and has_view_or_page and has_component
 
 
@@ -147,12 +174,57 @@ def frontend_candidate_scope_enabled(paths: Iterable[str | PurePosixPath]) -> bo
     return "view_page" in roles and bool(roles & support_roles)
 
 
+def frontend_score_parts(path: str | PurePosixPath, query: str, *, enabled: bool) -> dict[str, float]:
+    if not enabled:
+        return {}
+
+    role = classify_frontend_role(path).name
+    intent = infer_frontend_intent(query)
+    has_type_terms = _has_type_terms(query)
+    parts: dict[str, float] = {}
+
+    if role in {"view_page", "layout_component", "route_config"} and intent.feature_entrypoint >= 0.45:
+        parts["frontend_entrypoint_boost"] = 0.35 * intent.feature_entrypoint
+    elif role == "shared_component" and intent.feature_entrypoint >= 0.55:
+        parts["frontend_entrypoint_boost"] = 0.18 * intent.feature_entrypoint
+
+    if role in {"utility", "service"} and intent.utility_implementation >= 0.45:
+        parts["frontend_support_boost"] = 0.18 * intent.utility_implementation
+    elif role == "store" and intent.state >= 0.35:
+        parts["frontend_support_boost"] = 0.18 * intent.state
+    elif role == "type_decl" and has_type_terms:
+        parts["frontend_support_boost"] = 0.12
+
+    if role == "lockfile" and not _has_lockfile_terms(query):
+        _add_penalty(parts, "frontend_lockfile_penalty", -0.50)
+    if role == "scratch_temp":
+        _add_penalty(parts, "frontend_scratch_temp_penalty", -0.60)
+    if (
+        role == "type_decl"
+        and not has_type_terms
+        and intent.feature_entrypoint >= 0.45
+        and intent.feature_entrypoint >= intent.utility_implementation
+    ):
+        _add_penalty(parts, "frontend_type_decl_penalty", -0.12)
+
+    return parts
+
+
 def _normalize_path(path: str | PurePosixPath) -> str:
     raw_path = path.as_posix() if isinstance(path, PurePosixPath) else str(path)
     normalized = raw_path.replace("\\", "/").lower()
     while normalized.startswith("./"):
         normalized = normalized[2:]
     return normalized
+
+
+def _frontend_path_parts(parts: tuple[str, ...]) -> tuple[str, ...]:
+    if not parts or parts[0] == "src":
+        return parts
+    for index, part in enumerate(parts):
+        if part == "src":
+            return parts[index:]
+    return parts
 
 
 def _is_type_decl(path: str, parts: tuple[str, ...]) -> bool:
@@ -177,6 +249,20 @@ def _tokenize(query: str) -> tuple[str, ...]:
 
 def _score_tokens(tokens: tuple[str, ...], group: set[str], weight: float) -> float:
     return _clamp(sum(weight for token in tokens if token in group))
+
+
+def _has_lockfile_terms(query: str) -> bool:
+    return bool(set(_tokenize(query)) & _LOCKFILE_QUERY_TOKENS)
+
+
+def _has_type_terms(query: str) -> bool:
+    normalized = _normalize_path(query)
+    return "d.ts" in normalized or bool(set(_tokenize(query)) & _TYPE_QUERY_TOKENS)
+
+
+def _add_penalty(parts: dict[str, float], key: str, value: float) -> None:
+    parts[key] = value
+    parts["penalty"] = min(parts.get("penalty", value), value)
 
 
 def _clamp(score: float) -> float:
