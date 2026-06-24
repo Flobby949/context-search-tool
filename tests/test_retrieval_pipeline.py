@@ -5294,6 +5294,29 @@ def test_generic_noise_indexed_lockfile_demotes_below_source(
     assert by_id["lockfile"].score_parts["penalty"] < 0
 
 
+def test_generic_noise_explicit_dependency_query_does_not_penalize_lockfile(
+    tmp_path: Path,
+) -> None:
+    lockfile = _generic_noise_chunk(
+        "lockfile",
+        "package-lock.json",
+        '{"packages": {"image-reader": {"version": "1.0.0"}}}',
+        ["package", "dependency", "lock", "versions"],
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [lockfile],
+        {"lockfile": {"lexical": 0.8, "direct_text": 0.7}},
+        retrieval.tokenize_query("package dependency lock versions"),
+        "package dependency lock versions",
+    )
+
+    parts = ranked[0].score_parts
+    assert "lockfile_penalty" not in parts
+    assert "penalty" not in parts
+
+
 @pytest.mark.parametrize(
     "lockfile_path",
     [

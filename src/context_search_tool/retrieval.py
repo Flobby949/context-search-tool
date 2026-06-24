@@ -101,6 +101,17 @@ _INDEXED_LOCKFILE_NAMES = {
     "pnpm-lock.yml",
     "yarn.lock",
 }
+_LOCKFILE_QUERY_TOKENS = {
+    "dependencies",
+    "dependency",
+    "lock",
+    "lockfile",
+    "lockfiles",
+    "package",
+    "packages",
+    "version",
+    "versions",
+}
 
 
 @dataclass(frozen=True)
@@ -3230,6 +3241,10 @@ def _looks_implementation_query(query: str, tokens: list[str]) -> bool:
     return bool({token.lower() for token in tokens}.intersection(implementation_terms))
 
 
+def _has_lockfile_query_terms(tokens: list[str]) -> bool:
+    return bool({token.lower() for token in tokens} & _LOCKFILE_QUERY_TOKENS)
+
+
 def _is_generated_schema_path(path: str, suffix: str) -> bool:
     parts = [part for part in path.split("/") if part]
     if "generated" in parts:
@@ -3259,11 +3274,12 @@ def _generic_file_role(
             penalty_key="generated_schema_penalty",
         )
     if name in _INDEXED_LOCKFILE_NAMES:
+        penalty = 0.0 if _has_lockfile_query_terms(tokens) else 0.20
         return _GenericFileRole(
             "lockfile",
             "high",
-            penalty=0.20,
-            penalty_key="lockfile_penalty",
+            penalty=penalty,
+            penalty_key="lockfile_penalty" if penalty else "",
         )
     if suffix in _TEMPLATE_SUFFIXES:
         penalty = 0.08 if is_implementation_query else 0.0
@@ -3317,7 +3333,7 @@ def _generic_noise_score_parts(
             parts,
             {"penalty": -0.20, "generated_schema_penalty": -0.20},
         )
-    if name in _INDEXED_LOCKFILE_NAMES:
+    if name in _INDEXED_LOCKFILE_NAMES and not _has_lockfile_query_terms(tokens):
         parts = _merge_score_parts(
             parts,
             {"penalty": -0.20, "lockfile_penalty": -0.20},

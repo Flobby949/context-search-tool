@@ -96,6 +96,15 @@ _TYPE_QUERY_TOKENS = {
     "typing",
     "typings",
 }
+_SCRATCH_QUERY_TOKENS = {
+    "cache",
+    "generated",
+    "mock",
+    "scratch",
+    "temp",
+    "tmp",
+}
+_TYPE_PATH_GENERIC_TOKENS = {"src", "type", "types", "d", "ts"}
 _SEPARATOR_RE = re.compile(r"[\\/._-]+")
 _ACRONYM_BOUNDARY_RE = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
@@ -181,6 +190,7 @@ def frontend_score_parts(path: str | PurePosixPath, query: str, *, enabled: bool
     role = classify_frontend_role(path).name
     intent = infer_frontend_intent(query)
     has_type_terms = _has_type_terms(query)
+    has_explicit_type_evidence = has_type_terms or _has_type_path_match(path, query)
     parts: dict[str, float] = {}
 
     if role in {"view_page", "layout_component", "route_config"} and intent.feature_entrypoint >= 0.45:
@@ -197,11 +207,11 @@ def frontend_score_parts(path: str | PurePosixPath, query: str, *, enabled: bool
 
     if role == "lockfile" and not _has_lockfile_terms(query):
         _add_penalty(parts, "frontend_lockfile_penalty", -0.50)
-    if role == "scratch_temp":
+    if role == "scratch_temp" and not _has_scratch_terms(query):
         _add_penalty(parts, "frontend_scratch_temp_penalty", -0.60)
     if (
         role == "type_decl"
-        and not has_type_terms
+        and not has_explicit_type_evidence
         and intent.feature_entrypoint >= 0.45
         and intent.feature_entrypoint >= intent.utility_implementation
     ):
@@ -258,6 +268,30 @@ def _has_lockfile_terms(query: str) -> bool:
 def _has_type_terms(query: str) -> bool:
     normalized = _normalize_path(query)
     return "d.ts" in normalized or bool(set(_tokenize(query)) & _TYPE_QUERY_TOKENS)
+
+
+def _has_type_path_match(path: str | PurePosixPath, query: str) -> bool:
+    query_tokens = set(_tokenize(query))
+    path_tokens = _type_decl_path_tokens(path)
+    return bool(query_tokens & path_tokens)
+
+
+def _type_decl_path_tokens(path: str | PurePosixPath) -> set[str]:
+    normalized = _normalize_path(path)
+    pure_path = PurePosixPath(normalized)
+    tokens: set[str] = set()
+    for part in _frontend_path_parts(pure_path.parts):
+        cleaned = part[:-5] if part.endswith(".d.ts") else PurePosixPath(part).stem
+        part_tokens = set(_tokenize(cleaned))
+        compact = re.sub(r"[^a-z0-9]+", "", cleaned)
+        if compact:
+            part_tokens.add(compact)
+        tokens.update(part_tokens - _TYPE_PATH_GENERIC_TOKENS)
+    return tokens
+
+
+def _has_scratch_terms(query: str) -> bool:
+    return bool(set(_tokenize(query)) & _SCRATCH_QUERY_TOKENS)
 
 
 def _add_penalty(parts: dict[str, float], key: str, value: float) -> None:

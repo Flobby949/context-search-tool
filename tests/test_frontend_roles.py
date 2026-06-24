@@ -269,3 +269,25 @@ def test_frontend_score_parts_do_not_penalize_explicit_type_or_lock_queries() ->
     assert type_parts["frontend_support_boost"] > 0
     assert "frontend_type_decl_penalty" not in type_parts
     assert "frontend_lockfile_penalty" not in lockfile_parts
+
+
+def test_frontend_score_parts_treat_matching_type_decl_path_as_explicit_type_evidence() -> None:
+    parts = frontend_roles.frontend_score_parts(
+        "src/types/image-reader.d.ts",
+        "image reader scan camera",
+        enabled=True,
+    )
+
+    assert "frontend_type_decl_penalty" not in parts
+    assert "penalty" not in parts
+
+
+def test_frontend_score_parts_do_not_penalize_explicit_scratch_queries() -> None:
+    parts = frontend_roles.frontend_score_parts(
+        "temp/entityMock.ts",
+        "temp scratch entity mock",
+        enabled=True,
+    )
+
+    assert "frontend_scratch_temp_penalty" not in parts
+    assert "penalty" not in parts
