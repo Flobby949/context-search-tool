@@ -94,6 +94,15 @@ def test_infer_frontend_intent_for_layout_theme_query() -> None:
     assert intent.state >= 0.35
 
 
+def test_infer_frontend_intent_for_image_remove_feature_query() -> None:
+    intent = infer_frontend_intent(
+        "image remover remove detection mask canvas inpaint"
+    )
+
+    assert intent.feature_entrypoint >= 0.45
+    assert intent.feature_entrypoint >= intent.utility_implementation
+
+
 def test_infer_frontend_intent_splits_pascal_case_terms() -> None:
     intent = infer_frontend_intent("AppLayout")
 
@@ -253,6 +262,48 @@ def test_frontend_score_parts_boost_entrypoint_and_support_roles() -> None:
     assert "frontend_entrypoint_boost" not in utility_parts
 
 
+def test_frontend_score_parts_boost_image_remove_entrypoint_query() -> None:
+    parts = frontend_roles.frontend_score_parts(
+        "src/views/image/ImageRemover.vue",
+        "image remover remove detection mask canvas inpaint",
+        enabled=True,
+    )
+
+    assert parts["frontend_entrypoint_boost"] > 0
+
+
+def test_frontend_score_parts_boost_direct_entrypoint_name_match() -> None:
+    target_parts = frontend_roles.frontend_score_parts(
+        "src/views/model/InputToModel.vue",
+        "input to model generate class interface",
+        enabled=True,
+    )
+    sibling_parts = frontend_roles.frontend_score_parts(
+        "src/views/model/ModelToMock.vue",
+        "input to model generate class interface",
+        enabled=True,
+    )
+
+    assert target_parts["frontend_entrypoint_boost"] == pytest.approx(0.25)
+    assert "frontend_entrypoint_boost" not in sibling_parts
+
+
+def test_frontend_score_parts_boost_direct_support_name_match() -> None:
+    target_parts = frontend_roles.frontend_score_parts(
+        "src/utils/inputToModel.ts",
+        "input to model generate class interface",
+        enabled=True,
+    )
+    sibling_parts = frontend_roles.frontend_score_parts(
+        "src/utils/modelToMock.ts",
+        "input to model generate class interface",
+        enabled=True,
+    )
+
+    assert target_parts["frontend_support_name_match_boost"] == pytest.approx(0.18)
+    assert "frontend_support_name_match_boost" not in sibling_parts
+
+
 def test_frontend_score_parts_use_targeted_noise_penalties() -> None:
     lockfile_parts = frontend_roles.frontend_score_parts(
         "package-lock.json",
@@ -272,8 +323,8 @@ def test_frontend_score_parts_use_targeted_noise_penalties() -> None:
 
     assert lockfile_parts["frontend_lockfile_penalty"] == pytest.approx(-0.80)
     assert lockfile_parts["penalty"] == pytest.approx(-0.80)
-    assert scratch_parts["frontend_scratch_temp_penalty"] == pytest.approx(-0.60)
-    assert scratch_parts["penalty"] == pytest.approx(-0.60)
+    assert scratch_parts["frontend_scratch_temp_penalty"] == pytest.approx(-1.00)
+    assert scratch_parts["penalty"] == pytest.approx(-1.00)
     assert type_parts["frontend_type_decl_penalty"] == pytest.approx(-0.12)
     assert type_parts["penalty"] == pytest.approx(-0.12)
 

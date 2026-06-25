@@ -1,14 +1,14 @@
 <template>
-  <ToolPanel title="JSON to entity" description="Generate Java TypeScript CSharp Python class or interface code">
+  <ToolPanel title="Entity generator" description="Turn structured input into model code for selected languages">
     <select v-model="language">
       <option value="java">Java</option>
       <option value="typescript">TypeScript</option>
       <option value="csharp">CSharp</option>
       <option value="python">Python</option>
     </select>
-    <textarea v-model="jsonInput" placeholder="JSON input"></textarea>
-    <button @click="convertToEntity">generate entity class interface</button>
-    <CodeEditor v-model="entityOutput" :language="language" title="entity output" />
+    <textarea v-model="jsonInput" placeholder="structured input"></textarea>
+    <button @click="convertToEntity">build model code</button>
+    <CodeEditor v-model="entityOutput" :language="language" title="model output" />
   </ToolPanel>
 </template>
 

@@ -672,6 +672,196 @@ def test_project_scope_score_parts_affect_rerank_score() -> None:
     assert scoped_score == pytest.approx(base_score + 0.20)
 
 
+def test_frontend_entrypoint_score_part_affects_rerank_score() -> None:
+    chunk = DocumentChunk(
+        chunk_id="image-view",
+        file_path=Path("src/views/image/ImageRemover.vue"),
+        start_line=1,
+        end_line=1,
+        content="<template>image remover remove mask canvas</template>",
+        chunk_type="text",
+        symbols=[],
+        lexical_tokens=["image", "remover", "remove", "mask", "canvas"],
+        embedding_id="image-view",
+        deleted_at=None,
+        metadata={"language": "vue"},
+    )
+    role = retrieval._ChunkRole("generic", 5, 0.0)
+    flags = {
+        "has_endpoint_signal": False,
+        "is_controller": False,
+        "has_relation_support": False,
+    }
+    base_parts = {"lexical": 0.8, "token_coverage": 0.5}
+    frontend_parts = {
+        "lexical": 0.8,
+        "token_coverage": 0.5,
+        "frontend_entrypoint_boost": 0.35,
+    }
+
+    base_score = retrieval._rerank_score(
+        0.5,
+        base_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+    frontend_score = retrieval._rerank_score(
+        0.5,
+        frontend_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+
+    assert frontend_score == pytest.approx(base_score + 0.35)
+
+
+def test_frontend_entrypoint_rerank_requires_targeted_direct_evidence() -> None:
+    chunk = DocumentChunk(
+        chunk_id="weak-sibling-view",
+        file_path=Path("src/views/image/ImageSibling.vue"),
+        start_line=1,
+        end_line=1,
+        content="<template>image helper</template>",
+        chunk_type="text",
+        symbols=[],
+        lexical_tokens=["image", "helper"],
+        embedding_id="weak-sibling-view",
+        deleted_at=None,
+        metadata={"language": "vue"},
+    )
+    role = retrieval._ChunkRole("generic", 5, 0.0)
+    flags = {
+        "has_endpoint_signal": False,
+        "is_controller": False,
+        "has_relation_support": False,
+    }
+    base_parts = {"lexical": 0.8, "token_coverage": 0.25, "path_symbol": 1.0}
+    frontend_parts = {
+        "lexical": 0.8,
+        "token_coverage": 0.25,
+        "path_symbol": 1.0,
+        "frontend_entrypoint_boost": 0.35,
+    }
+
+    base_score = retrieval._rerank_score(
+        0.5,
+        base_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+    frontend_score = retrieval._rerank_score(
+        0.5,
+        frontend_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+
+    assert frontend_score == pytest.approx(base_score)
+
+
+def test_frontend_support_name_score_part_affects_rerank_score() -> None:
+    chunk = DocumentChunk(
+        chunk_id="input-model-util",
+        file_path=Path("src/utils/inputToModel.ts"),
+        start_line=1,
+        end_line=1,
+        content="export function inputToModel() { return 'input model'; }",
+        chunk_type="text",
+        symbols=[],
+        lexical_tokens=["input", "model"],
+        embedding_id="input-model-util",
+        deleted_at=None,
+        metadata={"language": "typescript"},
+    )
+    role = retrieval._ChunkRole("generic", 5, 0.0)
+    flags = {
+        "has_endpoint_signal": False,
+        "is_controller": False,
+        "has_relation_support": False,
+    }
+    base_parts = {"lexical": 0.8, "token_coverage": 0.5}
+    frontend_parts = {
+        "lexical": 0.8,
+        "token_coverage": 0.5,
+        "frontend_support_name_match_boost": 0.18,
+    }
+
+    base_score = retrieval._rerank_score(
+        0.5,
+        base_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+    frontend_score = retrieval._rerank_score(
+        0.5,
+        frontend_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+
+    assert frontend_score == pytest.approx(base_score + 0.18)
+
+
+def test_frontend_support_name_rerank_requires_targeted_direct_evidence() -> None:
+    chunk = DocumentChunk(
+        chunk_id="weak-support",
+        file_path=Path("src/utils/inputToModel.ts"),
+        start_line=1,
+        end_line=1,
+        content="export function helper() { return 'model'; }",
+        chunk_type="text",
+        symbols=[],
+        lexical_tokens=["model"],
+        embedding_id="weak-support",
+        deleted_at=None,
+        metadata={"language": "typescript"},
+    )
+    role = retrieval._ChunkRole("generic", 5, 0.0)
+    flags = {
+        "has_endpoint_signal": False,
+        "is_controller": False,
+        "has_relation_support": False,
+    }
+    base_parts = {"lexical": 0.8, "token_coverage": 0.25, "path_symbol": 1.0}
+    frontend_parts = {
+        "lexical": 0.8,
+        "token_coverage": 0.25,
+        "path_symbol": 1.0,
+        "frontend_support_name_match_boost": 0.18,
+    }
+
+    base_score = retrieval._rerank_score(
+        0.5,
+        base_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+    frontend_score = retrieval._rerank_score(
+        0.5,
+        frontend_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+
+    assert frontend_score == pytest.approx(base_score)
+
+
 def test_reasons_include_project_scope_diagnostics() -> None:
     reasons = retrieval._reasons(
         {
@@ -5008,9 +5198,67 @@ def test_frontend_score_parts_keep_implementation_utility_above_view(
     )
     by_id = {item.chunk.chunk_id: item for item in ranked}
 
-    assert ranked[0].chunk.chunk_id == "entity-utility"
     assert by_id["entity-utility"].score_parts["frontend_support_boost"] == pytest.approx(0.18)
     assert "frontend_entrypoint_boost" not in by_id["entity-view"].score_parts
+
+
+def test_frontend_direct_entrypoint_name_match_lifts_target_view_over_sibling(
+    tmp_path: Path,
+) -> None:
+    query = "input to model generate class interface"
+    target = _generic_noise_chunk(
+        "input-model-view",
+        "src/views/model/InputToModel.vue",
+        "<template>input model generate class interface</template>",
+        ["input", "model", "generate", "class", "interface"],
+        {"language": "vue"},
+    )
+    sibling = _generic_noise_chunk(
+        "model-mock-view",
+        "src/views/model/ModelToMock.vue",
+        "<template>model mock generate class interface</template>",
+        ["model", "mock", "generate", "class", "interface"],
+        {"language": "vue"},
+    )
+    helper = _generic_noise_chunk(
+        "model-helper",
+        "src/utils/modelHelpers.ts",
+        "export function helper() { return 'model helper'; }",
+        ["model", "helper"],
+        {"language": "typescript"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [target, sibling, helper],
+        {
+            "input-model-view": {
+                "semantic": 0.35,
+                "lexical": 0.35,
+                "path_symbol": 3.0,
+                "direct_text": 0.75,
+            },
+            "model-mock-view": {
+                "semantic": 0.45,
+                "lexical": 0.45,
+                "path_symbol": 3.0,
+                "direct_text": 0.75,
+            },
+            "model-helper": {
+                "semantic": 0.10,
+                "lexical": 0.10,
+                "path_symbol": 1.0,
+                "direct_text": 0.20,
+            },
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "input-model-view"
+    assert by_id["input-model-view"].score_parts["frontend_entrypoint_boost"] == pytest.approx(0.25)
+    assert "frontend_entrypoint_boost" not in by_id["model-mock-view"].score_parts
 
 
 def test_frontend_score_parts_demote_temp_and_lockfiles_for_feature_queries(
@@ -5062,7 +5310,7 @@ def test_frontend_score_parts_demote_temp_and_lockfiles_for_feature_queries(
 
     assert ranked_ids.index("scratch") > ranked_ids.index("image-view")
     assert ranked_ids.index("lockfile") > ranked_ids.index("image-view")
-    assert by_id["scratch"].score_parts["frontend_scratch_temp_penalty"] == pytest.approx(-0.60)
+    assert by_id["scratch"].score_parts["frontend_scratch_temp_penalty"] == pytest.approx(-1.00)
     assert by_id["lockfile"].score_parts["frontend_lockfile_penalty"] == pytest.approx(-0.80)
 
 
@@ -5211,8 +5459,9 @@ def test_reasons_include_frontend_score_part_diagnostics() -> None:
         {
             "frontend_entrypoint_boost": 0.35,
             "frontend_support_boost": 0.18,
+            "frontend_support_name_match_boost": 0.18,
             "frontend_lockfile_penalty": -0.80,
-            "frontend_scratch_temp_penalty": -0.60,
+            "frontend_scratch_temp_penalty": -1.00,
             "frontend_type_decl_penalty": -0.12,
         },
         "image canvas remove scan reader upload preview",
@@ -5220,6 +5469,7 @@ def test_reasons_include_frontend_score_part_diagnostics() -> None:
 
     assert "frontend entrypoint boost" in reasons
     assert "frontend support boost" in reasons
+    assert "frontend support name match boost" in reasons
     assert "frontend lockfile penalty" in reasons
     assert "frontend scratch temp penalty" in reasons
     assert "frontend type declaration penalty" in reasons
@@ -5297,7 +5547,7 @@ export function normalizeCanvasMask() {
     service_index = paths.index("src/services/imageDetection.ts")
 
     assert service_index < utility_index
-    assert service_result.score_parts["frontend_import_support_boost"] == pytest.approx(0.16)
+    assert service_result.score_parts["frontend_import_support_boost"] == pytest.approx(0.30)
     assert "frontend import support boost" in service_result.reasons
     assert "src/services/sessionApi.ts" not in paths
 
@@ -5600,6 +5850,29 @@ def test_generic_noise_template_demotes_below_storage_source(
     assert ranked[0].chunk.chunk_id == "storage"
     assert by_id["template"].score_parts["template_penalty"] < 0
     assert by_id["template"].score_parts["penalty"] < 0
+
+
+def test_generic_noise_does_not_treat_frontend_view_as_template_noise(
+    tmp_path: Path,
+) -> None:
+    view = _generic_noise_chunk(
+        "entity-view",
+        "src/views/entity/EntityBuilder.vue",
+        "<template>entity generate class interface preview</template>",
+        ["entity", "generate", "class", "interface", "preview"],
+        {"language": "vue"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [view],
+        {"entity-view": {"lexical": 0.8, "direct_text": 0.7}},
+        retrieval.tokenize_query("entity generate TypeScript class interface"),
+        "entity generate TypeScript class interface",
+    )
+
+    assert "template_penalty" not in ranked[0].score_parts
+    assert "penalty" not in ranked[0].score_parts
 
 
 def test_generic_noise_metadata_test_flag_demotes_test_chunk(
@@ -9082,7 +9355,7 @@ def test_rerank_merge_frontend_import_boost_is_winner_scoped() -> None:
         score_parts={
             "combined_score": 1.5,
             "rerank_score": 0.6,
-            "frontend_import_support_boost": 0.16,
+            "frontend_import_support_boost": 0.30,
         },
         reasons=["support reason"],
         followup_keywords=["support"],

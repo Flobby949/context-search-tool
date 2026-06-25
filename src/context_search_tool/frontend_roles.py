@@ -38,6 +38,8 @@ _FEATURE_ENTRYPOINT_TOKENS = {
     "scanner",
     "camera",
     "image",
+    "remove",
+    "remover",
     "upload",
     "download",
     "route",
@@ -104,6 +106,28 @@ _SCRATCH_QUERY_TOKENS = {
     "temp",
     "tmp",
 }
+_ENTRYPOINT_NAME_GENERIC_TOKENS = {
+    "astro",
+    "component",
+    "components",
+    "d",
+    "from",
+    "index",
+    "js",
+    "jsx",
+    "page",
+    "pages",
+    "src",
+    "svelte",
+    "to",
+    "ts",
+    "tsx",
+    "view",
+    "views",
+    "vue",
+}
+_ENTRYPOINT_NAME_MATCH_BOOST = 0.25
+_SUPPORT_NAME_MATCH_BOOST = 0.18
 _FRONTEND_SOURCE_SUFFIXES = {".astro", ".js", ".jsx", ".svelte", ".ts", ".tsx", ".vue"}
 _IMPORT_FROM_RE = re.compile(
     r"^\s*import\s+(?:type\s+)?[^;\n]*?\s+from\s+[\"']([^\"']+)[\"']",
@@ -269,10 +293,17 @@ def frontend_score_parts(path: str | PurePosixPath, query: str, *, enabled: bool
     has_explicit_type_evidence = has_type_terms or _has_type_path_match(path, query)
     parts: dict[str, float] = {}
 
+    name_match_boost = _entrypoint_name_match_boost(path, query, role)
+
     if role in {"view_page", "layout_component", "route_config"} and intent.feature_entrypoint >= 0.45:
         parts["frontend_entrypoint_boost"] = 0.35 * intent.feature_entrypoint
     elif role == "shared_component" and intent.feature_entrypoint >= 0.55:
         parts["frontend_entrypoint_boost"] = 0.18 * intent.feature_entrypoint
+    if name_match_boost:
+        parts["frontend_entrypoint_boost"] = max(
+            parts.get("frontend_entrypoint_boost", 0.0),
+            name_match_boost,
+        )
 
     if role in {"utility", "service"} and intent.utility_implementation >= 0.45:
         parts["frontend_support_boost"] = 0.18 * intent.utility_implementation
@@ -280,11 +311,13 @@ def frontend_score_parts(path: str | PurePosixPath, query: str, *, enabled: bool
         parts["frontend_support_boost"] = 0.18 * intent.state
     elif role == "type_decl" and has_type_terms:
         parts["frontend_support_boost"] = 0.12
+    if role in {"utility", "service"} and _path_stem_matches_query(path, query):
+        parts["frontend_support_name_match_boost"] = _SUPPORT_NAME_MATCH_BOOST
 
     if role == "lockfile" and not _has_lockfile_terms(query):
         _add_penalty(parts, "frontend_lockfile_penalty", -0.80)
     if role == "scratch_temp" and not _has_scratch_terms(query):
-        _add_penalty(parts, "frontend_scratch_temp_penalty", -0.60)
+        _add_penalty(parts, "frontend_scratch_temp_penalty", -1.00)
     if (
         role == "type_decl"
         and not has_explicit_type_evidence
@@ -412,6 +445,34 @@ def _type_decl_path_tokens(path: str | PurePosixPath) -> set[str]:
 
 def _has_scratch_terms(query: str) -> bool:
     return bool(set(_tokenize(query)) & _SCRATCH_QUERY_TOKENS)
+
+
+def _entrypoint_name_match_boost(
+    path: str | PurePosixPath,
+    query: str,
+    role: str,
+) -> float:
+    if role not in {"view_page", "layout_component", "route_config"}:
+        return 0.0
+    if _path_stem_matches_query(path, query):
+        return _ENTRYPOINT_NAME_MATCH_BOOST
+    return 0.0
+
+
+def _path_stem_matches_query(path: str | PurePosixPath, query: str) -> bool:
+    query_tokens = _entrypoint_name_tokens(query)
+    raw_path = path.as_posix() if isinstance(path, PurePosixPath) else str(path)
+    stem = PurePosixPath(raw_path.replace("\\", "/")).stem
+    stem_tokens = _entrypoint_name_tokens(stem)
+    if len(stem_tokens) < 2:
+        return False
+
+    overlap = stem_tokens & query_tokens
+    return len(overlap) >= 2 and (len(overlap) / len(stem_tokens)) >= (2 / 3)
+
+
+def _entrypoint_name_tokens(value: str) -> set[str]:
+    return set(_tokenize(value)) - _ENTRYPOINT_NAME_GENERIC_TOKENS
 
 
 def _add_penalty(parts: dict[str, float], key: str, value: float) -> None:

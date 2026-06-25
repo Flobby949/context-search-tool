@@ -118,7 +118,7 @@ _LOCKFILE_QUERY_TOKENS = {
 _FRONTEND_IMPORT_SCAN_TOP_K = 10
 _FRONTEND_IMPORT_SCAN_FILE_LIMIT = 3
 _FRONTEND_IMPORT_MAX_FILE_BYTES = 50_000
-_FRONTEND_IMPORT_SUPPORT_BOOST = 0.16
+_FRONTEND_IMPORT_SUPPORT_BOOST = 0.30
 _FRONTEND_IMPORT_ANCHOR_EPSILON = 10 ** -_RERANK_SORT_DECIMALS
 _FRONTEND_IMPORT_ANCHOR_ROLES = {
     "view_page",
@@ -1960,6 +1960,7 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         + score_parts.get("file_role_source_boost", 0.0)
         + score_parts.get("frontend_entrypoint_boost", 0.0)
         + score_parts.get("frontend_support_boost", 0.0)
+        + score_parts.get("frontend_support_name_match_boost", 0.0)
         + score_parts.get("penalty", 0.0)
     )
 
@@ -2286,6 +2287,9 @@ def _rerank_score(
     rerank_score += score_parts.get("route_tail_context_match", 0.0)
     rerank_score += _spring_path_rerank_adjustment(score_parts)
     rerank_score += project_scope_rerank_adjustment(score_parts)
+    if not has_project_scope_mismatch:
+        rerank_score += _frontend_entrypoint_rerank_adjustment(score_parts)
+        rerank_score += _frontend_support_name_rerank_adjustment(score_parts)
 
     if (
         not has_project_scope_mismatch
@@ -2341,6 +2345,32 @@ def _rerank_score(
 
 def _has_project_scope_mismatch(score_parts: dict[str, float]) -> bool:
     return score_parts.get("project_scope_mismatch_penalty", 0.0) < 0
+
+
+def _frontend_entrypoint_rerank_adjustment(score_parts: dict[str, float]) -> float:
+    boost = score_parts.get("frontend_entrypoint_boost", 0.0)
+    if boost <= 0.0:
+        return 0.0
+    if (
+        score_parts.get("token_coverage", 0.0) >= 0.50
+        or score_parts.get("path_symbol", 0.0) >= 3.0
+        or score_parts.get("direct_text", 0.0) >= 0.75
+    ):
+        return boost
+    return 0.0
+
+
+def _frontend_support_name_rerank_adjustment(score_parts: dict[str, float]) -> float:
+    boost = score_parts.get("frontend_support_name_match_boost", 0.0)
+    if boost <= 0.0:
+        return 0.0
+    if (
+        score_parts.get("token_coverage", 0.0) >= 0.50
+        or score_parts.get("path_symbol", 0.0) >= 3.0
+        or score_parts.get("direct_text", 0.0) >= 0.75
+    ):
+        return boost
+    return 0.0
 
 
 _COHORT_MISMATCH_PENALTY = 0.05
@@ -3390,6 +3420,12 @@ def _generic_file_role(
             penalty_key="lockfile_penalty" if penalty else "",
         )
     if suffix in _TEMPLATE_SUFFIXES:
+        if classify_frontend_role(chunk.file_path).name in {
+            "view_page",
+            "layout_component",
+            "shared_component",
+        }:
+            return _GenericFileRole("source", "none", source_boost=0.03)
         penalty = 0.08 if is_implementation_query else 0.0
         return _GenericFileRole(
             "template",
@@ -3566,6 +3602,8 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("frontend entrypoint boost")
     if score_parts.get("frontend_support_boost", 0.0) > 0:
         reasons.append("frontend support boost")
+    if score_parts.get("frontend_support_name_match_boost", 0.0) > 0:
+        reasons.append("frontend support name match boost")
     if score_parts.get("frontend_import_support_boost", 0.0) > 0:
         reasons.append("frontend import support boost")
     if score_parts.get("frontend_lockfile_penalty", 0.0) < 0:
