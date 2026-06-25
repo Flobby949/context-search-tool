@@ -1840,6 +1840,7 @@ def _merge_expanded_result(
         "impl_match_boost",
         "relation_role_boost",
         "relation_detail_penalty",
+        "frontend_import_support_boost",
     ):
         if key in winner.score_parts:
             merged_score_parts[key] = winner.score_parts[key]

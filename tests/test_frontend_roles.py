@@ -346,6 +346,25 @@ const loader = () => import("@/services/lazyImageDetection")
     )
 
 
+def test_extract_static_imports_ignores_commented_and_dynamic_imports() -> None:
+    content = """
+// import { disabledLine } from "@/services/disabledLine"
+/*
+import { disabledBlock } from "@/services/disabledBlock"
+import "@/styles/disabledBlock"
+*/
+<!--
+import { disabledTemplate } from "@/services/disabledTemplate"
+-->
+import { enabled } from "@/services/enabled"
+import { enabledAgain } from "@/services/enabled"
+
+const loader = () => import("@/services/lazyEnabled")
+""".strip()
+
+    assert frontend_roles.extract_static_imports(content) == ("@/services/enabled",)
+
+
 def test_resolve_frontend_import_handles_alias_type_and_relative_imports(
     tmp_path,
 ) -> None:
@@ -388,6 +407,14 @@ def test_resolve_frontend_import_handles_alias_type_and_relative_imports(
         frontend_roles.resolve_frontend_import(repo, importer, "./localMask")
         == "src/views/image/localMask.ts"
     )
+    assert (
+        frontend_roles.resolve_frontend_import(
+            repo,
+            repo / importer,
+            "./localMask",
+        )
+        == "src/views/image/localMask.ts"
+    )
 
 
 @pytest.mark.parametrize("specifier", ["vue", "pinia", "axios"])
@@ -403,3 +430,87 @@ def test_resolve_frontend_import_rejects_package_imports(
         "src/views/image/ImageTool.vue",
         specifier,
     ) is None
+
+
+def test_resolve_frontend_import_rejects_relative_repo_escape_before_file_probe(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "src" / "views").mkdir(parents=True)
+    (tmp_path / "outside.ts").write_text(
+        "export const outside = true",
+        encoding="utf-8",
+    )
+    original_is_file = type(repo).is_file
+
+    def reject_escaped_probe(path):
+        try:
+            path.resolve().relative_to(repo.resolve())
+        except ValueError as exc:
+            raise AssertionError("escaped import candidate was probed") from exc
+        return original_is_file(path)
+
+    monkeypatch.setattr(type(repo), "is_file", reject_escaped_probe)
+
+    assert (
+        frontend_roles.resolve_frontend_import(
+            repo,
+            "src/views/Page.vue",
+            "../../../outside",
+        )
+        is None
+    )
+
+
+def test_resolve_frontend_import_rejects_symlink_escape_before_file_probe(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "src" / "views").mkdir(parents=True)
+    outside = tmp_path / "outside.ts"
+    outside.write_text("export const outside = true", encoding="utf-8")
+    link = repo / "src" / "views" / "linked.ts"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+
+    original_is_file = type(repo).is_file
+
+    def reject_escaped_probe(path):
+        try:
+            path.resolve().relative_to(repo.resolve())
+        except ValueError as exc:
+            raise AssertionError("escaped import candidate was probed") from exc
+        return original_is_file(path)
+
+    monkeypatch.setattr(type(repo), "is_file", reject_escaped_probe)
+
+    assert (
+        frontend_roles.resolve_frontend_import(
+            repo,
+            "src/views/Page.vue",
+            "./linked",
+        )
+        is None
+    )
+
+
+def test_resolve_frontend_import_rejects_absolute_importer_outside_repo(
+    tmp_path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "helper.ts").write_text("export const helper = true", encoding="utf-8")
+    outside_importer = tmp_path / "outside" / "Page.vue"
+
+    assert (
+        frontend_roles.resolve_frontend_import(
+            repo,
+            outside_importer,
+            "./helper",
+        )
+        is None
+    )

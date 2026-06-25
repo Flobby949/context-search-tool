@@ -113,6 +113,8 @@ _SIDE_EFFECT_IMPORT_RE = re.compile(
     r"^\s*import\s+[\"']([^\"']+)[\"']",
     re.MULTILINE,
 )
+_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/|<!--.*?-->", re.DOTALL)
+_LINE_COMMENT_RE = re.compile(r"^[ \t]*//.*$", re.MULTILINE)
 _IMPORT_FILE_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".vue", ".d.ts")
 _IMPORT_INDEX_FILES = ("index.ts", "index.tsx", "index.js", "index.vue")
 _TYPE_PATH_GENERIC_TOKENS = {"d", "index", "src", "ts", "type", "types"}
@@ -203,6 +205,7 @@ def frontend_candidate_scope_enabled(paths: Iterable[str | PurePosixPath]) -> bo
 
 
 def extract_static_imports(content: str) -> tuple[str, ...]:
+    content = _strip_js_ts_vue_comments(content)
     matches: list[tuple[int, str]] = []
     for regex in (_IMPORT_FROM_RE, _SIDE_EFFECT_IMPORT_RE):
         matches.extend(
@@ -219,6 +222,11 @@ def extract_static_imports(content: str) -> tuple[str, ...]:
     return tuple(specifiers)
 
 
+def _strip_js_ts_vue_comments(content: str) -> str:
+    without_blocks = _BLOCK_COMMENT_RE.sub("", content)
+    return _LINE_COMMENT_RE.sub("", without_blocks)
+
+
 def resolve_frontend_import(
     repo: Path,
     importer: str | Path,
@@ -230,6 +238,8 @@ def resolve_frontend_import(
 
     repo = repo.resolve()
     importer_path = _repo_relative_importer_path(repo, importer)
+    if importer_path is None:
+        return None
     if normalized.startswith("@/") or normalized.startswith("~/"):
         import_path = normalized[2:]
         if _has_parent_ref(import_path):
@@ -241,8 +251,11 @@ def resolve_frontend_import(
         return None
 
     for candidate in _frontend_import_candidates(repo, base_path):
-        if candidate.is_file() and _is_relative_to(candidate.resolve(), repo):
-            return candidate.resolve().relative_to(repo).as_posix()
+        resolved_candidate = candidate.resolve()
+        if not _is_relative_to(resolved_candidate, repo):
+            continue
+        if resolved_candidate.is_file():
+            return resolved_candidate.relative_to(repo).as_posix()
     return None
 
 
@@ -308,13 +321,13 @@ def _has_frontend_source_suffix(path: str) -> bool:
     return any(path.endswith(suffix) for suffix in _FRONTEND_SOURCE_SUFFIXES)
 
 
-def _repo_relative_importer_path(repo: Path, importer: str | Path) -> Path:
+def _repo_relative_importer_path(repo: Path, importer: str | Path) -> Path | None:
     importer_path = Path(importer)
     if importer_path.is_absolute():
         try:
             return importer_path.resolve().relative_to(repo)
         except ValueError:
-            return Path(importer_path.name)
+            return None
     return importer_path
 
 

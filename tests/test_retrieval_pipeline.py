@@ -9066,6 +9066,56 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
     assert "path_role_mismatch_penalty" not in merged.score_parts
 
 
+def test_rerank_merge_frontend_import_boost_is_winner_scoped() -> None:
+    from context_search_tool.retrieval import (
+        _ExpandedResult,
+        _merge_expanded_result,
+    )
+
+    left = _ExpandedResult(
+        chunk_ids=["support"],
+        file_path=Path("src/services/imageDetection.ts"),
+        start_line=1,
+        end_line=5,
+        content="line1\nline2\nline3",
+        score=1.5,
+        score_parts={
+            "combined_score": 1.5,
+            "rerank_score": 0.6,
+            "frontend_import_support_boost": 0.16,
+        },
+        reasons=["support reason"],
+        followup_keywords=["support"],
+        rank_tier=2,
+        rerank_score=0.6,
+        evidence_class="planner_relation",
+        evidence_priority=4,
+    )
+    right = _ExpandedResult(
+        chunk_ids=["winner"],
+        file_path=Path("src/services/imageDetection.ts"),
+        start_line=4,
+        end_line=8,
+        content="line4\nline5\nline6",
+        score=1.2,
+        score_parts={
+            "combined_score": 1.2,
+            "rerank_score": 0.8,
+        },
+        reasons=["winner reason"],
+        followup_keywords=["winner"],
+        rank_tier=1,
+        rerank_score=0.8,
+        evidence_class="original_relation",
+        evidence_priority=2,
+    )
+
+    merged = _merge_expanded_result(left, right)
+
+    assert merged.rerank_score == 0.8
+    assert "frontend_import_support_boost" not in merged.score_parts
+
+
 def test_merge_score_parts_preserves_stronger_penalty() -> None:
     from context_search_tool.retrieval import _merge_score_parts
 
