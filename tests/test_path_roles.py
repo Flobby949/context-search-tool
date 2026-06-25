@@ -37,3 +37,21 @@ def test_path_roles_classify_rust_tauri_files() -> None:
     assert classify_path_role(Path("src-tauri/src/commands.rs")).name == "command"
     assert classify_path_role(Path("src-tauri/src/engine.rs")).name == "engine"
     assert classify_path_role(Path("src-tauri/src/settings.rs")).name == "config"
+
+
+def test_path_roles_classify_storage_files() -> None:
+    assert classify_path_role(Path("storage/local.go")).name == "storage"
+    assert classify_path_role(Path("storage/s3.go")).name == "storage"
+    assert classify_path_role(Path("internal/storages/oss.go")).name == "storage"
+
+
+def test_path_roles_classify_all_indexed_lockfiles() -> None:
+    for relative_path in (
+        "Cargo.lock",
+        "go.sum",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "pnpm-lock.yml",
+        "yarn.lock",
+    ):
+        assert classify_path_role(Path(relative_path)).name == "lockfile"

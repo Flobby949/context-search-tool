@@ -672,6 +672,196 @@ def test_project_scope_score_parts_affect_rerank_score() -> None:
     assert scoped_score == pytest.approx(base_score + 0.20)
 
 
+def test_frontend_entrypoint_score_part_affects_rerank_score() -> None:
+    chunk = DocumentChunk(
+        chunk_id="image-view",
+        file_path=Path("src/views/image/ImageRemover.vue"),
+        start_line=1,
+        end_line=1,
+        content="<template>image remover remove mask canvas</template>",
+        chunk_type="text",
+        symbols=[],
+        lexical_tokens=["image", "remover", "remove", "mask", "canvas"],
+        embedding_id="image-view",
+        deleted_at=None,
+        metadata={"language": "vue"},
+    )
+    role = retrieval._ChunkRole("generic", 5, 0.0)
+    flags = {
+        "has_endpoint_signal": False,
+        "is_controller": False,
+        "has_relation_support": False,
+    }
+    base_parts = {"lexical": 0.8, "token_coverage": 0.5}
+    frontend_parts = {
+        "lexical": 0.8,
+        "token_coverage": 0.5,
+        "frontend_entrypoint_boost": 0.35,
+    }
+
+    base_score = retrieval._rerank_score(
+        0.5,
+        base_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+    frontend_score = retrieval._rerank_score(
+        0.5,
+        frontend_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+
+    assert frontend_score == pytest.approx(base_score + 0.35)
+
+
+def test_frontend_entrypoint_rerank_requires_targeted_direct_evidence() -> None:
+    chunk = DocumentChunk(
+        chunk_id="weak-sibling-view",
+        file_path=Path("src/views/image/ImageSibling.vue"),
+        start_line=1,
+        end_line=1,
+        content="<template>image helper</template>",
+        chunk_type="text",
+        symbols=[],
+        lexical_tokens=["image", "helper"],
+        embedding_id="weak-sibling-view",
+        deleted_at=None,
+        metadata={"language": "vue"},
+    )
+    role = retrieval._ChunkRole("generic", 5, 0.0)
+    flags = {
+        "has_endpoint_signal": False,
+        "is_controller": False,
+        "has_relation_support": False,
+    }
+    base_parts = {"lexical": 0.8, "token_coverage": 0.25, "path_symbol": 1.0}
+    frontend_parts = {
+        "lexical": 0.8,
+        "token_coverage": 0.25,
+        "path_symbol": 1.0,
+        "frontend_entrypoint_boost": 0.35,
+    }
+
+    base_score = retrieval._rerank_score(
+        0.5,
+        base_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+    frontend_score = retrieval._rerank_score(
+        0.5,
+        frontend_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+
+    assert frontend_score == pytest.approx(base_score)
+
+
+def test_frontend_support_name_score_part_affects_rerank_score() -> None:
+    chunk = DocumentChunk(
+        chunk_id="input-model-util",
+        file_path=Path("src/utils/inputToModel.ts"),
+        start_line=1,
+        end_line=1,
+        content="export function inputToModel() { return 'input model'; }",
+        chunk_type="text",
+        symbols=[],
+        lexical_tokens=["input", "model"],
+        embedding_id="input-model-util",
+        deleted_at=None,
+        metadata={"language": "typescript"},
+    )
+    role = retrieval._ChunkRole("generic", 5, 0.0)
+    flags = {
+        "has_endpoint_signal": False,
+        "is_controller": False,
+        "has_relation_support": False,
+    }
+    base_parts = {"lexical": 0.8, "token_coverage": 0.5}
+    frontend_parts = {
+        "lexical": 0.8,
+        "token_coverage": 0.5,
+        "frontend_support_name_match_boost": 0.18,
+    }
+
+    base_score = retrieval._rerank_score(
+        0.5,
+        base_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+    frontend_score = retrieval._rerank_score(
+        0.5,
+        frontend_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+
+    assert frontend_score == pytest.approx(base_score + 0.18)
+
+
+def test_frontend_support_name_rerank_requires_targeted_direct_evidence() -> None:
+    chunk = DocumentChunk(
+        chunk_id="weak-support",
+        file_path=Path("src/utils/inputToModel.ts"),
+        start_line=1,
+        end_line=1,
+        content="export function helper() { return 'model'; }",
+        chunk_type="text",
+        symbols=[],
+        lexical_tokens=["model"],
+        embedding_id="weak-support",
+        deleted_at=None,
+        metadata={"language": "typescript"},
+    )
+    role = retrieval._ChunkRole("generic", 5, 0.0)
+    flags = {
+        "has_endpoint_signal": False,
+        "is_controller": False,
+        "has_relation_support": False,
+    }
+    base_parts = {"lexical": 0.8, "token_coverage": 0.25, "path_symbol": 1.0}
+    frontend_parts = {
+        "lexical": 0.8,
+        "token_coverage": 0.25,
+        "path_symbol": 1.0,
+        "frontend_support_name_match_boost": 0.18,
+    }
+
+    base_score = retrieval._rerank_score(
+        0.5,
+        base_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+    frontend_score = retrieval._rerank_score(
+        0.5,
+        frontend_parts,
+        chunk,
+        flags,
+        role,
+        planner_ceiling=None,
+    )
+
+    assert frontend_score == pytest.approx(base_score)
+
+
 def test_reasons_include_project_scope_diagnostics() -> None:
     reasons = retrieval._reasons(
         {
@@ -4921,6 +5111,447 @@ def _rank_generic_noise_chunks(
     return retrieval._rank_chunks(store, candidates, tokens, query)
 
 
+def test_frontend_score_parts_rank_feature_entrypoint_over_broad_utility(
+    tmp_path: Path,
+) -> None:
+    query = "image canvas remove scan reader upload preview"
+    view = _generic_noise_chunk(
+        "image-view",
+        "src/views/image/ImageTool.vue",
+        "<template>image canvas remove scan reader upload preview</template>",
+        ["image", "canvas", "remove", "scan", "reader", "upload", "preview"],
+        {"language": "vue"},
+    )
+    utility = _generic_noise_chunk(
+        "image-helper",
+        "src/utils/imageHelpers.ts",
+        "export function broadImageUtility() { return 'image canvas helper transform'; }",
+        ["image", "canvas", "helper", "utility", "transform"],
+        {"language": "typescript"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [view, utility],
+        {
+            "image-view": {
+                "semantic": 0.40,
+                "lexical": 0.45,
+                "path_symbol": 2.0,
+                "direct_text": 0.60,
+            },
+            "image-helper": {
+                "semantic": 0.45,
+                "lexical": 0.40,
+                "path_symbol": 2.0,
+                "direct_text": 0.60,
+            },
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "image-view"
+    assert by_id["image-view"].score_parts["frontend_entrypoint_boost"] == pytest.approx(0.35)
+    assert "frontend_support_boost" not in by_id["image-helper"].score_parts
+
+
+def test_frontend_score_parts_keep_implementation_utility_above_view(
+    tmp_path: Path,
+) -> None:
+    query = "entity generate TypeScript class interface parse convert"
+    view = _generic_noise_chunk(
+        "entity-view",
+        "src/views/entity/EntityBuilder.vue",
+        "<template>entity generate form preview</template>",
+        ["entity", "generate", "form", "preview"],
+        {"language": "vue"},
+    )
+    utility = _generic_noise_chunk(
+        "entity-utility",
+        "src/utils/converter.ts",
+        "export function buildEntity() { return 'generate TypeScript class interface parse convert entity'; }",
+        ["entity", "generate", "typescript", "class", "interface", "parse", "convert"],
+        {"language": "typescript"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [view, utility],
+        {
+            "entity-view": {
+                "semantic": 0.55,
+                "lexical": 0.50,
+                "path_symbol": 2.0,
+                "direct_text": 0.70,
+            },
+            "entity-utility": {
+                "semantic": 0.42,
+                "lexical": 0.42,
+                "path_symbol": 3.0,
+                "direct_text": 0.50,
+            },
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert by_id["entity-utility"].score_parts["frontend_support_boost"] == pytest.approx(0.18)
+    assert "frontend_entrypoint_boost" not in by_id["entity-view"].score_parts
+
+
+def test_frontend_direct_entrypoint_name_match_lifts_target_view_over_sibling(
+    tmp_path: Path,
+) -> None:
+    query = "input to model generate class interface"
+    target = _generic_noise_chunk(
+        "input-model-view",
+        "src/views/model/InputToModel.vue",
+        "<template>input model generate class interface</template>",
+        ["input", "model", "generate", "class", "interface"],
+        {"language": "vue"},
+    )
+    sibling = _generic_noise_chunk(
+        "model-mock-view",
+        "src/views/model/ModelToMock.vue",
+        "<template>model mock generate class interface</template>",
+        ["model", "mock", "generate", "class", "interface"],
+        {"language": "vue"},
+    )
+    helper = _generic_noise_chunk(
+        "model-helper",
+        "src/utils/modelHelpers.ts",
+        "export function helper() { return 'model helper'; }",
+        ["model", "helper"],
+        {"language": "typescript"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [target, sibling, helper],
+        {
+            "input-model-view": {
+                "semantic": 0.35,
+                "lexical": 0.35,
+                "path_symbol": 3.0,
+                "direct_text": 0.75,
+            },
+            "model-mock-view": {
+                "semantic": 0.45,
+                "lexical": 0.45,
+                "path_symbol": 3.0,
+                "direct_text": 0.75,
+            },
+            "model-helper": {
+                "semantic": 0.10,
+                "lexical": 0.10,
+                "path_symbol": 1.0,
+                "direct_text": 0.20,
+            },
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "input-model-view"
+    assert by_id["input-model-view"].score_parts["frontend_entrypoint_boost"] == pytest.approx(0.25)
+    assert "frontend_entrypoint_boost" not in by_id["model-mock-view"].score_parts
+
+
+def test_frontend_score_parts_demote_temp_and_lockfiles_for_feature_queries(
+    tmp_path: Path,
+) -> None:
+    query = "image canvas remove scan reader upload preview"
+    view = _generic_noise_chunk(
+        "image-view",
+        "src/views/image/ImageTool.vue",
+        "<template>image canvas remove scan reader upload preview</template>",
+        ["image", "canvas", "remove", "scan", "reader", "upload", "preview"],
+        {"language": "vue"},
+    )
+    utility = _generic_noise_chunk(
+        "image-helper",
+        "src/utils/imageHelpers.ts",
+        "export function imageHelper() { return 'image helper'; }",
+        ["image", "helper"],
+        {"language": "typescript"},
+    )
+    scratch = _generic_noise_chunk(
+        "scratch",
+        "temp/imageProbe.ts",
+        "image canvas remove scan reader upload preview scratch copy",
+        ["image", "canvas", "remove", "scan", "reader", "upload", "preview"],
+        {"language": "typescript"},
+    )
+    lockfile = _generic_noise_chunk(
+        "lockfile",
+        "package-lock.json",
+        '{"packages": {"image-reader": {"version": "1.0.0"}}}',
+        ["image", "reader", "upload", "package", "lock"],
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [view, utility, scratch, lockfile],
+        {
+            "image-view": {"semantic": 0.40, "lexical": 0.45, "path_symbol": 2.0, "direct_text": 0.60},
+            "image-helper": {"semantic": 0.35, "lexical": 0.35, "path_symbol": 2.5, "direct_text": 0.45},
+            "scratch": {"semantic": 0.75, "lexical": 0.75, "path_symbol": 2.0, "direct_text": 0.90},
+            "lockfile": {"semantic": 0.65, "lexical": 0.65, "path_symbol": 2.0, "direct_text": 0.85},
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+    ranked_ids = [item.chunk.chunk_id for item in ranked]
+
+    assert ranked_ids.index("scratch") > ranked_ids.index("image-view")
+    assert ranked_ids.index("lockfile") > ranked_ids.index("image-view")
+    assert by_id["scratch"].score_parts["frontend_scratch_temp_penalty"] == pytest.approx(-1.00)
+    assert by_id["lockfile"].score_parts["frontend_lockfile_penalty"] == pytest.approx(-0.80)
+
+
+def test_frontend_score_parts_push_strong_lockfile_out_of_feature_top_neighborhood(
+    tmp_path: Path,
+) -> None:
+    query = "image scan reader generate decode camera"
+    view = _generic_noise_chunk(
+        "image-view",
+        "src/views/image/ImageTool.vue",
+        "<template>image scan reader generate decode camera</template>",
+        ["image", "scan", "reader", "generate", "decode", "camera"],
+        {"language": "vue"},
+    )
+    utility = _generic_noise_chunk(
+        "image-utility",
+        "src/utils/imageCodec.ts",
+        "export function imageCodec() { return 'image scan reader generate decode camera'; }",
+        ["image", "scan", "reader", "generate", "decode", "camera"],
+        {"language": "typescript"},
+    )
+    service = _generic_noise_chunk(
+        "image-service",
+        "src/services/imageReader.ts",
+        "export function readImage() { return 'image scan reader camera'; }",
+        ["image", "scan", "reader", "camera"],
+        {"language": "typescript"},
+    )
+    component = _generic_noise_chunk(
+        "image-component",
+        "src/components/ImageReaderPanel.vue",
+        "<template>image reader camera preview</template>",
+        ["image", "reader", "camera", "preview"],
+        {"language": "vue"},
+    )
+    store = _generic_noise_chunk(
+        "image-store",
+        "src/stores/image.ts",
+        "export const imageState = { reader: true, camera: true }",
+        ["image", "reader", "camera"],
+        {"language": "typescript"},
+    )
+    lockfile = _generic_noise_chunk(
+        "lockfile",
+        "package-lock.json",
+        '{"packages": {"image-reader": {"keywords": ["scan", "generate", "decode", "camera"]}}}',
+        ["image", "reader", "scan", "generate", "decode", "camera", "package", "lock"],
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [view, utility, service, component, store, lockfile],
+        {
+            "image-view": {"semantic": 0.40, "lexical": 0.45, "path_symbol": 2.0, "direct_text": 0.60},
+            "image-utility": {"semantic": 0.45, "lexical": 0.45, "path_symbol": 2.0, "direct_text": 0.55},
+            "image-service": {"semantic": 0.42, "lexical": 0.42, "path_symbol": 2.0, "direct_text": 0.55},
+            "image-component": {"semantic": 0.34, "lexical": 0.34, "path_symbol": 1.5, "direct_text": 0.45},
+            "image-store": {"semantic": 0.32, "lexical": 0.32, "path_symbol": 1.5, "direct_text": 0.40},
+            "lockfile": {"semantic": 0.95, "lexical": 0.95, "path_symbol": 2.0, "direct_text": 1.0},
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    ranked_ids = [item.chunk.chunk_id for item in ranked]
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert "lockfile" not in ranked_ids[:5]
+    assert ranked_ids.index("image-view") < ranked_ids.index("lockfile")
+    assert ranked_ids.index("image-utility") < ranked_ids.index("lockfile")
+    assert ranked_ids.index("image-service") < ranked_ids.index("lockfile")
+    assert by_id["lockfile"].score_parts["frontend_lockfile_penalty"] == pytest.approx(-0.80)
+
+
+def test_frontend_score_parts_are_absent_in_java_only_candidate_pool(
+    tmp_path: Path,
+) -> None:
+    controller = _generic_noise_chunk(
+        "controller",
+        "src/main/java/com/example/ImageController.java",
+        "class ImageController { String scanReaderUpload() { return service.run(); } }",
+        ["image", "scan", "reader", "upload"],
+        {"language": "java"},
+    )
+    service = _generic_noise_chunk(
+        "service",
+        "src/main/java/com/example/ImageService.java",
+        "class ImageService { String removeCanvas() { return \"image canvas remove\"; } }",
+        ["image", "canvas", "remove"],
+        {"language": "java"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [controller, service],
+        {
+            "controller": {"semantic": 0.60, "lexical": 0.60, "path_symbol": 2.0},
+            "service": {"semantic": 0.55, "lexical": 0.55, "path_symbol": 2.0},
+        },
+        ["image", "canvas", "remove", "scan", "reader", "upload"],
+        "image canvas remove scan reader upload",
+    )
+
+    assert all(
+        not any(key.startswith("frontend_") for key in item.score_parts)
+        for item in ranked
+    )
+
+
+def test_frontend_score_parts_are_absent_in_python_like_view_service_pool(
+    tmp_path: Path,
+) -> None:
+    view = _generic_noise_chunk(
+        "python-view",
+        "src/views/users.py",
+        "def user_page(): return 'image scan reader generate decode camera'",
+        ["image", "scan", "reader", "generate", "decode", "camera"],
+        {"language": "python"},
+    )
+    service = _generic_noise_chunk(
+        "python-service",
+        "src/services/users.py",
+        "def user_service(): return 'image scan reader generate decode camera'",
+        ["image", "scan", "reader", "generate", "decode", "camera"],
+        {"language": "python"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [view, service],
+        {
+            "python-view": {"semantic": 0.60, "lexical": 0.60, "path_symbol": 2.0},
+            "python-service": {"semantic": 0.55, "lexical": 0.55, "path_symbol": 2.0},
+        },
+        retrieval.tokenize_query("image scan reader generate decode camera"),
+        "image scan reader generate decode camera",
+    )
+
+    assert all(
+        not any(key.startswith("frontend_") for key in item.score_parts)
+        for item in ranked
+    )
+
+
+def test_reasons_include_frontend_score_part_diagnostics() -> None:
+    reasons = retrieval._reasons(
+        {
+            "frontend_entrypoint_boost": 0.35,
+            "frontend_support_boost": 0.18,
+            "frontend_support_name_match_boost": 0.18,
+            "frontend_lockfile_penalty": -0.80,
+            "frontend_scratch_temp_penalty": -1.00,
+            "frontend_type_decl_penalty": -0.12,
+        },
+        "image canvas remove scan reader upload preview",
+    )
+
+    assert "frontend entrypoint boost" in reasons
+    assert "frontend support boost" in reasons
+    assert "frontend support name match boost" in reasons
+    assert "frontend lockfile penalty" in reasons
+    assert "frontend scratch temp penalty" in reasons
+    assert "frontend type declaration penalty" in reasons
+
+
+def test_query_repository_boosts_frontend_direct_import_cohort_without_adding_candidates(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "src" / "views" / "image").mkdir(parents=True)
+    (repo / "src" / "services").mkdir(parents=True)
+    (repo / "src" / "utils").mkdir(parents=True)
+    (repo / "package.json").write_text(
+        '{"dependencies": {"vue": "latest"}}',
+        encoding="utf-8",
+    )
+    (repo / "src" / "views" / "image" / "ImageEditor.vue").write_text(
+        """
+<script setup lang="ts">
+import { detectImageMask } from "@/services/imageDetection"
+import { loadSession } from "@/services/sessionApi"
+
+const copy = "image remover detection mask canvas inpaint";
+</script>
+
+<template><section>image remover detection mask canvas inpaint</section></template>
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (repo / "src" / "services" / "imageDetection.ts").write_text(
+        """
+export function detectImageMask(canvas: HTMLCanvasElement) {
+  return `detection mask canvas ${canvas.width}`;
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (repo / "src" / "services" / "sessionApi.ts").write_text(
+        "export function loadSession() { return 'user preferences'; }\n",
+        encoding="utf-8",
+    )
+    (repo / "src" / "utils" / "canvasTools.ts").write_text(
+        """
+export function normalizeCanvasMask() {
+  return "image remover canvas helper";
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=20,
+            final_top_k=10,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    query = "image remover detection mask canvas inpaint"
+
+    index_repository(repo, config)
+    bundle = query_repository(repo, query, config)
+
+    paths = [result.file_path.as_posix() for result in bundle.results]
+    service_result = next(
+        result
+        for result in bundle.results
+        if result.file_path.as_posix() == "src/services/imageDetection.ts"
+    )
+    utility_index = paths.index("src/utils/canvasTools.ts")
+    service_index = paths.index("src/services/imageDetection.ts")
+
+    assert service_index < utility_index
+    assert service_result.score_parts["frontend_import_support_boost"] == pytest.approx(0.30)
+    assert "frontend import support boost" in service_result.reasons
+    assert "src/services/sessionApi.ts" not in paths
+
+
 def test_generic_noise_generated_schema_demotes_below_source(
     tmp_path: Path,
 ) -> None:
@@ -5095,6 +5726,99 @@ def test_generic_noise_indexed_lockfile_demotes_below_source(
     assert by_id["lockfile"].score_parts["penalty"] < 0
 
 
+def test_generic_noise_explicit_dependency_query_does_not_penalize_lockfile(
+    tmp_path: Path,
+) -> None:
+    lockfile = _generic_noise_chunk(
+        "lockfile",
+        "package-lock.json",
+        '{"packages": {"image-reader": {"version": "1.0.0"}}}',
+        ["package", "dependency", "lock", "versions"],
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [lockfile],
+        {"lockfile": {"lexical": 0.8, "direct_text": 0.7}},
+        retrieval.tokenize_query("package dependency lock versions"),
+        "package dependency lock versions",
+    )
+
+    parts = ranked[0].score_parts
+    assert "lockfile_penalty" not in parts
+    assert "penalty" not in parts
+
+
+@pytest.mark.parametrize("query", ["go.sum", "go sum"])
+def test_generic_noise_explicit_go_sum_query_does_not_penalize_lockfile(
+    tmp_path: Path,
+    query: str,
+) -> None:
+    lockfile = _generic_noise_chunk(
+        "lockfile",
+        "go.sum",
+        "example.com/image/reader v1.2.3 h1:checksum",
+        ["go", "sum", "checksum", "module"],
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [lockfile],
+        {"lockfile": {"lexical": 0.8, "direct_text": 0.7}},
+        retrieval.tokenize_query(query),
+        query,
+    )
+
+    parts = ranked[0].score_parts
+    assert "lockfile_penalty" not in parts
+    assert "penalty" not in parts
+
+
+@pytest.mark.parametrize(
+    "lockfile_path",
+    [
+        "Cargo.lock",
+        "go.sum",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "pnpm-lock.yml",
+        "yarn.lock",
+    ],
+)
+def test_generic_noise_indexed_common_lockfiles_demote_below_source(
+    tmp_path: Path,
+    lockfile_path: str,
+) -> None:
+    lockfile = _generic_noise_chunk(
+        "lockfile",
+        lockfile_path,
+        "storage save upload lock dependency",
+        ["storage", "save", "upload", "lock"],
+    )
+    source = _generic_noise_chunk(
+        "source",
+        "storage/local.go",
+        "type LocalStorage struct{} func (s *LocalStorage) Save() {}",
+        ["storage", "local", "save", "upload"],
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [lockfile, source],
+        {
+            "lockfile": {"lexical": 0.8, "direct_text": 0.7},
+            "source": {"lexical": 0.8, "direct_text": 0.7},
+        },
+        ["storage", "save", "upload"],
+        "storage save upload implementation",
+    )
+
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+    assert ranked[0].chunk.chunk_id == "source"
+    assert by_id["lockfile"].score_parts["lockfile_penalty"] < 0
+    assert by_id["lockfile"].score_parts["penalty"] == pytest.approx(-0.20)
+
+
 def test_generic_noise_template_demotes_below_storage_source(
     tmp_path: Path,
 ) -> None:
@@ -5126,6 +5850,29 @@ def test_generic_noise_template_demotes_below_storage_source(
     assert ranked[0].chunk.chunk_id == "storage"
     assert by_id["template"].score_parts["template_penalty"] < 0
     assert by_id["template"].score_parts["penalty"] < 0
+
+
+def test_generic_noise_does_not_treat_frontend_view_as_template_noise(
+    tmp_path: Path,
+) -> None:
+    view = _generic_noise_chunk(
+        "entity-view",
+        "src/views/entity/EntityBuilder.vue",
+        "<template>entity generate class interface preview</template>",
+        ["entity", "generate", "class", "interface", "preview"],
+        {"language": "vue"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [view],
+        {"entity-view": {"lexical": 0.8, "direct_text": 0.7}},
+        retrieval.tokenize_query("entity generate TypeScript class interface"),
+        "entity generate TypeScript class interface",
+    )
+
+    assert "template_penalty" not in ranked[0].score_parts
+    assert "penalty" not in ranked[0].score_parts
 
 
 def test_generic_noise_metadata_test_flag_demotes_test_chunk(
@@ -5215,6 +5962,102 @@ def test_role_rerank_prefers_service_impl_over_handler_for_business_query(tmp_pa
 
     assert ranked[0].chunk.chunk_id == "access-service-impl"
     assert ranked[0].score_parts["role_priority"] < ranked[1].score_parts["role_priority"]
+
+
+def test_rerank_sort_uses_role_priority_for_noise_level_score_ties() -> None:
+    generic = DocumentChunk(
+        chunk_id="settings",
+        file_path=Path("src-tauri/src/settings.rs"),
+        start_line=1,
+        end_line=77,
+        content="settings persistence save load project config app settings",
+        chunk_type="generic",
+    )
+    detail = DocumentChunk(
+        chunk_id="commands",
+        file_path=Path("src-tauri/src/commands.rs"),
+        start_line=1,
+        end_line=238,
+        content="commands settings persistence save load project config app settings",
+        chunk_type="generic",
+    )
+    near_tie_preferred_role = retrieval._RankedChunk(
+        chunk=generic,
+        score=0.92,
+        score_parts={"role_priority": 5.0, "rerank_score": 1.07985},
+        reasons=[],
+        rank_tier=0,
+        rerank_score=1.07985,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+    near_tie_detail_role = retrieval._RankedChunk(
+        chunk=detail,
+        score=1.05,
+        score_parts={"role_priority": 6.0, "rerank_score": 1.08},
+        reasons=[],
+        rank_tier=0,
+        rerank_score=1.08,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+    clear_winner = retrieval._RankedChunk(
+        chunk=detail,
+        score=1.05,
+        score_parts={"role_priority": 6.0, "rerank_score": 1.09},
+        reasons=[],
+        rank_tier=0,
+        rerank_score=1.09,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+
+    near_tie = sorted(
+        [near_tie_detail_role, near_tie_preferred_role],
+        key=retrieval._ranked_chunk_sort_key,
+    )
+    clear_gap = sorted(
+        [clear_winner, near_tie_preferred_role],
+        key=retrieval._ranked_chunk_sort_key,
+    )
+    expanded_near_tie_preferred_role = retrieval._ExpandedResult(
+        chunk_ids=["settings"],
+        file_path=Path("src-tauri/src/settings.rs"),
+        start_line=1,
+        end_line=77,
+        content="settings persistence save load project config app settings",
+        score=0.92,
+        score_parts={"role_priority": 5.0, "rerank_score": 1.07985},
+        reasons=[],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=1.07985,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+    expanded_near_tie_detail_role = retrieval._ExpandedResult(
+        chunk_ids=["commands"],
+        file_path=Path("src-tauri/src/commands.rs"),
+        start_line=1,
+        end_line=238,
+        content="commands settings persistence save load project config app settings",
+        score=1.05,
+        score_parts={"role_priority": 6.0, "rerank_score": 1.08},
+        reasons=[],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=1.08,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+    expanded_near_tie = sorted(
+        [expanded_near_tie_detail_role, expanded_near_tie_preferred_role],
+        key=retrieval._expanded_result_sort_key,
+    )
+
+    assert near_tie[0].chunk.chunk_id == "settings"
+    assert clear_gap[0].chunk.chunk_id == "commands"
+    assert expanded_near_tie[0].file_path == Path("src-tauri/src/settings.rs")
 
 
 def test_identifier_intent_ranks_state_store_above_related_frontend_files(
@@ -5363,6 +6206,60 @@ def test_identifier_intent_ranks_composable_above_chat_types_and_views(
         > score_parts_by_chunk["chat-view"].get("identifier_exact_match_boost", 0.0)
     )
     assert ranked[0].score_parts["path_role_hint_boost"] > 0
+
+
+def test_identifier_intent_ranks_storage_source_above_unrelated_cli_entrypoint(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    storage = DocumentChunk(
+        chunk_id="local-storage",
+        file_path=Path("storage/local.go"),
+        start_line=1,
+        end_line=80,
+        content="type LocalStorage struct{} func (s *LocalStorage) Save(file multipart.File) error { return nil }",
+        chunk_type="symbol",
+        lexical_tokens=["local", "storage", "save", "file", "multipart"],
+        metadata={"language": "go"},
+    )
+    typora = DocumentChunk(
+        chunk_id="typora-main",
+        file_path=Path("cmd/typora/main.go"),
+        start_line=1,
+        end_line=80,
+        content="func main() { uploadFromTypora(); saveFile(); }",
+        chunk_type="symbol",
+        lexical_tokens=["typora", "upload", "save", "file", "main"],
+        metadata={"language": "go"},
+    )
+    for chunk in (storage, typora):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "local-storage": RetrievalCandidate(
+                chunk_id="local-storage",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.42, "path_symbol": 2.0, "direct_text": 0.8},
+            ),
+            "typora-main": RetrievalCandidate(
+                chunk_id="typora-main",
+                score=1.0,
+                source="direct",
+                score_parts={"semantic": 0.50, "path_symbol": 2.0, "direct_text": 0.8},
+            ),
+        },
+        retrieval.tokenize_query("UploadHandler MultiUpload multipart file storage Save"),
+        "UploadHandler MultiUpload multipart file storage Save",
+    )
+
+    score_parts_by_chunk = {item.chunk.chunk_id: item.score_parts for item in ranked}
+    assert ranked[0].chunk.chunk_id == "local-storage"
+    assert score_parts_by_chunk["local-storage"]["path_role_hint_boost"] == pytest.approx(0.14)
+    assert score_parts_by_chunk["typora-main"]["path_role_mismatch_penalty"] == pytest.approx(-0.08)
 
 
 def test_identifier_intent_ranks_rust_frontend_entry_when_query_names_frontend(
@@ -8440,6 +9337,56 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
     assert "identifier_exact_match_boost" not in merged.score_parts
     assert "path_role_hint_boost" not in merged.score_parts
     assert "path_role_mismatch_penalty" not in merged.score_parts
+
+
+def test_rerank_merge_frontend_import_boost_is_winner_scoped() -> None:
+    from context_search_tool.retrieval import (
+        _ExpandedResult,
+        _merge_expanded_result,
+    )
+
+    left = _ExpandedResult(
+        chunk_ids=["support"],
+        file_path=Path("src/services/imageDetection.ts"),
+        start_line=1,
+        end_line=5,
+        content="line1\nline2\nline3",
+        score=1.5,
+        score_parts={
+            "combined_score": 1.5,
+            "rerank_score": 0.6,
+            "frontend_import_support_boost": 0.30,
+        },
+        reasons=["support reason"],
+        followup_keywords=["support"],
+        rank_tier=2,
+        rerank_score=0.6,
+        evidence_class="planner_relation",
+        evidence_priority=4,
+    )
+    right = _ExpandedResult(
+        chunk_ids=["winner"],
+        file_path=Path("src/services/imageDetection.ts"),
+        start_line=4,
+        end_line=8,
+        content="line4\nline5\nline6",
+        score=1.2,
+        score_parts={
+            "combined_score": 1.2,
+            "rerank_score": 0.8,
+        },
+        reasons=["winner reason"],
+        followup_keywords=["winner"],
+        rank_tier=1,
+        rerank_score=0.8,
+        evidence_class="original_relation",
+        evidence_priority=2,
+    )
+
+    merged = _merge_expanded_result(left, right)
+
+    assert merged.rerank_score == 0.8
+    assert "frontend_import_support_boost" not in merged.score_parts
 
 
 def test_merge_score_parts_preserves_stronger_penalty() -> None:

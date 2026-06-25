@@ -10,6 +10,13 @@ from pathlib import Path
 from context_search_tool.chunker import expand_lines
 from context_search_tool.config import ToolConfig
 from context_search_tool.embeddings import provider_from_config
+from context_search_tool.frontend_roles import (
+    classify_frontend_role,
+    extract_static_imports,
+    frontend_candidate_scope_enabled,
+    frontend_score_parts,
+    resolve_frontend_import,
+)
 from context_search_tool.identifier_intent import IdentifierIntent, infer_identifier_intent
 from context_search_tool.manifest import assert_manifest_compatible
 from context_search_tool.models import (
@@ -88,7 +95,43 @@ _CONFIG_SUFFIXES = {
     ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".conf",
     ".properties", ".env", ".xml",
 }
-_INDEXED_LOCKFILE_NAMES = {"package-lock.json", "pnpm-lock.yaml", "pnpm-lock.yml"}
+_RERANK_SORT_DECIMALS = 3
+_INDEXED_LOCKFILE_NAMES = {
+    "cargo.lock",
+    "go.sum",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "pnpm-lock.yml",
+    "yarn.lock",
+}
+_LOCKFILE_QUERY_TOKENS = {
+    "dependencies",
+    "dependency",
+    "lock",
+    "lockfile",
+    "lockfiles",
+    "package",
+    "packages",
+    "version",
+    "versions",
+}
+_FRONTEND_IMPORT_SCAN_TOP_K = 10
+_FRONTEND_IMPORT_SCAN_FILE_LIMIT = 3
+_FRONTEND_IMPORT_MAX_FILE_BYTES = 50_000
+_FRONTEND_IMPORT_SUPPORT_BOOST = 0.30
+_FRONTEND_IMPORT_ANCHOR_EPSILON = 10 ** -_RERANK_SORT_DECIMALS
+_FRONTEND_IMPORT_ANCHOR_ROLES = {
+    "view_page",
+    "layout_component",
+    "shared_component",
+}
+_FRONTEND_IMPORT_SUPPORT_ROLES = {
+    "service",
+    "utility",
+    "store",
+    "type_decl",
+    "shared_component",
+}
 
 
 @dataclass(frozen=True)
@@ -254,6 +297,7 @@ def query_repository(
         )
 
     ranked_chunks = _rank_chunks(store, candidates, original_tokens, query)
+    ranked_chunks = _apply_frontend_import_cohort_rerank(repo, ranked_chunks, query)
     expanded = _expand_ranked_chunks(repo, ranked_chunks, config, context_lines, full_file)
     visible_results, evidence_anchors = _split_code_results_and_evidence_anchors(
         expanded,
@@ -1220,6 +1264,9 @@ def _rank_chunks(
     project_units = project_units_from_chunk_metadata(tuple(candidate_chunks.values()))
     query_scope = infer_query_scope(query, tokens, project_units)
     identifier_intent = infer_identifier_intent(query, tokens)
+    frontend_enabled = frontend_candidate_scope_enabled(
+        chunk.file_path for chunk in candidate_chunks.values()
+    )
     spring_path_parts = _spring_path_score_parts(
         store,
         candidate_chunks,
@@ -1305,6 +1352,10 @@ def _rank_chunks(
         score_parts = _merge_score_parts(
             score_parts,
             _identifier_intent_score_parts(chunk, identifier_intent),
+        )
+        score_parts = _merge_score_parts(
+            score_parts,
+            frontend_score_parts(chunk.file_path, query, enabled=frontend_enabled),
         )
 
         score = _combined_score(score_parts)
@@ -1428,16 +1479,104 @@ def _rank_chunks(
 
     return sorted(
         final_ranked,
-        key=lambda item: (
-            -item.rerank_score,        # Descending: larger is better
-            item.evidence_priority,    # Ascending: 0 (original_direct) is highest priority
-            item.score_parts.get("role_priority", 99.0),
-            -item.score,               # Descending: combined_score tiebreaker
-            item.chunk.file_path.as_posix(),
-            item.chunk.start_line,
-            item.chunk.chunk_id,
-        ),
+        key=_ranked_chunk_sort_key,
     )
+
+
+def _ranked_chunk_sort_key(
+    item: _RankedChunk,
+) -> tuple[float, int, float, float, float, str, int, str]:
+    return (
+        -round(item.rerank_score, _RERANK_SORT_DECIMALS),
+        item.evidence_priority,
+        item.score_parts.get("role_priority", 99.0),
+        -item.rerank_score,
+        -item.score,
+        item.chunk.file_path.as_posix(),
+        item.chunk.start_line,
+        item.chunk.chunk_id,
+    )
+
+
+def _apply_frontend_import_cohort_rerank(
+    repo: Path,
+    ranked_chunks: list[_RankedChunk],
+    query: str,
+) -> list[_RankedChunk]:
+    import_anchor_scores: dict[str, float] = {}
+    files_read = 0
+
+    for ranked in ranked_chunks[:_FRONTEND_IMPORT_SCAN_TOP_K]:
+        if files_read >= _FRONTEND_IMPORT_SCAN_FILE_LIMIT:
+            break
+        anchor_role = classify_frontend_role(ranked.chunk.file_path).name
+        if anchor_role not in _FRONTEND_IMPORT_ANCHOR_ROLES:
+            continue
+
+        try:
+            content = _read_frontend_import_anchor(repo / ranked.chunk.file_path)
+        except OSError:
+            continue
+
+        files_read += 1
+        anchor_path = ranked.chunk.file_path.as_posix()
+        for specifier in extract_static_imports(content):
+            resolved = resolve_frontend_import(repo, ranked.chunk.file_path, specifier)
+            if resolved and resolved != anchor_path:
+                import_anchor_scores[resolved] = max(
+                    ranked.rerank_score,
+                    import_anchor_scores.get(resolved, float("-inf")),
+                )
+
+    if not import_anchor_scores:
+        return ranked_chunks
+
+    adjusted: list[_RankedChunk] = []
+    for ranked in ranked_chunks:
+        path = ranked.chunk.file_path.as_posix()
+        role = classify_frontend_role(ranked.chunk.file_path).name
+        if path not in import_anchor_scores or role not in _FRONTEND_IMPORT_SUPPORT_ROLES:
+            adjusted.append(ranked)
+            continue
+
+        score_parts = dict(ranked.score_parts)
+        existing_boost = score_parts.get("frontend_import_support_boost", 0.0)
+        boost_delta = max(0.0, _FRONTEND_IMPORT_SUPPORT_BOOST - existing_boost)
+        if boost_delta <= 0:
+            adjusted.append(ranked)
+            continue
+
+        anchor_ceiling = import_anchor_scores[path] - _FRONTEND_IMPORT_ANCHOR_EPSILON
+        rerank_score = min(ranked.rerank_score + boost_delta, anchor_ceiling)
+        applied_boost = rerank_score - ranked.rerank_score
+        if applied_boost <= 0:
+            adjusted.append(ranked)
+            continue
+
+        score_parts["frontend_import_support_boost"] = applied_boost
+        score_parts["rerank_score"] = rerank_score
+        adjusted.append(
+            _RankedChunk(
+                chunk=ranked.chunk,
+                score=ranked.score,
+                score_parts=score_parts,
+                reasons=_reasons(score_parts, query),
+                rank_tier=ranked.rank_tier,
+                rerank_score=rerank_score,
+                evidence_class=ranked.evidence_class,
+                evidence_priority=ranked.evidence_priority,
+            )
+        )
+
+    return sorted(adjusted, key=_ranked_chunk_sort_key)
+
+
+def _read_frontend_import_anchor(path: Path) -> str:
+    with path.open("rb") as handle:
+        return handle.read(_FRONTEND_IMPORT_MAX_FILE_BYTES).decode(
+            "utf-8",
+            errors="replace",
+        )
 
 
 def _expand_ranked_chunks(
@@ -1655,14 +1794,21 @@ def _merge_overlapping_results(results: list[_ExpandedResult]) -> list[_Expanded
 
     return sorted(
         merged,
-        key=lambda item: (
-            -item.rerank_score,
-            item.evidence_priority,
-            item.score_parts.get("role_priority", 99.0),
-            -item.score,
-            item.file_path.as_posix(),
-            item.start_line,
-        ),
+        key=_expanded_result_sort_key,
+    )
+
+
+def _expanded_result_sort_key(
+    item: _ExpandedResult,
+) -> tuple[float, int, float, float, float, str, int]:
+    return (
+        -round(item.rerank_score, _RERANK_SORT_DECIMALS),
+        item.evidence_priority,
+        item.score_parts.get("role_priority", 99.0),
+        -item.rerank_score,
+        -item.score,
+        item.file_path.as_posix(),
+        item.start_line,
     )
 
 
@@ -1675,18 +1821,7 @@ def _merge_expanded_result(
     overlap = max(0, left.end_line - right.start_line + 1)
     content_lines = [*left_lines, *right_lines[overlap:]]
 
-    # Winner selection based on rerank_score (with tiebreak)
-    if left.rerank_score != right.rerank_score:
-        winner = left if left.rerank_score > right.rerank_score else right
-    else:
-        # Tiebreak by complete sort key
-        winner = min(left, right, key=lambda x: (
-            x.evidence_priority,
-            x.score_parts.get("role_priority", 99.0),
-            -x.score,
-            x.file_path.as_posix(),
-            x.start_line
-        ))
+    winner = min(left, right, key=_expanded_result_sort_key)
 
     # Merge score_parts: max for most fields, winner value for rerank-related fields
     merged_score_parts = _merge_score_parts(left.score_parts, right.score_parts)
@@ -1705,6 +1840,7 @@ def _merge_expanded_result(
         "impl_match_boost",
         "relation_role_boost",
         "relation_detail_penalty",
+        "frontend_import_support_boost",
     ):
         if key in winner.score_parts:
             merged_score_parts[key] = winner.score_parts[key]
@@ -1822,6 +1958,9 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         + score_parts.get("spring_path_service_interface_match", 0.0)
         + score_parts.get("spring_path_executor_match", 0.0)
         + score_parts.get("file_role_source_boost", 0.0)
+        + score_parts.get("frontend_entrypoint_boost", 0.0)
+        + score_parts.get("frontend_support_boost", 0.0)
+        + score_parts.get("frontend_support_name_match_boost", 0.0)
         + score_parts.get("penalty", 0.0)
     )
 
@@ -2148,6 +2287,9 @@ def _rerank_score(
     rerank_score += score_parts.get("route_tail_context_match", 0.0)
     rerank_score += _spring_path_rerank_adjustment(score_parts)
     rerank_score += project_scope_rerank_adjustment(score_parts)
+    if not has_project_scope_mismatch:
+        rerank_score += _frontend_entrypoint_rerank_adjustment(score_parts)
+        rerank_score += _frontend_support_name_rerank_adjustment(score_parts)
 
     if (
         not has_project_scope_mismatch
@@ -2203,6 +2345,32 @@ def _rerank_score(
 
 def _has_project_scope_mismatch(score_parts: dict[str, float]) -> bool:
     return score_parts.get("project_scope_mismatch_penalty", 0.0) < 0
+
+
+def _frontend_entrypoint_rerank_adjustment(score_parts: dict[str, float]) -> float:
+    boost = score_parts.get("frontend_entrypoint_boost", 0.0)
+    if boost <= 0.0:
+        return 0.0
+    if (
+        score_parts.get("token_coverage", 0.0) >= 0.50
+        or score_parts.get("path_symbol", 0.0) >= 3.0
+        or score_parts.get("direct_text", 0.0) >= 0.75
+    ):
+        return boost
+    return 0.0
+
+
+def _frontend_support_name_rerank_adjustment(score_parts: dict[str, float]) -> float:
+    boost = score_parts.get("frontend_support_name_match_boost", 0.0)
+    if boost <= 0.0:
+        return 0.0
+    if (
+        score_parts.get("token_coverage", 0.0) >= 0.50
+        or score_parts.get("path_symbol", 0.0) >= 3.0
+        or score_parts.get("direct_text", 0.0) >= 0.75
+    ):
+        return boost
+    return 0.0
 
 
 _COHORT_MISMATCH_PENALTY = 0.05
@@ -2370,6 +2538,7 @@ def _strong_role_mismatch(
         "service",
         "repository",
         "source_adapter",
+        "storage",
     }
     return (
         bool(set(intent.role_hints).intersection(high_confidence_roles))
@@ -3205,6 +3374,15 @@ def _looks_implementation_query(query: str, tokens: list[str]) -> bool:
     return bool({token.lower() for token in tokens}.intersection(implementation_terms))
 
 
+def _has_explicit_lockfile_query(tokens: list[str], name: str) -> bool:
+    token_set = {token.lower() for token in tokens}
+    if token_set & _LOCKFILE_QUERY_TOKENS:
+        return True
+    return name == "go.sum" and (
+        "gosum" in token_set or {"go", "sum"}.issubset(token_set)
+    )
+
+
 def _is_generated_schema_path(path: str, suffix: str) -> bool:
     parts = [part for part in path.split("/") if part]
     if "generated" in parts:
@@ -3234,13 +3412,20 @@ def _generic_file_role(
             penalty_key="generated_schema_penalty",
         )
     if name in _INDEXED_LOCKFILE_NAMES:
+        penalty = 0.0 if _has_explicit_lockfile_query(tokens, name) else 0.20
         return _GenericFileRole(
             "lockfile",
             "high",
-            penalty=0.20,
-            penalty_key="lockfile_penalty",
+            penalty=penalty,
+            penalty_key="lockfile_penalty" if penalty else "",
         )
     if suffix in _TEMPLATE_SUFFIXES:
+        if classify_frontend_role(chunk.file_path).name in {
+            "view_page",
+            "layout_component",
+            "shared_component",
+        }:
+            return _GenericFileRole("source", "none", source_boost=0.03)
         penalty = 0.08 if is_implementation_query else 0.0
         return _GenericFileRole(
             "template",
@@ -3292,7 +3477,7 @@ def _generic_noise_score_parts(
             parts,
             {"penalty": -0.20, "generated_schema_penalty": -0.20},
         )
-    if name in _INDEXED_LOCKFILE_NAMES:
+    if name in _INDEXED_LOCKFILE_NAMES and not _has_explicit_lockfile_query(tokens, name):
         parts = _merge_score_parts(
             parts,
             {"penalty": -0.20, "lockfile_penalty": -0.20},
@@ -3413,6 +3598,20 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("java plugin boost")
     if score_parts.get("file_role_source_boost", 0.0) > 0:
         reasons.append("source file role boost")
+    if score_parts.get("frontend_entrypoint_boost", 0.0) > 0:
+        reasons.append("frontend entrypoint boost")
+    if score_parts.get("frontend_support_boost", 0.0) > 0:
+        reasons.append("frontend support boost")
+    if score_parts.get("frontend_support_name_match_boost", 0.0) > 0:
+        reasons.append("frontend support name match boost")
+    if score_parts.get("frontend_import_support_boost", 0.0) > 0:
+        reasons.append("frontend import support boost")
+    if score_parts.get("frontend_lockfile_penalty", 0.0) < 0:
+        reasons.append("frontend lockfile penalty")
+    if score_parts.get("frontend_scratch_temp_penalty", 0.0) < 0:
+        reasons.append("frontend scratch temp penalty")
+    if score_parts.get("frontend_type_decl_penalty", 0.0) < 0:
+        reasons.append("frontend type declaration penalty")
     if score_parts.get("generated_schema_penalty", 0.0) < 0:
         reasons.append("generated schema penalty")
     if score_parts.get("lockfile_penalty", 0.0) < 0:

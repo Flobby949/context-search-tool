@@ -145,6 +145,54 @@ def test_scanner_recognizes_common_source_language_suffixes(tmp_path: Path) -> N
     }
 
 
+def test_scanner_indexes_common_lockfiles_for_noise_demotion(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    files = {
+        "Cargo.lock": "[[package]]\nname = \"demo\"\n",
+        "yarn.lock": "left-pad@^1.0.0:\n  version \"1.0.0\"\n",
+        "go.sum": "example.com/lib v1.0.0 h1:abc\n",
+        "package-lock.json": "{\"packages\": {}}\n",
+        "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+        "pnpm-lock.yml": "lockfileVersion: '9.0'\n",
+    }
+    for relative_path, content in files.items():
+        (repo / relative_path).write_text(content, encoding="utf-8")
+
+    scanned = scan_workspace(repo, DEFAULT_CONFIG)
+
+    paths = {item.path.as_posix() for item in scanned}
+    assert paths == set(files)
+    assert {item.language for item in scanned} == {"lockfile"}
+
+
+def test_scanner_marks_cross_language_test_files(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    files = {
+        "service/upload_test.go": "package service\nfunc TestUpload() {}\n",
+        "src/components/upload.test.ts": "test('upload', () => {})\n",
+        "src/components/upload.spec.tsx": "test('upload', () => {})\n",
+        "tests/integration/upload.rs": "#[test]\nfn upload() {}\n",
+        "src/main/java/com/example/UploadTest.java": "class UploadTest {}\n",
+        "src/main/java/com/example/UploadService.java": "class UploadService {}\n",
+    }
+    for relative_path, content in files.items():
+        path = repo / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    scanned = scan_workspace(repo, DEFAULT_CONFIG)
+    by_path = {item.path.as_posix(): item for item in scanned}
+
+    assert by_path["service/upload_test.go"].is_test
+    assert by_path["src/components/upload.test.ts"].is_test
+    assert by_path["src/components/upload.spec.tsx"].is_test
+    assert by_path["tests/integration/upload.rs"].is_test
+    assert by_path["src/main/java/com/example/UploadTest.java"].is_test
+    assert not by_path["src/main/java/com/example/UploadService.java"].is_test
+
+
 def test_scanner_skips_all_hidden_paths_by_default(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

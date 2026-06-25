@@ -35,6 +35,8 @@ _ROLE_HINTS = {
     "source": "source_adapter",
     "adapter": "source_adapter",
     "client": "source_adapter",
+    "storage": "storage",
+    "storages": "storage",
     "view": "view",
     "views": "view",
     "page": "view",
