@@ -5932,6 +5932,74 @@ def test_generic_noise_template_demotes_below_storage_source(
     assert by_id["template"].score_parts["penalty"] < 0
 
 
+def test_generic_intent_demotes_generated_history_for_scan_logic(
+    tmp_path: Path,
+) -> None:
+    query = "历史记录扫描同步任务图片 scan sync service"
+    service = _generic_noise_chunk(
+        "history-service",
+        "backend/services/history.py",
+        "class HistoryService: scan_and_sync_task_images scan_all_tasks",
+        ["history", "scan", "sync", "task", "images", "service"],
+        {"language": "python"},
+    )
+    output = _generic_noise_chunk(
+        "history-output",
+        "history/index.json",
+        '{"records": [{"status": "completed", "task_id": "abc"}]}',
+        ["history", "task", "status", "completed", "json"],
+        {"language": "json"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [service, output],
+        {
+            "history-service": {"semantic": 0.45, "lexical": 0.45, "path_symbol": 2.0, "direct_text": 0.65},
+            "history-output": {"semantic": 0.75, "lexical": 0.75, "path_symbol": 2.5, "direct_text": 0.85},
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "history-service"
+    assert by_id["history-output"].score_parts["generated_output_penalty"] < 0
+
+
+def test_generic_intent_download_logic_prefers_route_over_stored_images(
+    tmp_path: Path,
+) -> None:
+    query = "download zip history record route api 打包下载接口"
+    route = _generic_noise_chunk(
+        "download-route",
+        "backend/routes/history_routes.py",
+        "def download_history_zip(record_id): create zip send_file download",
+        ["download", "history", "zip", "route", "api"],
+        {"language": "python"},
+    )
+    artifact = _generic_noise_chunk(
+        "image-artifact",
+        "output/task_1/0.json",
+        '{"download": "zip", "history": "record"}',
+        ["download", "zip", "history", "record"],
+        {"language": "json"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [route, artifact],
+        {
+            "download-route": {"semantic": 0.40, "lexical": 0.40, "path_symbol": 2.0, "direct_text": 0.70},
+            "image-artifact": {"semantic": 0.72, "lexical": 0.72, "path_symbol": 2.5, "direct_text": 0.85},
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+
+    assert ranked[0].chunk.chunk_id == "download-route"
+
+
 def test_generic_noise_does_not_treat_frontend_view_as_template_noise(
     tmp_path: Path,
 ) -> None:
