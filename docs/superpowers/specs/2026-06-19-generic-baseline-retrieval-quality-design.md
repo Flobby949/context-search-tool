@@ -197,6 +197,8 @@ This milestone should add an independent generic file-role/noise classifier used
 
 The implementation must account for the existing `_generated_or_test_penalty(chunk)` path in `retrieval.py`. New noise penalties should extend or consolidate that existing penalty path rather than create a second unrelated generated/test penalty system. Existing `is_generated` and `is_test` metadata should continue to feed the unified noise penalty.
 
+Current `_is_test_path(path)` coverage is narrow. It mostly protects Java-style test paths and does not reliably cover Go `*_test.go`, Rust `tests/*.rs`, or TypeScript `*.test.ts` paths. Broadening cross-language test-file detection is a follow-up unless this milestone explicitly adds scanner metadata for those files. First-round synthetic tests for `test_penalty` should set `chunk.metadata["is_test"]` instead of depending on generic test filename heuristics.
+
 ### 3. Generic Noise Policy
 
 Default behavior should combine hard skips and rank demotion.
@@ -207,7 +209,7 @@ Hard skip candidates:
 - Binary artifacts and oversized files.
 - CST's own `.context-search/`.
 
-Current scanner behavior relies on `.gitignore` and configured excludes for dependency/build directories; it does not have built-in `node_modules/`, `vendor/`, `.venv/`, `dist/`, or `target/` defaults. This milestone should add a small default skip list for dependency and build-output directories so baseline quality does not depend on each target repo's `.gitignore` hygiene.
+Current scanner behavior relies on `.gitignore` and configured excludes for dependency/build directories; it does not have built-in `node_modules/`, `vendor/`, `.venv/`, `dist/`, or `target/` defaults. This milestone should add a small, high-confidence default skip list for dependency and build-output directories so baseline quality does not depend on each target repo's `.gitignore` hygiene. Avoid broad names such as `env/`, `venv/`, or `out/` in the first round because they can be legitimate source or configuration directories.
 
 Include patterns should not override default hard skips, `.gitignore`, configured exclude patterns, internal paths, binary detection, or oversized file skips. Changing include precedence is out of scope for this milestone.
 
@@ -227,6 +229,10 @@ Demotion should be explainable in `reasons` and numeric in `score_parts`, for ex
 - `lockfile_penalty`
 - `template_penalty`
 - `doc_anchor_split`
+
+The aggregate `penalty` score part should be the only negative noise value consumed by `_combined_score`. Detailed keys such as `generated_schema_penalty`, `lockfile_penalty`, `template_penalty`, `config_penalty`, `doc_penalty`, and `test_penalty` should remain diagnostic numeric fields for reasons, debugging, and review. They must not be added to `_combined_score` separately, otherwise the same demotion is applied twice.
+
+When one file matches multiple high-noise classes, the aggregate `penalty` should take the most severe single demotion rather than summing every matching class. Detailed penalty fields can still record each matched class for diagnosis.
 
 Initial penalty sizing should stay close to existing score magnitudes:
 

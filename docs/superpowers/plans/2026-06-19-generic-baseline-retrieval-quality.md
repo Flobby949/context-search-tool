@@ -68,7 +68,7 @@ Initial penalty ladder:
 | generated/test aggregate | `penalty` | negative aggregate | Existing combined score already adds this field. |
 | generated schema | `generated_schema_penalty` | `-0.20` | Same scale as current generated penalty. |
 | indexed lockfile | `lockfile_penalty` | `-0.20` | Only for indexed JSON/YAML lockfiles in this round. |
-| test | `test_penalty` | `-0.10` | Preserve existing test penalty scale unless regression tests show it is too strong. |
+| test | `test_penalty` | `-0.10` | Preserve existing test penalty scale. Cross-language test filename detection is not part of this first round. |
 | template | `template_penalty` | `-0.08` | Apply mainly to implementation-oriented queries. |
 | broad config/doc | `config_penalty` / `doc_penalty` | `-0.03` to `-0.08` | Keep conservative; README anchor behavior is separate. |
 | source | `file_role_source_boost` | `+0.03` | Optional small nudge, lower than Java role boosts. |
@@ -89,6 +89,8 @@ Initial penalty ladder:
   - Focused synthetic tests for generated schema, indexed lockfile, template/config demotion, source preference, and README/RISKS/pom anchor regression if needed.
 - Modify: `README.md`
   - Short documentation for generic baseline behavior and explicit real-project smoke command.
+- Keep: `tests/test_indexer_manifest.py`
+  - Existing index manifest behavior must keep passing after scanner default skips change.
 - Keep: `tests/test_acceptance_java_fixture.py`
   - Existing Java gates run unchanged.
 - Keep: `tests/test_rerank_soft_sorting.py`
@@ -128,10 +130,6 @@ Create `tests/fixtures/generic_baseline_quality/queries.json`:
         "expected_top_k": [
           {"glob": "storage/*.go", "top_k": 8}
         ],
-        "expected_any_top_k": [
-          {"path": "main.go", "top_k": 8},
-          {"glob": "storage/*.go", "top_k": 8}
-        ],
         "absent_top_k": [
           {"path": "templates/index.html", "top_k": 5}
         ],
@@ -141,7 +139,8 @@ Create `tests/fixtures/generic_baseline_quality/queries.json`:
             "noise": "templates/index.html",
             "top_k": 8
           }
-        ]
+        ],
+        "known_gap": "main.go is useful for initStorage queries, but first-round hard assertions focus on storage implementation files and template demotion."
       },
       {
         "id": "go-delete-handler",
@@ -466,19 +465,18 @@ _DEFAULT_SKIPPED_DIRS = {
     "node_modules",
     "vendor",
     ".venv",
-    "venv",
-    "env",
     "__pycache__",
     "dist",
     "build",
     "target",
-    "out",
     ".next",
     ".nuxt",
     ".turbo",
     "coverage",
 }
 ```
+
+Do not add broad names such as `env`, `venv`, or `out` in this first round. They can be legitimate source or configuration directories, and silently skipping them would be harder to debug than leaving them searchable.
 
 Add:
 
@@ -494,7 +492,7 @@ Update `_is_skipped_path(...)` so the returned expression includes `_is_default_
 Run:
 
 ```bash
-/opt/homebrew/Caskroom/miniforge/base/bin/python -m pytest tests/test_tokenizer_scanner.py -q
+/opt/homebrew/Caskroom/miniforge/base/bin/python -m pytest tests/test_tokenizer_scanner.py tests/test_indexer_manifest.py -q
 ```
 
 ### Task 3: Add Generic File Role And Unified Noise Penalties
@@ -529,6 +527,13 @@ Test template demotion:
 - Compare `storage/local.go` or `main.go` with `templates/index.html`.
 - Assert source ranks ahead for storage implementation query.
 - Assert `template_penalty < 0`.
+
+Test metadata-driven test demotion:
+
+- Compare a normal source chunk with a test chunk.
+- Set the test chunk metadata to `{"is_test": True}`.
+- Assert the test chunk has `test_penalty < 0` and `penalty < 0`.
+- Do not rely on a path such as `handler/upload_test.go`, `tests/engine.rs`, or `app.test.ts` for this first-round test. Current `_is_test_path(path)` coverage is narrow and cross-language test filename detection is a follow-up.
 
 Test README/RISKS/pom regression:
 
@@ -580,6 +585,8 @@ Classifier rules:
 - if suffix in `_SOURCE_SUFFIXES`: source role, `file_role_source_boost = 0.03`.
 - otherwise unknown role with no boost.
 
+Current `_is_test_path(path)` is intentionally not expanded in this milestone. It mostly covers Java-style paths and does not reliably classify Go `*_test.go`, Rust `tests/*.rs`, or TypeScript `*.test.ts` paths. For first-round behavior, test penalties should be driven by existing `chunk.metadata["is_test"]`; broader path heuristics require separate tests and a follow-up decision.
+
 Add a small helper such as:
 
 ```python
@@ -621,6 +628,8 @@ def _generic_noise_score_parts(
     parts: dict[str, float] = {}
     legacy_penalty = _generated_or_test_penalty(chunk)
     if legacy_penalty:
+        # Aggregate penalty is the only negative noise value consumed by _combined_score.
+        # Detailed penalty keys below are numeric diagnostics for reasons/debugging only.
         parts["penalty"] = -legacy_penalty
         if chunk.metadata.get("is_generated") or "generated" in chunk.file_path.as_posix().lower():
             parts["generated_schema_penalty"] = -0.20
@@ -639,9 +648,10 @@ def _generic_noise_score_parts(
 The exact implementation can differ, but it must satisfy:
 
 - one aggregate `penalty` remains negative.
-- detailed penalty parts remain numeric and negative.
+- detailed penalty parts remain numeric and negative, but are diagnostics only.
 - generated/test metadata feeds the same path as generated schema and lockfile penalties.
 - no index schema migration is required.
+- `_combined_score` must consume the aggregate `penalty` only; detailed penalty keys must not be added separately.
 
 - [ ] **Step 5: Integrate score parts in `_rank_chunks`**
 
@@ -665,6 +675,8 @@ penalty = abs(min(score_parts.get("penalty", 0.0), 0.0))
 
 Keep the `penalty` variable as a positive magnitude because `_should_apply_java_context_score(...)` currently receives it that way.
 
+Use `_merge_score_parts(...)` rather than direct assignment so `penalty` keeps the most severe negative value. With only this generic penalty source it is equivalent to the old direct assignment; if a future path also emits `penalty`, the merge rule intentionally chooses the stricter demotion.
+
 - [ ] **Step 6: Include new numeric parts in scoring and reasons**
 
 Update `_combined_score(score_parts)` to include:
@@ -673,7 +685,7 @@ Update `_combined_score(score_parts)` to include:
 + score_parts.get("file_role_source_boost", 0.0)
 ```
 
-Do not add detailed negative parts directly if they are already folded into aggregate `penalty`; otherwise penalties will double-apply.
+Do not add detailed negative parts directly because they are already folded into aggregate `penalty`; otherwise penalties will double-apply. The detailed negative keys are for `reasons`, diagnostics, and review output only.
 
 Update `_reasons(...)`:
 
@@ -723,6 +735,7 @@ If a query fails:
 - prefer adjusting fixture top-K only when the result is genuinely acceptable.
 - prefer reducing penalties if strong direct evidence is being suppressed.
 - prefer increasing only the specific noise penalty if a known noise class still crowds out source.
+- remember that `vite.config.ts` is a `.ts` file; suffix-based `config_penalty` will not affect it. If that case fails, inspect direct evidence and the fixture threshold, or add a separately tested config-filename classifier instead of tuning JSON/YAML/TOML config penalties.
 - do not add repo-specific aliases or path shortcuts.
 
 - [ ] **Step 2: Run Java regression gates**
@@ -830,6 +843,7 @@ Optional broader pass if time allows:
 - Apply high penalties only to clearly noisy classes: generated schemas and indexed lockfiles.
 - Apply template/config/doc penalties mainly for implementation-oriented queries.
 - Do not double-apply detailed penalties and aggregate `penalty`.
+- If one file matches multiple high-noise classes, make aggregate `penalty` the most severe single demotion rather than the sum. Keep each detailed penalty field for diagnosis.
 - Do not use real-project smoke in default CI unless explicitly requested; missing repos should skip.
 - Do not let `known_gap` hide a failing assertion. It is documentation only.
 - Do not add `.lock` suffix scanning in this plan; that would change index coverage and needs a separate decision.
