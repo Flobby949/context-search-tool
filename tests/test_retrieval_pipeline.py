@@ -5111,6 +5111,86 @@ def _rank_generic_noise_chunks(
     return retrieval._rank_chunks(store, candidates, tokens, query)
 
 
+def test_generic_intent_rerank_prefers_config_save_logic_over_yaml_artifacts(
+    tmp_path: Path,
+) -> None:
+    query = "配置页面保存文本服务商和图片服务商 YAML provider"
+    route = _generic_noise_chunk(
+        "config-route",
+        "backend/routes/config_routes.py",
+        "def update_config(): save active provider text image yaml config",
+        ["update", "config", "save", "active", "provider", "yaml"],
+        {"language": "python"},
+    )
+    form = _generic_noise_chunk(
+        "settings-form",
+        "frontend/src/composables/useProviderForm.ts",
+        "export async function saveTextProvider() { updateConfig(textConfig) }",
+        ["save", "text", "provider", "update", "config"],
+        {"language": "typescript"},
+    )
+    docker_yaml = _generic_noise_chunk(
+        "docker-yaml",
+        "docker/text_providers.yaml",
+        "active_provider: openai providers api_key model",
+        ["active", "provider", "providers", "yaml"],
+        {"language": "yaml"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [route, form, docker_yaml],
+        {
+            "config-route": {"semantic": 0.45, "lexical": 0.45, "path_symbol": 2.0, "direct_text": 0.65},
+            "settings-form": {"semantic": 0.42, "lexical": 0.42, "path_symbol": 2.0, "direct_text": 0.55},
+            "docker-yaml": {"semantic": 0.80, "lexical": 0.80, "path_symbol": 3.0, "direct_text": 0.90},
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id in {"config-route", "settings-form"}
+    assert ranked.index(by_id["docker-yaml"]) > ranked.index(by_id["config-route"])
+    assert by_id["docker-yaml"].score_parts["config_artifact_penalty"] < 0
+    assert by_id["config-route"].score_parts["query_operation_logic_boost"] > 0
+
+
+def test_generic_intent_rerank_preserves_deployment_config_queries(
+    tmp_path: Path,
+) -> None:
+    query = "docker compose deployment yaml mount output history"
+    compose = _generic_noise_chunk(
+        "compose",
+        "docker-compose.yml",
+        "services app volumes history output text_providers yaml",
+        ["docker", "compose", "deployment", "yaml", "history", "output"],
+        {"language": "yaml"},
+    )
+    service = _generic_noise_chunk(
+        "service",
+        "backend/services/history.py",
+        "class HistoryService: scan output history records",
+        ["history", "service", "scan", "output"],
+        {"language": "python"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [compose, service],
+        {
+            "compose": {"semantic": 0.55, "lexical": 0.55, "path_symbol": 2.5, "direct_text": 0.70},
+            "service": {"semantic": 0.60, "lexical": 0.60, "path_symbol": 2.0, "direct_text": 0.70},
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+
+    assert ranked[0].chunk.chunk_id == "compose"
+    assert ranked[0].score_parts["deployment_config_boost"] > 0
+    assert "config_artifact_penalty" not in ranked[0].score_parts
+
+
 def test_frontend_score_parts_rank_feature_entrypoint_over_broad_utility(
     tmp_path: Path,
 ) -> None:
@@ -5850,6 +5930,164 @@ def test_generic_noise_template_demotes_below_storage_source(
     assert ranked[0].chunk.chunk_id == "storage"
     assert by_id["template"].score_parts["template_penalty"] < 0
     assert by_id["template"].score_parts["penalty"] < 0
+
+
+def test_generic_intent_demotes_generated_history_for_scan_logic(
+    tmp_path: Path,
+) -> None:
+    query = "历史记录扫描同步任务图片 scan sync service"
+    service = _generic_noise_chunk(
+        "history-service",
+        "backend/services/history.py",
+        "class HistoryService: scan_and_sync_task_images scan_all_tasks",
+        ["history", "scan", "sync", "task", "images", "service"],
+        {"language": "python"},
+    )
+    output = _generic_noise_chunk(
+        "history-output",
+        "history/index.json",
+        '{"records": [{"status": "completed", "task_id": "abc"}]}',
+        ["history", "task", "status", "completed", "json"],
+        {"language": "json"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [service, output],
+        {
+            "history-service": {"semantic": 0.45, "lexical": 0.45, "path_symbol": 2.0, "direct_text": 0.65},
+            "history-output": {"semantic": 0.75, "lexical": 0.75, "path_symbol": 2.5, "direct_text": 0.85},
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "history-service"
+    assert by_id["history-output"].score_parts["generated_output_penalty"] < 0
+
+
+def test_generic_intent_download_logic_prefers_route_over_stored_images(
+    tmp_path: Path,
+) -> None:
+    query = "download zip history record route api 打包下载接口"
+    route = _generic_noise_chunk(
+        "download-route",
+        "backend/routes/history_routes.py",
+        "def download_history_zip(record_id): create zip send_file download",
+        ["download", "history", "zip", "route", "api"],
+        {"language": "python"},
+    )
+    artifact = _generic_noise_chunk(
+        "image-artifact",
+        "output/task_1/0.json",
+        '{"download": "zip", "history": "record"}',
+        ["download", "zip", "history", "record"],
+        {"language": "json"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [route, artifact],
+        {
+            "download-route": {"semantic": 0.40, "lexical": 0.40, "path_symbol": 2.0, "direct_text": 0.70},
+            "image-artifact": {"semantic": 0.72, "lexical": 0.72, "path_symbol": 2.5, "direct_text": 0.85},
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+
+    assert ranked[0].chunk.chunk_id == "download-route"
+
+
+def test_generic_intent_does_not_lift_command_over_config_source(
+    tmp_path: Path,
+) -> None:
+    query = "settings persistence save load project config app settings"
+    settings = _generic_noise_chunk(
+        "settings",
+        "src-tauri/src/settings.rs",
+        "settings persistence save load project app settings",
+        ["settings", "persistence", "save", "load", "project", "app"],
+        {"language": "rust"},
+    )
+    commands = _generic_noise_chunk(
+        "commands",
+        "src-tauri/src/commands.rs",
+        "commands settings persistence save load project config app settings",
+        ["commands", "settings", "persistence", "save", "load", "project", "config", "app"],
+        {"language": "rust"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [settings, commands],
+        {
+            "settings": {
+                "semantic": 0.09,
+                "lexical": 1.08,
+                "path_symbol": 2.0,
+                "direct_text": 0.83,
+            },
+            "commands": {
+                "semantic": 0.09,
+                "lexical": 1.25,
+                "path_symbol": 1.5,
+                "direct_text": 1.0,
+            },
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "settings"
+    assert "query_operation_logic_boost" not in by_id["commands"].score_parts
+
+
+def test_generic_intent_artifact_only_query_does_not_lift_view_over_utility(
+    tmp_path: Path,
+) -> None:
+    query = "JSON to entity generate Java TypeScript CSharp Python class interface"
+    view = _generic_noise_chunk(
+        "json-view",
+        "src/views/json/JsonToEntity.vue",
+        "import { jsonToJava } from '@/utils/jsonToEntity'; convert JSON to entity class",
+        ["json", "entity", "generate", "java", "typescript", "csharp", "python", "class"],
+        {"language": "vue"},
+    )
+    utility = _generic_noise_chunk(
+        "json-utility",
+        "src/utils/jsonToEntity.ts",
+        "export function jsonToJava(jsonString: string): string { return 'class Entity'; }",
+        ["json", "entity", "generate", "java", "typescript", "csharp", "python", "class", "interface"],
+        {"language": "typescript"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [view, utility],
+        {
+            "json-view": {
+                "semantic": 0.08,
+                "lexical": 5.53,
+                "path_symbol": 5.5,
+                "direct_text": 1.0,
+            },
+            "json-utility": {
+                "semantic": 0.05,
+                "lexical": 6.56,
+                "path_symbol": 5.75,
+                "direct_text": 1.0,
+            },
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "json-utility"
+    assert "query_operation_logic_boost" not in by_id["json-view"].score_parts
 
 
 def test_generic_noise_does_not_treat_frontend_view_as_template_noise(

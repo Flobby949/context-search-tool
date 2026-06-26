@@ -37,6 +37,7 @@ from context_search_tool.project_scope import (
     project_scope_score_parts,
     project_units_from_chunk_metadata,
 )
+from context_search_tool.query_intent import QueryIntent, infer_query_intent
 from context_search_tool.query_planner import (
     QueryPlanner,
     expand_query_plan_tokens,
@@ -1264,6 +1265,7 @@ def _rank_chunks(
     project_units = project_units_from_chunk_metadata(tuple(candidate_chunks.values()))
     query_scope = infer_query_scope(query, tokens, project_units)
     identifier_intent = infer_identifier_intent(query, tokens)
+    query_intent = infer_query_intent(query, tokens)
     frontend_enabled = frontend_candidate_scope_enabled(
         chunk.file_path for chunk in candidate_chunks.values()
     )
@@ -1314,6 +1316,11 @@ def _rank_chunks(
             score_parts,
             _generic_noise_score_parts(chunk, query, tokens),
         )
+        path_role = classify_path_role(chunk.file_path, chunk.content)
+        score_parts = _merge_score_parts(
+            score_parts,
+            _query_intent_score_parts(path_role, query_intent),
+        )
         penalty = abs(min(score_parts.get("penalty", 0.0), 0.0))
 
         if query_route and _chunk_looks_route_relevant(
@@ -1351,7 +1358,7 @@ def _rank_chunks(
         )
         score_parts = _merge_score_parts(
             score_parts,
-            _identifier_intent_score_parts(chunk, identifier_intent),
+            _identifier_intent_score_parts(chunk, identifier_intent, path_role),
         )
         score_parts = _merge_score_parts(
             score_parts,
@@ -2290,6 +2297,8 @@ def _rerank_score(
     if not has_project_scope_mismatch:
         rerank_score += _frontend_entrypoint_rerank_adjustment(score_parts)
         rerank_score += _frontend_support_name_rerank_adjustment(score_parts)
+    if not has_project_scope_mismatch:
+        rerank_score += _query_intent_rerank_adjustment(score_parts)
 
     if (
         not has_project_scope_mismatch
@@ -2407,12 +2416,135 @@ def _role_exact_match_boost(
     return 0.0
 
 
+_LOGIC_OPERATION_NAMES = {"save", "update", "delete", "download", "scan", "generate", "retry"}
+_LOGIC_PATH_ROLES = {
+    "entrypoint",
+    "router",
+    "service",
+    "service_impl",
+    "service_interface",
+    "executor",
+    "handler",
+    "middleware",
+    "repository",
+    "source_adapter",
+    "storage",
+    "command",
+    "engine",
+    "scheduler",
+    "state_store",
+    "composable",
+    "view",
+    "component",
+}
+_CONFIG_ARTIFACT_ROLES = {
+    "deployment_config",
+    "config_example",
+    "runtime_config",
+    "lockfile",
+}
+_LOGIC_TARGET_ROLES = {"entrypoint", "implementation", "ui"}
+
+
+def _query_intent_score_parts(
+    path_role: PathRole,
+    intent: QueryIntent,
+) -> dict[str, float]:
+    if intent.confidence == 0:
+        return {}
+
+    parts: dict[str, float] = {}
+    operation_query = bool(
+        intent.operations.intersection(_LOGIC_OPERATION_NAMES)
+        and (intent.target_roles or intent.artifact_roles)
+    )
+    logic_operation_query = bool(
+        intent.operations.intersection(_LOGIC_OPERATION_NAMES)
+        and intent.target_roles.intersection(_LOGIC_TARGET_ROLES)
+    )
+    wants_deployment = "deploy" in intent.target_roles and intent.wants_artifact
+    wants_docs = "doc" in intent.target_roles and intent.wants_artifact
+    wants_tests = "test" in intent.target_roles and intent.wants_artifact
+
+    if logic_operation_query and path_role.name in _LOGIC_PATH_ROLES:
+        parts["query_operation_logic_boost"] = 0.10
+
+    if "config" in intent.target_roles and path_role.name in {
+        "entrypoint",
+        "router",
+        "service",
+        "service_impl",
+        "handler",
+        "state_store",
+        "composable",
+        "view",
+        "component",
+    }:
+        parts["config_logic_boost"] = 0.12
+
+    if wants_deployment and path_role.name == "deployment_config":
+        parts["deployment_config_boost"] = 0.18
+
+    if wants_docs and path_role.name == "doc":
+        parts["doc_artifact_boost"] = 0.12
+
+    if wants_tests and path_role.name == "test":
+        parts["test_artifact_boost"] = 0.12
+
+    if (
+        operation_query
+        and not intent.wants_artifact
+        and path_role.name in _CONFIG_ARTIFACT_ROLES
+    ):
+        parts["penalty"] = -0.35
+        parts["config_artifact_penalty"] = -0.35
+
+    if (
+        operation_query
+        and not intent.wants_artifact
+        and path_role.name == "generated_output"
+    ):
+        parts["penalty"] = -0.45
+        parts["generated_output_penalty"] = -0.45
+
+    if (
+        operation_query
+        and not intent.wants_artifact
+        and path_role.name in {"doc", "test"}
+    ):
+        parts["penalty"] = -0.20
+        parts[f"{path_role.name}_artifact_penalty"] = -0.20
+
+    return parts
+
+
+def _query_intent_rerank_adjustment(score_parts: dict[str, float]) -> float:
+    if not _has_query_intent_rerank_evidence(score_parts):
+        return 0.0
+    return (
+        score_parts.get("query_operation_logic_boost", 0.0)
+        + score_parts.get("config_logic_boost", 0.0)
+        + score_parts.get("deployment_config_boost", 0.0)
+        + score_parts.get("doc_artifact_boost", 0.0)
+        + score_parts.get("test_artifact_boost", 0.0)
+    )
+
+
+def _has_query_intent_rerank_evidence(score_parts: dict[str, float]) -> bool:
+    return (
+        score_parts.get("token_coverage", 0.0) >= 0.35
+        or score_parts.get("path_symbol", 0.0) >= 1.5
+        or score_parts.get("direct_text", 0.0) >= 0.55
+        or score_parts.get("lexical", 0.0) >= 0.35
+    )
+
+
 def _identifier_intent_score_parts(
     chunk: DocumentChunk,
     intent: IdentifierIntent,
+    path_role: PathRole,
 ) -> dict[str, float]:
     parts: dict[str, float] = {}
-    path_role = classify_path_role(chunk.file_path, chunk.content)
     identifier_score = _identifier_exact_match_score(chunk, intent)
     if identifier_score:
         parts["identifier_exact_match_boost"] = identifier_score
@@ -3612,6 +3744,20 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("frontend scratch temp penalty")
     if score_parts.get("frontend_type_decl_penalty", 0.0) < 0:
         reasons.append("frontend type declaration penalty")
+    if score_parts.get("query_operation_logic_boost", 0.0) > 0:
+        reasons.append("query operation logic boost")
+    if score_parts.get("config_logic_boost", 0.0) > 0:
+        reasons.append("config logic boost")
+    if score_parts.get("deployment_config_boost", 0.0) > 0:
+        reasons.append("deployment config boost")
+    if score_parts.get("config_artifact_penalty", 0.0) < 0:
+        reasons.append("config artifact penalty")
+    if score_parts.get("generated_output_penalty", 0.0) < 0:
+        reasons.append("generated output penalty")
+    if score_parts.get("doc_artifact_penalty", 0.0) < 0:
+        reasons.append("doc artifact penalty")
+    if score_parts.get("test_artifact_penalty", 0.0) < 0:
+        reasons.append("test artifact penalty")
     if score_parts.get("generated_schema_penalty", 0.0) < 0:
         reasons.append("generated schema penalty")
     if score_parts.get("lockfile_penalty", 0.0) < 0:
