@@ -5111,6 +5111,86 @@ def _rank_generic_noise_chunks(
     return retrieval._rank_chunks(store, candidates, tokens, query)
 
 
+def test_generic_intent_rerank_prefers_config_save_logic_over_yaml_artifacts(
+    tmp_path: Path,
+) -> None:
+    query = "配置页面保存文本服务商和图片服务商 YAML provider"
+    route = _generic_noise_chunk(
+        "config-route",
+        "backend/routes/config_routes.py",
+        "def update_config(): save active provider text image yaml config",
+        ["update", "config", "save", "active", "provider", "yaml"],
+        {"language": "python"},
+    )
+    form = _generic_noise_chunk(
+        "settings-form",
+        "frontend/src/composables/useProviderForm.ts",
+        "export async function saveTextProvider() { updateConfig(textConfig) }",
+        ["save", "text", "provider", "update", "config"],
+        {"language": "typescript"},
+    )
+    docker_yaml = _generic_noise_chunk(
+        "docker-yaml",
+        "docker/text_providers.yaml",
+        "active_provider: openai providers api_key model",
+        ["active", "provider", "providers", "yaml"],
+        {"language": "yaml"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [route, form, docker_yaml],
+        {
+            "config-route": {"semantic": 0.45, "lexical": 0.45, "path_symbol": 2.0, "direct_text": 0.65},
+            "settings-form": {"semantic": 0.42, "lexical": 0.42, "path_symbol": 2.0, "direct_text": 0.55},
+            "docker-yaml": {"semantic": 0.80, "lexical": 0.80, "path_symbol": 3.0, "direct_text": 0.90},
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id in {"config-route", "settings-form"}
+    assert ranked.index(by_id["docker-yaml"]) > ranked.index(by_id["config-route"])
+    assert by_id["docker-yaml"].score_parts["config_artifact_penalty"] < 0
+    assert by_id["config-route"].score_parts["query_operation_logic_boost"] > 0
+
+
+def test_generic_intent_rerank_preserves_deployment_config_queries(
+    tmp_path: Path,
+) -> None:
+    query = "docker compose deployment yaml mount output history"
+    compose = _generic_noise_chunk(
+        "compose",
+        "docker-compose.yml",
+        "services app volumes history output text_providers yaml",
+        ["docker", "compose", "deployment", "yaml", "history", "output"],
+        {"language": "yaml"},
+    )
+    service = _generic_noise_chunk(
+        "service",
+        "backend/services/history.py",
+        "class HistoryService: scan output history records",
+        ["history", "service", "scan", "output"],
+        {"language": "python"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [compose, service],
+        {
+            "compose": {"semantic": 0.55, "lexical": 0.55, "path_symbol": 2.5, "direct_text": 0.70},
+            "service": {"semantic": 0.60, "lexical": 0.60, "path_symbol": 2.0, "direct_text": 0.70},
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+
+    assert ranked[0].chunk.chunk_id == "compose"
+    assert ranked[0].score_parts["deployment_config_boost"] > 0
+    assert "config_artifact_penalty" not in ranked[0].score_parts
+
+
 def test_frontend_score_parts_rank_feature_entrypoint_over_broad_utility(
     tmp_path: Path,
 ) -> None:
