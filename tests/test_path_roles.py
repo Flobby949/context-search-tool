@@ -55,3 +55,41 @@ def test_path_roles_classify_all_indexed_lockfiles() -> None:
         "yarn.lock",
     ):
         assert classify_path_role(Path(relative_path)).name == "lockfile"
+
+
+def test_path_roles_classify_deployment_and_config_artifacts() -> None:
+    dockerfile_role = classify_path_role(Path("Dockerfile"))
+    assert dockerfile_role.name == "deployment_config"
+    assert dockerfile_role.priority == 75
+    assert classify_path_role(Path("docker-compose.yml")).name == "deployment_config"
+    assert classify_path_role(Path("docker/image_providers.yaml")).name == "deployment_config"
+    docker_env_role = classify_path_role(Path("docker/.env"))
+    assert docker_env_role.name == "deployment_config"
+    assert docker_env_role.priority == 75
+    assert classify_path_role(Path("docker/entrypoint.sh")).name == "source"
+    example_role = classify_path_role(Path("image_providers.yaml.example"))
+    assert example_role.name == "config_example"
+    assert example_role.priority == 75
+    runtime_config_role = classify_path_role(Path("config/text_providers.yaml"))
+    assert runtime_config_role.name == "runtime_config"
+    assert runtime_config_role.priority == 65
+    config_env_role = classify_path_role(Path("config/.env"))
+    assert config_env_role.name == "runtime_config"
+    assert config_env_role.priority == 65
+    assert classify_path_role(Path("image_providers.yaml")).name == "runtime_config"
+    assert classify_path_role(Path("tsconfig.json")).name == "config"
+
+
+def test_path_roles_classify_generated_output_and_docs() -> None:
+    generated_role = classify_path_role(Path("history/index.json"))
+    assert generated_role.name == "generated_output"
+    assert generated_role.priority == 85
+    assert classify_path_role(Path("output/task_1/result.json")).name == "generated_output"
+    assert classify_path_role(Path("README.md")).name == "doc"
+    assert classify_path_role(Path("docs/setup.md")).name == "doc"
+
+
+def test_path_roles_do_not_classify_source_paths_as_generated_output() -> None:
+    assert classify_path_role(Path("src/views/history/index.vue")).name == "view"
+    assert classify_path_role(Path("src/pages/output/index.tsx")).name == "view"
+    assert classify_path_role(Path("src/main/java/com/example/service/history/HistoryService.java")).name == "service"

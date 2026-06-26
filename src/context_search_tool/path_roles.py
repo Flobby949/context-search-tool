@@ -10,6 +10,17 @@ class PathRole:
     priority: int
 
 
+_DEPLOYMENT_CONFIG_NAMES = {
+    "dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+}
+
+_ARTIFACT_CONFIG_SUFFIXES = {".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env"}
+
+
 def classify_path_role(path: Path, content: str = "") -> PathRole:
     normalized = path.as_posix().lower()
     parts = tuple(part for part in normalized.split("/") if part)
@@ -17,6 +28,7 @@ def classify_path_role(path: Path, content: str = "") -> PathRole:
     stem = path.stem.lower()
     original_stem = path.stem
     content_lower = content.lower()
+    artifact_config_suffix = _artifact_config_suffix(path, name)
 
     if _is_test_path(normalized, name, parts):
         return PathRole("test", 90)
@@ -31,6 +43,28 @@ def classify_path_role(path: Path, content: str = "") -> PathRole:
         return PathRole("lockfile", 90)
     if name in {"vite.config.ts", "vite.config.js", "webpack.config.js", "tsconfig.json"}:
         return PathRole("config", 70)
+    if name in _DEPLOYMENT_CONFIG_NAMES or (
+        any(part in {"docker", "deploy", "deployment", "k8s", "helm"} for part in parts)
+        and artifact_config_suffix in _ARTIFACT_CONFIG_SUFFIXES
+    ):
+        return PathRole("deployment_config", 75)
+    if name.endswith(".example") or (
+        artifact_config_suffix in _ARTIFACT_CONFIG_SUFFIXES
+        and any(part in {"example", "examples", "sample"} for part in parts)
+    ):
+        return PathRole("config_example", 75)
+    if artifact_config_suffix in _ARTIFACT_CONFIG_SUFFIXES and any(
+        part in {"history", "output", "outputs", "generated", "gen"} for part in parts
+    ):
+        return PathRole("generated_output", 85)
+    if artifact_config_suffix in _ARTIFACT_CONFIG_SUFFIXES and any(
+        part in {"config", "configs", "setting", "settings"} for part in parts
+    ):
+        return PathRole("runtime_config", 65)
+    if artifact_config_suffix in _ARTIFACT_CONFIG_SUFFIXES and (
+        "config" in stem or "provider" in stem or "setting" in stem
+    ):
+        return PathRole("runtime_config", 65)
     if path.suffix.lower() in {".md", ".mdx", ".rst"}:
         return PathRole("doc", 80)
 
@@ -104,6 +138,12 @@ def _is_test_path(path: str, name: str, parts: tuple[str, ...]) -> bool:
             )
         )
     )
+
+
+def _artifact_config_suffix(path: Path, name: str) -> str:
+    if name == ".env":
+        return ".env"
+    return path.suffix.lower()
 
 
 def _is_frontend_use_hook(path: Path, stem: str) -> bool:
