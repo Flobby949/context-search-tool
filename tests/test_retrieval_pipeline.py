@@ -6000,6 +6000,96 @@ def test_generic_intent_download_logic_prefers_route_over_stored_images(
     assert ranked[0].chunk.chunk_id == "download-route"
 
 
+def test_generic_intent_does_not_lift_command_over_config_source(
+    tmp_path: Path,
+) -> None:
+    query = "settings persistence save load project config app settings"
+    settings = _generic_noise_chunk(
+        "settings",
+        "src-tauri/src/settings.rs",
+        "settings persistence save load project app settings",
+        ["settings", "persistence", "save", "load", "project", "app"],
+        {"language": "rust"},
+    )
+    commands = _generic_noise_chunk(
+        "commands",
+        "src-tauri/src/commands.rs",
+        "commands settings persistence save load project config app settings",
+        ["commands", "settings", "persistence", "save", "load", "project", "config", "app"],
+        {"language": "rust"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [settings, commands],
+        {
+            "settings": {
+                "semantic": 0.09,
+                "lexical": 1.08,
+                "path_symbol": 2.0,
+                "direct_text": 0.83,
+            },
+            "commands": {
+                "semantic": 0.09,
+                "lexical": 1.25,
+                "path_symbol": 1.5,
+                "direct_text": 1.0,
+            },
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "settings"
+    assert "query_operation_logic_boost" not in by_id["commands"].score_parts
+
+
+def test_generic_intent_artifact_only_query_does_not_lift_view_over_utility(
+    tmp_path: Path,
+) -> None:
+    query = "JSON to entity generate Java TypeScript CSharp Python class interface"
+    view = _generic_noise_chunk(
+        "json-view",
+        "src/views/json/JsonToEntity.vue",
+        "import { jsonToJava } from '@/utils/jsonToEntity'; convert JSON to entity class",
+        ["json", "entity", "generate", "java", "typescript", "csharp", "python", "class"],
+        {"language": "vue"},
+    )
+    utility = _generic_noise_chunk(
+        "json-utility",
+        "src/utils/jsonToEntity.ts",
+        "export function jsonToJava(jsonString: string): string { return 'class Entity'; }",
+        ["json", "entity", "generate", "java", "typescript", "csharp", "python", "class", "interface"],
+        {"language": "typescript"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [view, utility],
+        {
+            "json-view": {
+                "semantic": 0.08,
+                "lexical": 5.53,
+                "path_symbol": 5.5,
+                "direct_text": 1.0,
+            },
+            "json-utility": {
+                "semantic": 0.05,
+                "lexical": 6.56,
+                "path_symbol": 5.75,
+                "direct_text": 1.0,
+            },
+        },
+        retrieval.tokenize_query(query),
+        query,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "json-utility"
+    assert "query_operation_logic_boost" not in by_id["json-view"].score_parts
+
+
 def test_generic_noise_does_not_treat_frontend_view_as_template_noise(
     tmp_path: Path,
 ) -> None:

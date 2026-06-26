@@ -2443,6 +2443,7 @@ _CONFIG_ARTIFACT_ROLES = {
     "runtime_config",
     "lockfile",
 }
+_LOGIC_TARGET_ROLES = {"entrypoint", "implementation", "ui"}
 
 
 def _query_intent_score_parts(
@@ -2457,11 +2458,15 @@ def _query_intent_score_parts(
         intent.operations.intersection(_LOGIC_OPERATION_NAMES)
         and (intent.target_roles or intent.artifact_roles)
     )
+    logic_operation_query = bool(
+        intent.operations.intersection(_LOGIC_OPERATION_NAMES)
+        and intent.target_roles.intersection(_LOGIC_TARGET_ROLES)
+    )
     wants_deployment = "deploy" in intent.target_roles and intent.wants_artifact
     wants_docs = "doc" in intent.target_roles and intent.wants_artifact
     wants_tests = "test" in intent.target_roles and intent.wants_artifact
 
-    if operation_query and path_role.name in _LOGIC_PATH_ROLES:
+    if logic_operation_query and path_role.name in _LOGIC_PATH_ROLES:
         parts["query_operation_logic_boost"] = 0.10
 
     if "config" in intent.target_roles and path_role.name in {
