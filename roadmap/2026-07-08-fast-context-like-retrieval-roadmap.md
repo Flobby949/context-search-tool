@@ -3,6 +3,7 @@
 Date: 2026-07-08
 Status: Long-term roadmap
 Repository: `/Users/flobby/Documents/context-seatch-tool`
+Next-stage plan: `docs/superpowers/plans/2026-07-08-retrieval-quality-scoring-system.md`
 
 ## Summary
 

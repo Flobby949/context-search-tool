@@ -4,6 +4,7 @@ Date: 2026-07-08
 Status: Draft for review
 Repository: `/Users/flobby/Documents/context-seatch-tool`
 Roadmap: `roadmap/2026-07-08-fast-context-like-retrieval-roadmap.md`
+Implementation Plan: `docs/superpowers/plans/2026-07-08-retrieval-quality-scoring-system.md`
 
 ## Summary
 
