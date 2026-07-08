@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "repos": [
+    {
+      "repo_key": "program_tool_snapshot",
+      "snapshot_path": "tests/fixtures/real_projects/program_tool",
+      "profiles": ["ci", "smoke"],
+      "queries": [
+        {
+          "id": "qrcode-entrypoint",
+          "query": "QRCode generate scan camera decode paste image qrcode-reader",
+          "tags": ["frontend", "entrypoint"],
+          "gate": "required",
+          "expected_top_k": [
+            {"path": "src/views/qrcode/QRCodeTool.vue", "top_k": 5}
+          ],
+          "expected_any_top_k": [
+            {
+              "matchers": [
+                {"path": "src/utils/qrcodeUtils.ts"},
+                {"path": "src/types/qrcode-reader.d.ts"}
+              ],
+              "top_k": 5
+            }
+          ],
+          "absent_top_k": [
+            {"path": "package-lock.json", "top_k": 5}
+          ]
+        }
+      ]
+    }
+  ]
+}

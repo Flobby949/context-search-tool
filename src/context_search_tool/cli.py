@@ -30,6 +30,10 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+from context_search_tool.quality.__main__ import quality_app
+
+app.add_typer(quality_app, name="quality")
+
 
 @app.callback()
 def main() -> None:
