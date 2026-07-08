@@ -53,6 +53,7 @@ The fast-context-like roadmap makes this more important. The next major features
 - Add a human-readable Markdown summary for before/after review.
 - Support baseline-vs-candidate comparison without requiring two separate code checkouts in the first version.
 - Keep CI fast by separating committed fixture checks from slow real-repository and model-backed runs.
+- Prevent quality runs from mutating source repositories by indexing copied workspaces.
 - Treat MCP feedback as offline analysis input, not as a required CI fixture.
 - Preserve existing quality tests while gradually moving them onto the shared evaluator.
 
@@ -67,6 +68,7 @@ The fast-context-like roadmap makes this more important. The next major features
 - No deletion of existing fixture suites in the first implementation.
 - No claim of fast-context parity.
 - No automatic tuning of weights based on scores.
+- No in-place indexing of source repositories in v1 quality runs.
 
 ## Design Principles
 
@@ -151,8 +153,8 @@ Quality Fixture
        -> repo resolution
        -> profile filtering
   -> Quality Runner
-       -> copy repo when needed
-       -> index repository
+       -> copy resolved repo into temp workspace
+       -> index copied workspace
        -> run query_repository
        -> measure latency
   -> Case Evaluator
@@ -187,6 +189,23 @@ If a package feels too heavy during implementation, a smaller module layout is a
 - execution;
 - report serialization;
 - report comparison.
+
+### Source Repository Safety
+
+The runner must never index the original source repository in v1.
+
+`index_repository()` creates `.context-search/`, and the current index layout helper also ensures a `.context-search/` entry in `.gitignore`. That behavior is correct for normal CST usage, but a quality runner may target private real repositories, committed snapshots, or comparison baselines that should not be mutated during evaluation.
+
+Required runner behavior:
+
+1. Resolve the source repository from `snapshot_path`, `path_env`, or `CST_SMOKE_REPOS_DIR`.
+2. Copy the source into a temporary quality workspace before indexing.
+3. Exclude `.git/`, `.context-search/`, virtualenvs, dependency directories, and build/cache directories from the copy.
+4. Run `index_repository()` and `query_repository()` only against the copied workspace.
+5. Record the original source identity and copied workspace path in the report.
+6. Clean up the copied workspace by default after the run, unless a debug flag explicitly preserves it.
+
+An `--in-place` mode is out of scope for v1. If a later version adds it for performance, it must be explicit and clearly marked as mutating.
 
 ## Quality Fixture Schema
 
@@ -224,6 +243,7 @@ Each query case should have this shape:
   "query": "数据看板统计图表功能",
   "tags": ["cross_language", "feature_lookup", "java_spring"],
   "mode": "results",
+  "gate": "required",
   "expected_top_k": [
     {"path": "src/main/java/com/example/DashboardController.java", "top_k": 5}
   ],
@@ -254,7 +274,7 @@ Each query case should have this shape:
       "top_k": 10
     }
   ],
-  "known_gap": false
+  "known_gap_reason": ""
 }
 ```
 
@@ -276,6 +296,7 @@ Each query case should have this shape:
 
 - `tags`: categories such as `java_spring`, `frontend`, `generic`, `cross_language`, `exact`, `noise`, `entrypoint`, `planner`.
 - `mode`: initially `results`; future values may include `context_pack` when ContextPack exists.
+- `gate`: one of `required`, `known_gap`, or `informational`. Defaults to `required`.
 - `expected_top_k`: every matcher must appear within its own top K.
 - `expected_any_top_k`: at least one matcher in each group's `matchers` list must appear within top K.
 - `preferred_rank`: a matcher should be at or above `max_rank` within top K.
@@ -283,7 +304,7 @@ Each query case should have this shape:
 - `forbidden_above`: noise matcher must not rank above a target matcher.
 - `outranks`: source matcher must outrank noise matcher inside top K when both are present.
 - `anchor_expected`: docs or config evidence should appear in evidence anchors when that output exists.
-- `known_gap`: case is measured and reported but does not fail gates.
+- `known_gap_reason`: explanation for a `known_gap` gate.
 - `notes`: short explanation for humans.
 
 ### Matchers
@@ -298,7 +319,80 @@ Matchers should support:
 
 The first implementation should strongly prefer `path` and `glob`. `contains` is useful for legacy fixtures but should not become the main style because it can hide ambiguous expectations.
 
+Matcher validation:
+
+- All paths are normalized to repo-relative POSIX paths.
+- Absolute paths are rejected.
+- Parent traversal such as `../` is rejected.
+- Empty paths and empty globs are rejected.
+- Windows drive-letter paths and UNC-style paths are rejected in fixture input.
+- Matching is case-sensitive by default because repository paths are case-sensitive in git.
+- Symlinks are not resolved for matching; the indexed relative path is the comparison value.
+
 Line-range expectations are out of scope for v1 unless an existing fixture already needs them. File-level quality is enough for this milestone.
+
+### Legacy Fixture Adapter
+
+Existing fixtures should not be rewritten wholesale before the new evaluator is proven. Add a legacy adapter that accepts the current fixture shapes and normalizes them into v1 cases:
+
+- Existing flat `expected_any_top_k` matcher lists become one `expected_any_top_k` group with `matchers`.
+- Existing `outranks` entries with string `source` and `noise` values become matcher objects. Strings containing glob metacharacters become `glob`; other strings become `path`.
+- Existing string `known_gap` values become `known_gap_reason`, but the gate remains `required` unless the new fixture explicitly sets `gate: "known_gap"`.
+- Existing `anchor_expected` string lists remain assertion-only until evidence-anchor metrics are added.
+- Existing calibration `expected_core` lists become expected target matchers for metrics, with the original `expected_top5_min` preserved as an assertion.
+
+This adapter is part of the migration path. New fixtures should use the v1 shape directly.
+
+## Evaluation Algorithm
+
+The evaluator should use one deterministic algorithm for all quality surfaces.
+
+### Result Normalization
+
+For each query result:
+
+1. Convert `result.file_path` to a repo-relative POSIX string.
+2. Drop duplicate paths after the first occurrence. Metrics are file-level in v1, so a later chunk from the same file should not improve Recall@K or MRR.
+3. Keep rank, score, score parts, and reasons from the first occurrence for the report.
+4. Evaluate only primary `results` for v1 metrics. Evidence anchors are asserted separately when present.
+
+### Target Construction
+
+Build two matcher sets per case:
+
+- `relevance_targets`: matchers from `expected_top_k`, `expected_any_top_k`, and legacy `expected_core`.
+- `entrypoint_targets`: matchers from `preferred_rank` entries whose `role` is `entrypoint`.
+
+`absent_top_k`, `outranks`, `forbidden_above`, and `anchor_expected` are assertions. They should not increase the relevance denominator.
+
+For grouped `expected_any_top_k`, the group counts as one relevance target for Recall@K. It is satisfied when any matcher in the group matches a result within K.
+
+### Metric Formulas
+
+- `hit_at_k`: true when at least one relevance target is satisfied within K.
+- `recall_at_k`: satisfied relevance targets within K divided by total relevance targets. If a case has no relevance targets, emit `null` rather than `0`.
+- `mrr`: reciprocal rank of the first result satisfying any relevance target. If none match, `0`.
+- `expected_coverage_top5`: count and ratio of relevance targets satisfied within top 5.
+- `preferred_rank_pass`: true when every `preferred_rank` assertion satisfies its `max_rank` within its declared `top_k`.
+- `noise_top_k`: number of unique result paths within K that match any `absent_top_k` matcher with `top_k <= K` or any explicitly tagged noise matcher.
+- `entrypoint_rank`: first rank matching an entrypoint target, or `null`.
+- `cross_language_success`: for cases tagged `cross_language`, same value as `hit_at_5`; otherwise `null`.
+- `latency_ms`: wall-clock duration around the `query_repository()` call only. Index time is reported separately when available.
+- `status`: `pass` if all required assertions pass, `fail` if any required assertion fails, `known_gap` if `gate` is `known_gap`, `skipped` if repo/profile is unavailable, and `error` for runner or retrieval exceptions.
+
+`gate: "informational"` cases should compute metrics but should not count as pass or fail. `gate: "known_gap"` cases should compute metrics, appear in reports, and be excluded from required pass/fail gates.
+
+### Assertion Semantics
+
+Assertions should be evaluated after metrics:
+
+- `expected_top_k`: each matcher must match at least one result within its own `top_k`.
+- `expected_any_top_k`: at least one matcher in the group must match within the group's `top_k`.
+- `preferred_rank`: matcher must appear at or above `max_rank` and within `top_k`.
+- `absent_top_k`: matcher must not appear within `top_k`.
+- `outranks`: if the noise matcher appears within `top_k`, the source matcher must also appear within `top_k` and rank earlier.
+- `forbidden_above`: noise matcher must not rank above target matcher within the declared window.
+- `anchor_expected`: expected anchors are checked only when the query output exposes evidence anchors.
 
 ## Metrics
 
@@ -367,17 +461,35 @@ The JSON report should be stable and versioned:
 {
   "schema_version": 1,
   "generated_at": 1783526400,
+  "command_args": [
+    "quality",
+    "run",
+    "tests/fixtures/retrieval_quality/queries.json",
+    "--profile",
+    "ci"
+  ],
   "tool": {
     "name": "context-search-tool",
-    "git_commit": "abc1234"
+    "git_commit": "abc1234",
+    "version": "0.0.0"
+  },
+  "fixture": {
+    "path": "tests/fixtures/retrieval_quality/queries.json",
+    "sha256": "sha256:...",
+    "schema_version": 1,
+    "case_count": 12
   },
   "profile": "ci",
   "config": {
+    "config_hash": "sha256:...",
     "embedding": {
       "provider": "hash",
       "model": "hash-v1",
       "dimensions": 384
     }
+  },
+  "planner": {
+    "enabled": false
   },
   "aggregate": {},
   "repos": [],
@@ -406,6 +518,10 @@ Each case record should include:
       "rank": 1,
       "path": "src/views/qrcode/QRCodeTool.vue",
       "score": 12.3,
+      "score_parts": {
+        "lexical": 3.2,
+        "path": 1.0
+      },
       "reasons": ["frontend entrypoint match"]
     }
   ],
@@ -414,6 +530,52 @@ Each case record should include:
 ```
 
 Top results should be capped, for example top 10, so reports remain readable.
+
+### Repository Metadata
+
+Each repo record should include enough identity data to explain what was evaluated:
+
+```json
+{
+  "repo_key": "program_tool",
+  "source": {
+    "type": "snapshot_path",
+    "path": "tests/fixtures/real_projects/program_tool",
+    "git_commit": null,
+    "content_hash": "sha256:..."
+  },
+  "workspace": {
+    "path": "/tmp/cst-quality/program_tool",
+    "copied": true
+  },
+  "index": {
+    "manifest_config_hash": "sha256:...",
+    "embedding_config_hash": "sha256:...",
+    "files_indexed": 42,
+    "chunks_indexed": 128
+  }
+}
+```
+
+For git repositories, `git_commit` should be recorded when available. For snapshots or copied directories without git metadata, a lightweight content hash over included relative paths and file metadata is acceptable. The hash does not need to read every byte in v1 if that would make large smoke runs expensive, but the report must clearly label how the identity was computed.
+
+### Comparability Metadata
+
+These fields are mandatory for `quality compare`:
+
+- report `schema_version`;
+- fixture `sha256` and fixture schema version;
+- profile;
+- tool git commit or version;
+- serialized config hash;
+- embedding provider/model/dimensions;
+- planner enabled/provider/model/prompt hash when applicable;
+- repo source identity for each `repo_key`;
+- case identifiers as `repo_key + case_id`;
+- top-K cap used for report storage;
+- command arguments.
+
+If fixture, config, profile, or repo identity differs, `quality compare` should still compare overlapping cases but must emit an `incompatible_metadata` warning. A later strict mode can fail on such differences. In v1, warnings are safer because the tool is meant to help exploration as well as gating.
 
 ### Markdown Summary
 
@@ -432,6 +594,14 @@ The Markdown report is for humans. The JSON report is the source of truth.
 ## Baseline Comparison
 
 The first comparison tool should compare two JSON reports, not two live repositories.
+
+Before classifying metric deltas, comparison must:
+
+1. Validate both report schema versions.
+2. Compare fixture/config/profile/repo metadata.
+3. Build the overlapping case set by `repo_key + case_id`.
+4. Mark cases missing from either side as `new_case` or `removed_case`.
+5. Attach metadata warnings to the comparison summary before reporting regressions.
 
 Comparison categories:
 
@@ -465,6 +635,7 @@ Behavior:
 - Use hash embedding by default.
 - Do not require Ollama, BGE, private repos, or network.
 - Fail on schema errors and required case failures.
+- Reject profile-incompatible `default_config` values such as BGE embeddings, planner-enabled config, or remote providers.
 
 ### `smoke`
 
@@ -475,7 +646,8 @@ Behavior:
 - Resolve real repos through `path_env`, `CST_SMOKE_REPOS_DIR`, or `snapshot_path`.
 - Skip unavailable repos with explicit records.
 - Can take longer than CI.
-- Fail only when the invoked repo exists and the case is not marked `known_gap`.
+- Fail only when the invoked repo exists and the case gate is `required`.
+- May use hash embedding by default; model-backed smoke belongs in the `model` profile.
 
 ### `model`
 
@@ -486,6 +658,7 @@ Behavior:
 - Allows BGE or planner-enabled configs.
 - Must be opt-in.
 - Should record provider, model, dimensions, planner status, and latency.
+- May skip when local model dependencies are unavailable, but skips must be explicit in the report.
 
 ### `feedback`
 
@@ -494,9 +667,21 @@ Purpose: offline analysis of real MCP use.
 Behavior:
 
 - Reads one or more `.context-search/mcp_calls.jsonl` files.
-- Reports query counts, success/failure rates, result counts, planner status, top score distribution, and common query terms.
+- Reports query counts, success/failure rates, result counts, planner status, and top score distribution.
 - Does not run retrieval.
 - Does not fail CI.
+
+### Profile Compatibility Matrix
+
+| Capability | `ci` | `smoke` | `model` | `feedback` |
+| --- | --- | --- | --- | --- |
+| Committed snapshots | required | allowed | allowed | not used |
+| Private real repos | rejected | allowed when configured | allowed when configured | log input only |
+| Hash embedding | required default | default | allowed | not used |
+| BGE/Ollama embeddings | rejected | rejected by default | allowed | not used |
+| Query planner enabled | rejected | rejected by default | allowed | summarized if logged |
+| Network-backed providers | rejected | rejected | opt-in only | not used |
+| Source repo mutation | rejected | rejected | rejected | not used |
 
 ## MCP Feedback Analysis
 
@@ -515,10 +700,14 @@ Instead, add a separate analysis path that can summarize:
 - empty-result rate;
 - top score distribution;
 - planner enabled/status/latency when present;
-- common query terms after local tokenization;
 - embedding provider/model distribution.
 
-The feedback analyzer should redact or omit raw queries by default in aggregate output, with an explicit local flag if the developer wants to include query examples.
+The feedback analyzer should omit raw queries and query-derived terms by default. Even tokenized "common terms" can expose private business concepts, endpoint names, customer names, or identifiers. Add explicit local-only flags for these cases:
+
+- `--include-query-examples`: include capped raw query examples.
+- `--include-query-terms`: include tokenized common terms.
+
+Both flags should be documented as privacy-sensitive and should not be used in CI.
 
 ## CLI And Test Integration
 
@@ -529,7 +718,7 @@ Add a developer-facing command under the existing CLI:
 ```text
 cst quality run <fixture> --profile ci --output report.json [--markdown report.md]
 cst quality compare --baseline base.json --candidate head.json [--markdown comparison.md]
-cst quality feedback <mcp_calls.jsonl> --output feedback-summary.json
+cst quality feedback <mcp_calls.jsonl> --output feedback-summary.json [--include-query-terms] [--include-query-examples]
 ```
 
 If adding a CLI subcommand is too much for the first implementation, a module entry point is acceptable:
@@ -548,9 +737,12 @@ Add focused tests for:
 - path/glob/contains matcher behavior;
 - metric calculations;
 - known-gap behavior;
+- source-repo copy behavior that excludes `.git/` and `.context-search/`;
+- profile compatibility rejection for model-backed CI configs;
 - report JSON shape;
+- report comparability metadata;
 - comparison classification;
-- feedback-log summary with synthetic events.
+- feedback-log summary with synthetic events and default query redaction.
 
 Then gradually update existing quality tests to use shared helpers:
 
@@ -592,6 +784,8 @@ Verification:
 python -m pytest tests/test_quality_runner.py -q
 ```
 
+The runner test must prove the original source repository is unchanged after a quality run. It should create a source repo with `.git/`, `.context-search/`, and `.gitignore`, run the quality runner, and assert the source snapshot is identical before and after.
+
 ### Step 4: Add Compare Command
 
 Compare two synthetic reports and classify improvements/regressions.
@@ -626,14 +820,20 @@ python -m pytest tests/test_generic_baseline_quality.py tests/test_quality_runne
 ## Acceptance Criteria
 
 - A unified quality fixture schema is documented and validated by tests.
+- Metric formulas and assertion semantics are implemented from the Evaluation Algorithm section.
 - Matcher-based metrics cover path and glob expectations.
+- Matcher validation rejects absolute paths, parent traversal, empty values, and Windows absolute path forms.
+- Quality runs index copied workspaces and do not mutate source repositories.
+- `ci` profile rejects model-backed, planner-enabled, private-repo-only, or network-dependent cases.
 - The quality runner emits a versioned JSON report.
+- JSON reports include comparability metadata for fixture hash, config hash, repo identity, command args, profile, embedding config, and case count.
 - The Markdown summary highlights failures, known gaps, aggregate metrics, and slow cases.
 - The comparison tool can classify pass-to-fail and metric regressions from two reports.
+- The comparison tool warns on incompatible fixture, config, profile, or repo metadata.
 - CI-friendly tests run without private repositories, Ollama, BGE, or network.
 - Existing default test suite still passes.
 - Existing quality fixtures remain usable during migration.
-- MCP feedback analysis is opt-in and does not expose raw query text by default.
+- MCP feedback analysis is opt-in and does not expose raw query text or query-derived terms by default.
 
 ## Open Questions
 
@@ -651,7 +851,11 @@ Recommendation: warn when fixture hashes differ, but still compare overlapping `
 
 ### Should Known Gaps Affect Aggregate Metrics?
 
-Recommendation: include known gaps in measured aggregate metrics but exclude them from pass/fail gate counts. This keeps visibility without blocking progress.
+Recommendation: include `gate: "known_gap"` cases in measured aggregate metrics but exclude them from required pass/fail gate counts. Legacy string `known_gap` values should become `known_gap_reason` only, and should not weaken gates unless the fixture explicitly opts into `gate: "known_gap"`.
+
+### Should Feedback Analysis Ship In The Same Implementation?
+
+Recommendation: implement the core evaluator, reports, and comparison first. Feedback analysis can be a final task in the milestone or a follow-up if it distracts from the core scoring loop. If it ships in v1, the default output must omit raw queries and query-derived terms.
 
 ## Future Extensions
 
