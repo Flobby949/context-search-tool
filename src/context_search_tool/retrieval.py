@@ -60,7 +60,16 @@ _RELATION_SCORE_DECAY = 0.8
 _CJK_SEQUENCE_RE = re.compile(r"[㐀-鿿]{2,}")
 _DIRECT_FRAGMENT_RE = re.compile(r"[A-Za-z0-9_./:@-]{3,}")
 _DIRECT_TEXT_TOP_K_MULTIPLIER = 3
-_NON_README_DOCUMENT_DISPLAY_PENALTY = 0.30
+_NON_SOURCE_ARTIFACT_DISPLAY_PENALTIES = {
+    "doc": 0.45,
+    "test": 0.25,
+    "deployment_config": 0.35,
+    "config_example": 0.35,
+    "runtime_config": 0.25,
+    "config": 0.20,
+    "generated_output": 0.45,
+    "lockfile": 0.35,
+}
 _ROUTE_EXACT_MATCH_BOOST = 0.35
 _ROUTE_PREFIX_MATCH_BOOST = 0.12
 _ROUTE_SIBLING_PENALTY = 0.18
@@ -936,10 +945,6 @@ def _is_readme_document(path: Path) -> bool:
     return path.suffix.lower() == ".md" and path.stem.lower().startswith("readme")
 
 
-def _is_non_readme_markdown_document(path: Path) -> bool:
-    return path.suffix.lower() == ".md" and not _is_readme_document(path)
-
-
 def _relation_expansion_candidates(
     store: SQLiteStore,
     seed_candidates: list[RetrievalCandidate],
@@ -1389,6 +1394,7 @@ def _rank_chunks(
             'score_parts': score_parts,
             'flags': flags,
             'role': role,
+            'path_role': path_role,
             'signals': rank_tier_signals,
         })
 
@@ -1408,6 +1414,8 @@ def _rank_chunks(
             item['chunk'],
             item['flags'],
             item['role'],
+            path_role=item['path_role'],
+            query_intent=query_intent,
             planner_ceiling=None,
         )
 
@@ -2196,6 +2204,8 @@ def _rerank_score(
     flags: dict,
     role: _ChunkRole,
     *,
+    path_role: PathRole | None = None,
+    query_intent: QueryIntent = QueryIntent(),
     planner_ceiling: float | None,
 ) -> float:
     """
@@ -2208,6 +2218,7 @@ def _rerank_score(
             + implementation_chain_boost (if has relation support)
             + role_boost
             - role_penalty
+            - non_source_artifact_penalty
             - planner_only_penalty (if planner-only, no original evidence)
             - relation_only_penalty (if only relation, no direct evidence)
             - generic_hint_penalty
@@ -2223,6 +2234,8 @@ def _rerank_score(
             - is_controller: bool
             - has_relation_support: bool
         role: Role classification with boost/penalty metadata
+        path_role: Optional artifact/source role for display demotion
+        query_intent: Inferred query intent used for artifact escapes
         planner_ceiling: Optional ceiling for planner/relation evidence classes
 
     Returns:
@@ -2264,11 +2277,15 @@ def _rerank_score(
         rerank_score -= role_penalty
         score_parts["role_penalty"] = -role_penalty
 
-    if _is_non_readme_markdown_document(chunk.file_path):
-        rerank_score -= _NON_README_DOCUMENT_DISPLAY_PENALTY
-        score_parts[
-            "non_readme_document_penalty"
-        ] = -_NON_README_DOCUMENT_DISPLAY_PENALTY
+    artifact_penalty = _non_source_artifact_display_penalty(
+        path_role,
+        query_intent,
+        score_parts,
+    )
+    if artifact_penalty:
+        rerank_score -= artifact_penalty
+        score_parts["non_source_artifact_penalty"] = -artifact_penalty
+        score_parts[f"{path_role.name}_penalty"] = -artifact_penalty
 
     role_exact_boost = 0.0
     if not has_project_scope_mismatch:
@@ -2518,6 +2535,50 @@ def _query_intent_score_parts(
         parts[f"{path_role.name}_artifact_penalty"] = -0.20
 
     return parts
+
+
+def _non_source_artifact_display_penalty(
+    path_role: PathRole | None,
+    intent: QueryIntent,
+    score_parts: dict[str, float],
+) -> float:
+    if path_role is None:
+        return 0.0
+    penalty = _NON_SOURCE_ARTIFACT_DISPLAY_PENALTIES.get(path_role.name, 0.0)
+    if not penalty:
+        return 0.0
+    if _artifact_role_is_requested(path_role.name, intent, score_parts):
+        return 0.0
+    return penalty
+
+
+def _artifact_role_is_requested(
+    path_role_name: str,
+    intent: QueryIntent,
+    score_parts: dict[str, float],
+) -> bool:
+    if path_role_name == "doc":
+        return "doc" in intent.target_roles and intent.wants_artifact
+    if path_role_name == "test":
+        return "test" in intent.target_roles and intent.wants_artifact
+    if path_role_name in {
+        "config",
+        "runtime_config",
+        "config_example",
+        "deployment_config",
+    }:
+        return bool(
+            intent.wants_artifact
+            and intent.target_roles.intersection({"config", "deploy"})
+        )
+    if path_role_name == "lockfile":
+        return bool(intent.wants_artifact and "config_artifact" in intent.artifact_roles)
+    if path_role_name == "generated_output":
+        return bool(
+            intent.wants_artifact
+            and "generated_artifact" in intent.artifact_roles
+        )
+    return False
 
 
 def _query_intent_rerank_adjustment(score_parts: dict[str, float]) -> float:

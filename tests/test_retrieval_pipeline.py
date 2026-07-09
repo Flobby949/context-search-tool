@@ -5227,6 +5227,99 @@ def test_generic_intent_rerank_preserves_deployment_config_queries(
     assert "config_artifact_penalty" not in ranked[0].score_parts
 
 
+def test_behavior_query_demotes_non_source_artifacts_below_source(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    docs = DocumentChunk(
+        chunk_id="docs-advanced",
+        file_path=Path("docs/user/advanced.rst"),
+        start_line=1,
+        end_line=80,
+        content="Session objects keep cookies across requests in client examples.",
+        chunk_type="document",
+        lexical_tokens=["session", "cookies", "requests", "client"],
+        metadata={"language": "restructuredtext"},
+    )
+    txt = DocumentChunk(
+        chunk_id="history",
+        file_path=Path("HISTORY.txt"),
+        start_line=1,
+        end_line=60,
+        content="Cookies and sessions changed across requests releases.",
+        chunk_type="document",
+        lexical_tokens=["cookies", "sessions", "requests"],
+        metadata={"language": "text"},
+    )
+    source = DocumentChunk(
+        chunk_id="sessions-source",
+        file_path=Path("src/requests/sessions.py"),
+        start_line=395,
+        end_line=555,
+        content=(
+            "class Session: Provides cookie persistence. "
+            "self.cookies = cookiejar_from_dict({}); "
+            "merged_cookies = merge_cookies(RequestsCookieJar(), self.cookies)"
+        ),
+        chunk_type="code",
+        lexical_tokens=["session", "cookies", "cookie", "persistence", "merge"],
+        metadata={"language": "python"},
+    )
+    for chunk in (docs, txt, source):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    candidates = {
+        "docs-advanced": RetrievalCandidate(
+            chunk_id="docs-advanced",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.45,
+                "lexical": 4.2,
+                "path_symbol": 3.0,
+                "direct_text": 1.0,
+            },
+        ),
+        "history": RetrievalCandidate(
+            chunk_id="history",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.40,
+                "lexical": 3.8,
+                "path_symbol": 2.5,
+                "direct_text": 0.9,
+            },
+        ),
+        "sessions-source": RetrievalCandidate(
+            chunk_id="sessions-source",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.35,
+                "lexical": 3.2,
+                "path_symbol": 3.0,
+                "direct_text": 0.8,
+            },
+        ),
+    }
+
+    ranked = retrieval._rank_chunks(
+        store,
+        candidates,
+        ["where", "requests", "cookies", "client", "session"],
+        "where does requests keep cookies between multiple calls in a client session",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "sessions-source"
+    assert by_id["docs-advanced"].score_parts["non_source_artifact_penalty"] < 0
+    assert by_id["docs-advanced"].score_parts["doc_penalty"] < 0
+    assert by_id["history"].score_parts["non_source_artifact_penalty"] < 0
+    assert by_id["sessions-source"].score_parts["file_role_source_boost"] > 0
+
+
 def test_frontend_score_parts_rank_feature_entrypoint_over_broad_utility(
     tmp_path: Path,
 ) -> None:
