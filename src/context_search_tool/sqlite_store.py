@@ -847,6 +847,93 @@ class SQLiteStore:
             ).fetchall()
         return {row["chunk_id"] for row in rows}
 
+    def language_counts(self) -> list[tuple[str, int]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT language, COUNT(*) AS count
+                FROM source_files
+                GROUP BY language
+                ORDER BY
+                  CASE
+                    WHEN language IN (
+                      'python', 'java', 'kotlin', 'go', 'rust', 'typescript',
+                      'typescriptreact', 'javascript', 'javascriptreact', 'vue',
+                      'svelte', 'c', 'cpp', 'csharp', 'swift', 'php', 'ruby',
+                      'lua', 'dart'
+                    ) THEN 0
+                    ELSE 1
+                  END,
+                  count DESC,
+                  language
+                """
+            ).fetchall()
+        return [(str(row["language"]), int(row["count"])) for row in rows]
+
+    def source_files_for_profile(self, limit: int) -> list[Path]:
+        if limit <= 0:
+            return []
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT path
+                FROM source_files
+                ORDER BY
+                  is_generated ASC,
+                  is_test ASC,
+                  CASE
+                    WHEN language IN (
+                      'python', 'java', 'kotlin', 'go', 'rust', 'typescript',
+                      'typescriptreact', 'javascript', 'javascriptreact', 'vue',
+                      'svelte', 'c', 'cpp', 'csharp', 'swift', 'php', 'ruby',
+                      'lua', 'dart'
+                    ) THEN 0
+                    ELSE 1
+                  END,
+                  path
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [Path(row["path"]) for row in rows]
+
+    def symbol_names_for_profile(self, limit: int) -> list[str]:
+        if limit <= 0:
+            return []
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT symbols.name, COUNT(*) AS count
+                FROM symbols
+                JOIN chunk_symbols ON chunk_symbols.symbol_id = symbols.symbol_id
+                JOIN chunks ON chunks.chunk_id = chunk_symbols.chunk_id
+                WHERE chunks.deleted_at IS NULL
+                GROUP BY symbols.name
+                ORDER BY count DESC, symbols.name
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [str(row["name"]) for row in rows]
+
+    def token_counts_for_profile(self, limit: int) -> list[str]:
+        if limit <= 0:
+            return []
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT chunk_tokens.token, COUNT(*) AS count
+                FROM chunk_tokens
+                JOIN chunks ON chunks.chunk_id = chunk_tokens.chunk_id
+                WHERE chunks.deleted_at IS NULL
+                GROUP BY chunk_tokens.token
+                ORDER BY count DESC, chunk_tokens.token
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [str(row["token"]) for row in rows]
+
     def stats(self) -> dict[str, int]:
         with self._connect() as connection:
             source_files = connection.execute(

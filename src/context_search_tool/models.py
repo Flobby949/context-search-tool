@@ -89,6 +89,17 @@ class QueryPlan:
 
 
 @dataclass(frozen=True)
+class RepoProfile:
+    languages: list[str] = field(default_factory=list)
+    source_roots: list[str] = field(default_factory=list)
+    important_files: list[str] = field(default_factory=list)
+    symbols: list[str] = field(default_factory=list)
+    tokens: list[str] = field(default_factory=list)
+    profile_hash: str = ""
+    truncated: bool = False
+
+
+@dataclass(frozen=True)
 class DocumentChunk:
     chunk_id: str
     file_path: Path
