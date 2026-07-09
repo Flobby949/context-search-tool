@@ -2549,6 +2549,8 @@ def _non_source_artifact_display_penalty(
     penalty = _NON_SOURCE_ARTIFACT_DISPLAY_PENALTIES.get(path_role.name, 0.0)
     if not penalty:
         return 0.0
+    if path_role.name == "config" and score_parts.get("file_role_source_boost", 0.0) > 0:
+        return 0.0
     if _artifact_role_is_requested(path_role.name, intent, score_parts):
         return 0.0
     return penalty

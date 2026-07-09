@@ -6428,6 +6428,8 @@ def test_generic_intent_does_not_lift_command_over_config_source(
     )
     by_id = {item.chunk.chunk_id: item for item in ranked}
 
+    assert "non_source_artifact_penalty" not in by_id["settings"].score_parts
+    assert "artifact_display_config_penalty" not in by_id["settings"].score_parts
     assert ranked[0].chunk.chunk_id == "settings"
     assert "query_operation_logic_boost" not in by_id["commands"].score_parts
 
