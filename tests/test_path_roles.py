@@ -93,3 +93,29 @@ def test_path_roles_do_not_classify_source_paths_as_generated_output() -> None:
     assert classify_path_role(Path("src/views/history/index.vue")).name == "view"
     assert classify_path_role(Path("src/pages/output/index.tsx")).name == "view"
     assert classify_path_role(Path("src/main/java/com/example/service/history/HistoryService.java")).name == "service"
+
+
+def test_path_roles_classify_common_textual_artifacts_as_docs() -> None:
+    for relative_path in (
+        "README.rst",
+        "docs/user/advanced.rst",
+        "docs/usage.txt",
+        "docs/api.adoc",
+        "docs/api.asciidoc",
+        "CHANGELOG",
+        "CHANGELOG.txt",
+        "HISTORY.md",
+        "LICENSE",
+        "NOTICE",
+        "AUTHORS",
+        "CONTRIBUTORS.txt",
+    ):
+        role = classify_path_role(Path(relative_path))
+        assert role.name == "doc", relative_path
+        assert role.priority == 80
+
+
+def test_path_roles_keep_production_source_as_source() -> None:
+    assert classify_path_role(Path("src/requests/sessions.py")).name == "source"
+    assert classify_path_role(Path("src/requests/cookies.py")).name == "source"
+    assert classify_path_role(Path("src/utils/usage.ts")).name == "source"

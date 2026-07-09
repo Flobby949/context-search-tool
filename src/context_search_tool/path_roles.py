@@ -20,6 +20,19 @@ _DEPLOYMENT_CONFIG_NAMES = {
 
 _ARTIFACT_CONFIG_SUFFIXES = {".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env"}
 
+_DOC_SUFFIXES = {".md", ".mdx", ".rst", ".txt", ".adoc", ".asciidoc"}
+_DOC_FILE_NAMES = {
+    "authors",
+    "changelog",
+    "code_of_conduct",
+    "contributors",
+    "copying",
+    "history",
+    "license",
+    "notice",
+    "readme",
+}
+
 
 def classify_path_role(path: Path, content: str = "") -> PathRole:
     normalized = path.as_posix().lower()
@@ -65,7 +78,11 @@ def classify_path_role(path: Path, content: str = "") -> PathRole:
         "config" in stem or "provider" in stem or "setting" in stem
     ):
         return PathRole("runtime_config", 65)
-    if path.suffix.lower() in {".md", ".mdx", ".rst"}:
+    if (
+        path.suffix.lower() in _DOC_SUFFIXES
+        or name in _DOC_FILE_NAMES
+        or stem in _DOC_FILE_NAMES
+    ):
         return PathRole("doc", 80)
 
     if "/service/impl/" in normalized or "serviceimpl" in stem:
