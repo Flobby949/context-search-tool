@@ -5315,7 +5315,8 @@ def test_behavior_query_demotes_non_source_artifacts_below_source(
 
     assert ranked[0].chunk.chunk_id == "sessions-source"
     assert by_id["docs-advanced"].score_parts["non_source_artifact_penalty"] < 0
-    assert by_id["docs-advanced"].score_parts["doc_penalty"] < 0
+    assert by_id["docs-advanced"].score_parts["artifact_display_doc_penalty"] < 0
+    assert "doc_penalty" not in by_id["docs-advanced"].score_parts
     assert by_id["history"].score_parts["non_source_artifact_penalty"] < 0
     assert by_id["sessions-source"].score_parts["file_role_source_boost"] > 0
 
@@ -5956,6 +5957,7 @@ def test_generic_noise_explicit_dependency_query_does_not_penalize_lockfile(
     parts = ranked[0].score_parts
     assert "lockfile_penalty" not in parts
     assert "penalty" not in parts
+    assert "non_source_artifact_penalty" not in parts
 
 
 @pytest.mark.parametrize("query", ["go.sum", "go sum"])
@@ -5981,6 +5983,7 @@ def test_generic_noise_explicit_go_sum_query_does_not_penalize_lockfile(
     parts = ranked[0].score_parts
     assert "lockfile_penalty" not in parts
     assert "penalty" not in parts
+    assert "non_source_artifact_penalty" not in parts
 
 
 @pytest.mark.parametrize(

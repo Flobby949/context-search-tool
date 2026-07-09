@@ -2285,7 +2285,9 @@ def _rerank_score(
     if artifact_penalty:
         rerank_score -= artifact_penalty
         score_parts["non_source_artifact_penalty"] = -artifact_penalty
-        score_parts[f"{path_role.name}_penalty"] = -artifact_penalty
+        score_parts[
+            f"artifact_display_{path_role.name}_penalty"
+        ] = -artifact_penalty
 
     role_exact_boost = 0.0
     if not has_project_scope_mismatch:
@@ -2572,7 +2574,13 @@ def _artifact_role_is_requested(
             and intent.target_roles.intersection({"config", "deploy"})
         )
     if path_role_name == "lockfile":
-        return bool(intent.wants_artifact and "config_artifact" in intent.artifact_roles)
+        return bool(
+            score_parts.get("explicit_lockfile_query", 0.0) > 0
+            or (
+                intent.wants_artifact
+                and "config_artifact" in intent.artifact_roles
+            )
+        )
     if path_role_name == "generated_output":
         return bool(
             intent.wants_artifact
@@ -3672,11 +3680,14 @@ def _generic_noise_score_parts(
             parts,
             {"penalty": -0.20, "generated_schema_penalty": -0.20},
         )
-    if name in _INDEXED_LOCKFILE_NAMES and not _has_explicit_lockfile_query(tokens, name):
-        parts = _merge_score_parts(
-            parts,
-            {"penalty": -0.20, "lockfile_penalty": -0.20},
-        )
+    if name in _INDEXED_LOCKFILE_NAMES:
+        if _has_explicit_lockfile_query(tokens, name):
+            parts["explicit_lockfile_query"] = 1.0
+        else:
+            parts = _merge_score_parts(
+                parts,
+                {"penalty": -0.20, "lockfile_penalty": -0.20},
+            )
 
     role = _generic_file_role(chunk, query, tokens)
     role_parts: dict[str, float] = {}
