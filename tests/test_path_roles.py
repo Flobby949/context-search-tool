@@ -119,3 +119,11 @@ def test_path_roles_keep_production_source_as_source() -> None:
     assert classify_path_role(Path("src/requests/sessions.py")).name == "source"
     assert classify_path_role(Path("src/requests/cookies.py")).name == "source"
     assert classify_path_role(Path("src/utils/usage.ts")).name == "source"
+
+
+def test_path_roles_do_not_classify_source_file_stems_as_docs() -> None:
+    assert classify_path_role(Path("src/history.py")).name == "source"
+    assert classify_path_role(Path("internal/service/license.go")).name == "service"
+    assert classify_path_role(Path("src/notice.ts")).name == "source"
+    assert classify_path_role(Path("src/contributors.rs")).name == "source"
+    assert classify_path_role(Path("src/changelog.ts")).name == "source"

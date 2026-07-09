@@ -81,7 +81,6 @@ def classify_path_role(path: Path, content: str = "") -> PathRole:
     if (
         path.suffix.lower() in _DOC_SUFFIXES
         or name in _DOC_FILE_NAMES
-        or stem in _DOC_FILE_NAMES
     ):
         return PathRole("doc", 80)
 
