@@ -30,14 +30,30 @@ class FakePlanner:
     def __init__(self, plan: QueryPlan) -> None:
         self.query_plan = plan
         self.calls: list[str] = []
+        self.repo_profiles: list[object] = []
 
     def plan_query(self, query: str) -> QueryPlan:
         self.calls.append(query)
         return self.query_plan
 
-    def plan(self, query: str) -> QueryPlan:
+    def plan(self, query: str, repo_profile: object | None = None) -> QueryPlan:
         self.calls.append(query)
+        self.repo_profiles.append(repo_profile)
         return self.query_plan
+
+
+class CapturingPlanner:
+    def __init__(self) -> None:
+        self.repo_profile = None
+
+    def plan(self, query: str, repo_profile=None) -> QueryPlan:
+        self.repo_profile = repo_profile
+        return QueryPlan(
+            original_query=query,
+            grep_keywords=["session"],
+            status="ok",
+            repo_profile_hash=repo_profile.profile_hash if repo_profile else "",
+        )
 
 
 def _write_go_imagebed_fixture(repo: Path) -> None:
@@ -4255,6 +4271,26 @@ class UnrelatedController {
         if result.file_path == Path("DashboardController.java")
     )
     assert "planner hint match" in dashboard.reasons
+
+
+def test_query_repository_passes_repo_profile_to_planner(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "sessions.py").write_text(
+        "class Session:\n    def send(self):\n        return None\n",
+        encoding="utf-8",
+    )
+    config = DEFAULT_CONFIG
+    index_repository(repo, config)
+    planner = CapturingPlanner()
+
+    bundle = query_repository(repo, "where is session send handled", config, planner=planner)
+
+    assert planner.repo_profile is not None
+    assert "python" in planner.repo_profile.languages
+    assert "session" in planner.repo_profile.tokens
+    assert "sessions.py" in " ".join(planner.repo_profile.important_files)
+    assert bundle.planner.repo_profile_hash == planner.repo_profile.profile_hash
 
 
 def test_query_planner_fallback_returns_original_query_results(tmp_path: Path) -> None:

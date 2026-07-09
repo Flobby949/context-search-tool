@@ -44,6 +44,7 @@ from context_search_tool.query_planner import (
     planner_from_config,
     planner_hint_tokens,
 )
+from context_search_tool.repo_profile import build_repo_profile
 from context_search_tool.sqlite_store import SQLiteStore
 from context_search_tool.tokenizer import tokenize_query
 from context_search_tool.vector_store import NumpyVectorStore
@@ -245,7 +246,8 @@ def query_repository(
         )
 
     query_planner = planner or planner_from_config(config.query_planner)
-    plan = query_planner.plan(query)
+    repo_profile = build_repo_profile(store)
+    plan = query_planner.plan(query, repo_profile=repo_profile)
     tokens = expand_query_plan_tokens(query, plan)
     hint_tokens = (
         planner_hint_tokens(original_tokens, tokens) if plan.status == "ok" else []
