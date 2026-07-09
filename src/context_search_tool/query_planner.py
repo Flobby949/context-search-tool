@@ -8,7 +8,13 @@ from typing import Any, Protocol
 import requests
 
 from context_search_tool.config import QueryPlannerConfig
-from context_search_tool.models import QueryPlan
+from context_search_tool.models import QueryPlan, RepoProfile
+from context_search_tool.repo_profile import (
+    profile_vocabulary,
+    repo_profile_payload,
+    rewritten_query_is_repo_supported,
+    term_is_repo_supported,
+)
 from context_search_tool.tokenizer import tokenize_query
 
 PROMPT_VERSION = "qwen-query-planner-v2"
@@ -37,6 +43,10 @@ Required fields:
 - intent: feature_lookup | endpoint_lookup | bug_trace | data_flow | symbol_lookup | unknown
 
 Do not explain. Do not guess file paths. Prefer identifiers and English code terms.
+Use repo_profile terms when possible.
+Do not infer unrelated frameworks, languages, libraries, or file paths.
+If repo_profile is present, prefer its languages, files, symbols, and tokens.
+Only return hints that would plausibly exist in this repository.
 Use an empty array when a list has no useful values.
 
 DO NOT:
@@ -53,12 +63,12 @@ DO:
 
 
 class QueryPlanner(Protocol):
-    def plan(self, query: str) -> QueryPlan:
+    def plan(self, query: str, repo_profile: RepoProfile | None = None) -> QueryPlan:
         ...
 
 
 class DisabledQueryPlanner:
-    def plan(self, query: str) -> QueryPlan:
+    def plan(self, query: str, repo_profile: RepoProfile | None = None) -> QueryPlan:
         return disabled_plan(query)
 
 
@@ -72,7 +82,7 @@ class OllamaQueryPlanner:
         self.session = session or requests.Session()
         self.session.trust_env = config.use_system_proxy
 
-    def plan(self, query: str) -> QueryPlan:
+    def plan(self, query: str, repo_profile: RepoProfile | None = None) -> QueryPlan:
         start = time.perf_counter()
         try:
             response = self.session.post(
@@ -87,7 +97,7 @@ class OllamaQueryPlanner:
                         {
                             "role": "user",
                             "content": json.dumps(
-                                _user_payload(query, self.config),
+                                _user_payload(query, self.config, repo_profile),
                                 ensure_ascii=False,
                             ),
                         },
@@ -127,6 +137,7 @@ class OllamaQueryPlanner:
                 provider=self.config.provider,
                 model=self.config.model,
                 latency_ms=_elapsed_ms(start),
+                repo_profile=repo_profile,
             )
         except requests.Timeout:
             return self._fallback(
@@ -184,6 +195,7 @@ def clean_planner_payload(
     provider: str,
     model: str,
     latency_ms: int | None,
+    repo_profile: RepoProfile | None = None,
 ) -> QueryPlan:
     try:
         rewritten_queries = _clean_string_list(
@@ -210,6 +222,21 @@ def clean_planner_payload(
             error=str(exc),
         )
 
+    discarded_hints: list[str] = []
+    if repo_profile is not None:
+        vocabulary = profile_vocabulary(repo_profile)
+        original_tokens = tokenize_query(original_query)
+        rewritten_queries, dropped = _filter_rewritten_queries(
+            rewritten_queries,
+            vocabulary,
+            original_tokens,
+        )
+        discarded_hints.extend(dropped)
+        grep_keywords, dropped = _filter_identifier_hints(grep_keywords, vocabulary)
+        discarded_hints.extend(dropped)
+        symbol_hints, dropped = _filter_identifier_hints(symbol_hints, vocabulary)
+        discarded_hints.extend(dropped)
+
     raw_intent = payload.get("intent", "unknown")
     intent = (
         raw_intent
@@ -228,6 +255,11 @@ def clean_planner_payload(
         prompt_version=PROMPT_VERSION,
         prompt_hash=prompt_hash(),
         latency_ms=latency_ms,
+        repo_profile_hash=repo_profile.profile_hash if repo_profile is not None else "",
+        repo_profile_truncated=repo_profile.truncated
+        if repo_profile is not None
+        else False,
+        discarded_hints=discarded_hints,
     )
 
 
@@ -259,14 +291,20 @@ def planner_hint_tokens(
     return [token for token in expanded_tokens if token.lower() not in original]
 
 
-def _user_payload(query: str, config: QueryPlannerConfig) -> dict[str, object]:
-    return {
+def _user_payload(
+    query: str,
+    config: QueryPlannerConfig,
+    repo_profile: RepoProfile | None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
         "query": query,
-        "language_hints": ["Java", "Spring"],
         "max_rewritten_queries": config.max_rewritten_queries,
         "max_keywords": config.max_keywords,
         "max_symbol_hints": config.max_symbol_hints,
     }
+    if repo_profile is not None:
+        payload["repo_profile"] = repo_profile_payload(repo_profile)
+    return payload
 
 
 def _elapsed_ms(start: float) -> int:
@@ -326,6 +364,47 @@ def _clean_string_list(payload: dict[str, Any], key: str, limit: int) -> list[st
         if len(cleaned) >= limit:
             break
     return cleaned
+
+
+def _filter_rewritten_queries(
+    terms: list[str],
+    vocabulary: set[str],
+    original_tokens: list[str],
+) -> tuple[list[str], list[str]]:
+    kept: list[str] = []
+    dropped: list[str] = []
+    for term in terms:
+        cleaned = rewritten_query_is_repo_supported(term, vocabulary, original_tokens)
+        if not cleaned:
+            dropped.append(term)
+            continue
+        kept.append(cleaned)
+    return _dedupe_strings(kept), dropped
+
+
+def _filter_identifier_hints(
+    terms: list[str],
+    vocabulary: set[str],
+) -> tuple[list[str], list[str]]:
+    kept: list[str] = []
+    dropped: list[str] = []
+    for term in terms:
+        if term_is_repo_supported(term, vocabulary):
+            kept.append(term)
+        else:
+            dropped.append(term)
+    return kept, dropped
+
+
+def _dedupe_strings(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        key = item.lower()
+        if key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
 
 
 def _dedupe(tokens: list[str]) -> list[str]:

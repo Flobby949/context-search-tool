@@ -3,7 +3,7 @@ import json
 import requests
 
 from context_search_tool.config import QueryPlannerConfig
-from context_search_tool.models import QueryPlan
+from context_search_tool.models import QueryPlan, RepoProfile
 from context_search_tool.query_planner import (
     OllamaQueryPlanner,
     PROMPT_VERSION,
@@ -249,6 +249,70 @@ class FakeSession:
         if isinstance(self.response, Exception):
             raise self.response
         return self.response
+
+
+def _python_requests_profile() -> RepoProfile:
+    return RepoProfile(
+        languages=["python"],
+        source_roots=["src/requests"],
+        important_files=["src/requests/sessions.py", "src/requests/cookies.py"],
+        symbols=[],
+        tokens=["requests", "session", "cookies", "cookie", "jar", "merge"],
+        profile_hash="sha256:test",
+    )
+
+
+def test_ollama_planner_sends_repo_profile_without_java_spring_defaults() -> None:
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "rewritten_queries": ["session cookies"],
+                            "grep_keywords": ["RequestsCookieJar"],
+                            "symbol_hints": ["Session"],
+                            "intent": "feature_lookup",
+                        }
+                    )
+                }
+            },
+        )
+    )
+    planner = OllamaQueryPlanner(QueryPlannerConfig(enabled=True), session=session)
+
+    plan = planner.plan("where are cookies kept", repo_profile=_python_requests_profile())
+
+    assert plan.status == "ok"
+    payload = json.loads(session.calls[0]["json"]["messages"][1]["content"])
+    assert payload["repo_profile"]["languages"] == ["python"]
+    assert payload["repo_profile"]["source_roots"] == ["src/requests"]
+    assert "language_hints" not in payload
+
+
+def test_clean_planner_payload_drops_terms_without_repo_overlap() -> None:
+    plan = clean_planner_payload(
+        original_query="where are cookies kept",
+        payload={
+            "rewritten_queries": ["Spring HttpSession cookies", "requests session cookies"],
+            "grep_keywords": ["HttpSession", "RequestsCookieJar"],
+            "symbol_hints": ["RestTemplate", "Session"],
+            "intent": "feature_lookup",
+        },
+        config=QueryPlannerConfig(),
+        provider="ollama",
+        model="qwen3.5:4b-mlx",
+        latency_ms=10,
+        repo_profile=_python_requests_profile(),
+    )
+
+    assert plan.rewritten_queries == ["session cookies", "requests session cookies"]
+    assert plan.grep_keywords == ["RequestsCookieJar"]
+    assert plan.symbol_hints == ["Session"]
+    assert "HttpSession" in plan.discarded_hints
+    assert "RestTemplate" in plan.discarded_hints
+    assert plan.repo_profile_hash == "sha256:test"
 
 
 def test_ollama_planner_parses_valid_json_and_bypasses_proxy() -> None:

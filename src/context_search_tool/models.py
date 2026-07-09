@@ -82,6 +82,9 @@ class QueryPlan:
     prompt_hash: str = ""
     latency_ms: int | None = None
     error: str | None = None
+    repo_profile_hash: str = ""
+    repo_profile_truncated: bool = False
+    discarded_hints: list[str] = field(default_factory=list)
 
     @staticmethod
     def disabled_default() -> QueryPlan:
