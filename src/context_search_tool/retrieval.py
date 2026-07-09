@@ -2559,6 +2559,8 @@ def _artifact_role_is_requested(
     intent: QueryIntent,
     score_parts: dict[str, float],
 ) -> bool:
+    if _has_explicit_artifact_file_hint(score_parts):
+        return True
     if path_role_name == "doc":
         return "doc" in intent.target_roles and intent.wants_artifact
     if path_role_name == "test":
@@ -2587,6 +2589,19 @@ def _artifact_role_is_requested(
             and "generated_artifact" in intent.artifact_roles
         )
     return False
+
+
+def _has_explicit_artifact_file_hint(score_parts: dict[str, float]) -> bool:
+    return any(
+        score_parts.get(key, 0.0) > 0
+        for key in (
+            "identifier_exact_match_boost",
+            "file_hint_match_boost",
+            "project_file_hint_boost",
+            "project_path_hint_boost",
+            "path_role_hint_boost",
+        )
+    )
 
 
 def _query_intent_rerank_adjustment(score_parts: dict[str, float]) -> float:

@@ -5321,6 +5321,261 @@ def test_behavior_query_demotes_non_source_artifacts_below_source(
     assert by_id["sessions-source"].score_parts["file_role_source_boost"] > 0
 
 
+def test_explicit_file_hint_does_not_apply_artifact_display_penalty(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    history = DocumentChunk(
+        chunk_id="history",
+        file_path=Path("HISTORY.txt"),
+        start_line=1,
+        end_line=40,
+        content="History mentions cookies and sessions.",
+        chunk_type="document",
+        lexical_tokens=["history", "cookies", "sessions"],
+        metadata={"language": "text"},
+    )
+    source = DocumentChunk(
+        chunk_id="sessions-source",
+        file_path=Path("src/requests/sessions.py"),
+        start_line=395,
+        end_line=555,
+        content="class Session: Provides cookie persistence.",
+        chunk_type="code",
+        lexical_tokens=["session", "cookies", "persistence"],
+        metadata={"language": "python"},
+    )
+    for chunk in (history, source):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "history": RetrievalCandidate(
+                chunk_id="history",
+                score=1.0,
+                source="direct",
+                score_parts={
+                    "semantic": 0.45,
+                    "lexical": 3.5,
+                    "path_symbol": 4.0,
+                    "direct_text": 1.0,
+                },
+            ),
+            "sessions-source": RetrievalCandidate(
+                chunk_id="sessions-source",
+                score=1.0,
+                source="direct",
+                score_parts={
+                    "semantic": 0.40,
+                    "lexical": 3.0,
+                    "path_symbol": 2.0,
+                    "direct_text": 0.8,
+                },
+            ),
+        },
+        ["history", "cookies", "sessions"],
+        "HISTORY.txt cookies sessions",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "history"
+    assert "non_source_artifact_penalty" not in by_id["history"].score_parts
+    assert by_id["history"].score_parts["identifier_exact_match_boost"] > 0
+
+
+def test_doc_query_does_not_apply_doc_artifact_display_penalty(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    docs = DocumentChunk(
+        chunk_id="docs-advanced",
+        file_path=Path("docs/user/advanced.rst"),
+        start_line=1,
+        end_line=80,
+        content="Advanced docs explain Session cookies and cookie persistence.",
+        chunk_type="document",
+        lexical_tokens=["advanced", "docs", "session", "cookies", "persistence"],
+        metadata={"language": "restructuredtext"},
+    )
+    source = DocumentChunk(
+        chunk_id="sessions-source",
+        file_path=Path("src/requests/sessions.py"),
+        start_line=395,
+        end_line=555,
+        content="class Session: Provides cookie persistence.",
+        chunk_type="code",
+        lexical_tokens=["session", "cookies", "persistence"],
+        metadata={"language": "python"},
+    )
+    for chunk in (docs, source):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "docs-advanced": RetrievalCandidate(
+                chunk_id="docs-advanced",
+                score=1.0,
+                source="direct",
+                score_parts={
+                    "semantic": 0.45,
+                    "lexical": 3.5,
+                    "path_symbol": 3.0,
+                    "direct_text": 1.0,
+                },
+            ),
+            "sessions-source": RetrievalCandidate(
+                chunk_id="sessions-source",
+                score=1.0,
+                source="direct",
+                score_parts={
+                    "semantic": 0.40,
+                    "lexical": 3.0,
+                    "path_symbol": 2.0,
+                    "direct_text": 0.8,
+                },
+            ),
+        },
+        ["docs", "session", "cookies"],
+        "docs for requests session cookies",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "docs-advanced"
+    assert "non_source_artifact_penalty" not in by_id["docs-advanced"].score_parts
+    assert by_id["docs-advanced"].score_parts["doc_artifact_boost"] > 0
+
+
+def test_config_artifact_query_does_not_apply_config_display_penalty(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    config = DocumentChunk(
+        chunk_id="provider-config",
+        file_path=Path("config/text_providers.yaml"),
+        start_line=1,
+        end_line=40,
+        content="providers: yaml config provider file for text services.",
+        chunk_type="document",
+        lexical_tokens=["config", "yaml", "provider", "file", "text"],
+        metadata={"language": "yaml"},
+    )
+    source = DocumentChunk(
+        chunk_id="provider-source",
+        file_path=Path("src/context_search_tool/providers.py"),
+        start_line=1,
+        end_line=80,
+        content="class ProviderConfig: load provider settings for text services.",
+        chunk_type="code",
+        lexical_tokens=["config", "provider", "settings", "text"],
+        metadata={"language": "python"},
+    )
+    for chunk in (config, source):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "provider-config": RetrievalCandidate(
+                chunk_id="provider-config",
+                score=1.0,
+                source="direct",
+                score_parts={
+                    "semantic": 0.45,
+                    "lexical": 3.5,
+                    "path_symbol": 3.0,
+                    "direct_text": 1.0,
+                },
+            ),
+            "provider-source": RetrievalCandidate(
+                chunk_id="provider-source",
+                score=1.0,
+                source="direct",
+                score_parts={
+                    "semantic": 0.40,
+                    "lexical": 3.0,
+                    "path_symbol": 2.0,
+                    "direct_text": 0.8,
+                },
+            ),
+        },
+        ["config", "yaml", "provider", "file"],
+        "config yaml provider file",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "provider-config"
+    assert "non_source_artifact_penalty" not in by_id["provider-config"].score_parts
+
+
+def test_test_artifact_query_does_not_apply_test_display_penalty(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    test = DocumentChunk(
+        chunk_id="sessions-test",
+        file_path=Path("tests/test_sessions.py"),
+        start_line=1,
+        end_line=70,
+        content="def test_session_cookies(): assert cookies persist in sessions.",
+        chunk_type="code",
+        lexical_tokens=["test", "session", "cookies", "persist"],
+        metadata={"language": "python"},
+    )
+    source = DocumentChunk(
+        chunk_id="sessions-source",
+        file_path=Path("src/requests/sessions.py"),
+        start_line=395,
+        end_line=555,
+        content="class Session: Provides cookie persistence.",
+        chunk_type="code",
+        lexical_tokens=["session", "cookies", "persistence"],
+        metadata={"language": "python"},
+    )
+    for chunk in (test, source):
+        store.replace_chunks(chunk.file_path, [chunk])
+
+    ranked = retrieval._rank_chunks(
+        store,
+        {
+            "sessions-test": RetrievalCandidate(
+                chunk_id="sessions-test",
+                score=1.0,
+                source="direct",
+                score_parts={
+                    "semantic": 0.45,
+                    "lexical": 3.5,
+                    "path_symbol": 3.0,
+                    "direct_text": 1.0,
+                },
+            ),
+            "sessions-source": RetrievalCandidate(
+                chunk_id="sessions-source",
+                score=1.0,
+                source="direct",
+                score_parts={
+                    "semantic": 0.40,
+                    "lexical": 3.0,
+                    "path_symbol": 2.0,
+                    "direct_text": 0.8,
+                },
+            ),
+        },
+        ["test", "for", "session", "cookies"],
+        "test for session cookies",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "sessions-test"
+    assert "non_source_artifact_penalty" not in by_id["sessions-test"].score_parts
+    assert by_id["sessions-test"].score_parts["test_artifact_boost"] > 0
+
+
 def test_frontend_score_parts_rank_feature_entrypoint_over_broad_utility(
     tmp_path: Path,
 ) -> None:
