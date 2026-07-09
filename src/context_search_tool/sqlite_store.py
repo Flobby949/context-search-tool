@@ -876,13 +876,31 @@ class SQLiteStore:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT path
+                SELECT source_files.path
                 FROM source_files
+                LEFT JOIN (
+                  SELECT file_path, COUNT(*) AS active_chunks
+                  FROM chunks
+                  WHERE deleted_at IS NULL
+                  GROUP BY file_path
+                ) AS chunk_counts
+                  ON chunk_counts.file_path = source_files.path
                 ORDER BY
-                  is_generated ASC,
-                  is_test ASC,
+                  source_files.is_generated ASC,
+                  source_files.is_test ASC,
                   CASE
-                    WHEN language IN (
+                    WHEN source_files.path LIKE 'src/%'
+                      OR source_files.path LIKE 'lib/%'
+                      OR source_files.path LIKE 'app/%'
+                      OR source_files.path LIKE 'packages/%'
+                    THEN 0
+                    WHEN source_files.path LIKE 'docs/%'
+                      OR source_files.path LIKE 'doc/%'
+                    THEN 2
+                    ELSE 1
+                  END,
+                  CASE
+                    WHEN source_files.language IN (
                       'python', 'java', 'kotlin', 'go', 'rust', 'typescript',
                       'typescriptreact', 'javascript', 'javascriptreact', 'vue',
                       'svelte', 'c', 'cpp', 'csharp', 'swift', 'php', 'ruby',
@@ -890,7 +908,8 @@ class SQLiteStore:
                     ) THEN 0
                     ELSE 1
                   END,
-                  path
+                  COALESCE(chunk_counts.active_chunks, 0) DESC,
+                  source_files.path
                 LIMIT ?
                 """,
                 (limit,),

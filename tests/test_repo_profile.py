@@ -54,6 +54,18 @@ def _chunk(chunk_id: str, path: str, content: str, symbols: list[str]) -> Docume
     )
 
 
+def _chunk_with_tokens(chunk_id: str, path: str, tokens: list[str]) -> DocumentChunk:
+    return DocumentChunk(
+        chunk_id=chunk_id,
+        file_path=Path(path),
+        start_line=1,
+        end_line=20,
+        content=" ".join(tokens),
+        chunk_type="code",
+        lexical_tokens=tokens,
+    )
+
+
 def test_store_exposes_language_file_symbol_and_token_inputs(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.upsert_source_file(_source("src/requests/sessions.py"))
@@ -115,6 +127,62 @@ def test_build_repo_profile_prefers_source_vocabulary_and_hashes_payload(
     assert "cookies" in profile.tokens
     assert profile.profile_hash.startswith("sha256:")
     assert profile.truncated is False
+
+
+def test_build_repo_profile_prefers_source_files_and_useful_tokens(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    for path in [
+        "docs/conf.py",
+        "setup.py",
+        "src/pkg/cookies.py",
+        "src/pkg/models.py",
+        "src/pkg/sessions.py",
+        "tests/test_sessions.py",
+    ]:
+        store.upsert_source_file(_source(path, is_test=path.startswith("tests/")))
+    store.replace_chunks(
+        Path("docs/conf.py"),
+        [_chunk_with_tokens("docs", "docs/conf.py", ["the", "is", "the"])],
+    )
+    store.replace_chunks(
+        Path("setup.py"),
+        [_chunk_with_tokens("setup", "setup.py", ["the", "for", "the"])],
+    )
+    store.replace_chunks(
+        Path("src/pkg/sessions.py"),
+        [
+            _chunk_with_tokens(
+                "sessions-1",
+                "src/pkg/sessions.py",
+                ["session", "cookie", "jar", "the", "is"],
+            ),
+            _chunk_with_tokens("sessions-2", "src/pkg/sessions.py", ["session"]),
+            _chunk_with_tokens("sessions-3", "src/pkg/sessions.py", ["session"]),
+        ],
+    )
+    store.replace_chunks(
+        Path("src/pkg/cookies.py"),
+        [
+            _chunk_with_tokens("cookies-1", "src/pkg/cookies.py", ["cookie", "jar"]),
+            _chunk_with_tokens("cookies-2", "src/pkg/cookies.py", ["cookie"]),
+        ],
+    )
+
+    profile = build_repo_profile(
+        store,
+        limits=RepoProfileLimits(max_files=3, max_symbols=0, max_tokens=4, max_chars=1000),
+    )
+
+    assert profile.important_files[:2] == [
+        "src/pkg/sessions.py",
+        "src/pkg/cookies.py",
+    ]
+    assert "session" in profile.tokens
+    assert "cookie" in profile.tokens
+    assert "the" not in profile.tokens
+    assert "is" not in profile.tokens
 
 
 def test_profile_respects_character_budget(tmp_path: Path) -> None:

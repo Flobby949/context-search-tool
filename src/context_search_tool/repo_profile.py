@@ -9,6 +9,50 @@ from context_search_tool.models import RepoProfile
 from context_search_tool.sqlite_store import SQLiteStore
 from context_search_tool.tokenizer import tokenize_query
 
+_PROFILE_STOP_TOKENS = {
+    "0",
+    "1",
+    "2",
+    "3",
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "be",
+    "by",
+    "class",
+    "com",
+    "def",
+    "false",
+    "for",
+    "from",
+    "if",
+    "in",
+    "is",
+    "it",
+    "no",
+    "none",
+    "not",
+    "of",
+    "on",
+    "or",
+    "py",
+    "return",
+    "self",
+    "s",
+    "t",
+    "tests",
+    "that",
+    "the",
+    "this",
+    "to",
+    "true",
+    "we",
+    "will",
+    "with",
+}
+
 
 @dataclass(frozen=True)
 class RepoProfileLimits:
@@ -25,12 +69,17 @@ def build_repo_profile(
 ) -> RepoProfile:
     languages = [language for language, _ in store.language_counts()[: limits.max_languages]]
     files = [path.as_posix() for path in store.source_files_for_profile(limits.max_files)]
+    tokens = [
+        token
+        for token in store.token_counts_for_profile(max(limits.max_tokens * 4, limits.max_tokens))
+        if _useful_profile_token(token)
+    ][: limits.max_tokens]
     profile = RepoProfile(
         languages=languages,
         source_roots=_source_roots(files),
         important_files=files,
         symbols=store.symbol_names_for_profile(limits.max_symbols),
-        tokens=store.token_counts_for_profile(limits.max_tokens),
+        tokens=tokens,
     )
     return _fit_budget(profile, limits.max_chars)
 
@@ -150,6 +199,15 @@ def _payload_len(profile: RepoProfile, truncated: bool) -> int:
         "truncated": truncated,
     }
     return len(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+def _useful_profile_token(token: str) -> bool:
+    normalized = token.lower()
+    return (
+        len(normalized) >= 2
+        and not normalized.isdigit()
+        and normalized not in _PROFILE_STOP_TOKENS
+    )
 
 
 def _dedupe(tokens: list[str]) -> list[str]:
