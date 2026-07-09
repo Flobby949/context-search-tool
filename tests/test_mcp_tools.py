@@ -8,7 +8,7 @@ from context_search_tool.mcp_tools import (
     context_search_query_tool,
     context_search_stats_tool,
 )
-from context_search_tool.models import EvidenceAnchor, RetrievalResult
+from context_search_tool.models import EvidenceAnchor, QueryPlan, RetrievalResult
 from context_search_tool.retrieval import QueryBundle
 
 
@@ -262,6 +262,50 @@ def test_mcp_query_payload_includes_evidence_anchors() -> None:
     assert payload["evidence_anchors"][0]["anchor_kind"] == "config"
     assert payload["evidence_anchors"][0]["score_parts"]["lexical"] == 0.2
     assert isinstance(payload["evidence_anchors"][0]["score_parts"]["lexical"], (int, float))
+
+
+def test_mcp_query_payload_includes_repo_profile_planner_diagnostics() -> None:
+    bundle = QueryBundle(
+        query="cookies",
+        expanded_tokens=["cookies"],
+        followup_keywords=[],
+        results=[],
+        planner=QueryPlan(
+            original_query="cookies",
+            status="ok",
+            provider="ollama",
+            model="qwen3.5:4b-mlx",
+            repo_profile_hash="sha256:test",
+            repo_profile_truncated=True,
+            discarded_hints=["RestTemplate"],
+        ),
+    )
+
+    payload = mcp_tools._query_payload(bundle)
+
+    assert payload["planner"]["repo_profile_hash"] == "sha256:test"
+    assert payload["planner"]["repo_profile_truncated"] is True
+    assert payload["planner"]["discarded_hint_count"] == 1
+    assert payload["planner"]["discarded_hints"] == ["RestTemplate"]
+
+
+def test_mcp_query_feedback_keeps_repo_profile_planner_metadata_bounded() -> None:
+    payload = {
+        "planner": {
+            "status": "ok",
+            "repo_profile_hash": "sha256:test",
+            "repo_profile_truncated": True,
+            "discarded_hint_count": 3,
+            "discarded_hints": ["RestTemplate", "HttpSession", "RestController"],
+        }
+    }
+
+    planner = mcp_tools._feedback_planner_payload(payload)
+
+    assert planner["repo_profile_hash"] == "sha256:test"
+    assert planner["repo_profile_truncated"] is True
+    assert planner["discarded_hint_count"] == 3
+    assert "discarded_hints" not in planner
 
 
 def test_mcp_query_feedback_includes_planner_metadata_without_prompt_text(

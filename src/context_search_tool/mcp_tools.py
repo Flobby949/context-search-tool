@@ -241,6 +241,12 @@ def _planner_payload(bundle: QueryBundle) -> dict[str, Any]:
         )
     if plan.status == "fallback":
         payload["error"] = plan.error
+    if plan.repo_profile_hash:
+        payload["repo_profile_hash"] = plan.repo_profile_hash
+        payload["repo_profile_truncated"] = plan.repo_profile_truncated
+    if plan.discarded_hints:
+        payload["discarded_hint_count"] = len(plan.discarded_hints)
+        payload["discarded_hints"] = plan.discarded_hints[:8]
     return payload
 
 
@@ -379,6 +385,9 @@ def _feedback_planner_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "latency_ms",
             "intent",
             "error",
+            "repo_profile_hash",
+            "repo_profile_truncated",
+            "discarded_hint_count",
         )
         if key in planner
     }

@@ -261,6 +261,30 @@ def test_json_formatter_includes_planner_diagnostics() -> None:
     }
 
 
+def test_format_json_includes_repo_profile_planner_diagnostics() -> None:
+    bundle = QueryBundle(
+        query="cookies",
+        expanded_tokens=["cookies"],
+        results=[],
+        followup_keywords=[],
+        planner=QueryPlan(
+            original_query="cookies",
+            status="ok",
+            provider="ollama",
+            model="qwen3.5:4b-mlx",
+            repo_profile_hash="sha256:test",
+            repo_profile_truncated=True,
+            discarded_hints=["RestTemplate"],
+        ),
+    )
+
+    payload = json.loads(format_json(bundle))
+
+    assert payload["planner"]["repo_profile_hash"] == "sha256:test"
+    assert payload["planner"]["repo_profile_truncated"] is True
+    assert payload["planner"]["discarded_hint_count"] == 1
+
+
 def test_markdown_formatter_includes_concise_planner_line_when_ok() -> None:
     bundle = QueryBundle(
         query="数据看板统计图表功能",

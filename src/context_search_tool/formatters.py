@@ -151,6 +151,12 @@ def _planner_payload(plan: QueryPlan) -> dict[str, Any]:
         )
     if plan.status == "fallback":
         payload["error"] = plan.error
+    if plan.repo_profile_hash:
+        payload["repo_profile_hash"] = plan.repo_profile_hash
+        payload["repo_profile_truncated"] = plan.repo_profile_truncated
+    if plan.discarded_hints:
+        payload["discarded_hint_count"] = len(plan.discarded_hints)
+        payload["discarded_hints"] = plan.discarded_hints[:8]
     return payload
 
 
