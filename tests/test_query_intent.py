@@ -25,6 +25,49 @@ def test_query_intent_detects_deployment_artifact_request() -> None:
     assert intent.wants_artifact
 
 
+def test_query_intent_detects_plural_test_artifact_request() -> None:
+    intent = infer_query_intent(
+        "tests for session cookies",
+        ["tests", "for", "session", "cookies"],
+    )
+
+    assert "test" in intent.target_roles
+    assert "test_artifact" in intent.artifact_roles
+    assert intent.wants_artifact
+
+
+def test_query_intent_detects_config_file_artifact_request() -> None:
+    intent = infer_query_intent(
+        "config file for provider settings",
+        ["config", "file", "for", "provider", "settings"],
+    )
+
+    assert "config" in intent.target_roles
+    assert "config_artifact" in intent.artifact_roles
+    assert intent.wants_artifact
+
+
+def test_query_intent_detects_generated_file_artifact_request() -> None:
+    intent = infer_query_intent(
+        "generated files for history index",
+        ["generated", "files", "for", "history", "index"],
+    )
+
+    assert "generated_artifact" in intent.artifact_roles
+    assert intent.wants_artifact
+
+
+def test_query_intent_detects_documentation_artifact_request() -> None:
+    intent = infer_query_intent(
+        "documentation for cookies",
+        ["documentation", "for", "cookies"],
+    )
+
+    assert "doc" in intent.target_roles
+    assert "doc_artifact" in intent.artifact_roles
+    assert intent.wants_artifact
+
+
 def test_query_intent_detects_download_logic() -> None:
     intent = infer_query_intent(
         "历史记录打包下载 zip 接口",

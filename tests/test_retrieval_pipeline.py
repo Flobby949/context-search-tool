@@ -5383,6 +5383,66 @@ def test_explicit_file_hint_does_not_apply_artifact_display_penalty(
     assert ranked[0].chunk.chunk_id == "history"
     assert "non_source_artifact_penalty" not in by_id["history"].score_parts
     assert by_id["history"].score_parts["identifier_exact_match_boost"] > 0
+    assert by_id["history"].score_parts["explicit_artifact_file_hint"] > 0
+
+
+def test_symbol_identifier_in_doc_content_still_applies_artifact_display_penalty(
+    tmp_path: Path,
+) -> None:
+    docs = _generic_noise_chunk(
+        "docs-quickstart",
+        "docs/user/quickstart.rst",
+        "Quickstart mentions RequestsCookieJar cookie persistence in prose.",
+        ["requestscookiejar", "cookie", "persistence", "quickstart"],
+        {"language": "restructuredtext"},
+    )
+    source = DocumentChunk(
+        chunk_id="cookies-source",
+        file_path=Path("src/requests/cookies.py"),
+        start_line=1,
+        end_line=80,
+        content="class RequestsCookieJar: cookie persistence implementation.",
+        chunk_type="symbol",
+        symbols=[
+            SymbolRef(
+                name="RequestsCookieJar",
+                kind="class",
+                start_line=1,
+                end_line=80,
+                language="python",
+            )
+        ],
+        lexical_tokens=["requestscookiejar", "cookie", "persistence", "implementation"],
+        metadata={"language": "python"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [docs, source],
+        {
+            "docs-quickstart": {
+                "semantic": 0.45,
+                "lexical": 3.5,
+                "path_symbol": 3.0,
+                "direct_text": 1.0,
+            },
+            "cookies-source": {
+                "semantic": 0.40,
+                "lexical": 3.0,
+                "path_symbol": 2.0,
+                "direct_text": 0.8,
+            },
+        },
+        ["requestscookiejar", "cookie", "persistence"],
+        "RequestsCookieJar cookie persistence",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "cookies-source"
+    assert by_id["docs-quickstart"].score_parts["identifier_exact_match_boost"] > 0
+    assert "explicit_artifact_file_hint" not in by_id["docs-quickstart"].score_parts
+    assert by_id["docs-quickstart"].score_parts["non_source_artifact_penalty"] < 0
+    assert by_id["docs-quickstart"].score_parts["artifact_display_doc_penalty"] < 0
 
 
 def test_doc_query_does_not_apply_doc_artifact_display_penalty(
@@ -5439,8 +5499,8 @@ def test_doc_query_does_not_apply_doc_artifact_display_penalty(
                 },
             ),
         },
-        ["docs", "session", "cookies"],
-        "docs for requests session cookies",
+        ["documentation", "for", "cookies"],
+        "documentation for cookies",
     )
     by_id = {item.chunk.chunk_id: item for item in ranked}
 
@@ -5503,8 +5563,8 @@ def test_config_artifact_query_does_not_apply_config_display_penalty(
                 },
             ),
         },
-        ["config", "yaml", "provider", "file"],
-        "config yaml provider file",
+        ["config", "file", "for", "provider", "settings"],
+        "config file for provider settings",
     )
     by_id = {item.chunk.chunk_id: item for item in ranked}
 
@@ -5566,14 +5626,58 @@ def test_test_artifact_query_does_not_apply_test_display_penalty(
                 },
             ),
         },
-        ["test", "for", "session", "cookies"],
-        "test for session cookies",
+        ["tests", "for", "session", "cookies"],
+        "tests for session cookies",
     )
     by_id = {item.chunk.chunk_id: item for item in ranked}
 
     assert ranked[0].chunk.chunk_id == "sessions-test"
     assert "non_source_artifact_penalty" not in by_id["sessions-test"].score_parts
     assert by_id["sessions-test"].score_parts["test_artifact_boost"] > 0
+
+
+def test_generated_artifact_query_does_not_apply_generated_display_penalty(
+    tmp_path: Path,
+) -> None:
+    output = _generic_noise_chunk(
+        "history-output",
+        "history/index.json",
+        '{"generated": true, "history": [{"id": 1}]}',
+        ["generated", "history", "index", "files", "json"],
+        {"language": "json"},
+    )
+    source = _generic_noise_chunk(
+        "history-source",
+        "src/history/index.py",
+        "def build_history_index(records): return generated_history_index(records)",
+        ["history", "index", "generated", "records"],
+        {"language": "python"},
+    )
+
+    ranked = _rank_generic_noise_chunks(
+        tmp_path,
+        [output, source],
+        {
+            "history-output": {
+                "semantic": 0.45,
+                "lexical": 3.5,
+                "path_symbol": 3.0,
+                "direct_text": 1.0,
+            },
+            "history-source": {
+                "semantic": 0.40,
+                "lexical": 3.0,
+                "path_symbol": 2.0,
+                "direct_text": 0.8,
+            },
+        },
+        ["generated", "files", "for", "history", "index"],
+        "generated files for history index",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert ranked[0].chunk.chunk_id == "history-output"
+    assert "non_source_artifact_penalty" not in by_id["history-output"].score_parts
 
 
 def test_frontend_score_parts_rank_feature_entrypoint_over_broad_utility(

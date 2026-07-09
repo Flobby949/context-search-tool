@@ -19,7 +19,7 @@ _OPERATION_KEYWORDS = {
     "delete": {"delete", "remove", "删除", "移除"},
     "download": {"download", "zip", "export", "下载", "导出", "打包"},
     "scan": {"scan", "sync", "synchronize", "扫描", "同步"},
-    "generate": {"generate", "生成", "创建"},
+    "generate": {"generate", "generated", "生成", "创建"},
     "retry": {"retry", "regenerate", "重试", "重新生成"},
 }
 
@@ -27,11 +27,11 @@ _TARGET_ROLE_KEYWORDS = {
     "entrypoint": {"api", "endpoint", "route", "router", "controller", "接口", "路由"},
     "implementation": {"service", "handler", "logic", "impl", "实现", "逻辑", "服务"},
     "ui": {"page", "view", "component", "form", "store", "页面", "表单", "组件"},
-    "config": {"config", "setting", "settings", "yaml", "yml", "配置", "服务商"},
+    "config": {"config", "configs", "setting", "settings", "yaml", "yml", "配置", "服务商"},
     "deploy": {"docker", "compose", "deployment", "deploy", "部署", "容器"},
     "history": {"record", "records", "历史记录"},
-    "test": {"test", "spec", "测试"},
-    "doc": {"doc", "docs", "readme", "文档", "说明"},
+    "test": {"test", "tests", "spec", "specs", "测试"},
+    "doc": {"doc", "docs", "documentation", "document", "documents", "readme", "文档", "说明"},
 }
 
 _ARTIFACT_KEYWORDS = {
@@ -43,11 +43,15 @@ _ARTIFACT_KEYWORDS = {
         "docker",
         "compose",
         "dockerfile",
+        "config",
+        "configs",
+        "setting",
+        "settings",
         "配置文件",
     },
-    "generated_artifact": {"output", "dist", "build", "生成文件", "产物"},
-    "doc_artifact": {"readme", "docs", "markdown", "文档"},
-    "test_artifact": {"test", "spec", "测试"},
+    "generated_artifact": {"output", "dist", "build", "generate", "generated", "生成文件", "产物"},
+    "doc_artifact": {"doc", "docs", "documentation", "document", "documents", "readme", "markdown", "文档"},
+    "test_artifact": {"test", "tests", "spec", "specs", "测试"},
 }
 
 _ARTIFACT_REQUEST_HINTS = {
@@ -61,6 +65,10 @@ _ARTIFACT_REQUEST_HINTS = {
     "deploy",
     "readme",
     "docs",
+    "documentation",
+    "document",
+    "documents",
+    "generated",
     "文件",
     "配置文件",
     "部署",

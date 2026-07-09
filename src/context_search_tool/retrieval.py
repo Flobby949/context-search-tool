@@ -2597,7 +2597,7 @@ def _has_explicit_artifact_file_hint(score_parts: dict[str, float]) -> bool:
     return any(
         score_parts.get(key, 0.0) > 0
         for key in (
-            "identifier_exact_match_boost",
+            "explicit_artifact_file_hint",
             "file_hint_match_boost",
             "project_file_hint_boost",
             "project_path_hint_boost",
@@ -2636,6 +2636,10 @@ def _identifier_intent_score_parts(
     identifier_score = _identifier_exact_match_score(chunk, intent)
     if identifier_score:
         parts["identifier_exact_match_boost"] = identifier_score
+
+    explicit_file_hint_score = _explicit_artifact_file_hint_score(chunk, intent)
+    if explicit_file_hint_score:
+        parts["explicit_artifact_file_hint"] = explicit_file_hint_score
 
     role_score = _path_role_hint_score(path_role, intent)
     if role_score:
@@ -2719,6 +2723,17 @@ def _identifier_exact_match_score(
         score += min(0.15, repeated_identifier_bonus)
 
     return min(score, 0.40)
+
+
+def _explicit_artifact_file_hint_score(
+    chunk: DocumentChunk,
+    intent: IdentifierIntent,
+) -> float:
+    for file_hint in intent.file_hints:
+        normalized = file_hint.lower()
+        if normalized and normalized in chunk.file_path.as_posix().lower():
+            return 0.40
+    return 0.0
 
 
 def _path_role_hint_score(path_role: PathRole, intent: IdentifierIntent) -> float:
