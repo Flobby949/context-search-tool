@@ -1,4 +1,3 @@
-import fnmatch
 import json
 import os
 import shutil
@@ -10,6 +9,7 @@ from context_search_tool import retrieval
 from context_search_tool.config import DEFAULT_CONFIG
 from context_search_tool.indexer import index_repository
 from context_search_tool.paths import index_dir_for
+from context_search_tool.quality.cases import Matcher
 from context_search_tool.retrieval import query_repository
 from context_search_tool.sqlite_store import SQLiteStore
 
@@ -173,13 +173,11 @@ def _copy_repo_for_smoke(source_repo: Path, workspace: Path) -> Path:
 
 
 def _matches(pattern: dict, path: str) -> bool:
-    if "path" in pattern:
-        return path == pattern["path"]
-    return fnmatch.fnmatch(path, pattern["glob"])
+    return Matcher.from_raw(pattern).matches(path)
 
 
 def _pattern_matches(pattern: str, path: str) -> bool:
-    return path == pattern or fnmatch.fnmatch(path, pattern)
+    return Matcher.from_raw(pattern).matches(path)
 
 
 def _assert_expected_top_k(query_spec: dict, top_paths: list[str]) -> None:
@@ -387,6 +385,13 @@ def test_generic_baseline_quality_queries_load() -> None:
     }
     for repo_spec in repo_specs:
         _assert_repo_spec(repo_spec)
+
+
+def test_quality_matcher_supports_existing_glob_expectations() -> None:
+    matcher = Matcher.from_raw("storage/*.go")
+
+    assert matcher.matches("storage/local.go")
+    assert not matcher.matches("handler/upload.go")
 
 
 def _program_tool_repo_spec() -> dict:
