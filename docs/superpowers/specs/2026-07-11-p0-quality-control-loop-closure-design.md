@@ -575,8 +575,11 @@ The durable 33-case mapping is:
 
 The existing canonical `program_tool_snapshot/qrcode-entrypoint` query is the
 same query as legacy `program_tool/qrcode-tool`. Migration keeps the canonical
-ID `program_tool/qrcode-tool`, enriches it with the `entrypoint` role, and
-removes `qrcode-entrypoint`; it does not create a 34th legacy case.
+identity as `repo_key = "program_tool"`, `case_id = "qrcode-tool"`, and
+`legacy.key = "program_tool/qrcode-tool"`. Reports derive case key
+`program_tool/qrcode-tool` by joining `repo_key` and `case_id`. Migration
+enriches that case with the `entrypoint` role and removes `qrcode-entrypoint`; it
+does not create a 34th legacy case or store a double-prefixed case ID.
 
 Parity tests read both old and new fixtures during migration. After old JSON is
 deleted, inventory tests assert that canonical `legacy.fixture` and
@@ -749,12 +752,8 @@ non-gating observed declines second, then metric changes and metadata warnings.
 Comparison first separates gating from observation:
 
 - Only `gate: required` can create a gating regression or improvement.
-- Required baseline `pass -> fail/error/skipped` is a gating regression.
 - Removing a required baseline case is `removed_required` and is a gating
   regression.
-- Required `fail/error -> pass` is an improvement.
-- For required comparable cases, loss of Hit@5, an MRR drop greater than 0.25,
-  or two or more additional noise results in Top 5 is a gating regression.
 - Latency above 150% of a non-zero baseline is a warning, not a functional
   regression.
 - Known-gap and informational cases can be classified `metric_improvement`,
@@ -771,11 +770,46 @@ Classification precedence is deterministic:
 | case exists only in candidate | `new_case` | no |
 | required baseline case is absent from candidate | `removed_required` | yes |
 | non-required baseline case is absent from candidate | `removed_observation` | no |
-| required baseline is `pass` and candidate is `fail`, `error`, or `skipped` | `regressed` | yes |
-| required baseline is `fail` or `error` and candidate is `pass` | `improved` | no |
-| required comparable metrics cross a regression threshold | `regressed` | yes |
-| non-required comparable metrics improve or decline | `metric_improvement` or `metric_decline` | no |
-| none of the above | `unchanged_pass`, `unchanged_fail`, or `unchanged_observation` | no |
+| baseline gate is `required`, candidate gate is not | `gate_weakened` | yes |
+| baseline gate is not `required`, candidate gate is `required` | `gate_strengthened` | no |
+| baseline and candidate use different non-required gates | `gate_changed_observation` | no |
+| gates match | use the status matrix, then metric rules below | depends on matrix/rules |
+
+For matching `required` gates, status classification is complete:
+
+| baseline status | candidate `pass` | candidate `fail` | candidate `error` | candidate `skipped` |
+| --- | --- | --- | --- | --- |
+| `pass` | evaluate required metrics | `regressed` (gating) | `regressed` (gating) | `regressed` (gating) |
+| `fail` | `improved` | `unchanged_fail` | `execution_regressed` (gating) | `coverage_lost_required` (gating) |
+| `error` | `improved` | `newly_evaluated_failure` | `unchanged_error` | `unchanged_unverified` |
+| `skipped` | `newly_verified` | `newly_evaluated_failure` | `unchanged_unverified` | `skipped` |
+
+Matching known-gap or informational gates never create gating classifications.
+If both sides executed, apply observational metric rules. If either side is
+`error` or `skipped`, classify `observation_unavailable`; otherwise use
+`unchanged_observation` when no metric direction changes.
+
+Metric direction is defined once:
+
+- higher is better for Hit@K, Recall@K, MRR, precision, expected-coverage ratio,
+  cross-language success, and preferred-rank success;
+- lower is better for entrypoint rank and noise counts;
+- latency changes create warnings only;
+- result count and top score are neutral diagnostics and never affect
+  classification.
+
+Floating values whose absolute delta is at most `1e-12` are ties. For required
+`pass -> pass`, only the existing protected thresholds gate: Hit@5 true-to-false,
+MRR drop greater than 0.25, or Top-5 noise increase of at least 2. A protected
+decline takes precedence over any simultaneous improvement; otherwise a
+protected improvement produces `improved`, and smaller/mixed non-threshold
+changes produce `unchanged_pass` with all deltas retained.
+
+For matching non-required executed cases, any decline-direction metric produces
+`metric_decline`, even if another metric improves. With no decline, any
+improvement-direction metric produces `metric_improvement`; ties produce
+`unchanged_observation`. This safety-first ordering makes mixed precision/noise
+movements deterministic without turning them into gates.
 
 Repository identity, fixture hash, profile, effective config, and embedding
 differences produce metadata warnings but do not make a report structurally
@@ -933,6 +967,10 @@ after that profile actually runs against an English-only target.
 - Warn on repository effective-config differences.
 - Treat required pass-to-skipped/error and required removal as gating
   regressions; reject malformed reports before classification.
+- Cover every required status-matrix cell, required/non-required gate changes,
+  and missing cases.
+- Verify decline-first tie-breaking for mixed metric movements and the declared
+  higher/lower/neutral metric directions.
 - Keep informational and known-gap metric declines non-gating.
 - Exit non-zero on gating regressions by default and zero with
   `--allow-regressions`.
@@ -1010,10 +1048,17 @@ conda run -n base cst quality run \
 conda run -n base python -c '
 import json
 report = json.load(open("/tmp/cst-p0-smoke.json", encoding="utf-8"))
-assert report["aggregate"]["executed"] > 0
-assert any(
-    repo["source"]["type"] in {"path_env", "smoke_root"}
+external_repo_keys = {
+    repo["repo_key"]
     for repo in report["repos"]
+    if repo["source"]["type"] in {"path_env", "smoke_root"}
+}
+executed_statuses = {"pass", "fail", "known_gap", "informational"}
+assert external_repo_keys
+assert any(
+    case["repo_key"] in external_repo_keys
+    and case["status"] in executed_statuses
+    for case in report["cases"]
 )
 '
 ```
