@@ -1,10 +1,11 @@
 # P0 Quality Control Loop Closure Design
 
 Date: 2026-07-11
-Status: Draft for review
+Status: Approved
 Repository: `/Users/flobby/Documents/context-seatch-tool`
 Roadmap: `roadmap/2026-07-08-fast-context-like-retrieval-roadmap.md`
 Predecessor design: `docs/superpowers/specs/2026-07-08-retrieval-quality-scoring-system-design.md`
+Implementation Plan: `docs/superpowers/plans/2026-07-11-p0-quality-control-loop-closure.md`
 
 ## Summary
 
