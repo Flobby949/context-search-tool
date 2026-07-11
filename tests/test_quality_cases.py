@@ -183,6 +183,18 @@ def test_informational_measurement_fields_parse(tmp_path: Path) -> None:
     assert case.noise_matchers == (Matcher(contains="region"),)
 
 
+def test_explicit_null_metric_k_requires_relevance_matchers(tmp_path: Path) -> None:
+    with pytest.raises(ValueError) as exc_info:
+        load_quality_fixture(
+            _write_fixture(
+                tmp_path,
+                _minimal_fixture(case_overrides={"metric_k": None}),
+            )
+        )
+
+    assert str(exc_info.value) == "metric_k requires relevance_matchers"
+
+
 def test_measurement_matchers_require_contains_selector(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="measurement matcher requires contains"):
         load_quality_fixture(_write_fixture(tmp_path, _minimal_fixture(case_overrides={

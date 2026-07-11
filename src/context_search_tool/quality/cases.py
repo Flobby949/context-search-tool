@@ -451,7 +451,7 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         "noise_matchers",
     )
     raw_metric_k = raw.get("metric_k")
-    if (noise_matchers or raw_metric_k is not None) and not relevance_matchers:
+    if (noise_matchers or "metric_k" in raw) and not relevance_matchers:
         raise ValueError("metric_k requires relevance_matchers")
     if relevance_matchers:
         metric_k = _require_positive_int(raw_metric_k, "metric_k")
