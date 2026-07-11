@@ -3,12 +3,12 @@ from __future__ import annotations
 import fnmatch
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from context_search_tool.config import ToolConfig
+from context_search_tool.config import DEFAULT_CONFIG, ToolConfig
 
 
 class Gate(str, Enum):
@@ -99,9 +99,16 @@ class Outranks:
 
 
 @dataclass(frozen=True)
+class LegacyProvenance:
+    fixture: str
+    key: str
+
+
+@dataclass(frozen=True)
 class QualityCase:
     case_id: str
     query: str
+    profiles: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     mode: str = "results"
     gate: Gate = Gate.REQUIRED
@@ -115,6 +122,7 @@ class QualityCase:
     known_gap_reason: str = ""
     notes: str = ""
     expected_top5_min: int | None = None
+    legacy: LegacyProvenance | None = None
 
 
 @dataclass(frozen=True)
@@ -131,8 +139,10 @@ class QualityRepo:
 @dataclass(frozen=True)
 class QualityFixture:
     schema_version: int
+    profile_configs: dict[str, dict[str, Any]]
     repos: tuple[QualityRepo, ...]
     path: Path
+    canonical: bool
 
 
 def load_quality_fixture(path: Path) -> QualityFixture:
@@ -144,10 +154,22 @@ def load_quality_fixture(path: Path) -> QualityFixture:
     if not isinstance(raw_repos, (list, tuple)) or not raw_repos:
         raise ValueError("quality fixture requires at least one repo")
 
+    canonical = "profile_configs" in data
+    repos = tuple(_parse_repo(raw_repo) for raw_repo in raw_repos)
+    profile_configs = (
+        _parse_profile_configs(data["profile_configs"]) if canonical else {}
+    )
+    if not canonical:
+        profile_configs = {
+            profile: {} for repo in repos for profile in repo.profiles
+        }
+    _validate_fixture_profiles(profile_configs, repos, canonical)
     return QualityFixture(
         schema_version=1,
-        repos=tuple(_parse_repo(raw_repo) for raw_repo in raw_repos),
+        profile_configs=profile_configs,
+        repos=repos,
         path=path,
+        canonical=canonical,
     )
 
 
@@ -155,17 +177,116 @@ def adapt_legacy_query_case(raw: dict[str, Any]) -> QualityCase:
     return _parse_case(raw)
 
 
-def validate_profile_compatible(profile: str, config: ToolConfig) -> None:
-    if profile != "ci":
+def _parse_profile_configs(raw: Any) -> dict[str, dict[str, Any]]:
+    raw = _require_dict(raw, "profile_configs")
+    parsed: dict[str, dict[str, Any]] = {}
+    for name, config in raw.items():
+        name = _require_non_empty_str(name, "profile name")
+        config = _require_dict(config, f"profile {name}")
+        unknown = set(config) - {"index", "retrieval", "embedding", "query_planner"}
+        if unknown:
+            raise ValueError(f"unknown profile config section: {sorted(unknown)[0]}")
+        parsed[name] = {
+            section: _validate_config_section(f"profile {name}", section, values)
+            for section, values in config.items()
+        }
+    return parsed
+
+
+def _validate_config_section(
+    owner: str,
+    section: str,
+    raw: Any,
+) -> dict[str, Any]:
+    values = dict(_require_dict(raw, f"{owner}.{section}"))
+    template = getattr(DEFAULT_CONFIG, section)
+    allowed = {item.name for item in fields(template)}
+    unknown = set(values) - allowed
+    if unknown:
+        raise ValueError(
+            f"unknown config option: {owner}.{section}.{sorted(unknown)[0]}"
+        )
+    for name, value in values.items():
+        default = getattr(template, name)
+        label = f"{owner}.{section}.{name}"
+        valid = (
+            isinstance(value, list)
+            and all(isinstance(item, str) for item in value)
+            if isinstance(default, list)
+            else isinstance(value, str | None)
+            if default is None
+            else isinstance(value, int | float) and not isinstance(value, bool)
+            if isinstance(default, float)
+            else type(value) is type(default)
+        )
+        if not valid:
+            raise ValueError(f"{label} has invalid type")
+    return values
+
+
+def _canonical_profile_config(overrides: dict[str, Any]) -> ToolConfig:
+    result = DEFAULT_CONFIG
+    for section in ("index", "retrieval", "embedding", "query_planner"):
+        if section in overrides:
+            result = replace(
+                result,
+                **{
+                    section: replace(
+                        getattr(DEFAULT_CONFIG, section),
+                        **overrides[section],
+                    )
+                },
+            )
+    return result
+
+
+def validate_profile_compatible(
+    profile: str,
+    config: ToolConfig,
+    *,
+    canonical: bool = False,
+) -> None:
+    if not canonical:
+        if profile != "ci":
+            return
+        if config.embedding.provider != "hash":
+            raise ValueError("ci profile requires hash embeddings")
+        if config.query_planner.enabled:
+            raise ValueError("ci profile requires the query planner disabled")
+        if (
+            config.embedding.api_key_env is not None
+            or config.embedding.base_url is not None
+        ):
+            raise ValueError("ci profile does not allow remote embedding settings")
         return
-    if config.embedding.provider != "hash":
-        raise ValueError("ci profile requires hash embeddings")
-    if config.query_planner.enabled:
-        raise ValueError("ci profile requires the query planner to be disabled")
-    if config.embedding.api_key_env is not None:
-        raise ValueError("ci profile does not allow embedding api_key_env")
-    if config.embedding.base_url is not None:
-        raise ValueError("ci profile does not allow embedding base_url")
+    if profile in {"ci", "smoke", "ab_hash"}:
+        if config.embedding.provider != "hash":
+            raise ValueError(f"{profile} profile requires hash embeddings")
+        if config.query_planner.enabled:
+            raise ValueError(f"{profile} profile requires the query planner disabled")
+        if profile == "ci" and (
+            config.embedding.api_key_env is not None
+            or config.embedding.base_url is not None
+        ):
+            raise ValueError("ci profile does not allow remote embedding settings")
+        return
+    if profile == "planner":
+        if config.embedding.provider != "hash":
+            raise ValueError("planner profile requires hash embeddings")
+        if not config.query_planner.enabled:
+            raise ValueError("planner profile requires the query planner enabled")
+        if config.query_planner.provider != "ollama":
+            raise ValueError("planner profile requires the Ollama planner")
+        return
+    if profile in {"calibration_bge", "ab_bge"}:
+        if (
+            config.embedding.provider != "bge"
+            or config.embedding.model != "bge-m3"
+            or config.embedding.dimensions != 1024
+        ):
+            raise ValueError(f"{profile} profile requires BGE M3 at 1024 dimensions")
+        if config.query_planner.enabled:
+            raise ValueError(f"{profile} profile requires the query planner disabled")
 
 
 def _parse_repo(raw: dict[str, Any]) -> QualityRepo:
@@ -175,9 +296,25 @@ def _parse_repo(raw: dict[str, Any]) -> QualityRepo:
     raw_queries = raw.get("queries")
     if not isinstance(raw_queries, (list, tuple)) or not raw_queries:
         raise ValueError("quality repo requires at least one query")
-    default_config = raw.get("default_config", {})
-    if not isinstance(default_config, dict):
-        raise ValueError("default_config must be an object")
+    raw_default_config = _require_dict(raw.get("default_config", {}), "default_config")
+    unknown_sections = set(raw_default_config) - {
+        "index",
+        "retrieval",
+        "embedding",
+        "query_planner",
+    }
+    if unknown_sections:
+        raise ValueError(
+            f"unknown default_config section: {sorted(unknown_sections)[0]}"
+        )
+    default_config = {
+        section: _validate_config_section(
+            f"repo {repo_key}.default_config",
+            section,
+            values,
+        )
+        for section, values in raw_default_config.items()
+    }
 
     return QualityRepo(
         repo_key=repo_key,
@@ -190,11 +327,53 @@ def _parse_repo(raw: dict[str, Any]) -> QualityRepo:
     )
 
 
+def _validate_fixture_profiles(
+    profile_configs: dict[str, dict[str, Any]],
+    repos: tuple[QualityRepo, ...],
+    canonical: bool,
+) -> None:
+    if canonical:
+        for profile, overrides in profile_configs.items():
+            validate_profile_compatible(
+                profile,
+                _canonical_profile_config(overrides),
+                canonical=True,
+            )
+    repo_keys: set[str] = set()
+    for repo in repos:
+        if repo.repo_key in repo_keys:
+            raise ValueError(f"duplicate repo_key: {repo.repo_key}")
+        repo_keys.add(repo.repo_key)
+        if canonical and set(repo.default_config) - {"index", "retrieval"}:
+            raise ValueError("canonical repo default_config only allows index and retrieval")
+        for profile in repo.profiles:
+            if profile not in profile_configs:
+                raise ValueError(f"unknown profile: {profile}")
+        case_ids: set[str] = set()
+        for case in repo.queries:
+            if case.case_id in case_ids:
+                raise ValueError(f"duplicate case id: {repo.repo_key}/{case.case_id}")
+            case_ids.add(case.case_id)
+            for profile in case.profiles:
+                if profile not in repo.profiles or profile not in profile_configs:
+                    raise ValueError(f"unknown profile: {profile}")
+
+
 def _parse_case(raw: dict[str, Any]) -> QualityCase:
     raw = _require_dict(raw, "query")
     case_id = _require_non_empty_str(raw.get("id", ""), "id")
     query = _require_non_empty_str(raw.get("query", ""), "query")
     gate = _require_str(raw.get("gate", Gate.REQUIRED.value), "gate")
+    raw_legacy = raw.get("legacy")
+    legacy = None
+    if raw_legacy is not None:
+        raw_legacy = _require_dict(raw_legacy, "legacy")
+        legacy = LegacyProvenance(
+            fixture=_require_non_empty_str(raw_legacy.get("fixture"), "legacy.fixture"),
+            key=_require_non_empty_str(raw_legacy.get("key"), "legacy.key"),
+        )
+
+    profiles = _require_str_tuple(raw.get("profiles", ()), "profiles")
     expected_top5_min = raw.get("expected_top5_min")
 
     expected_top_k = _parse_top_k_matchers(raw.get("expected_top_k", ()))
@@ -214,6 +393,7 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
     return QualityCase(
         case_id=case_id,
         query=query,
+        profiles=profiles,
         tags=_require_str_tuple(raw.get("tags", ()), "tags"),
         mode=_require_str(raw.get("mode", "results"), "mode"),
         gate=Gate(gate),
@@ -236,6 +416,7 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         expected_top5_min=None
         if expected_top5_min is None
         else _require_non_negative_int(expected_top5_min, "expected_top5_min"),
+        legacy=legacy,
     )
 
 

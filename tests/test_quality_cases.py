@@ -7,6 +7,7 @@ import context_search_tool.quality as quality
 from context_search_tool.config import EmbeddingConfig, ToolConfig
 from context_search_tool.quality.cases import (
     Gate,
+    LegacyProvenance,
     Matcher,
     adapt_legacy_query_case,
     load_quality_fixture,
@@ -425,3 +426,233 @@ def test_ci_profile_rejects_model_backed_config() -> None:
 
     with pytest.raises(ValueError, match="ci profile"):
         validate_profile_compatible("ci", config)
+
+
+def test_load_fixture_parses_profile_registry_case_profiles_and_legacy(
+    tmp_path: Path,
+) -> None:
+    fixture_path = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {
+                "ci": {
+                    "embedding": {
+                        "provider": "hash",
+                        "model": "hash-v1",
+                        "dimensions": 384,
+                    },
+                    "query_planner": {"enabled": False},
+                },
+                "smoke": {
+                    "embedding": {
+                        "provider": "hash",
+                        "model": "hash-v1",
+                        "dimensions": 384,
+                    },
+                    "query_planner": {"enabled": False},
+                },
+            },
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "profiles": ["ci", "smoke"],
+                    "queries": [
+                        {
+                            "id": "login",
+                            "query": "login",
+                            "profiles": ["ci"],
+                            "legacy": {
+                                "fixture": "generic_baseline_quality",
+                                "key": "sample/login",
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    fixture = load_quality_fixture(fixture_path)
+
+    assert fixture.canonical is True
+    assert set(fixture.profile_configs) == {"ci", "smoke"}
+    case = fixture.repos[0].queries[0]
+    assert case.profiles == ("ci",)
+    assert case.legacy == LegacyProvenance(
+        fixture="generic_baseline_quality",
+        key="sample/login",
+    )
+
+
+@pytest.mark.parametrize(
+    "mutate, message",
+    [
+        (
+            lambda data: data["repos"].append(data["repos"][0].copy()),
+            "duplicate repo_key",
+        ),
+        (
+            lambda data: data["repos"][0]["queries"].append(
+                data["repos"][0]["queries"][0].copy()
+            ),
+            "duplicate case id",
+        ),
+        (
+            lambda data: data["repos"][0]["queries"][0].update(
+                {"profiles": ["missing"]}
+            ),
+            "unknown profile",
+        ),
+        (
+            lambda data: data["repos"][0].update(
+                {"default_config": {"embedding": {"provider": "bge"}}}
+            ),
+            "canonical repo default_config",
+        ),
+        (
+            lambda data: data.update({"profile_configs": None}),
+            "profile_configs",
+        ),
+        (
+            lambda data: data["profile_configs"]["ci"].update({"retrieval": []}),
+            "profile ci.retrieval",
+        ),
+        (
+            lambda data: data["profile_configs"]["ci"]["embedding"].update(
+                {"dimensions": "384"}
+            ),
+            "profile ci.embedding.dimensions",
+        ),
+        (
+            lambda data: data["profile_configs"]["ci"]["query_planner"].update(
+                {"surprise": True}
+            ),
+            "unknown config option",
+        ),
+    ],
+)
+def test_canonical_fixture_rejects_profile_and_identity_errors(
+    tmp_path: Path,
+    mutate,
+    message: str,
+) -> None:
+    data = {
+        "schema_version": 1,
+        "profile_configs": {
+            "ci": {
+                "embedding": {
+                    "provider": "hash",
+                    "model": "hash-v1",
+                    "dimensions": 384,
+                },
+                "query_planner": {"enabled": False},
+            }
+        },
+        "repos": [
+            {
+                "repo_key": "sample",
+                "profiles": ["ci"],
+                "queries": [{"id": "login", "query": "login"}],
+            }
+        ],
+    }
+    mutate(data)
+
+    with pytest.raises(ValueError, match=message):
+        load_quality_fixture(_write_fixture(tmp_path, data))
+
+
+def test_legacy_v1_fixture_derives_profiles_without_registry(tmp_path: Path) -> None:
+    fixture = load_quality_fixture(
+        _write_fixture(
+            tmp_path,
+            {
+                "schema_version": 1,
+                "repos": [
+                    {
+                        "repo_key": "sample",
+                        "profiles": ["ci", "smoke"],
+                        "queries": [{"id": "login", "query": "login"}],
+                    }
+                ],
+            },
+        )
+    )
+
+    assert fixture.profile_configs == {"ci": {}, "smoke": {}}
+    assert fixture.canonical is False
+    assert fixture.repos[0].queries[0].profiles == ()
+
+
+@pytest.mark.parametrize(
+    "profile,bad_config,message",
+    [
+        (
+            "smoke",
+            {
+                "embedding": {
+                    "provider": "bge",
+                    "model": "bge-m3",
+                    "dimensions": 1024,
+                },
+                "query_planner": {"enabled": False},
+            },
+            "smoke profile requires hash embeddings",
+        ),
+        (
+            "planner",
+            {
+                "embedding": {
+                    "provider": "hash",
+                    "model": "hash-v1",
+                    "dimensions": 384,
+                },
+                "query_planner": {"enabled": False},
+            },
+            "planner profile requires the query planner enabled",
+        ),
+        (
+            "ab_bge",
+            {
+                "embedding": {
+                    "provider": "hash",
+                    "model": "hash-v1",
+                    "dimensions": 384,
+                },
+                "query_planner": {"enabled": False},
+            },
+            "ab_bge profile requires BGE M3",
+        ),
+    ],
+)
+def test_loader_rejects_invalid_unused_canonical_profile(
+    tmp_path: Path,
+    profile: str,
+    bad_config: dict,
+    message: str,
+) -> None:
+    data = {
+        "schema_version": 1,
+        "profile_configs": {
+            "ci": {
+                "embedding": {
+                    "provider": "hash",
+                    "model": "hash-v1",
+                    "dimensions": 384,
+                },
+                "query_planner": {"enabled": False},
+            },
+            profile: bad_config,
+        },
+        "repos": [
+            {
+                "repo_key": "sample",
+                "profiles": ["ci"],
+                "queries": [{"id": "login", "query": "login"}],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match=message):
+        load_quality_fixture(_write_fixture(tmp_path, data))

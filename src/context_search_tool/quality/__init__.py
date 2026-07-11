@@ -1,5 +1,6 @@
 from context_search_tool.quality.cases import (
     Gate,
+    LegacyProvenance,
     Matcher,
     QualityCase,
     QualityFixture,
@@ -12,6 +13,7 @@ from context_search_tool.quality.cases import (
 
 __all__ = [
     "Gate",
+    "LegacyProvenance",
     "Matcher",
     "QualityCase",
     "QualityFixture",
