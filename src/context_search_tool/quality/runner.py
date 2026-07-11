@@ -268,7 +268,7 @@ def _resolve_repo_source(
             raise ValueError(
                 f"ci profile requires snapshot_path for repo {repo.repo_key}"
             )
-        snapshot = _existing_directory(
+        snapshot = _existing_resolved_directory(
             _resolve_snapshot_path(fixture_path, repo.snapshot_path)
         )
         if snapshot is None:
@@ -300,7 +300,7 @@ def _resolve_repo_source(
                 if source.is_dir():
                     return ResolvedSource(source, "smoke_root", repo_dir_name)
     if repo.snapshot_path:
-        source = _existing_directory(
+        source = _existing_resolved_directory(
             _resolve_snapshot_path(fixture_path, repo.snapshot_path)
         )
         if source is not None:
@@ -315,6 +315,14 @@ def _resolve_repo_source(
 def _existing_directory(raw_path: str | Path) -> Path | None:
     path = Path(raw_path).expanduser().resolve()
     return path if path.is_dir() else None
+
+
+def _existing_resolved_directory(path: Path) -> Path | None:
+    try:
+        mode = path.lstat().st_mode
+    except OSError:
+        return None
+    return path if stat.S_ISDIR(mode) else None
 
 
 def _safe_path_component(value: str, field_name: str) -> str:
@@ -394,7 +402,19 @@ def _copy_source_repo(source: Path, workspace: Path) -> None:
     """Copy regular files/directories while omitting all link-like entries."""
     if not _descriptor_copy_supported():
         raise RuntimeError("secure repository copy is not supported on this platform")
-    _copy_source_repo_with_descriptors(source, workspace)
+    try:
+        workspace.lstat()
+    except FileNotFoundError:
+        workspace_existed = False
+    else:
+        workspace_existed = True
+
+    try:
+        _copy_source_repo_with_descriptors(source, workspace)
+    except Exception:
+        if not workspace_existed:
+            shutil.rmtree(workspace, ignore_errors=True)
+        raise
 
 
 def _descriptor_copy_supported() -> bool:

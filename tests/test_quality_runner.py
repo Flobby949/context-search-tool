@@ -1342,6 +1342,116 @@ def test_snapshot_source_rejects_absolute_top_level_symlink(tmp_path: Path) -> N
         _resolve_repo_source(repo, tmp_path / "quality.json", "ci")
 
 
+@pytest.mark.parametrize("profile", ["ci", "smoke"])
+def test_snapshot_source_swap_never_recanonicalizes_to_external_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    profile: str,
+) -> None:
+    fixture_dir = tmp_path / "fixtures"
+    snapshot = fixture_dir / "snapshot"
+    snapshot.mkdir(parents=True)
+    (snapshot / "ordinary.txt").write_text("ordinary\n", encoding="utf-8")
+    moved_snapshot = fixture_dir / "snapshot-original"
+    external = tmp_path / "external"
+    external.mkdir()
+    secret = b"external-secret-token"
+    (external / "secret.txt").write_bytes(secret)
+    temp_root = tmp_path / "temp-root"
+    fixture = _write_fixture(
+        fixture_dir,
+        {
+            "schema_version": 1,
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "snapshot_path": "snapshot",
+                    "profiles": [profile],
+                    "queries": [{"id": "target", "query": "target"}],
+                }
+            ],
+        },
+    )
+    captured: list[tuple[Path, ToolConfig]] = []
+    _patch_runner_dependencies(monkeypatch, captured)
+    original_resolve_snapshot = quality_runner._resolve_snapshot_path
+    original_resolve_source = quality_runner._resolve_repo_source
+    original_copy = quality_runner._copy_source_repo
+    resolved_sources: list[ResolvedSource | None] = []
+    copied_sources: list[Path] = []
+    swapped = False
+
+    def resolve_then_swap(fixture_path: Path, raw_path: str) -> Path:
+        nonlocal swapped
+        resolved = original_resolve_snapshot(fixture_path, raw_path)
+        if not swapped:
+            resolved.rename(moved_snapshot)
+            resolved.symlink_to(external, target_is_directory=True)
+            swapped = True
+        return resolved
+
+    def capture_resolved_source(
+        repo: QualityRepo,
+        fixture_path: Path,
+        selected_profile: str,
+    ) -> ResolvedSource | None:
+        source = original_resolve_source(repo, fixture_path, selected_profile)
+        resolved_sources.append(source)
+        return source
+
+    def capture_copy_source(source: Path, workspace: Path) -> None:
+        copied_sources.append(source)
+        original_copy(source, workspace)
+
+    def fake_mkdtemp(*, prefix: str) -> str:
+        assert prefix == "cst-quality-"
+        temp_root.mkdir()
+        return str(temp_root)
+
+    monkeypatch.setattr(quality_runner, "_resolve_snapshot_path", resolve_then_swap)
+    monkeypatch.setattr(quality_runner, "_resolve_repo_source", capture_resolved_source)
+    monkeypatch.setattr(quality_runner, "_copy_source_repo", capture_copy_source)
+    monkeypatch.setattr(quality_runner.tempfile, "mkdtemp", fake_mkdtemp)
+
+    report: dict[str, object] | None = None
+    try:
+        if profile == "ci":
+            with pytest.raises(ValueError, match=r"ci snapshot not found"):
+                run_quality_fixture(
+                    fixture,
+                    profile=profile,
+                    output_path=None,
+                    markdown_path=None,
+                    keep_workspace=True,
+                )
+        else:
+            report = run_quality_fixture(
+                fixture,
+                profile=profile,
+                output_path=None,
+                markdown_path=None,
+                keep_workspace=True,
+            )
+            assert report["aggregate"]["skipped"] == 1
+            assert report["cases"][0]["status"] == "skipped"
+
+        assert swapped
+        assert all(
+            source is None or source.path != external.resolve()
+            for source in resolved_sources
+        )
+        assert copied_sources == []
+        copied_contents = [
+            path.read_bytes()
+            for path in temp_root.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        ]
+        assert secret not in copied_contents
+        assert report is None or secret.decode() not in json.dumps(report)
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def test_copy_source_repo_fails_closed_without_descriptor_support(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1359,6 +1469,50 @@ def test_copy_source_repo_fails_closed_without_descriptor_support(
         _copy_source_repo(source, workspace)
 
     assert not workspace.exists()
+
+
+def test_copy_source_repo_removes_new_workspace_after_mid_copy_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not quality_runner._descriptor_copy_supported():
+        pytest.skip("descriptor-based no-follow copy is not supported")
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "normal.txt").write_text("normal\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+
+    def fail_mid_copy(source_file: object, destination_file: object) -> None:
+        destination_file.write(b"partial")
+        raise PermissionError("copy interrupted")
+
+    monkeypatch.setattr(quality_runner.shutil, "copyfileobj", fail_mid_copy)
+
+    with pytest.raises(PermissionError, match="copy interrupted"):
+        _copy_source_repo(source, workspace)
+
+    assert not workspace.exists()
+
+
+def test_copy_source_repo_preserves_preexisting_workspace_when_copy_refuses(
+    tmp_path: Path,
+) -> None:
+    if not quality_runner._descriptor_copy_supported():
+        pytest.skip("descriptor-based no-follow copy is not supported")
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "normal.txt").write_text("normal\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    marker = workspace / "caller-owned.txt"
+    marker.write_text("keep\n", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        _copy_source_repo(source, workspace)
+
+    assert marker.read_text(encoding="utf-8") == "keep\n"
 
 
 def test_quality_runner_records_unsupported_secure_copy_for_each_repo(
