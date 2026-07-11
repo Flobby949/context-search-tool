@@ -330,6 +330,13 @@ The existing `expected_top5_min` field remains readable only through the legacy
 adapter. Canonical cases use `expected_at_least_top_k`, which prevents the
 current adapter behavior from accidentally turning a 2-of-5 gate into 5-of-5.
 
+Legacy generic rank windows are also converted exactly. A shorthand
+`forbidden_above` matcher with `max_rank: N` means that matcher must be absent
+from the first N ranked paths regardless of where the expected source ranks.
+Canonical migration therefore converts it to `absent_top_k` with `top_k: N`;
+it does not convert it to a source-vs-noise `Outranks` relation. Explicit
+`{source, noise, top_k}` objects retain relational outrank semantics.
+
 ### Source Resolution
 
 Source selection depends on profile purpose:
@@ -593,6 +600,11 @@ Known gaps remain visible without weakening existing gates. A legacy
 case into `gate: known_gap`. The report and Markdown renderer list every
 non-empty known-gap reason independently of pass/fail status. Only a case that
 was already non-gating uses `gate: known_gap` or `gate: informational`.
+
+An `anchor_expected` path remains evidence-only: it must appear in
+`QueryBundle.evidence_anchors` and must not also appear in ordinary ranked
+results. The shared evaluator owns this assertion before the legacy generic
+harness is removed.
 
 ## Effective Configuration Reporting
 
@@ -983,6 +995,9 @@ after that profile actually runs against an English-only target.
 - Account for all 33 legacy cases before deleting legacy JSON.
 - Preserve every legacy query exactly.
 - Preserve required, absent, rank, noise, and known-gap intent.
+- Convert legacy absolute `forbidden_above.max_rank` windows to equivalent
+  `absent_top_k` gates and verify behavior above and below the cutoff.
+- Preserve evidence-anchor separation from ordinary ranked results.
 - Map all eight calibration `expected_core` groups, minimum counts,
   `required_top3`, and `forbidden_top3` fields with N-of-M parity.
 - Assert exact 22/8/3 provenance counts after legacy JSON is removed.

@@ -255,6 +255,79 @@ def test_legacy_v1_fixture_derives_profiles_without_registry(tmp_path: Path) -> 
     assert fixture.profile_configs == {"ci": {}, "smoke": {}}
     assert fixture.canonical is False
     assert fixture.repos[0].queries[0].profiles == ()
+
+
+@pytest.mark.parametrize(
+    "profile,bad_config,message",
+    [
+        (
+            "smoke",
+            {
+                "embedding": {
+                    "provider": "bge",
+                    "model": "bge-m3",
+                    "dimensions": 1024,
+                },
+                "query_planner": {"enabled": False},
+            },
+            "smoke profile requires hash embeddings",
+        ),
+        (
+            "planner",
+            {
+                "embedding": {
+                    "provider": "hash",
+                    "model": "hash-v1",
+                    "dimensions": 384,
+                },
+                "query_planner": {"enabled": False},
+            },
+            "planner profile requires the query planner enabled",
+        ),
+        (
+            "ab_bge",
+            {
+                "embedding": {
+                    "provider": "hash",
+                    "model": "hash-v1",
+                    "dimensions": 384,
+                },
+                "query_planner": {"enabled": False},
+            },
+            "ab_bge profile requires BGE M3",
+        ),
+    ],
+)
+def test_loader_rejects_invalid_unused_canonical_profile(
+    tmp_path: Path,
+    profile: str,
+    bad_config: dict,
+    message: str,
+) -> None:
+    data = {
+        "schema_version": 1,
+        "profile_configs": {
+            "ci": {
+                "embedding": {
+                    "provider": "hash",
+                    "model": "hash-v1",
+                    "dimensions": 384,
+                },
+                "query_planner": {"enabled": False},
+            },
+            profile: bad_config,
+        },
+        "repos": [
+            {
+                "repo_key": "sample",
+                "profiles": ["ci"],
+                "queries": [{"id": "login", "query": "login"}],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match=message):
+        load_quality_fixture(_write_fixture(tmp_path, data))
 ```
 
 Add `LegacyProvenance` to the imports from `context_search_tool.quality.cases`.
@@ -268,6 +341,7 @@ conda run -n base python -m pytest \
   tests/test_quality_cases.py::test_load_fixture_parses_profile_registry_case_profiles_and_legacy \
   tests/test_quality_cases.py::test_canonical_fixture_rejects_profile_and_identity_errors \
   tests/test_quality_cases.py::test_legacy_v1_fixture_derives_profiles_without_registry \
+  tests/test_quality_cases.py::test_loader_rejects_invalid_unused_canonical_profile \
   -q
 ```
 
@@ -275,7 +349,7 @@ Expected: FAIL because `QualityFixture.profile_configs`, `QualityCase.profiles`,
 
 - [ ] **Step 3: Add the profile and provenance data model**
 
-In `src/context_search_tool/quality/cases.py`, import `fields` from `dataclasses`
+In `src/context_search_tool/quality/cases.py`, import `fields` and `replace` from `dataclasses`
 and `DEFAULT_CONFIG` from `context_search_tool.config`, then add:
 
 ```python
@@ -302,6 +376,7 @@ class QualityCase:
     anchor_expected: tuple[str, ...] = ()
     known_gap_reason: str = ""
     notes: str = ""
+    expected_top5_min: int | None = None
     legacy: LegacyProvenance | None = None
 
 
@@ -368,6 +443,75 @@ def _validate_config_section(
     return values
 ```
 
+Replace the existing CI-only `validate_profile_compatible()` and add the
+profile materializer:
+
+```python
+def _canonical_profile_config(overrides: dict[str, Any]) -> ToolConfig:
+    result = DEFAULT_CONFIG
+    for section in ("index", "retrieval", "embedding", "query_planner"):
+        if section in overrides:
+            result = replace(
+                result,
+                **{
+                    section: replace(
+                        getattr(DEFAULT_CONFIG, section),
+                        **overrides[section],
+                    )
+                },
+            )
+    return result
+
+
+def validate_profile_compatible(
+    profile: str,
+    config: ToolConfig,
+    *,
+    canonical: bool = False,
+) -> None:
+    if not canonical:
+        if profile != "ci":
+            return
+        if config.embedding.provider != "hash":
+            raise ValueError("ci profile requires hash embeddings")
+        if config.query_planner.enabled:
+            raise ValueError("ci profile requires the query planner disabled")
+        if (
+            config.embedding.api_key_env is not None
+            or config.embedding.base_url is not None
+        ):
+            raise ValueError("ci profile does not allow remote embedding settings")
+        return
+    if profile in {"ci", "smoke", "ab_hash"}:
+        if config.embedding.provider != "hash":
+            raise ValueError(f"{profile} profile requires hash embeddings")
+        if config.query_planner.enabled:
+            raise ValueError(f"{profile} profile requires the query planner disabled")
+        if profile == "ci" and (
+            config.embedding.api_key_env is not None
+            or config.embedding.base_url is not None
+        ):
+            raise ValueError("ci profile does not allow remote embedding settings")
+        return
+    if profile == "planner":
+        if config.embedding.provider != "hash":
+            raise ValueError("planner profile requires hash embeddings")
+        if not config.query_planner.enabled:
+            raise ValueError("planner profile requires the query planner enabled")
+        if config.query_planner.provider != "ollama":
+            raise ValueError("planner profile requires the Ollama planner")
+        return
+    if profile in {"calibration_bge", "ab_bge"}:
+        if (
+            config.embedding.provider != "bge"
+            or config.embedding.model != "bge-m3"
+            or config.embedding.dimensions != 1024
+        ):
+            raise ValueError(f"{profile} profile requires BGE M3 at 1024 dimensions")
+        if config.query_planner.enabled:
+            raise ValueError(f"{profile} profile requires the query planner disabled")
+```
+
 In `_parse_repo()`, replace the current loose `default_config` copy with:
 
 ```python
@@ -397,6 +541,13 @@ def _validate_fixture_profiles(
     repos: tuple[QualityRepo, ...],
     canonical: bool,
 ) -> None:
+    if canonical:
+        for profile, overrides in profile_configs.items():
+            validate_profile_compatible(
+                profile,
+                _canonical_profile_config(overrides),
+                canonical=True,
+            )
     repo_keys: set[str] = set()
     for repo in repos:
         if repo.repo_key in repo_keys:
@@ -486,7 +637,7 @@ git add src/context_search_tool/quality/cases.py \
 git commit -m "feat: add quality profile registry"
 ```
 
-## Task 2: Preserve Calibration N-Of-M Semantics
+## Task 2: Preserve Calibration N-Of-M And Legacy Rank Windows
 
 **Files:**
 - Modify: `src/context_search_tool/quality/cases.py`
@@ -497,7 +648,9 @@ git commit -m "feat: add quality profile registry"
 
 - [ ] **Step 1: Replace the legacy calibration adapter test**
 
-Replace `test_legacy_calibration_expected_core_becomes_relevance_targets` in `tests/test_quality_cases.py` with:
+Replace `test_legacy_calibration_expected_core_becomes_relevance_targets` and
+`test_legacy_forbidden_above_dict_shorthand_uses_first_expected_target` in
+`tests/test_quality_cases.py` with:
 
 ```python
 def test_legacy_calibration_maps_n_of_m_required_and_forbidden_paths() -> None:
@@ -533,6 +686,33 @@ def test_legacy_calibration_maps_n_of_m_required_and_forbidden_paths() -> None:
     assert case.absent_top_k == (
         TopKMatcher(Matcher(path="src/WxMiniLoginClient.java"), 3),
     )
+
+
+def test_legacy_forbidden_above_max_rank_becomes_absent_window() -> None:
+    case = adapt_legacy_query_case(
+        {
+            "id": "legacy-window",
+            "query": "fund service",
+            "expected_top_k": [
+                {"path": "collector/internal/service/fund_service.go", "top_k": 5}
+            ],
+            "forbidden_above": [
+                {
+                    "glob": "investment-assistant-backend/**/*.java",
+                    "top_k": 5,
+                    "max_rank": 2,
+                }
+            ],
+        }
+    )
+
+    assert case.absent_top_k == (
+        TopKMatcher(
+            Matcher(glob="investment-assistant-backend/**/*.java"),
+            2,
+        ),
+    )
+    assert case.forbidden_above == ()
 ```
 
 Import `AtLeastTopKGroup` and `TopKMatcher` in that test file.
@@ -636,23 +816,106 @@ def test_zero_minimum_records_relevance_without_failure() -> None:
 
     assert evaluation.status == "pass"
     assert evaluation.metrics["recall_at_5"] == 0.0
+
+
+def test_informational_cross_language_metrics_without_legacy_minimum() -> None:
+    case = QualityCase(
+        case_id="cross-language-info",
+        query="数据看板",
+        tags=("cross_language",),
+        gate=Gate.INFORMATIONAL,
+        expected_top_k=(
+            TopKMatcher(Matcher(path="src/Dashboard.java"), 5),
+        ),
+    )
+
+    evaluation = evaluate_case(
+        case,
+        [_result("src/Dashboard.java")],
+        latency_ms=1,
+    )
+
+    assert evaluation.status == "informational"
+    assert evaluation.metrics["cross_language_success"] is True
+
+
+def test_legacy_forbidden_window_matches_absolute_rank_semantics() -> None:
+    case = adapt_legacy_query_case(
+        {
+            "id": "legacy-window",
+            "query": "fund service",
+            "expected_top_k": [{"path": "src/FundService.go", "top_k": 5}],
+            "forbidden_above": [
+                {"glob": "legacy/**/*.java", "top_k": 5, "max_rank": 2}
+            ],
+        }
+    )
+
+    fails = evaluate_case(
+        case,
+        [_result("src/FundService.go"), _result("legacy/Old.java")],
+        latency_ms=1,
+    )
+    passes = evaluate_case(
+        case,
+        [
+            _result("src/FundService.go"),
+            _result("src/Other.go"),
+            _result("legacy/Old.java"),
+        ],
+        latency_ms=1,
+    )
+
+    assert fails.status == "fail"
+    assert fails.failures == [
+        "absent_top_k present within top 2: legacy/**/*.java"
+    ]
+    assert passes.status == "pass"
+
+
+def test_expected_anchor_must_remain_outside_ranked_results() -> None:
+    case = QualityCase(
+        case_id="anchor-separation",
+        query="readme",
+        anchor_expected=("README.md",),
+    )
+
+    evaluation = evaluate_case(
+        case,
+        [_result("README.md")],
+        latency_ms=1,
+        anchor_paths=["README.md"],
+    )
+
+    assert evaluation.status == "fail"
+    assert evaluation.failures == [
+        "anchor_expected must remain outside ranked results: README.md"
+    ]
 ```
 
-Import `AtLeastTopKGroup` in `tests/test_quality_metrics.py`.
+Import `AtLeastTopKGroup` and `adapt_legacy_query_case` in
+`tests/test_quality_metrics.py`. Replace the
+pre-existing `test_expected_top5_min_informational_and_cross_language_metrics`
+with `test_informational_cross_language_metrics_without_legacy_minimum` above.
 
 - [ ] **Step 4: Run the new tests and verify failure**
 
 ```bash
 conda run -n base python -m pytest \
   tests/test_quality_cases.py::test_legacy_calibration_maps_n_of_m_required_and_forbidden_paths \
+  tests/test_quality_cases.py::test_legacy_forbidden_above_max_rank_becomes_absent_window \
   tests/test_quality_cases.py::test_at_least_group_rejects_invalid_minimum \
   tests/test_quality_cases.py::test_at_least_group_rejects_duplicate_matchers \
   tests/test_quality_metrics.py::test_at_least_group_gates_n_of_m_but_counts_each_relevance_target \
   tests/test_quality_metrics.py::test_zero_minimum_records_relevance_without_failure \
+  tests/test_quality_metrics.py::test_informational_cross_language_metrics_without_legacy_minimum \
+  tests/test_quality_metrics.py::test_legacy_forbidden_window_matches_absolute_rank_semantics \
+  tests/test_quality_metrics.py::test_expected_anchor_must_remain_outside_ranked_results \
   -q
 ```
 
-Expected: FAIL because `AtLeastTopKGroup` and `expected_at_least_top_k` do not exist.
+Expected: FAIL because N-of-M fields do not exist, legacy `max_rank` still maps
+to a relational outrank, and anchor/result separation is not enforced.
 
 - [ ] **Step 5: Implement N-of-M parsing and legacy conversion**
 
@@ -691,6 +954,30 @@ def _parse_at_least_groups(raw: Any) -> tuple[AtLeastTopKGroup, ...]:
             )
         )
     return tuple(groups)
+
+
+def _partition_forbidden_above(
+    raw: Any,
+) -> tuple[tuple[TopKMatcher, ...], tuple[Any, ...]]:
+    if not raw:
+        return (), ()
+    items = tuple(raw) if isinstance(raw, (list, tuple)) else (raw,)
+    windows: list[TopKMatcher] = []
+    relational: list[Any] = []
+    for item in items:
+        if (
+            isinstance(item, dict)
+            and "max_rank" in item
+            and not {"source", "noise"}.issubset(item)
+        ):
+            top_k = _require_positive_int(item.get("top_k", 5), "top_k")
+            max_rank = _require_positive_int(item.get("max_rank"), "max_rank")
+            if max_rank > top_k:
+                raise ValueError("forbidden_above max_rank cannot exceed top_k")
+            windows.append(TopKMatcher(Matcher.from_raw(item), max_rank))
+        else:
+            relational.append(item)
+    return tuple(windows), tuple(relational)
 ```
 
 In `_parse_case()`, stop appending `expected_core` to `expected_top_k`. Instead build:
@@ -729,9 +1016,30 @@ Keep the existing `forbidden_top3 -> absent_top_k` block. Add
 `expected_at_least_top_k=at_least_groups` to the `QualityCase(...)` return and
 remove the `expected_top5_min` field and return argument entirely.
 
+Before the `QualityCase(...)` return, partition legacy absolute rank windows:
+
+```python
+forbidden_windows, relational_forbidden = _partition_forbidden_above(
+    raw.get("forbidden_above")
+)
+absent_top_k += forbidden_windows
+forbidden_above = _parse_forbidden_above(
+    relational_forbidden,
+    expected_top_k,
+)
+```
+
+Pass this `forbidden_above` variable instead of reparsing the raw field. This
+keeps explicit `{source, noise, top_k}` and string shorthand relational, while
+the two legacy `{matcher, top_k, max_rank}` cases become exact absolute
+`absent_top_k` windows.
+
 - [ ] **Step 6: Implement N-of-M evaluation and relevance counting**
 
-In `evaluate_case()` add before preferred-rank evaluation:
+In `evaluate_case()`, delete the `expected_top5_count = ...` assignment and the
+entire `if case.expected_top5_min is not None: ...` failure block. Preserve the
+separate `coverage_top5_count` calculation. Then add before preferred-rank
+evaluation:
 
 ```python
 for group in case.expected_at_least_top_k:
@@ -752,6 +1060,23 @@ Extend `_relevance_targets()` with one independent target per group matcher:
 ```python
 for group in case.expected_at_least_top_k:
     targets.extend(_RelevanceTarget((matcher,)) for matcher in group.matchers)
+```
+
+Replace the existing `anchor_paths is not None` block with:
+
+```python
+if anchor_paths is not None:
+    normalized_anchors = {normalize_result_path(path) for path in anchor_paths}
+    ranked_paths = {result.path for result in normalized}
+    for expected_anchor in case.anchor_expected:
+        expected_path = normalize_result_path(expected_anchor)
+        if expected_path not in normalized_anchors:
+            failures.append(f"anchor_expected missing: {expected_path}")
+        elif expected_path in ranked_paths:
+            failures.append(
+                "anchor_expected must remain outside ranked results: "
+                f"{expected_path}"
+            )
 ```
 
 Export `AtLeastTopKGroup` from `quality/__init__.py`.
@@ -1413,7 +1738,6 @@ git commit -m "feat: aggregate retrieval quality metrics"
 
 **Files:**
 - Modify: `src/context_search_tool/quality/runner.py`
-- Modify: `src/context_search_tool/quality/cases.py`
 - Modify: `tests/test_quality_runner.py`
 
 - [ ] **Step 1: Add failing effective-config tests**
@@ -1424,7 +1748,9 @@ Extend `tests/test_quality_runner.py` imports with:
 from context_search_tool.config import (
     DEFAULT_CONFIG,
     EmbeddingConfig,
+    IndexConfig,
     QueryPlannerConfig,
+    RetrievalConfig,
     ToolConfig,
 )
 from context_search_tool.indexer import IndexSummary
@@ -1435,7 +1761,7 @@ from context_search_tool.retrieval import QueryBundle
 Append:
 
 ```python
-def test_profile_rebuilds_embedding_and_planner_sections(
+def test_canonical_profile_rebuilds_from_default_then_repo_then_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1466,6 +1792,8 @@ def test_profile_rebuilds_embedding_and_planner_sections(
         },
     )
     stale = ToolConfig(
+        index=IndexConfig(max_file_bytes=1),
+        retrieval=RetrievalConfig(final_top_k=99),
         embedding=EmbeddingConfig(
             provider="openai-compatible",
             model="remote",
@@ -1513,9 +1841,66 @@ def test_profile_rebuilds_embedding_and_planner_sections(
     run_quality_fixture(fixture, "ci", None, None, config=stale)
 
     effective = captured[0]
+    assert effective.index == DEFAULT_CONFIG.index
     assert effective.embedding == DEFAULT_CONFIG.embedding
     assert effective.query_planner == DEFAULT_CONFIG.query_planner
     assert effective.retrieval.final_top_k == 7
+
+
+def test_legacy_fixture_keeps_caller_base_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_source_repo(tmp_path)
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "snapshot_path": str(source),
+                    "profiles": ["smoke"],
+                    "queries": [{"id": "target", "query": "targetToken"}],
+                }
+            ],
+        },
+    )
+    caller_config = ToolConfig(
+        index=IndexConfig(max_file_bytes=1234),
+        retrieval=RetrievalConfig(final_top_k=9),
+    )
+    captured: list[ToolConfig] = []
+
+    def fake_index(repo: Path, config: ToolConfig) -> IndexSummary:
+        captured.append(config)
+        return IndexSummary(
+            files_seen=1,
+            files_indexed=1,
+            files_skipped=0,
+            files_deleted=0,
+            chunks_indexed=1,
+        )
+
+    monkeypatch.setattr("context_search_tool.quality.runner.index_repository", fake_index)
+    monkeypatch.setattr(
+        "context_search_tool.quality.runner.load_manifest",
+        lambda repo: Manifest(embedding_config_hash="sha256:test"),
+    )
+    monkeypatch.setattr(
+        "context_search_tool.quality.runner.query_repository",
+        lambda *args, **kwargs: QueryBundle(
+            query="targetToken",
+            expanded_tokens=["targettoken"],
+            results=[],
+            followup_keywords=[],
+        ),
+    )
+
+    run_quality_fixture(fixture, "smoke", None, None, config=caller_config)
+
+    assert captured[0].index.max_file_bytes == 1234
+    assert captured[0].retrieval.final_top_k == 9
 ```
 
 - [ ] **Step 2: Add failing source-resolution order tests**
@@ -1609,15 +1994,135 @@ def test_runner_executes_only_cases_selected_by_profile(
     assert [case["case_id"] for case in report["cases"]] == ["ci-only"]
     with pytest.raises(ValueError, match="unknown quality profile: missing"):
         run_quality_fixture(fixture, "missing", None, None)
+
+
+@pytest.mark.parametrize(
+    "profile,profile_config,provider,planner_enabled",
+    [
+        (
+            "ci",
+            {
+                "embedding": {"provider": "hash", "model": "hash-v1", "dimensions": 384},
+                "query_planner": {"enabled": False},
+            },
+            "hash",
+            False,
+        ),
+        (
+            "smoke",
+            {
+                "embedding": {"provider": "hash", "model": "hash-v1", "dimensions": 384},
+                "query_planner": {"enabled": False},
+            },
+            "hash",
+            False,
+        ),
+        (
+            "planner",
+            {
+                "embedding": {"provider": "hash", "model": "hash-v1", "dimensions": 384},
+                "query_planner": {"enabled": True, "provider": "ollama"},
+            },
+            "hash",
+            True,
+        ),
+        (
+            "calibration_bge",
+            {
+                "embedding": {"provider": "bge", "model": "bge-m3", "dimensions": 1024},
+                "query_planner": {"enabled": False},
+            },
+            "bge",
+            False,
+        ),
+        (
+            "ab_hash",
+            {
+                "embedding": {"provider": "hash", "model": "hash-v1", "dimensions": 384},
+                "query_planner": {"enabled": False},
+            },
+            "hash",
+            False,
+        ),
+        (
+            "ab_bge",
+            {
+                "embedding": {"provider": "bge", "model": "bge-m3", "dimensions": 1024},
+                "query_planner": {"enabled": False},
+            },
+            "bge",
+            False,
+        ),
+    ],
+)
+def test_all_canonical_profiles_wire_without_external_dependencies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    profile: str,
+    profile_config: dict,
+    provider: str,
+    planner_enabled: bool,
+) -> None:
+    source = _write_source_repo(tmp_path)
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {profile: profile_config},
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "snapshot_path": str(source),
+                    "profiles": [profile],
+                    "queries": [{"id": "target", "query": "targetToken"}],
+                }
+            ],
+        },
+    )
+    captured: list[ToolConfig] = []
+
+    def fake_index(repo: Path, config: ToolConfig) -> IndexSummary:
+        captured.append(config)
+        assert (repo / "src" / "App.java").is_file()
+        return IndexSummary(
+            files_seen=1,
+            files_indexed=1,
+            files_skipped=0,
+            files_deleted=0,
+            chunks_indexed=1,
+        )
+
+    monkeypatch.setattr("context_search_tool.quality.runner.index_repository", fake_index)
+    monkeypatch.setattr(
+        "context_search_tool.quality.runner.load_manifest",
+        lambda repo: Manifest(embedding_config_hash="sha256:test"),
+    )
+    monkeypatch.setattr(
+        "context_search_tool.quality.runner.query_repository",
+        lambda *args, **kwargs: QueryBundle(
+            query="targetToken",
+            expanded_tokens=["targettoken"],
+            results=[],
+            followup_keywords=[],
+        ),
+    )
+
+    report = run_quality_fixture(fixture, profile, None, None)
+
+    assert [case["case_id"] for case in report["cases"]] == ["target"]
+    assert captured[0].embedding.provider == provider
+    assert captured[0].query_planner.enabled is planner_enabled
 ```
 
 - [ ] **Step 4: Run focused tests and verify failure**
 
 ```bash
 conda run -n base python -m pytest \
-  tests/test_quality_runner.py::test_profile_rebuilds_embedding_and_planner_sections \
+  tests/test_quality_runner.py::test_canonical_profile_rebuilds_from_default_then_repo_then_profile \
+  tests/test_quality_runner.py::test_legacy_fixture_keeps_caller_base_config \
   tests/test_quality_runner.py::test_non_ci_source_prefers_existing_env_then_smoke_root_then_snapshot \
   tests/test_quality_runner.py::test_runner_executes_only_cases_selected_by_profile \
+  tests/test_quality_runner.py::test_all_canonical_profiles_wire_without_external_dependencies \
   -q
 ```
 
@@ -1686,62 +2191,17 @@ For each repo, use:
 
 ```python
 profile_overrides = fixture.profile_configs[profile]
-repo_config = _effective_config(config, repo.default_config, profile_overrides)
+base_config = DEFAULT_CONFIG if fixture.canonical else config
+repo_config = _effective_config(
+    base_config,
+    repo.default_config,
+    profile_overrides,
+)
 validate_profile_compatible(profile, repo_config, canonical=fixture.canonical)
 ```
 
-Replace `validate_profile_compatible()` in `cases.py` with the complete canonical
-matrix while retaining v1 custom-profile compatibility:
-
-```python
-def validate_profile_compatible(
-    profile: str,
-    config: ToolConfig,
-    *,
-    canonical: bool = False,
-) -> None:
-    if not canonical:
-        if profile != "ci":
-            return
-        if config.embedding.provider != "hash":
-            raise ValueError("ci profile requires hash embeddings")
-        if config.query_planner.enabled:
-            raise ValueError("ci profile requires the query planner disabled")
-        if (
-            config.embedding.api_key_env is not None
-            or config.embedding.base_url is not None
-        ):
-            raise ValueError("ci profile does not allow remote embedding settings")
-        return
-    if profile in {"ci", "smoke", "ab_hash"}:
-        if config.embedding.provider != "hash":
-            raise ValueError(f"{profile} profile requires hash embeddings")
-        if config.query_planner.enabled:
-            raise ValueError(f"{profile} profile requires the query planner disabled")
-        if profile == "ci" and (
-            config.embedding.api_key_env is not None
-            or config.embedding.base_url is not None
-        ):
-            raise ValueError("ci profile does not allow remote embedding settings")
-        return
-    if profile == "planner":
-        if config.embedding.provider != "hash":
-            raise ValueError("planner profile requires hash embeddings")
-        if not config.query_planner.enabled:
-            raise ValueError("planner profile requires the query planner enabled")
-        if config.query_planner.provider != "ollama":
-            raise ValueError("planner profile requires the Ollama planner")
-        return
-    if profile in {"calibration_bge", "ab_bge"}:
-        if (
-            config.embedding.provider != "bge"
-            or config.embedding.model != "bge-m3"
-            or config.embedding.dimensions != 1024
-        ):
-            raise ValueError(f"{profile} profile requires BGE M3 at 1024 dimensions")
-        if config.query_planner.enabled:
-            raise ValueError(f"{profile} profile requires the query planner disabled")
-```
+Use the canonical/legacy-aware `validate_profile_compatible()` introduced in
+Task 1; do not redefine it in the runner task.
 
 - [ ] **Step 6: Implement safe source resolution and case selection**
 
@@ -1840,8 +2300,7 @@ Expected: PASS.
 - [ ] **Step 8: Commit Task 5**
 
 ```bash
-git add src/context_search_tool/quality/cases.py \
-  src/context_search_tool/quality/runner.py \
+git add src/context_search_tool/quality/runner.py \
   tests/test_quality_runner.py
 git commit -m "feat: apply quality profile configurations"
 ```
@@ -3709,7 +4168,7 @@ Add these exact repository definitions and source locators:
 
 - [ ] **Step 4: Migrate all 22 generic cases without changing their assertions**
 
-Copy each query object from `tests/fixtures/generic_baseline_quality/queries.json` into its repository entry. Preserve `id`, `query`, `expected_top_k`, `expected_any_top_k`, `preferred_rank`, `absent_top_k`, `outranks`, `forbidden_above`, and `anchor_expected` exactly. When present, rename `known_gap` to `known_gap_reason` without changing its string. Add:
+Copy each query object from `tests/fixtures/generic_baseline_quality/queries.json` into its repository entry. Preserve `id`, `query`, `expected_top_k`, `expected_any_top_k`, `preferred_rank`, `absent_top_k`, `outranks`, and `anchor_expected` exactly. Convert each legacy `forbidden_above` matcher with `max_rank: N` into the same matcher under `absent_top_k` with `top_k: N`; do not retain that item under `forbidden_above`. When present, rename `known_gap` to `known_gap_reason` without changing its string. Add:
 
 ```json
 "gate": "required",
@@ -4181,6 +4640,10 @@ def test_investment_assistant_targets_enter_candidate_pool(
         for expected in case.expected_top_k:
             assert any(expected.matcher.matches(path) for path in candidates), case.case_id
 ```
+
+The legacy anchor-separation assertion is already preserved by
+`test_expected_anchor_must_remain_outside_ranked_results` in Task 2; verify that
+test remains before deleting the generic harness.
 
 - [ ] **Step 4: Delete legacy harnesses and fixtures**
 
@@ -4680,6 +5143,9 @@ conda run -n base cst quality run \
   tests/fixtures/retrieval_quality/queries.json \
   --profile ab_hash \
   --output /tmp/cst-p0-ab-hash.json
+
+printf 'verified\n' > /tmp/cst-p0-ci.status
+printf 'verified\n' > /tmp/cst-p0-ab-hash.status
 ```
 
 Expected: all commands exit 0; self-comparison has zero gating regressions and zero deltas; all three A/B cases execute as informational.
@@ -4711,88 +5177,138 @@ assert any(
     for case in report["cases"]
 )
 '
+
+printf 'verified\n' > /tmp/cst-p0-smoke.status
 ```
 
 Expected: both commands exit 0 and at least one case from an external repository executes.
 
-- [ ] **Step 5: Prepare and run the real planner profile**
+- [ ] **Step 5: Attempt the optional real planner profile and record status**
 
 ```bash
 mkdir -p /tmp/cst-quality-real
-test -d /tmp/cst-quality-real/requests/.git || \
+if ! test -d /tmp/cst-quality-real/requests/.git; then
   git clone --depth 1 -c fetch.fsck.badTimezone=ignore \
     https://github.com/psf/requests.git \
-    /tmp/cst-quality-real/requests
+    /tmp/cst-quality-real/requests || true
+fi
 
-CST_PLANNER_REQUESTS_REPO=/tmp/cst-quality-real/requests \
-conda run -n base cst quality run \
-  tests/fixtures/retrieval_quality/queries.json \
-  --profile planner \
-  --output /tmp/cst-p0-planner.json \
-  --markdown /tmp/cst-p0-planner.md
+planner_status=unverified_dependency
+if test -d /tmp/cst-quality-real/requests/.git && \
+   ollama list 2>/dev/null | rg -q 'qwen3.5:4b-mlx'; then
+  set +e
+  CST_PLANNER_REQUESTS_REPO=/tmp/cst-quality-real/requests \
+  conda run -n base cst quality run \
+    tests/fixtures/retrieval_quality/queries.json \
+    --profile planner \
+    --output /tmp/cst-p0-planner.json \
+    --markdown /tmp/cst-p0-planner.md
+  run_status=$?
 
-CST_PLANNER_REQUESTS_REPO=/tmp/cst-quality-real/requests \
-conda run -n base python -m pytest \
-  tests/test_quality_planner.py -m "slow and integration" -q
+  CST_PLANNER_REQUESTS_REPO=/tmp/cst-quality-real/requests \
+  conda run -n base python -m pytest \
+    tests/test_quality_planner.py -m "slow and integration" -q
+  diagnostic_status=$?
+  set -e
+
+  if test "$run_status" -eq 0 && test "$diagnostic_status" -eq 0; then
+    planner_status=verified
+  else
+    planner_status=failed
+  fi
+fi
+printf '%s\n' "$planner_status" > /tmp/cst-p0-planner.status
 ```
 
-Expected: both commands exit 0; requests is 3/3; dashboard cross-language case
-passes; consumed planner hints are non-empty, supported, and contribute new
-expanded tokens.
+Expected: status is `verified` only when the report path gates and specialized
+planner diagnostics both pass. A missing requests checkout, Ollama service, or
+planner model is `unverified_dependency`; an available-but-failing run is
+`failed`.
 
-- [ ] **Step 6: Run A/B BGE and record unavailable calibration dependencies**
-
-Run calibration with explicit empty-run permission so the report distinguishes
-missing private inputs from a pass, then confirm the installed model and run
-A/B BGE:
+- [ ] **Step 6: Attempt optional BGE profiles and record exact status**
 
 ```bash
-ollama list | rg "bge-m3"
+calibration_status=unverified_dependency
+ab_bge_status=unverified_dependency
 
-conda run -n base cst quality run \
-  tests/fixtures/retrieval_quality/queries.json \
-  --profile calibration_bge \
-  --allow-empty \
-  --output /tmp/cst-p0-calibration-bge.json \
-  --markdown /tmp/cst-p0-calibration-bge.md
+if ollama list 2>/dev/null | rg -q 'bge-m3'; then
+  set +e
+  conda run -n base cst quality run \
+    tests/fixtures/retrieval_quality/queries.json \
+    --profile calibration_bge \
+    --allow-empty \
+    --output /tmp/cst-p0-calibration-bge.json \
+    --markdown /tmp/cst-p0-calibration-bge.md
+  set -e
 
-conda run -n base python -c '
+  calibration_status=$(conda run -n base python -c '
 import json
-report = json.load(open("/tmp/cst-p0-calibration-bge.json", encoding="utf-8"))
-aggregate = report["aggregate"]
-assert aggregate["selected"] == 8
-if aggregate["executed"] == 8:
-    print("calibration_bge=verified")
+from pathlib import Path
+path = Path("/tmp/cst-p0-calibration-bge.json")
+if not path.is_file():
+    print("failed")
 else:
-    assert aggregate["skipped"] > 0
-    print(
-        "calibration_bge=unverified_dependency "
-        "CST_CALIBRATION_OPERATION_CLIENT_REPO "
-        "CST_CALIBRATION_CONSOLE_IOT_REPO"
-    )
-'
+    aggregate = json.loads(path.read_text(encoding="utf-8"))["aggregate"]
+    if aggregate["failed"] or aggregate["errors"]:
+        print("failed")
+    elif aggregate["executed"] == 8 and aggregate["skipped"] == 0:
+        print("verified")
+    else:
+        print("unverified_dependency")
+')
 
-conda run -n base cst quality run \
-  tests/fixtures/retrieval_quality/queries.json \
-  --profile ab_bge \
-  --output /tmp/cst-p0-ab-bge.json
+  set +e
+  conda run -n base cst quality run \
+    tests/fixtures/retrieval_quality/queries.json \
+    --profile ab_bge \
+    --output /tmp/cst-p0-ab-bge.json
+  set -e
 
-conda run -n base cst quality compare \
-  --baseline /tmp/cst-p0-ab-hash.json \
-  --candidate /tmp/cst-p0-ab-bge.json \
-  --output /tmp/cst-p0-ab-comparison.json \
-  --markdown /tmp/cst-p0-ab-comparison.md
+  ab_bge_status=$(conda run -n base python -c '
+import json
+from pathlib import Path
+path = Path("/tmp/cst-p0-ab-bge.json")
+if not path.is_file():
+    print("failed")
+else:
+    aggregate = json.loads(path.read_text(encoding="utf-8"))["aggregate"]
+    if aggregate["errors"]:
+        print("failed")
+    elif aggregate["executed"] == 3 and aggregate["informational"] == 3:
+        print("verified")
+    else:
+        print("failed")
+')
+
+  if test "$ab_bge_status" = verified; then
+    set +e
+    conda run -n base cst quality compare \
+      --baseline /tmp/cst-p0-ab-hash.json \
+      --candidate /tmp/cst-p0-ab-bge.json \
+      --output /tmp/cst-p0-ab-comparison.json \
+      --markdown /tmp/cst-p0-ab-comparison.md
+    compare_status=$?
+    set -e
+    if test "$compare_status" -ne 0; then
+      ab_bge_status=failed
+    fi
+  fi
+fi
+
+printf '%s\n' "$calibration_status" > /tmp/cst-p0-calibration-bge.status
+printf '%s\n' "$ab_bge_status" > /tmp/cst-p0-ab-bge.status
 ```
 
-Expected: commands exit 0. Calibration prints `verified` only when all eight
-cases execute. Otherwise it prints `unverified_dependency` with both source
-variable names; do not call that profile passed.
+Expected: `verified` requires zero failures/errors and the full expected
+execution count. Missing BGE, private repositories, or service availability is
+`unverified_dependency`; an available run with functional failures is `failed`.
 
 - [ ] **Step 7: Inspect generated reports and working tree**
 
 ```bash
 conda run -n base python -c '
 import json
+from pathlib import Path
 ci = json.load(open("/tmp/cst-p0-ci.json", encoding="utf-8"))
 self_compare = json.load(open("/tmp/cst-p0-self-compare.json", encoding="utf-8"))
 ab_hash = json.load(open("/tmp/cst-p0-ab-hash.json", encoding="utf-8"))
@@ -4811,6 +5327,31 @@ assert all(value == 0 for value in delta_values(self_compare["metric_deltas"]))
 assert ab_hash["aggregate"]["selected"] == 3
 assert ab_hash["aggregate"]["executed"] == 3
 assert ab_hash["aggregate"]["informational"] == 3
+status_files = {
+    "ci": "/tmp/cst-p0-ci.status",
+    "smoke": "/tmp/cst-p0-smoke.status",
+    "planner": "/tmp/cst-p0-planner.status",
+    "calibration_bge": "/tmp/cst-p0-calibration-bge.status",
+    "ab_hash": "/tmp/cst-p0-ab-hash.status",
+    "ab_bge": "/tmp/cst-p0-ab-bge.status",
+}
+statuses = {
+    profile: Path(path).read_text(encoding="utf-8").strip()
+    for profile, path in status_files.items()
+}
+allowed = {"verified", "failed", "unverified_dependency"}
+assert set(statuses.values()) <= allowed
+assert statuses["ci"] == "verified"
+assert statuses["smoke"] == "verified"
+assert statuses["ab_hash"] == "verified"
+Path("/tmp/cst-p0-profile-status.json").write_text(
+    json.dumps(statuses, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+print("| profile | status |")
+print("| --- | --- |")
+for profile, status in statuses.items():
+    print(f"| {profile} | {status} |")
 '
 
 git status --short
@@ -4819,7 +5360,8 @@ git diff --check
 
 Expected: report assertions pass; `.quality/` does not appear; only the roadmap
 plus the two pre-existing unrelated untracked plan files may remain. Do not
-stage those unrelated files.
+stage those unrelated files. The printed six-row status table is the only
+source for roadmap and final-handoff profile claims.
 
 - [ ] **Step 8: Mark Phase 0 complete only after acceptance passes**
 
@@ -4832,21 +5374,23 @@ Next-stage review: Phase 1 Query Understanding acceptance review
 ```
 
 Immediately below `### Phase 0: Quality Control Loop`, insert this block,
-choosing the calibration line from the acceptance report:
+then append the exact six-row table printed by Step 7:
 
 ```markdown
 Status: Complete (2026-07-11)
 
 Operational guide: `docs/retrieval-quality.md`
 Canonical catalog: `tests/fixtures/retrieval_quality/queries.json`
-Verified profiles: `ci`, `smoke`, `planner`, `ab_hash`, `ab_bge`
-Calibration: `calibration_bge = unverified_dependency` because
-`CST_CALIBRATION_OPERATION_CLIENT_REPO` and
-`CST_CALIBRATION_CONSOLE_IOT_REPO` are unavailable.
+Required verified profiles: `ci`, `smoke`, `ab_hash`
+
+Profile status:
 ```
 
-If all eight calibration cases executed successfully, replace the last three
-lines with exactly `Calibration: calibration_bge verified (8/8).`
+For every `unverified_dependency` row, add one bullet naming the missing input:
+planner uses the requests checkout/Ollama/planner model; calibration uses BGE
+plus `CST_CALIBRATION_OPERATION_CLIENT_REPO` and
+`CST_CALIBRATION_CONSOLE_IOT_REPO`; `ab_bge` uses BGE. A `failed` optional
+profile remains `failed`; never rewrite it as an unavailable dependency.
 
 Do not claim Phase 1 cross-language completion merely because the planner fixture exists.
 
@@ -4876,6 +5420,7 @@ git commit -m "docs: mark quality control loop complete"
 - [ ] CI covers frontend, Java/Spring, exact identifier, noise, and localized-CJK behavior without claiming translation.
 - [ ] The English-only dashboard case measures genuine Chinese-to-English planner behavior.
 - [ ] Profile configs control embedding and planner sections without stale fields.
+- [ ] All six profiles pass dependency-free copied-fixture wiring tests.
 - [ ] Source resolution is safe, copied, fallback-aware, and path-redacted.
 - [ ] Report schema v2 includes exact config, counters, planner diagnostics, typed aggregates, and known gaps.
 - [ ] Comparisons implement the complete gate/status matrix, deterministic metric direction, deltas, and non-zero required regression gates.
@@ -4883,8 +5428,10 @@ git commit -m "docs: mark quality control loop complete"
 - [ ] CLI output parents, empty runs, regression exits, and privacy-preserving feedback are tested.
 - [ ] Legacy fixtures are deleted only after parity passes.
 - [ ] Focused and full tests pass.
-- [ ] CI, A/B hash, real smoke, planner, and A/B BGE profiles are verified.
-- [ ] Missing private Java calibration repos are reported as `unverified_dependency`, not passed.
+- [ ] Required `ci`, `ab_hash`, and real `smoke` profiles are verified.
+- [ ] `planner`, `calibration_bge`, and `ab_bge` each have an honest
+  `verified`, `failed`, or `unverified_dependency` status with missing
+  dependencies named.
 - [ ] README, operational guide, design, and roadmap agree on the Phase 0 workflow and status.
 
 ## Execution Handoff
