@@ -208,10 +208,19 @@ DEFAULT_CONFIG
   -> selected profile config
 ```
 
-The selected profile owns embedding and planner behavior. Applying it last means
-a repository default cannot silently turn `calibration_bge` back into hash,
-disable the `planner` profile, or enable a model in `ci`. Repository defaults
-remain useful for repository-specific index and retrieval limits.
+The selected profile owns embedding and planner behavior. For a canonical
+fixture with `profile_configs`, repository `default_config` may contain only
+`index` and `retrieval`; the loader rejects repository-level `embedding` and
+`query_planner` sections. Older v1 fixtures without `profile_configs` keep their
+existing permissive behavior.
+
+Profile `embedding` and `query_planner` sections are rebuilt from their complete
+`DEFAULT_CONFIG` sections and then overlaid with profile values; they are not
+merged onto repository-derived sections. This clears stale `base_url`,
+`api_key_env`, model, timeout, and proxy fields. Profile `index` and `retrieval`
+values, when present, overlay repository defaults field by field. Applying the
+profile last means a repository default cannot silently turn `calibration_bge`
+back into hash, disable the `planner` profile, or enable a model in `ci`.
 
 Every canonical profile has an explicit `profile_configs` entry, including
 profiles whose configuration would otherwise be empty. When `profile_configs`
@@ -272,6 +281,54 @@ queries whose expected source files contain only English identifiers and
 English source text. They run under `planner` or `calibration_bge`, not under
 deterministic hash-only CI.
 
+### N-Of-M Calibration Gates
+
+The legacy Java calibration contract is not “every expected file must appear.”
+It is “at least N members of this expected set must appear within Top K.” Add an
+explicit group to `QualityCase`:
+
+```json
+{
+  "expected_at_least_top_k": [
+    {
+      "matchers": [
+        {"path": "src/main/java/example/AuthController.java"},
+        {"path": "src/main/java/example/AuthService.java"},
+        {"path": "src/main/java/example/AuthServiceImpl.java"}
+      ],
+      "top_k": 5,
+      "min_matches": 2
+    }
+  ]
+}
+```
+
+The contract is:
+
+- `matchers` is non-empty and contains unique matchers;
+- `top_k` is positive;
+- `min_matches` is an integer from zero through the matcher count;
+- every matcher is an independent relevance target for Recall@K and coverage;
+- gating adds one failure only when fewer than `min_matches` distinct matchers
+  appear within `top_k`;
+- members are not also converted into individually required
+  `expected_top_k` assertions;
+- `min_matches: 0` is valid and records relevance metrics without adding a
+  minimum-coverage failure.
+
+Legacy calibration conversion is exact:
+
+- `expected_core` plus `expected_top5_min` becomes one
+  `expected_at_least_top_k` group with `top_k: 5` and the original minimum;
+- each `required_top3` path becomes an individual required
+  `expected_top_k` matcher with `top_k: 3`;
+- each `forbidden_top3` path becomes `absent_top_k` with `top_k: 3`;
+- `known_gap` becomes `known_gap_reason` and does not change the gate.
+
+The existing `expected_top5_min` field remains readable only through the legacy
+adapter. Canonical cases use `expected_at_least_top_k`, which prevents the
+current adapter behavior from accidentally turning a 2-of-5 gate into 5-of-5.
+
 ### Source Resolution
 
 Source selection depends on profile purpose:
@@ -310,8 +367,8 @@ repositories.
 
 - Resolves the four generic repositories through environment variables or
   `CST_SMOKE_REPOS_DIR`.
-- Uses deterministic hash embeddings and keeps the planner disabled unless a
-  repository explicitly belongs to another profile.
+- Uses deterministic hash embeddings and always keeps the planner disabled.
+  Planner cases execute only when `--profile planner` is selected.
 - Contains all 22 generic cases.
 - Missing repositories are reported as skipped, not silently omitted.
 
@@ -390,6 +447,11 @@ the `psf/requests` cases it requires:
 
 - `planner.status == "ok"` rather than `fallback`;
 - a non-empty `repo_profile_hash`;
+- each required planner case has at least one supported value across consumed
+  `rewritten_queries`, `grep_keywords`, and `symbol_hints`;
+- tokenizing those consumed values contributes at least one token to
+  `bundle.expanded_tokens` that was not already produced by tokenizing the
+  original query; an `ok` plan with empty or no-op hints does not pass;
 - consumed `rewritten_queries`, `grep_keywords`, and `symbol_hints` do not
   contain `Spring`, `RestTemplate`, `HttpSession`, or `RestController` under
   Unicode case-insensitive comparison;
@@ -397,6 +459,11 @@ the `psf/requests` cases it requires:
   rejected before retrieval consumed them;
 - all three canonical requests cases satisfy their required Top-5 path gates;
 - the cookie/session case returns `sessions.py` or `cookies.py` in Top 5.
+
+The dashboard cross-language case additionally requires a consumed and expanded
+English token from `{dashboard, statistics, chart}`. This proves that the
+planner supplied the language bridge instead of ordinary retrieval finding the
+file unaided.
 
 The earlier planner notes refer to 3/6 and 5/6 ad hoc smoke counts, while the
 specified canonical requests fixture contains three cases. This design replaces
@@ -407,7 +474,7 @@ planner-diagnostic assertions above. The acceptance record reports both the
 Dependency-free tests use a fake planner and real `QueryBundle` diagnostics to
 verify wiring. The real-model smoke uses local Ollama and a real `psf/requests`
 checkout when available; if unavailable, its status is reported as
-`unverified`, not `passed`.
+`unverified_dependency`, not `passed`.
 
 ## A/B Case Semantics
 
@@ -488,15 +555,23 @@ Every migrated case stores canonical provenance:
 
 The durable 33-case mapping is:
 
-| legacy fixture | repository | canonical case IDs |
+| `legacy.fixture` | repository | canonical case IDs |
 | --- | --- | --- |
-| generic baseline | `imagebed` | `go-upload-handler`, `go-auth-middleware`, `go-storage-implementations`, `go-delete-handler`, `go-route-registration` |
-| generic baseline | `env_change` | `tauri-commands`, `engine-apply-restore`, `frontend-invoke`, `settings-persistence` |
-| generic baseline | `investment_assistant` | `frontend-auth-store`, `collector-handler`, `frontend-sse-composable`, `collector-fund-service`, `collector-nav-fetcher`, `collector-scheduler`, `java-ai-sse-controller` |
-| generic baseline | `program_tool` | `watermark-remover`, `mqtt-tool`, `qrcode-tool`, `json-to-entity`, `app-layout-theme`, `ai-chat` |
-| retrieval calibration | `operation_client` | `operation-client-auth-login-register`, `operation-client-station-device-list`, `operation-client-feedback-sms` |
-| retrieval calibration | `console_iot` | `console-iot-equipment-list`, `console-iot-access-control`, `console-iot-device-status`, `console-iot-alarm`, `console-iot-user-auth` |
-| embedding A/B | `embedding_ab` | `embedding-ab-access-validation`, `embedding-ab-whitelist-management`, `embedding-ab-order-cancel` |
+| `generic_baseline_quality` | `imagebed` | `go-upload-handler`, `go-auth-middleware`, `go-storage-implementations`, `go-delete-handler`, `go-route-registration` |
+| `generic_baseline_quality` | `env_change` | `tauri-commands`, `engine-apply-restore`, `frontend-invoke`, `settings-persistence` |
+| `generic_baseline_quality` | `investment_assistant` | `frontend-auth-store`, `collector-handler`, `frontend-sse-composable`, `collector-fund-service`, `collector-nav-fetcher`, `collector-scheduler`, `java-ai-sse-controller` |
+| `generic_baseline_quality` | `program_tool` | `watermark-remover`, `mqtt-tool`, `qrcode-tool`, `json-to-entity`, `app-layout-theme`, `ai-chat` |
+| `retrieval_calibration` | `operation_client` | `operation-client-auth-login-register`, `operation-client-station-device-list`, `operation-client-feedback-sms` |
+| `retrieval_calibration` | `console_iot` | `console-iot-equipment-list`, `console-iot-access-control`, `console-iot-device-status`, `console-iot-alarm`, `console-iot-user-auth` |
+| `ab_comparison` | `embedding_ab` | `embedding-ab-access-validation`, `embedding-ab-whitelist-management`, `embedding-ab-order-cancel` |
+
+`legacy.key` is also deterministic:
+
+- generic cases use `<repo_key>/<original-case-id>`;
+- calibration cases, whose source fixture has no ID, use
+  `<repo_key>/<canonical-case-id>` from the table;
+- A/B cases, whose source fixture has no ID, use
+  `embedding_ab/<canonical-case-id>` from the table.
 
 The existing canonical `program_tool_snapshot/qrcode-entrypoint` query is the
 same query as legacy `program_tool/qrcode-tool`. Migration keeps the canonical
@@ -562,6 +637,11 @@ absolute source path or any environment-variable value. Temporary workspace
 paths are omitted unless `keep_workspace` is explicitly enabled, in which case
 the preserved debug path is marked as local-only.
 
+`source.type` is exactly one of `snapshot_path`, `path_env`, or `smoke_root`.
+`source.locator` is respectively the repository-relative snapshot path, the
+environment-variable name, or the repository directory name under
+`CST_SMOKE_REPOS_DIR`.
+
 No planner prompt, source snippet, API key, resolved absolute source path, or
 environment-variable value is written into a normal report.
 
@@ -588,10 +668,33 @@ Report aggregates include:
 - typed metric summaries overall and grouped by repository, tag, profile, and
   embedding provider/model.
 
-`executed` means a case produced a `QueryBundle` and an evaluation with status
-`pass`, `fail`, `known_gap`, or `informational`. A query exception is `error`,
-not executed. Each aggregate metric records its own denominator because cases
-may legitimately emit `null`.
+Counter definitions are per case:
+
+- `selected`: repository and case profiles include the selected profile,
+  measured before source resolution;
+- `attempted`: source resolution, copy, and indexing succeeded and the runner
+  invoked `query_repository()` for the case;
+- `executed`: the query returned a `QueryBundle` and evaluation status `pass`,
+  `fail`, `known_gap`, or `informational`;
+- `error`: the selected case received an error record because repository copy,
+  indexing, or its query failed;
+- `skipped`: the selected case could not run because a non-CI source was
+  unavailable.
+
+Repository copy or index failure creates one error record for every selected
+case in that repository but does not increment `attempted`. A query exception
+increments both `attempted` and `error`. Therefore:
+
+```text
+selected = executed + error + skipped
+attempted = executed + query_error
+attempted <= selected
+```
+
+The report may additionally break `error` into repository-setup and query error
+counts. `selected == 0` is an invalid profile run. `executed == 0` is an error
+unless `--allow-empty` is explicit. Each aggregate metric records its own
+denominator because executed cases may legitimately emit `null`.
 
 Aggregation rules are explicit:
 
@@ -649,8 +752,6 @@ Comparison first separates gating from observation:
 - Required baseline `pass -> fail/error/skipped` is a gating regression.
 - Removing a required baseline case is `removed_required` and is a gating
   regression.
-- A required case with no comparable candidate result is
-  `incomparable_required` and is a gating regression.
 - Required `fail/error -> pass` is an improvement.
 - For required comparable cases, loss of Hit@5, an MRR drop greater than 0.25,
   or two or more additional noise results in Top 5 is a gating regression.
@@ -662,8 +763,29 @@ Comparison first separates gating from observation:
 - Removing or skipping a non-required case is an observed coverage change, not
   a gating regression.
 
+Classification precedence is deterministic:
+
+| condition | classification | gating |
+| --- | --- | --- |
+| duplicate case key, unsupported report schema, or a `pass` case missing its required metric object | `invalid_report` | command error |
+| case exists only in candidate | `new_case` | no |
+| required baseline case is absent from candidate | `removed_required` | yes |
+| non-required baseline case is absent from candidate | `removed_observation` | no |
+| required baseline is `pass` and candidate is `fail`, `error`, or `skipped` | `regressed` | yes |
+| required baseline is `fail` or `error` and candidate is `pass` | `improved` | no |
+| required comparable metrics cross a regression threshold | `regressed` | yes |
+| non-required comparable metrics improve or decline | `metric_improvement` or `metric_decline` | no |
+| none of the above | `unchanged_pass`, `unchanged_fail`, or `unchanged_observation` | no |
+
+Repository identity, fixture hash, profile, effective config, and embedding
+differences produce metadata warnings but do not make a report structurally
+incomparable. That permits intentional `ab_hash` versus `ab_bge` comparison.
+Case metrics are compared only when both sides provide the same scalar or rate;
+missing optional metrics are omitted from deltas. The separate
+`incomparable_required` classification is not used.
+
 The compare aggregate exposes `gating_regressions`, `improvements`,
-`observed_declines`, `removed_required`, and `incomparable_required` separately.
+`observed_declines`, and `removed_required` separately.
 The compare command exits non-zero only when gating regressions exist by default.
 An explicit `--allow-regressions` flag permits exploratory comparison without
 changing classifications. There is no strict-informational mode in this
@@ -745,7 +867,7 @@ The guide names every external source variable:
 | Keep Java/Spring coverage | committed Java snapshot plus eight BGE calibration cases | CI Java case and `calibration_bge` profile wiring |
 | Keep generic-language coverage | 22 cases over four repositories | smoke inventory and at least one real-repository acceptance run |
 | Keep frontend workflows | six `program_tool` cases including entrypoints and noise | committed snapshot CI and full smoke profile |
-| Keep genuine Chinese-to-English cases | English-only dashboard target; calibration cases receive the tag only after the same target-text audit | planner/BGE profile cases; status reported as verified or unverified, never inferred from localized comments |
+| Keep genuine Chinese-to-English cases | English-only dashboard target; calibration cases receive the tag only after the same target-text audit | planner/BGE profile cases; status reported as `verified` or `unverified_dependency`, never inferred from localized comments |
 | Standard branch comparison | documented `quality run` and `quality compare` commands | CI self-comparison plus CLI regression-exit tests |
 | Judge ranking changes by deltas | per-case and grouped baseline/candidate/delta output | comparison JSON/Markdown tests |
 | Preserve known fast-context gaps | `known_gap_reason` independent of gate status | report and Markdown known-gap tests |
@@ -765,12 +887,17 @@ after that profile actually runs against an English-only target.
   legacy v1 fixtures without a registry.
 - Reject unknown profiles, duplicates, invalid inheritance, and profile
   invariant violations.
+- Reject canonical repository defaults containing embedding or planner sections.
 - Parse informational A/B matchers and metric K.
+- Parse N-of-M groups, including `min_matches: 0`, and reject impossible
+  minimums or duplicate matchers.
 - Parse and validate canonical legacy provenance.
 
 ### Runner Tests
 
 - Apply configuration precedence in the documented order.
+- Verify profile reconstruction clears stale repository/base URL, API-key,
+  proxy, model, and timeout fields instead of partially merging them.
 - Record each repository's effective config.
 - Prefer external repositories for non-CI profiles and snapshots for CI.
 - Fall back after a missing `path_env` or missing smoke-root child.
@@ -790,6 +917,9 @@ after that profile actually runs against an English-only target.
   latency behavior.
 - Add case-insensitive, unique-path, fixed-denominator Precision@12 and
   noise@12 parity tests for informational cases.
+- Verify a 2-of-5 group passes with any two distinct matches, fails with one,
+  contributes five relevance targets, and does not create five individual
+  required failures.
 - Aggregate boolean success rates, entrypoint Top1/Top3, numeric means, and
   latency p50/p95 overall and by repository, tag, profile, and provider/model.
 - Include informational and executed counts.
@@ -801,8 +931,8 @@ after that profile actually runs against an English-only target.
 - Aggregate deltas across every documented grouping.
 - Preserve regression thresholds.
 - Warn on repository effective-config differences.
-- Treat required pass-to-skipped/error, required removal, and incomparable
-  required cases as gating regressions.
+- Treat required pass-to-skipped/error and required removal as gating
+  regressions; reject malformed reports before classification.
 - Keep informational and known-gap metric declines non-gating.
 - Exit non-zero on gating regressions by default and zero with
   `--allow-regressions`.
@@ -812,6 +942,8 @@ after that profile actually runs against an English-only target.
 - Account for all 33 legacy cases before deleting legacy JSON.
 - Preserve every legacy query exactly.
 - Preserve required, absent, rank, noise, and known-gap intent.
+- Map all eight calibration `expected_core` groups, minimum counts,
+  `required_top3`, and `forbidden_top3` fields with N-of-M parity.
 - Assert exact 22/8/3 provenance counts after legacy JSON is removed.
 - Merge `qrcode-entrypoint` into `program_tool/qrcode-tool` rather than keeping
   a duplicate.
@@ -825,8 +957,11 @@ after that profile actually runs against an English-only target.
   strings.
 - Verify fake-planner wiring without a network dependency.
 - When running the real `psf/requests` smoke, require planner status `ok`, a
-  non-empty repo-profile hash, no unsupported Java/Spring terms in consumed
+  non-empty repo-profile hash, at least one supported consumed hint per case, a
+  genuinely new expanded token, no unsupported Java/Spring terms in consumed
   hints, and 3/3 Top-5 path gates.
+- Require the dashboard case to consume and expand at least one of `dashboard`,
+  `statistics`, or `chart`.
 - Allow unsupported model output only in `discarded_hints`.
 
 ### CLI And Documentation Tests
@@ -864,6 +999,23 @@ conda run -n base cst quality run \
   tests/fixtures/retrieval_quality/queries.json \
   --profile ab_hash \
   --output /tmp/cst-p0-ab-hash.json
+
+CST_SMOKE_REPOS_DIR=/absolute/path/to/real-repositories \
+conda run -n base cst quality run \
+  tests/fixtures/retrieval_quality/queries.json \
+  --profile smoke \
+  --output /tmp/cst-p0-smoke.json \
+  --markdown /tmp/cst-p0-smoke.md
+
+conda run -n base python -c '
+import json
+report = json.load(open("/tmp/cst-p0-smoke.json", encoding="utf-8"))
+assert report["aggregate"]["executed"] > 0
+assert any(
+    repo["source"]["type"] in {"path_env", "smoke_root"}
+    for repo in report["repos"]
+)
+'
 ```
 
 Acceptance checks confirm:
@@ -892,7 +1044,7 @@ All profiles still have dependency-free end-to-end wiring tests.
 
 The profile-status record belongs in the implementation handoff, not in a
 generated committed report. Phase 1 cannot be declared complete while its real
-cross-language profile remains unverified.
+cross-language profile remains `unverified_dependency`.
 
 ## Risks And Mitigations
 
@@ -953,6 +1105,8 @@ target for `cross_language` cases.
 Phase 0 is complete when:
 
 - one canonical catalog owns all 33 legacy cases;
+- all eight calibration cases preserve their exact N-of-M, required Top-3, and
+  forbidden Top-3 semantics;
 - deterministic CI covers frontend, Java/Spring, exact identifiers, noise, and
   localized-CJK lexical behavior without claiming translation;
 - the catalog and model profiles preserve genuine Chinese-to-English cases with
