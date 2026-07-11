@@ -17,6 +17,9 @@ from context_search_tool.manifest import Manifest
 from context_search_tool.quality.cases import QualityRepo
 from context_search_tool.quality.runner import (
     ResolvedSource,
+    _content_identity,
+    _copy_source_repo,
+    _effective_config,
     _resolve_repo_source,
     run_quality_fixture,
 )
@@ -684,3 +687,418 @@ def test_all_canonical_profiles_wire_without_external_dependencies(
         assert (workspace / "source.txt").is_file()
     finally:
         shutil.rmtree(workspace.parent, ignore_errors=True)
+
+
+@pytest.mark.parametrize(
+    "unsafe_repo_key",
+    [
+        pytest.param("<absolute>", id="absolute"),
+        pytest.param("..", id="parent"),
+        pytest.param("../escape", id="parent-child"),
+        pytest.param("a/b", id="forward-slash"),
+        pytest.param(r"a\b", id="backslash"),
+        pytest.param("./alias", id="dot-alias"),
+    ],
+)
+def test_quality_runner_rejects_unsafe_repo_keys_without_leaking_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unsafe_repo_key: str,
+) -> None:
+    source = _write_source_repo(tmp_path)
+    temp_root = tmp_path / "temp-root"
+    absolute_escape = tmp_path / "absolute-escape"
+    parent_escape = tmp_path / "escape"
+    repo_key = (
+        str(absolute_escape) if unsafe_repo_key == "<absolute>" else unsafe_repo_key
+    )
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "repos": [
+                {
+                    "repo_key": repo_key,
+                    "snapshot_path": str(source),
+                    "profiles": ["ci"],
+                    "queries": [{"id": "target", "query": "targetToken"}],
+                }
+            ],
+        },
+    )
+    captured: list[tuple[Path, ToolConfig]] = []
+    _patch_runner_dependencies(monkeypatch, captured)
+
+    def fake_mkdtemp(*, prefix: str) -> str:
+        assert prefix == "cst-quality-"
+        temp_root.mkdir()
+        return str(temp_root)
+
+    monkeypatch.setattr(
+        "context_search_tool.quality.runner.tempfile.mkdtemp",
+        fake_mkdtemp,
+    )
+
+    try:
+        with pytest.raises(ValueError, match=r"repo_key.*safe.*component"):
+            run_quality_fixture(
+                fixture,
+                profile="ci",
+                output_path=None,
+                markdown_path=None,
+            )
+        assert not temp_root.exists()
+        assert not absolute_escape.exists()
+        assert not parent_escape.exists()
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+        shutil.rmtree(absolute_escape, ignore_errors=True)
+        shutil.rmtree(parent_escape, ignore_errors=True)
+
+
+@pytest.mark.parametrize("repo_key", ["sample_repo", "sample-repo", "仓库"])
+def test_quality_runner_keeps_safe_repo_keys_inside_temp_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repo_key: str,
+) -> None:
+    source = _write_source_repo(tmp_path)
+    temp_root = tmp_path / "temp-root"
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "repos": [
+                {
+                    "repo_key": repo_key,
+                    "snapshot_path": str(source),
+                    "profiles": ["ci"],
+                    "queries": [{"id": "target", "query": "targetToken"}],
+                }
+            ],
+        },
+    )
+    captured: list[tuple[Path, ToolConfig]] = []
+    _patch_runner_dependencies(monkeypatch, captured)
+
+    def fake_mkdtemp(*, prefix: str) -> str:
+        assert prefix == "cst-quality-"
+        temp_root.mkdir()
+        return str(temp_root)
+
+    monkeypatch.setattr(
+        "context_search_tool.quality.runner.tempfile.mkdtemp",
+        fake_mkdtemp,
+    )
+
+    try:
+        report = run_quality_fixture(
+            fixture,
+            profile="ci",
+            output_path=None,
+            markdown_path=None,
+            keep_workspace=True,
+        )
+
+        workspace = captured[0][0]
+        assert workspace == (temp_root / repo_key).resolve()
+        assert workspace.parent == temp_root.resolve()
+        assert report["repos"][0]["workspace"]["path"] == str(workspace)
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+@pytest.mark.parametrize(
+    "unsafe_repo_dir_name",
+    [
+        pytest.param("<absolute>", id="absolute"),
+        pytest.param("..", id="parent"),
+        pytest.param("../external", id="parent-child"),
+        pytest.param("a/b", id="forward-slash"),
+        pytest.param(r"a\b", id="backslash"),
+    ],
+)
+def test_smoke_source_rejects_unsafe_repo_dir_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unsafe_repo_dir_name: str,
+) -> None:
+    smoke_root = tmp_path / "smoke"
+    smoke_root.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    (smoke_root / "a" / "b").mkdir(parents=True)
+    (smoke_root / r"a\b").mkdir()
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    repo_dir_name = (
+        str(external)
+        if unsafe_repo_dir_name == "<absolute>"
+        else unsafe_repo_dir_name
+    )
+    repo = QualityRepo(
+        repo_key="sample",
+        repo_dir_name=repo_dir_name,
+        snapshot_path=str(snapshot),
+        profiles=("smoke",),
+    )
+    monkeypatch.setenv("CST_SMOKE_REPOS_DIR", str(smoke_root))
+
+    with pytest.raises(ValueError, match=r"repo_dir_name.*safe.*component"):
+        _resolve_repo_source(repo, tmp_path / "quality.json", "smoke")
+
+
+def test_smoke_source_rejects_child_symlink_escaping_resolved_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smoke_root = tmp_path / "smoke"
+    smoke_root.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    (smoke_root / "sample").symlink_to(external, target_is_directory=True)
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    repo = QualityRepo(
+        repo_key="sample",
+        repo_dir_name="sample",
+        snapshot_path=str(snapshot),
+        profiles=("smoke",),
+    )
+    monkeypatch.setenv("CST_SMOKE_REPOS_DIR", str(smoke_root))
+
+    with pytest.raises(ValueError, match=r"repo_dir_name.*escape"):
+        _resolve_repo_source(repo, tmp_path / "quality.json", "smoke")
+
+
+def test_smoke_source_keeps_safe_child_and_component_locator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smoke_root = tmp_path / "smoke"
+    source = smoke_root / "safe_repo-仓库"
+    source.mkdir(parents=True)
+    repo = QualityRepo(
+        repo_key="sample",
+        repo_dir_name="safe_repo-仓库",
+        profiles=("smoke",),
+    )
+    monkeypatch.setenv("CST_SMOKE_REPOS_DIR", str(smoke_root))
+
+    assert _resolve_repo_source(
+        repo,
+        tmp_path / "quality.json",
+        "smoke",
+    ) == ResolvedSource(
+        source.resolve(),
+        "smoke_root",
+        "safe_repo-仓库",
+    )
+
+
+@pytest.mark.parametrize(
+    "snapshot_path",
+    [
+        pytest.param("../private", id="parent"),
+        pytest.param("snapshots/../../private", id="nested-parent"),
+        pytest.param(r"..\private", id="backslash-parent"),
+        pytest.param(r"snapshots\..\private", id="nested-backslash-parent"),
+        pytest.param(r"\private", id="rooted-backslash"),
+        pytest.param(r"C:\private", id="windows-drive"),
+    ],
+)
+def test_snapshot_source_rejects_unsafe_relative_paths(
+    tmp_path: Path,
+    snapshot_path: str,
+) -> None:
+    fixture_dir = tmp_path / "fixtures"
+    fixture_dir.mkdir()
+    (tmp_path / "private").mkdir()
+    repo = QualityRepo(
+        repo_key="sample",
+        snapshot_path=snapshot_path,
+        profiles=("ci",),
+    )
+
+    with pytest.raises(ValueError, match=r"snapshot_path.*safe relative"):
+        _resolve_repo_source(repo, fixture_dir / "quality.json", "ci")
+
+
+@pytest.mark.parametrize(
+    ("snapshot_path", "locator"),
+    [
+        pytest.param("snapshots/nested", "snapshots/nested", id="posix"),
+        pytest.param(r"snapshots\nested", "snapshots/nested", id="backslash"),
+        pytest.param("./snapshots/nested", "snapshots/nested", id="dot"),
+    ],
+)
+def test_snapshot_source_normalizes_safe_nested_relative_paths(
+    tmp_path: Path,
+    snapshot_path: str,
+    locator: str,
+) -> None:
+    fixture_dir = tmp_path / "fixtures"
+    source = fixture_dir / "snapshots" / "nested"
+    source.mkdir(parents=True)
+    repo = QualityRepo(
+        repo_key="sample",
+        snapshot_path=snapshot_path,
+        profiles=("ci",),
+    )
+
+    assert _resolve_repo_source(
+        repo,
+        fixture_dir / "quality.json",
+        "ci",
+    ) == ResolvedSource(
+        source.resolve(),
+        "snapshot_path",
+        locator,
+    )
+
+
+def test_snapshot_source_allows_absolute_directory_with_redacted_locator(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "absolute-source"
+    source.mkdir()
+    repo = QualityRepo(
+        repo_key="sample",
+        snapshot_path=str(source),
+        profiles=("ci",),
+    )
+
+    assert _resolve_repo_source(
+        repo,
+        tmp_path / "quality.json",
+        "ci",
+    ) == ResolvedSource(
+        source.resolve(),
+        "snapshot_path",
+        "absolute-source",
+    )
+
+
+def test_snapshot_source_rejects_relative_symlink_escape(tmp_path: Path) -> None:
+    fixture_dir = tmp_path / "fixtures"
+    fixture_dir.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    (fixture_dir / "snapshot").symlink_to(external, target_is_directory=True)
+    repo = QualityRepo(
+        repo_key="sample",
+        snapshot_path="snapshot",
+        profiles=("ci",),
+    )
+
+    with pytest.raises(ValueError, match=r"snapshot_path.*escape"):
+        _resolve_repo_source(repo, fixture_dir / "quality.json", "ci")
+
+
+def test_snapshot_source_rejects_absolute_top_level_symlink(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    snapshot_link = tmp_path / "snapshot-link"
+    snapshot_link.symlink_to(source, target_is_directory=True)
+    repo = QualityRepo(
+        repo_key="sample",
+        snapshot_path=str(snapshot_link),
+        profiles=("ci",),
+    )
+
+    with pytest.raises(ValueError, match=r"snapshot_path.*symlink"):
+        _resolve_repo_source(repo, tmp_path / "quality.json", "ci")
+
+
+def test_copy_source_repo_ignores_nested_file_and_directory_symlinks(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    nested = source / "nested"
+    nested.mkdir(parents=True)
+    (source / "normal.txt").write_text("normal\n", encoding="utf-8")
+    external_file = tmp_path / "external.txt"
+    external_file.write_text("private\n", encoding="utf-8")
+    external_dir = tmp_path / "external-dir"
+    external_dir.mkdir()
+    (external_dir / "private.txt").write_text("private\n", encoding="utf-8")
+    (nested / "file-link.txt").symlink_to(external_file)
+    (nested / "dir-link").symlink_to(external_dir, target_is_directory=True)
+    workspace = tmp_path / "workspace"
+
+    _copy_source_repo(source, workspace)
+
+    assert (workspace / "normal.txt").read_text(encoding="utf-8") == "normal\n"
+    assert not (workspace / "nested" / "file-link.txt").exists()
+    assert not (workspace / "nested" / "file-link.txt").is_symlink()
+    assert not (workspace / "nested" / "dir-link").exists()
+    assert not (workspace / "nested" / "dir-link").is_symlink()
+
+
+def test_content_identity_skips_symlink_files_but_hashes_normal_files(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    normal = source / "normal.txt"
+    normal.write_text("normal-v1\n", encoding="utf-8")
+    external = tmp_path / "external.txt"
+    external.write_text("external-v1\n", encoding="utf-8")
+    (source / "external-link.txt").symlink_to(external)
+
+    original_identity = _content_identity(source)
+    external.write_text("external-v2\n", encoding="utf-8")
+    after_external_change = _content_identity(source)
+
+    assert after_external_change == original_identity
+
+    normal.write_text("normal-v2\n", encoding="utf-8")
+    assert _content_identity(source) != after_external_change
+
+
+def test_effective_config_copies_base_and_default_index_lists() -> None:
+    original_default_include = list(DEFAULT_CONFIG.index.include)
+    original_default_exclude = list(DEFAULT_CONFIG.index.exclude)
+    custom_base = ToolConfig(
+        index=IndexConfig(include=["base-include"], exclude=["base-exclude"])
+    )
+
+    try:
+        custom_first = _effective_config(custom_base, {}, {})
+        custom_second = _effective_config(custom_base, {}, {})
+        default_first = _effective_config(DEFAULT_CONFIG, {}, {})
+        default_second = _effective_config(DEFAULT_CONFIG, {}, {})
+
+        custom_first.index.include.append("mutated-include")
+        custom_first.index.exclude.append("mutated-exclude")
+        default_first.index.include.append("mutated-default-include")
+        default_first.index.exclude.append("mutated-default-exclude")
+
+        assert custom_base.index.include == ["base-include"]
+        assert custom_base.index.exclude == ["base-exclude"]
+        assert custom_second.index.include == ["base-include"]
+        assert custom_second.index.exclude == ["base-exclude"]
+        assert DEFAULT_CONFIG.index.include == original_default_include
+        assert DEFAULT_CONFIG.index.exclude == original_default_exclude
+        assert default_second.index.include == original_default_include
+        assert default_second.index.exclude == original_default_exclude
+    finally:
+        DEFAULT_CONFIG.index.include[:] = original_default_include
+        DEFAULT_CONFIG.index.exclude[:] = original_default_exclude
+
+
+def test_effective_config_copies_repo_and_profile_override_lists() -> None:
+    repo_include = ["repo-include"]
+    profile_exclude = ["profile-exclude"]
+    repo_overrides = {"index": {"include": repo_include}}
+    profile_overrides = {"index": {"exclude": profile_exclude}}
+
+    first = _effective_config(DEFAULT_CONFIG, repo_overrides, profile_overrides)
+    second = _effective_config(DEFAULT_CONFIG, repo_overrides, profile_overrides)
+    first.index.include.append("mutated-include")
+    first.index.exclude.append("mutated-exclude")
+
+    assert repo_include == ["repo-include"]
+    assert profile_exclude == ["profile-exclude"]
+    assert second.index.include == ["repo-include"]
+    assert second.index.exclude == ["profile-exclude"]

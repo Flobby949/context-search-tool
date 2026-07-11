@@ -6,9 +6,10 @@ import os
 import shutil
 import tempfile
 import time
+from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from context_search_tool.config import DEFAULT_CONFIG, ToolConfig
@@ -56,7 +57,7 @@ def run_quality_fixture(
     if profile not in fixture.profile_configs:
         raise ValueError(f"unknown quality profile: {profile}")
 
-    temp_root = Path(tempfile.mkdtemp(prefix="cst-quality-"))
+    temp_root = Path(tempfile.mkdtemp(prefix="cst-quality-")).resolve()
     repos: list[dict[str, Any]] = []
     cases: list[dict[str, Any]] = []
 
@@ -70,6 +71,7 @@ def run_quality_fixture(
             if profile not in repo.profiles or not selected_cases:
                 continue
 
+            workspace_component = _safe_path_component(repo.repo_key, "repo_key")
             profile_overrides = fixture.profile_configs[profile]
             base_config = DEFAULT_CONFIG if fixture.canonical else config
             repo_config = _effective_config(
@@ -94,7 +96,9 @@ def run_quality_fixture(
                 )
                 continue
 
-            workspace = temp_root / repo.repo_key
+            workspace = (temp_root / workspace_component).resolve()
+            if workspace.parent != temp_root:
+                raise ValueError("repo_key must be a safe path component")
             _copy_source_repo(source.path, workspace)
 
             try:
@@ -188,7 +192,8 @@ def _effective_config(
     repo_overrides: dict[str, Any],
     profile_overrides: dict[str, Any],
 ) -> ToolConfig:
-    result = _apply_config_sections(base, repo_overrides)
+    result = _apply_config_sections(deepcopy(base), deepcopy(repo_overrides))
+    profile_overrides = deepcopy(profile_overrides)
     if "index" in profile_overrides:
         result = replace(
             result,
@@ -246,11 +251,19 @@ def _resolve_repo_source(
             if source is not None:
                 return ResolvedSource(source, "path_env", repo.path_env)
     if repo.repo_dir_name:
+        repo_dir_name = _safe_path_component(repo.repo_dir_name, "repo_dir_name")
         smoke_root = os.environ.get("CST_SMOKE_REPOS_DIR")
         if smoke_root:
-            source = _existing_directory(Path(smoke_root) / repo.repo_dir_name)
-            if source is not None:
-                return ResolvedSource(source, "smoke_root", repo.repo_dir_name)
+            resolved_root = _existing_directory(smoke_root)
+            if resolved_root is not None:
+                source = (resolved_root / repo_dir_name).resolve()
+                if source == resolved_root or not source.is_relative_to(resolved_root):
+                    raise ValueError(
+                        "repo_dir_name escapes CST_SMOKE_REPOS_DIR: "
+                        f"{repo_dir_name}"
+                    )
+                if source.is_dir():
+                    return ResolvedSource(source, "smoke_root", repo_dir_name)
     if repo.snapshot_path:
         source = _existing_directory(
             _resolve_snapshot_path(fixture_path, repo.snapshot_path)
@@ -269,25 +282,68 @@ def _existing_directory(raw_path: str | Path) -> Path | None:
     return path if path.is_dir() else None
 
 
+def _safe_path_component(value: str, field_name: str) -> str:
+    if (
+        not value
+        or value in {".", ".."}
+        or Path(value).is_absolute()
+        or "/" in value
+        or "\\" in value
+    ):
+        raise ValueError(f"{field_name} must be a safe path component")
+    return value
+
+
 def _safe_snapshot_locator(raw_path: str) -> str:
     path = Path(raw_path).expanduser()
-    return path.name if path.is_absolute() else path.as_posix()
+    if path.is_absolute():
+        return path.name
+    return _safe_relative_snapshot_path(raw_path).as_posix()
 
 
 def _resolve_snapshot_path(fixture_path: Path, raw_path: str) -> Path:
     path = Path(raw_path).expanduser()
     if path.is_absolute():
+        if path.is_symlink():
+            raise ValueError("snapshot_path must not be a top-level symlink")
         return path.resolve()
 
-    fixture_relative = (fixture_path.parent / path).resolve()
-    if fixture_relative.exists():
-        return fixture_relative
-    return (Path.cwd() / path).resolve()
+    relative = _safe_relative_snapshot_path(raw_path)
+    fixture_root = fixture_path.parent.resolve()
+    fixture_candidate = fixture_root / relative
+    if fixture_candidate.exists() or fixture_candidate.is_symlink():
+        return _contained_snapshot_path(fixture_root, fixture_candidate)
+
+    cwd_root = Path.cwd().resolve()
+    return _contained_snapshot_path(cwd_root, cwd_root / relative)
+
+
+def _safe_relative_snapshot_path(raw_path: str) -> Path:
+    normalized = raw_path.replace("\\", "/")
+    windows_path = PureWindowsPath(raw_path)
+    if normalized.startswith("/") or windows_path.drive:
+        raise ValueError("snapshot_path must be a safe relative path")
+
+    relative = PurePosixPath(normalized)
+    if ".." in relative.parts:
+        raise ValueError("snapshot_path must be a safe relative path")
+    return Path(*relative.parts)
+
+
+def _contained_snapshot_path(root: Path, candidate: Path) -> Path:
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError("snapshot_path escapes its relative base")
+    return resolved
 
 
 def _copy_source_repo(source: Path, workspace: Path) -> None:
-    def ignore(_directory: str, names: list[str]) -> set[str]:
-        return {name for name in names if name in _COPY_EXCLUDES}
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        return {
+            name
+            for name in names
+            if name in _COPY_EXCLUDES or (Path(directory) / name).is_symlink()
+        }
 
     shutil.copytree(source, workspace, ignore=ignore)
 
@@ -410,7 +466,7 @@ def _config_hash(config: ToolConfig) -> str:
 def _content_identity(root: Path) -> str:
     digest = hashlib.sha256()
     for path in sorted(root.rglob("*")):
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
             continue
         relative = path.relative_to(root)
         if any(part in {".git", ".context-search"} for part in relative.parts):
