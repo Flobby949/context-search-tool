@@ -4,8 +4,10 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import tempfile
 import time
+import unicodedata
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -37,6 +39,23 @@ _COPY_EXCLUDES = {
     "__pycache__",
 }
 
+_WINDOWS_RESERVED_NAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{number}" for number in range(1, 10)),
+    *(f"lpt{number}" for number in range(1, 10)),
+}
+
+_DESCRIPTOR_COPY_SUPPORTED = (
+    os.name == "posix"
+    and hasattr(os, "O_DIRECTORY")
+    and hasattr(os, "O_NOFOLLOW")
+    and os.open in os.supports_dir_fd
+    and os.scandir in os.supports_fd
+)
+
 
 @dataclass(frozen=True)
 class ResolvedSource:
@@ -60,6 +79,7 @@ def run_quality_fixture(
     temp_root = Path(tempfile.mkdtemp(prefix="cst-quality-")).resolve()
     repos: list[dict[str, Any]] = []
     cases: list[dict[str, Any]] = []
+    workspace_identities: set[str] = set()
 
     try:
         for repo in fixture.repos:
@@ -72,6 +92,13 @@ def run_quality_fixture(
                 continue
 
             workspace_component = _safe_path_component(repo.repo_key, "repo_key")
+            workspace_identity = unicodedata.normalize(
+                "NFC",
+                workspace_component,
+            ).casefold()
+            if workspace_identity in workspace_identities:
+                raise ValueError(f"duplicate workspace repo_key: {repo.repo_key}")
+            workspace_identities.add(workspace_identity)
             profile_overrides = fixture.profile_configs[profile]
             base_config = DEFAULT_CONFIG if fixture.canonical else config
             repo_config = _effective_config(
@@ -99,12 +126,15 @@ def run_quality_fixture(
             workspace = (temp_root / workspace_component).resolve()
             if workspace.parent != temp_root:
                 raise ValueError("repo_key must be a safe path component")
-            _copy_source_repo(source.path, workspace)
 
             try:
+                _copy_source_repo(source.path, workspace)
                 summary = index_repository(workspace, repo_config)
                 manifest = load_manifest(workspace)
+                git_commit = _git_commit(source.path)
+                content_hash = _content_identity(workspace)
             except Exception as exc:
+                shutil.rmtree(workspace, ignore_errors=True)
                 cases.extend(
                     _case_records_for_cases(
                         repo.repo_key,
@@ -121,8 +151,8 @@ def run_quality_fixture(
                     "source": {
                         "type": source.source_type,
                         "path": source.locator,
-                        "git_commit": _git_commit(source.path),
-                        "content_hash": _content_identity(source.path),
+                        "git_commit": git_commit,
+                        "content_hash": content_hash,
                     },
                     "workspace": {
                         "path": str(workspace),
@@ -283,12 +313,17 @@ def _existing_directory(raw_path: str | Path) -> Path | None:
 
 
 def _safe_path_component(value: str, field_name: str) -> str:
+    windows_path = PureWindowsPath(value)
+    windows_basename = value.split(".", 1)[0].casefold()
     if (
         not value
         or value in {".", ".."}
         or Path(value).is_absolute()
+        or bool(windows_path.drive)
         or "/" in value
         or "\\" in value
+        or value.endswith((".", " "))
+        or windows_basename in _WINDOWS_RESERVED_NAMES
     ):
         raise ValueError(f"{field_name} must be a safe path component")
     return value
@@ -338,14 +373,158 @@ def _contained_snapshot_path(root: Path, candidate: Path) -> Path:
 
 
 def _copy_source_repo(source: Path, workspace: Path) -> None:
-    def ignore(directory: str, names: list[str]) -> set[str]:
-        return {
-            name
-            for name in names
-            if name in _COPY_EXCLUDES or (Path(directory) / name).is_symlink()
-        }
+    """Copy regular files/directories while omitting all link-like entries."""
+    if _descriptor_copy_supported():
+        _copy_source_repo_with_descriptors(source, workspace)
+        return
+    _copy_source_repo_fallback(source, workspace)
 
-    shutil.copytree(source, workspace, ignore=ignore)
+
+def _descriptor_copy_supported() -> bool:
+    return _DESCRIPTOR_COPY_SUPPORTED
+
+
+def _copy_source_repo_with_descriptors(source: Path, workspace: Path) -> None:
+    directory_flags = (
+        os.O_RDONLY
+        | os.O_DIRECTORY
+        | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    source_fd = _open_directory_no_follow(source, directory_flags)
+    try:
+        workspace.mkdir()
+        _copy_directory_fd(source_fd, source, workspace, directory_flags)
+    finally:
+        os.close(source_fd)
+
+
+def _open_directory_no_follow(path: Path, flags: int) -> int:
+    if path.is_absolute():
+        current_fd = os.open(path.anchor, flags)
+        parts = path.parts[1:]
+    else:
+        current_fd = os.open(".", flags)
+        parts = path.parts
+
+    try:
+        for part in parts:
+            child_fd = os.open(part, flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = child_fd
+    except Exception:
+        os.close(current_fd)
+        raise
+    return current_fd
+
+
+def _copy_directory_fd(
+    source_fd: int,
+    source: Path,
+    destination: Path,
+    directory_flags: int,
+) -> None:
+    with os.scandir(source_fd) as iterator:
+        entries = sorted(iterator, key=lambda entry: entry.name)
+
+    file_flags = (
+        os.O_RDONLY
+        | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    for entry in entries:
+        if entry.name in _COPY_EXCLUDES:
+            continue
+
+        source_child = source / entry.name
+        if entry.is_symlink() or _is_junction_or_reparse(source_child):
+            continue
+
+        destination_child = destination / entry.name
+        if entry.is_dir(follow_symlinks=False):
+            child_fd = os.open(entry.name, directory_flags, dir_fd=source_fd)
+            try:
+                destination_child.mkdir()
+                _copy_directory_fd(
+                    child_fd,
+                    source_child,
+                    destination_child,
+                    directory_flags,
+                )
+            finally:
+                os.close(child_fd)
+            continue
+
+        if not entry.is_file(follow_symlinks=False):
+            continue
+
+        file_fd = os.open(entry.name, file_flags, dir_fd=source_fd)
+        try:
+            file_status = os.fstat(file_fd)
+            if not stat.S_ISREG(file_status.st_mode):
+                continue
+            source_file = os.fdopen(file_fd, "rb")
+            file_fd = -1
+            with source_file:
+                with destination_child.open("xb") as destination_file:
+                    shutil.copyfileobj(source_file, destination_file)
+        finally:
+            if file_fd >= 0:
+                os.close(file_fd)
+
+
+def _copy_source_repo_fallback(source: Path, workspace: Path) -> None:
+    if source.is_symlink() or _is_junction_or_reparse(source):
+        raise ValueError("source repository must not be a symlink or reparse point")
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        ignored: set[str] = set()
+        for name in names:
+            path = Path(directory) / name
+            if name in _COPY_EXCLUDES:
+                ignored.add(name)
+                continue
+            try:
+                mode = path.lstat().st_mode
+            except OSError:
+                ignored.add(name)
+                continue
+            if _is_junction_or_reparse(path) and not stat.S_ISLNK(mode):
+                ignored.add(name)
+            elif not (
+                stat.S_ISDIR(mode) or stat.S_ISREG(mode) or stat.S_ISLNK(mode)
+            ):
+                ignored.add(name)
+        return ignored
+
+    shutil.copytree(source, workspace, symlinks=True, ignore=ignore)
+    _remove_link_like_entries(workspace)
+
+
+def _remove_link_like_entries(directory: Path) -> None:
+    with os.scandir(directory) as iterator:
+        entries = list(iterator)
+    for entry in entries:
+        path = directory / entry.name
+        if entry.is_symlink() or _is_junction_or_reparse(path):
+            path.unlink(missing_ok=True)
+        elif entry.is_dir(follow_symlinks=False):
+            _remove_link_like_entries(path)
+        elif not entry.is_file(follow_symlinks=False):
+            path.unlink(missing_ok=True)
+
+
+def _is_junction_or_reparse(path: Path) -> bool:
+    is_junction = getattr(path, "is_junction", None)
+    if is_junction is not None and is_junction():
+        return True
+    try:
+        file_attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    except OSError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(reparse_flag and file_attributes & reparse_flag)
 
 
 def _report(
