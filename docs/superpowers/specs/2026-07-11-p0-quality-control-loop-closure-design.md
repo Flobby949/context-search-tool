@@ -801,9 +801,11 @@ Metric direction is defined once:
 Floating values whose absolute delta is at most `1e-12` are ties. For required
 `pass -> pass`, only the existing protected thresholds gate: Hit@5 true-to-false,
 MRR drop greater than 0.25, or Top-5 noise increase of at least 2. A protected
-decline takes precedence over any simultaneous improvement; otherwise a
-protected improvement produces `improved`, and smaller/mixed non-threshold
-changes produce `unchanged_pass` with all deltas retained.
+decline takes precedence over any simultaneous improvement. Protected
+improvement is exactly Hit@5 false-to-true, MRR gain greater than 0.25, or
+Top-5 noise reduction of at least 2. If no protected decline exists and at least
+one protected improvement exists, classification is `improved`; smaller or
+mixed non-threshold changes produce `unchanged_pass` with all deltas retained.
 
 For matching non-required executed cases, any decline-direction metric produces
 `metric_decline`, even if another metric improves. With no decline, any
