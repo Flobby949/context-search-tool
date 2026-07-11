@@ -148,6 +148,7 @@ def test_quality_runner_copies_repo_without_mutating_source(tmp_path: Path) -> N
 
     repo_record = report["repos"][0]
     assert repo_record["workspace"]["copied"] is True
+    assert repo_record["workspace"]["preserved"] is True
     assert repo_record["index"]["embedding_config_hash"]
     assert repo_record["index"]["config_hash"].startswith("sha256:")
 
@@ -379,10 +380,116 @@ def test_quality_runner_contains_copy_errors_and_continues_later_repos(
             "first",
             "second",
         ]
-        assert report["repos"][0]["index"] == {"status": "error"}
+        first_repo = report["repos"][0]
+        assert first_repo["source"]["git_commit"] is None
+        assert first_repo["source"]["content_hash"] is None
+        assert first_repo["workspace"] == {"copied": False, "preserved": False}
+        assert first_repo["index"] == {"status": "error"}
         assert [workspace.name for workspace, _config in captured] == ["second"]
         assert not (temp_root / "first").exists()
         assert (temp_root / "second").is_dir()
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_quality_runner_retains_copied_provenance_when_index_setup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_source_repo(tmp_path).resolve()
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "snapshot_path": str(source),
+                    "profiles": ["ci"],
+                    "queries": [{"id": "target", "query": "target"}],
+                }
+            ],
+        },
+    )
+    git_commit = "1234567890abcdef1234567890abcdef12345678"
+    expected_content_hash = _content_identity(source)
+    copied_workspaces: list[Path] = []
+
+    def fail_index(repo: Path, config: ToolConfig) -> IndexSummary:
+        copied_workspaces.append(repo)
+        raise RuntimeError("index exploded")
+
+    monkeypatch.setattr(quality_runner, "_git_commit", lambda path: git_commit)
+    monkeypatch.setattr(quality_runner, "index_repository", fail_index)
+
+    report = run_quality_fixture(
+        fixture,
+        profile="ci",
+        output_path=None,
+        markdown_path=None,
+        allow_empty=True,
+    )
+
+    repo = report["repos"][0]
+    assert repo["source"]["git_commit"] == git_commit
+    assert repo["source"]["content_hash"].startswith("sha256:")
+    assert repo["source"]["content_hash"] == expected_content_hash
+    assert repo["workspace"] == {"copied": True, "preserved": False}
+    assert repo["index"] == {"status": "error"}
+    assert report["cases"][0]["status"] == "error"
+    assert report["cases"][0]["attempted"] is False
+    assert copied_workspaces and not copied_workspaces[0].exists()
+
+
+def test_quality_runner_does_not_advertise_cleaned_failed_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_source_repo(tmp_path).resolve()
+    temp_root = (tmp_path / "temp-root").resolve()
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "snapshot_path": str(source),
+                    "profiles": ["ci"],
+                    "queries": [{"id": "target", "query": "target"}],
+                }
+            ],
+        },
+    )
+    copied_workspaces: list[Path] = []
+
+    def fail_index(repo: Path, config: ToolConfig) -> IndexSummary:
+        copied_workspaces.append(repo)
+        raise RuntimeError("index exploded")
+
+    def fake_mkdtemp(*, prefix: str) -> str:
+        assert prefix == "cst-quality-"
+        temp_root.mkdir()
+        return str(temp_root)
+
+    monkeypatch.setattr(quality_runner, "index_repository", fail_index)
+    monkeypatch.setattr(quality_runner.tempfile, "mkdtemp", fake_mkdtemp)
+
+    try:
+        report = run_quality_fixture(
+            fixture,
+            profile="ci",
+            output_path=None,
+            markdown_path=None,
+            keep_workspace=True,
+            allow_empty=True,
+        )
+
+        repo = report["repos"][0]
+        assert repo["workspace"] == {"copied": True, "preserved": False}
+        assert "path" not in repo["workspace"]
+        assert copied_workspaces and not copied_workspaces[0].exists()
+        assert str(copied_workspaces[0]) not in json.dumps(repo)
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
@@ -394,7 +501,7 @@ def test_quality_runner_contains_copy_errors_and_continues_later_repos(
         pytest.param("content_identity", "identity denied", id="content-identity"),
     ],
 )
-def test_quality_runner_contains_post_index_setup_errors(
+def test_quality_runner_contains_provenance_setup_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     failure_stage: str,
@@ -479,10 +586,7 @@ def test_quality_runner_contains_post_index_setup_errors(
             "second",
         ]
         assert report["repos"][0]["index"] == {"status": "error"}
-        assert [workspace.name for workspace, _config in captured] == [
-            "first",
-            "second",
-        ]
+        assert [workspace.name for workspace, _config in captured] == ["second"]
         assert not (temp_root / "first").exists()
         assert (temp_root / "second").is_dir()
     finally:

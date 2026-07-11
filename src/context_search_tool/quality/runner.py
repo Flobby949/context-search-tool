@@ -168,12 +168,14 @@ def run_quality_fixture(
             try:
                 _copy_source_repo(source.path, workspace)
                 repo_record["workspace"]["copied"] = True
-                summary = index_repository(workspace, repo_config)
-                manifest = load_manifest(workspace)
                 repo_record["source"]["git_commit"] = _git_commit(source.path)
                 repo_record["source"]["content_hash"] = _content_identity(workspace)
+                summary = index_repository(workspace, repo_config)
+                manifest = load_manifest(workspace)
             except Exception as exc:
                 shutil.rmtree(workspace, ignore_errors=True)
+                repo_record["workspace"]["preserved"] = False
+                repo_record["workspace"].pop("path", None)
                 repo_record["index"] = {"status": "error"}
                 cases.extend(
                     _case_records_for_cases(
