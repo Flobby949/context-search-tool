@@ -3,6 +3,7 @@ import ntpath
 import os
 import shutil
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -24,6 +25,7 @@ from context_search_tool.quality.runner import (
     _content_identity,
     _copy_source_repo,
     _effective_config,
+    _git_commit,
     _resolve_repo_source,
     run_quality_fixture,
 )
@@ -105,6 +107,30 @@ def _patch_runner_dependencies(
         "context_search_tool.quality.runner.query_repository",
         fake_query,
     )
+
+
+def _write_successful_ci_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    source = _write_source_repo(tmp_path / "fixture-source")
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "snapshot_path": str(source),
+                    "profiles": ["ci"],
+                    "queries": [{"id": "target", "query": "targetToken"}],
+                }
+            ],
+        },
+    )
+    captured: list[tuple[Path, ToolConfig]] = []
+    _patch_runner_dependencies(monkeypatch, captured)
+    return fixture
 
 
 def test_quality_runner_copies_repo_without_mutating_source(tmp_path: Path) -> None:
@@ -212,6 +238,131 @@ def test_quality_runner_records_git_commit_from_worktree_gitdir_file(
     )
 
     assert report["repos"][0]["source"]["git_commit"] == fake_sha
+
+
+@pytest.mark.parametrize(
+    "unsafe_ref",
+    [
+        pytest.param("<absolute>", id="absolute"),
+        pytest.param("refs/heads/../../sentinel", id="traversal"),
+        pytest.param(r"refs\heads\main", id="backslash"),
+        pytest.param("refs/heads/bad\x01name", id="control"),
+        pytest.param("refs/heads/bad:name", id="invalid-component"),
+    ],
+)
+def test_git_commit_rejects_unsafe_symbolic_ref_paths(
+    tmp_path: Path,
+    unsafe_ref: str,
+) -> None:
+    repo = tmp_path / "repo"
+    gitdir = repo / ".git"
+    gitdir.mkdir(parents=True)
+    oid = "a" * 40
+
+    if unsafe_ref == "<absolute>":
+        sentinel = tmp_path / "sentinel"
+        ref = str(sentinel)
+    elif unsafe_ref == "refs/heads/../../sentinel":
+        (gitdir / "refs" / "heads").mkdir(parents=True)
+        sentinel = gitdir / "sentinel"
+        ref = unsafe_ref
+    else:
+        sentinel = gitdir / unsafe_ref
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        ref = unsafe_ref
+    sentinel.write_text(f"{oid}\n", encoding="utf-8")
+    (gitdir / "HEAD").write_text(f"ref: {ref}\n", encoding="utf-8")
+
+    assert _git_commit(repo) is None
+
+
+@pytest.mark.parametrize(
+    "storage",
+    [
+        pytest.param("detached", id="detached-head"),
+        pytest.param("loose", id="loose-ref"),
+        pytest.param("packed", id="packed-ref"),
+    ],
+)
+def test_git_commit_rejects_non_object_id_contents(
+    tmp_path: Path,
+    storage: str,
+) -> None:
+    repo = tmp_path / "repo"
+    gitdir = repo / ".git"
+    gitdir.mkdir(parents=True)
+    if storage == "detached":
+        (gitdir / "HEAD").write_text("private metadata\n", encoding="utf-8")
+    else:
+        ref = "refs/heads/main"
+        (gitdir / "HEAD").write_text(f"ref: {ref}\n", encoding="utf-8")
+        if storage == "loose":
+            ref_path = gitdir / ref
+            ref_path.parent.mkdir(parents=True)
+            ref_path.write_text("private metadata\n", encoding="utf-8")
+        else:
+            (gitdir / "packed-refs").write_text(
+                f"private-metadata {ref}\n",
+                encoding="utf-8",
+            )
+
+    assert _git_commit(repo) is None
+
+
+def test_git_commit_indirection_never_returns_raw_head_contents(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    gitdir = tmp_path / "external.git"
+    gitdir.mkdir()
+    (gitdir / "HEAD").write_text("private metadata\n", encoding="utf-8")
+    (repo / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+
+    assert _git_commit(repo) is None
+
+
+def test_git_commit_rejects_malformed_gitdir_indirection(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").write_text("gitdir: bad\x00path\n", encoding="utf-8")
+
+    assert _git_commit(repo) is None
+
+
+@pytest.mark.parametrize("oid", ["a" * 40, "b" * 64], ids=["sha1", "sha256"])
+@pytest.mark.parametrize(
+    "storage",
+    [
+        pytest.param("detached", id="detached-head"),
+        pytest.param("loose", id="loose-ref"),
+        pytest.param("packed", id="packed-ref"),
+    ],
+)
+def test_git_commit_accepts_valid_object_ids(
+    tmp_path: Path,
+    storage: str,
+    oid: str,
+) -> None:
+    repo = tmp_path / "repo"
+    gitdir = repo / ".git"
+    gitdir.mkdir(parents=True)
+    if storage == "detached":
+        (gitdir / "HEAD").write_text(f"{oid}\n", encoding="utf-8")
+    else:
+        ref = "refs/heads/main"
+        (gitdir / "HEAD").write_text(f"ref: {ref}\n", encoding="utf-8")
+        if storage == "loose":
+            ref_path = gitdir / ref
+            ref_path.parent.mkdir(parents=True)
+            ref_path.write_text(f"{oid}\n", encoding="utf-8")
+        else:
+            (gitdir / "packed-refs").write_text(
+                f"{oid} {ref}\n",
+                encoding="utf-8",
+            )
+
+    assert _git_commit(repo) == oid
 
 
 def test_quality_runner_records_skip_for_missing_repo(tmp_path: Path) -> None:
@@ -683,13 +834,42 @@ def test_legacy_fixture_keeps_caller_base_config(
         },
     )
     caller_config = ToolConfig(
-        index=IndexConfig(max_file_bytes=1234),
-        retrieval=RetrievalConfig(final_top_k=9),
+        index=IndexConfig(
+            include=["*.java"],
+            exclude=["vendor/**"],
+            max_file_bytes=1234,
+            max_full_file_bytes=987,
+        ),
+        retrieval=RetrievalConfig(
+            semantic_top_k=17,
+            lexical_top_k=19,
+            final_top_k=9,
+            context_before_lines=3,
+            context_after_lines=4,
+        ),
+        embedding=EmbeddingConfig(
+            provider="openai-compatible",
+            model="legacy-embedding",
+            dimensions=768,
+            base_url="https://embedding.example.test/v1",
+            api_key_env="LEGACY_EMBEDDING_KEY",
+        ),
+        query_planner=QueryPlannerConfig(
+            enabled=True,
+            provider="openai-compatible",
+            model="legacy-planner",
+            base_url="https://planner.example.test/v1",
+            use_system_proxy=True,
+            timeout_seconds=21,
+            max_rewritten_queries=2,
+            max_keywords=7,
+            max_symbol_hints=5,
+        ),
     )
     captured: list[tuple[Path, ToolConfig]] = []
     _patch_runner_dependencies(monkeypatch, captured)
 
-    run_quality_fixture(
+    report = run_quality_fixture(
         fixture,
         profile="smoke",
         output_path=None,
@@ -698,8 +878,11 @@ def test_legacy_fixture_keeps_caller_base_config(
     )
 
     effective = captured[0][1]
-    assert effective.index.max_file_bytes == 1234
-    assert effective.retrieval.final_top_k == 9
+    repo_config = report["repos"][0]["config"]
+    assert effective == caller_config
+    assert report["config"]["config_hash"] == repo_config["config_hash"]
+    assert report["config"]["embedding"] == repo_config["embedding"]
+    assert report["planner"] == repo_config["query_planner"]
 
 
 def test_non_ci_source_prefers_existing_env_then_smoke_root_then_snapshot(
@@ -2132,7 +2315,8 @@ def test_report_redacts_source_and_workspace_paths_from_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = _write_source_repo(tmp_path)
+    source = _write_source_repo(tmp_path / "source root with spaces").resolve()
+    temp_root = (tmp_path / "temporary root with spaces").resolve()
     monkeypatch.setenv("CST_SAMPLE_REPO", str(source))
     fixture = _write_fixture(
         tmp_path,
@@ -2160,12 +2344,34 @@ def test_report_redacts_source_and_workspace_paths_from_errors(
     )
 
     def fail_query(repo: Path, query: str, config: ToolConfig) -> QueryBundle:
-        raise RuntimeError(f"source={source} workspace={repo}")
+        raise RuntimeError(
+            " ".join(
+                [
+                    f"source={source}",
+                    f"workspace={repo}",
+                    f"source_uri={source.as_uri()}",
+                    f"source_encoded={quote(source.as_posix(), safe='/')}",
+                    f"source_encoded_all={quote(source.as_posix(), safe='')}",
+                    f"source_case={str(source).swapcase()}",
+                    f"workspace_uri={repo.as_uri()}",
+                    f"workspace_encoded={quote(repo.as_posix(), safe='/')}",
+                    f"workspace_encoded_all={quote(repo.as_posix(), safe='')}",
+                    f"workspace_case={str(repo).swapcase()}",
+                    "diagnostic=keep-me",
+                ]
+            )
+        )
+
+    def fake_mkdtemp(*, prefix: str) -> str:
+        assert prefix == "cst-quality-"
+        temp_root.mkdir()
+        return str(temp_root)
 
     monkeypatch.setattr(
         "context_search_tool.quality.runner.query_repository",
         fail_query,
     )
+    monkeypatch.setattr(quality_runner.tempfile, "mkdtemp", fake_mkdtemp)
 
     report = run_quality_fixture(
         fixture,
@@ -2176,11 +2382,252 @@ def test_report_redacts_source_and_workspace_paths_from_errors(
     )
 
     rendered = json.dumps(report)
-    assert str(source) not in rendered
-    assert "/cst-quality-" not in rendered
+    workspace = temp_root / "sample"
+    sensitive_variants = {
+        str(source),
+        source.as_uri(),
+        quote(source.as_posix(), safe="/"),
+        quote(source.as_posix(), safe=""),
+        str(source).swapcase(),
+        str(workspace),
+        workspace.as_uri(),
+        quote(workspace.as_posix(), safe="/"),
+        quote(workspace.as_posix(), safe=""),
+        str(workspace).swapcase(),
+    }
+    assert all(variant not in rendered for variant in sensitive_variants)
     assert report["cases"][0]["failures"] == [
-        "source=<source> workspace=<workspace>"
+        "source=<source> workspace=<workspace> "
+        "source_uri=<source> source_encoded=<source> "
+        "source_encoded_all=<source> source_case=<source> "
+        "workspace_uri=<workspace> workspace_encoded=<workspace> "
+        "workspace_encoded_all=<workspace> workspace_case=<workspace> "
+        "diagnostic=keep-me"
     ]
+
+
+def test_quality_runner_does_not_publish_when_setup_cleanup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _write_successful_ci_fixture(tmp_path, monkeypatch)
+    temp_root = (tmp_path / "temp-root").resolve()
+    workspace = temp_root / "sample"
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    output = reports / "quality.json"
+    markdown = reports / "quality.md"
+    output.write_text("old-json\n", encoding="utf-8")
+    original_rmtree = shutil.rmtree
+
+    def fail_index(repo: Path, config: ToolConfig) -> IndexSummary:
+        raise RuntimeError("index exploded")
+
+    def fake_mkdtemp(*, prefix: str) -> str:
+        assert prefix == "cst-quality-"
+        temp_root.mkdir()
+        return str(temp_root)
+
+    def leave_workspace(path: str | Path, *args: object, **kwargs: object) -> None:
+        if Path(path) == workspace:
+            return
+        original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(quality_runner, "index_repository", fail_index)
+    monkeypatch.setattr(quality_runner.tempfile, "mkdtemp", fake_mkdtemp)
+    monkeypatch.setattr(quality_runner.shutil, "rmtree", leave_workspace)
+
+    try:
+        with pytest.raises(OSError, match="repository workspace"):
+            run_quality_fixture(
+                fixture,
+                profile="ci",
+                output_path=output,
+                markdown_path=markdown,
+                keep_workspace=True,
+                allow_empty=True,
+            )
+
+        assert output.read_text(encoding="utf-8") == "old-json\n"
+        assert not markdown.exists()
+        assert workspace.exists()
+    finally:
+        original_rmtree(temp_root, ignore_errors=True)
+
+
+def test_quality_runner_cleans_temp_root_before_publishing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _write_successful_ci_fixture(tmp_path, monkeypatch)
+    temp_root = (tmp_path / "temp-root").resolve()
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    output = reports / "quality.json"
+    markdown = reports / "quality.md"
+    output.write_text("old-json\n", encoding="utf-8")
+    markdown.write_text("old-markdown\n", encoding="utf-8")
+    original_rmtree = shutil.rmtree
+
+    def fake_mkdtemp(*, prefix: str) -> str:
+        assert prefix == "cst-quality-"
+        temp_root.mkdir()
+        return str(temp_root)
+
+    def leave_temp_root(path: str | Path, *args: object, **kwargs: object) -> None:
+        if Path(path) == temp_root:
+            return
+        original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(quality_runner.tempfile, "mkdtemp", fake_mkdtemp)
+    monkeypatch.setattr(quality_runner.shutil, "rmtree", leave_temp_root)
+
+    try:
+        with pytest.raises(OSError, match="temporary workspace"):
+            run_quality_fixture(fixture, "ci", output, markdown)
+
+        assert output.read_text(encoding="utf-8") == "old-json\n"
+        assert markdown.read_text(encoding="utf-8") == "old-markdown\n"
+        assert temp_root.exists()
+    finally:
+        original_rmtree(temp_root, ignore_errors=True)
+
+
+def test_quality_runner_renders_all_artifacts_before_publishing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _write_successful_ci_fixture(tmp_path, monkeypatch)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    output = reports / "quality.json"
+    markdown = reports / "quality.md"
+    output.write_text("old-json\n", encoding="utf-8")
+    markdown.write_text("old-markdown\n", encoding="utf-8")
+
+    def fail_markdown(report: dict) -> str:
+        raise RuntimeError("markdown rendering failed")
+
+    monkeypatch.setattr(
+        "context_search_tool.quality.reports.render_markdown_report",
+        fail_markdown,
+    )
+
+    with pytest.raises(RuntimeError, match="markdown rendering failed"):
+        run_quality_fixture(fixture, "ci", output, markdown)
+
+    assert output.read_text(encoding="utf-8") == "old-json\n"
+    assert markdown.read_text(encoding="utf-8") == "old-markdown\n"
+    assert {path.name for path in reports.iterdir()} == {
+        "quality.json",
+        "quality.md",
+    }
+
+
+def test_quality_runner_temp_write_failure_preserves_existing_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _write_successful_ci_fixture(tmp_path, monkeypatch)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    output = reports / "quality.json"
+    markdown = reports / "quality.md"
+    output.write_text("old-json\n", encoding="utf-8")
+    markdown.write_text("old-markdown\n", encoding="utf-8")
+    original_write_text = Path.write_text
+
+    def fail_staged_write(
+        path: Path,
+        data: str,
+        *args: object,
+        **kwargs: object,
+    ) -> int:
+        if path.parent == reports and path.name.startswith("."):
+            raise OSError("temporary write failed")
+        return original_write_text(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_staged_write)
+
+    with pytest.raises(OSError, match="temporary write failed"):
+        run_quality_fixture(fixture, "ci", output, markdown)
+
+    assert output.read_text(encoding="utf-8") == "old-json\n"
+    assert markdown.read_text(encoding="utf-8") == "old-markdown\n"
+    assert {path.name for path in reports.iterdir()} == {
+        "quality.json",
+        "quality.md",
+    }
+
+
+@pytest.mark.parametrize(
+    "output_exists",
+    [
+        pytest.param(True, id="restore-existing"),
+        pytest.param(False, id="remove-new"),
+    ],
+)
+def test_quality_runner_second_replace_failure_rolls_back_all_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output_exists: bool,
+) -> None:
+    fixture = _write_successful_ci_fixture(tmp_path, monkeypatch)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    output = reports / "quality.json"
+    markdown = reports / "quality.md"
+    if output_exists:
+        output.write_text("old-json\n", encoding="utf-8")
+    markdown.write_text("old-markdown\n", encoding="utf-8")
+    original_replace = os.replace
+    replace_count = 0
+
+    def fail_second_replace(source: str | Path, destination: str | Path) -> None:
+        nonlocal replace_count
+        replace_count += 1
+        if replace_count == 2:
+            raise OSError("second replace failed")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(quality_runner.os, "replace", fail_second_replace)
+
+    with pytest.raises(OSError, match="second replace failed"):
+        run_quality_fixture(fixture, "ci", output, markdown)
+
+    assert replace_count >= (3 if output_exists else 2)
+    if output_exists:
+        assert output.read_text(encoding="utf-8") == "old-json\n"
+    else:
+        assert not output.exists()
+    assert markdown.read_text(encoding="utf-8") == "old-markdown\n"
+    assert {path.name for path in reports.iterdir()} == (
+        {"quality.json", "quality.md"} if output_exists else {"quality.md"}
+    )
+
+
+def test_quality_runner_atomically_replaces_all_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _write_successful_ci_fixture(tmp_path, monkeypatch)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    output = reports / "quality.json"
+    markdown = reports / "quality.md"
+    output.write_text("old-json\n", encoding="utf-8")
+    markdown.write_text("old-markdown\n", encoding="utf-8")
+
+    report = run_quality_fixture(fixture, "ci", output, markdown)
+
+    assert json.loads(output.read_text(encoding="utf-8")) == report
+    assert markdown.read_text(encoding="utf-8").startswith(
+        "# Retrieval Quality Report\n"
+    )
+    assert {path.name for path in reports.iterdir()} == {
+        "quality.json",
+        "quality.md",
+    }
 
 
 def test_runner_counters_distinguish_setup_and_query_outcomes(
@@ -2308,11 +2755,13 @@ def test_runner_rejects_zero_selected_or_executed_without_allow_empty(
         },
     )
     output = tmp_path / "nested" / "reports" / "quality.json"
+    markdown = tmp_path / "nested" / "reports" / "quality.md"
 
     with pytest.raises(ValueError, match="no cases executed"):
-        run_quality_fixture(fixture, "smoke", output, None)
+        run_quality_fixture(fixture, "smoke", output, markdown)
 
     assert output.exists()
+    assert markdown.exists()
     report = run_quality_fixture(fixture, "smoke", output, None, allow_empty=True)
     assert report["aggregate"]["executed"] == 0
 

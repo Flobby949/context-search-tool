@@ -4,6 +4,7 @@ import hashlib
 import json
 import ntpath
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -14,6 +15,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
+from urllib.parse import quote
 
 from context_search_tool.config import DEFAULT_CONFIG, ToolConfig
 from context_search_tool.indexer import index_repository
@@ -84,8 +86,9 @@ def run_quality_fixture(
     if profile not in fixture.profile_configs:
         raise ValueError(f"unknown quality profile: {profile}")
 
+    selected_base = DEFAULT_CONFIG if fixture.canonical else config
     selected_config = _effective_config(
-        DEFAULT_CONFIG,
+        selected_base,
         {},
         fixture.profile_configs[profile],
     )
@@ -94,6 +97,8 @@ def run_quality_fixture(
     repos: list[dict[str, Any]] = []
     cases: list[dict[str, Any]] = []
     workspace_identities: set[str] = set()
+    temp_root_removed = False
+    primary_error: BaseException | None = None
 
     try:
         for repo in fixture.repos:
@@ -114,9 +119,8 @@ def run_quality_fixture(
                 raise ValueError(f"duplicate workspace repo_key: {repo.repo_key}")
             workspace_identities.add(workspace_identity)
             profile_overrides = fixture.profile_configs[profile]
-            base_config = DEFAULT_CONFIG if fixture.canonical else config
             repo_config = _effective_config(
-                base_config,
+                selected_base,
                 repo.default_config,
                 profile_overrides,
             )
@@ -173,7 +177,7 @@ def run_quality_fixture(
                 summary = index_repository(workspace, repo_config)
                 manifest = load_manifest(workspace)
             except Exception as exc:
-                shutil.rmtree(workspace, ignore_errors=True)
+                _remove_tree(workspace, "repository workspace")
                 repo_record["workspace"]["preserved"] = False
                 repo_record["workspace"].pop("path", None)
                 repo_record["index"] = {"status": "error"}
@@ -223,17 +227,11 @@ def run_quality_fixture(
                     )
 
         report = _report(fixture, profile, selected_config, repos, cases)
-        _ensure_parent(output_path)
-        _ensure_parent(markdown_path)
-        if output_path is not None:
-            output_path.write_text(
-                json.dumps(report, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
-        if markdown_path is not None:
-            from context_search_tool.quality.reports import render_markdown_report
-
-            markdown_path.write_text(render_markdown_report(report), encoding="utf-8")
+        artifacts = _render_artifacts(report, output_path, markdown_path)
+        if not keep_workspace:
+            _remove_tree(temp_root, "temporary workspace")
+            temp_root_removed = True
+        _publish_artifacts(artifacts)
 
         aggregate = report["aggregate"]
         if aggregate["selected"] == 0:
@@ -241,9 +239,20 @@ def run_quality_fixture(
         if aggregate["executed"] == 0 and not allow_empty:
             raise ValueError("no cases executed for quality profile")
         return report
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        if not keep_workspace:
-            shutil.rmtree(temp_root, ignore_errors=True)
+        if not keep_workspace and not temp_root_removed:
+            try:
+                _remove_tree(temp_root, "temporary workspace")
+            except Exception as cleanup_error:
+                if primary_error is None:
+                    raise
+                primary_error.add_note(
+                    "Additional temporary workspace cleanup failure: "
+                    f"{cleanup_error}"
+                )
 
 
 def _apply_config_sections(
@@ -452,7 +461,7 @@ def _copy_source_repo(source: Path, workspace: Path) -> None:
         _copy_source_repo_with_descriptors(source, workspace)
     except Exception:
         if not workspace_existed:
-            shutil.rmtree(workspace, ignore_errors=True)
+            _remove_tree(workspace, "repository workspace")
         raise
 
 
@@ -704,17 +713,171 @@ def _planner_payload(plan: QueryPlan) -> dict[str, Any]:
 
 def _safe_error(exc: Exception, source: Path, workspace: Path) -> str:
     message = str(exc)
-    for path, replacement in (
-        (workspace, "<workspace>"),
-        (source, "<source>"),
+    replacements = [
+        (variant, replacement)
+        for path, replacement in (
+            (workspace, "<workspace>"),
+            (source, "<source>"),
+        )
+        for variant in _path_redaction_variants(path)
+    ]
+    for variant, replacement in sorted(
+        replacements,
+        key=lambda item: len(item[0]),
+        reverse=True,
     ):
-        message = message.replace(str(path), replacement)
+        message = re.sub(
+            re.escape(variant),
+            replacement,
+            message,
+            flags=re.IGNORECASE,
+        )
     return message
 
 
-def _ensure_parent(path: Path | None) -> None:
-    if path is not None:
-        path.parent.mkdir(parents=True, exist_ok=True)
+def _path_redaction_variants(path: Path) -> set[str]:
+    candidates = {path}
+    try:
+        candidates.add(path.resolve())
+    except (OSError, RuntimeError):
+        pass
+
+    path_spellings: set[str] = set()
+    variants: set[str] = set()
+    for candidate in candidates:
+        path_spellings.add(str(candidate))
+        path_spellings.add(candidate.as_posix())
+        try:
+            variants.add(candidate.as_uri())
+        except ValueError:
+            pass
+
+    variants.update(path_spellings)
+    for spelling in path_spellings:
+        variants.add(quote(spelling, safe="/"))
+        variants.add(quote(spelling, safe=""))
+    return {variant for variant in variants if variant}
+
+
+def _render_artifacts(
+    report: dict[str, Any],
+    output_path: Path | None,
+    markdown_path: Path | None,
+) -> list[tuple[Path, str]]:
+    artifacts: list[tuple[Path, str]] = []
+    if output_path is not None:
+        artifacts.append(
+            (
+                output_path,
+                json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+            )
+        )
+    if markdown_path is not None:
+        from context_search_tool.quality.reports import render_markdown_report
+
+        artifacts.append((markdown_path, render_markdown_report(report)))
+    return artifacts
+
+
+def _publish_artifacts(artifacts: list[tuple[Path, str]]) -> None:
+    staged: list[tuple[Path, Path]] = []
+    backups: dict[Path, Path] = {}
+    replaced: list[Path] = []
+    publication_error: BaseException | None = None
+
+    try:
+        for destination, _content in artifacts:
+            _ensure_parent(destination)
+        for destination, content in artifacts:
+            staged.append(
+                (
+                    destination,
+                    _stage_sibling_file(destination, content, "stage"),
+                )
+            )
+        for destination, _content in artifacts:
+            if destination.exists():
+                backups[destination] = _stage_sibling_file(
+                    destination,
+                    destination.read_bytes(),
+                    "backup",
+                )
+
+        try:
+            for destination, stage in staged:
+                os.replace(stage, destination)
+                replaced.append(destination)
+        except Exception as exc:
+            for destination in reversed(replaced):
+                try:
+                    backup = backups.pop(destination, None)
+                    if backup is None:
+                        destination.unlink(missing_ok=True)
+                    else:
+                        os.replace(backup, destination)
+                except Exception as rollback_error:
+                    exc.add_note(
+                        f"Artifact rollback failed for {destination.name}: "
+                        f"{rollback_error}"
+                    )
+            raise
+    except BaseException as exc:
+        publication_error = exc
+        raise
+    finally:
+        cleanup_error: OSError | None = None
+        temporary_paths = [stage for _destination, stage in staged]
+        temporary_paths.extend(backups.values())
+        for temporary_path in temporary_paths:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError as exc:
+                if cleanup_error is None:
+                    cleanup_error = exc
+        if cleanup_error is not None:
+            if publication_error is None:
+                raise cleanup_error
+            publication_error.add_note(
+                f"Artifact staging cleanup failed: {cleanup_error}"
+            )
+
+
+def _stage_sibling_file(
+    destination: Path,
+    content: str | bytes,
+    kind: str,
+) -> Path:
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.{kind}-",
+        suffix=".tmp",
+        dir=destination.parent,
+    )
+    os.close(file_descriptor)
+    temporary_path = Path(temporary_name)
+    try:
+        if isinstance(content, bytes):
+            temporary_path.write_bytes(content)
+        else:
+            temporary_path.write_text(content, encoding="utf-8")
+    except BaseException as exc:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            exc.add_note(f"Artifact staging cleanup failed: {cleanup_error}")
+        raise
+    return temporary_path
+
+
+def _remove_tree(path: Path, label: str) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    shutil.rmtree(path)
+    if path.exists() or path.is_symlink():
+        raise OSError(f"failed to remove {label}")
+
+
+def _ensure_parent(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def _file_sha256(path: Path) -> str:
@@ -745,40 +908,86 @@ def _git_commit(repo: Path) -> str | None:
     dot_git = repo / ".git"
     gitdir = dot_git
     if dot_git.is_file():
-        gitdir_text = dot_git.read_text(encoding="utf-8").strip()
-        if not gitdir_text.startswith("gitdir:"):
+        gitdir_text = _read_git_text(dot_git)
+        if gitdir_text is None or not gitdir_text.startswith("gitdir:"):
             return None
         raw_gitdir = gitdir_text.removeprefix("gitdir:").strip()
         if not raw_gitdir:
             return None
-        gitdir = Path(raw_gitdir).expanduser()
-        if not gitdir.is_absolute():
-            gitdir = (repo / gitdir).resolve()
+        try:
+            gitdir = Path(raw_gitdir).expanduser()
+            if not gitdir.is_absolute():
+                gitdir = (repo / gitdir).resolve()
+        except (OSError, RuntimeError, ValueError):
+            return None
 
     head_path = gitdir / "HEAD"
-    if not head_path.exists():
+    head = _read_git_text(head_path)
+    if head is None:
         return None
-    head = head_path.read_text(encoding="utf-8").strip()
     if not head.startswith("ref: "):
-        return head or None
+        return _validated_object_id(head)
 
     ref = head.removeprefix("ref: ").strip()
-    for refs_dir in _candidate_git_ref_dirs(gitdir):
-        ref_path = refs_dir / ref
-        if ref_path.exists():
-            return ref_path.read_text(encoding="utf-8").strip() or None
-
-    for refs_dir in _candidate_git_ref_dirs(gitdir):
-        packed_refs = refs_dir / "packed-refs"
-        if not packed_refs.exists():
+    if not _is_safe_git_ref(ref):
+        return None
+    for candidate_gitdir in _candidate_git_ref_dirs(gitdir):
+        try:
+            candidate_root = candidate_gitdir.resolve()
+            refs_root = (candidate_root / "refs").resolve()
+            ref_path = (candidate_root / ref).resolve()
+        except (OSError, RuntimeError, ValueError):
             continue
-        for line in packed_refs.read_text(encoding="utf-8").splitlines():
+        if not ref_path.is_relative_to(refs_root):
+            continue
+        object_id = _read_git_text(ref_path)
+        if object_id is not None:
+            return _validated_object_id(object_id)
+
+    for candidate_gitdir in _candidate_git_ref_dirs(gitdir):
+        packed_refs_text = _read_git_text(candidate_gitdir / "packed-refs")
+        if packed_refs_text is None:
+            continue
+        for line in packed_refs_text.splitlines():
             if not line or line.startswith(("#", "^")):
                 continue
             parts = line.split()
             if len(parts) == 2 and parts[1] == ref:
-                return parts[0]
+                return _validated_object_id(parts[0])
     return None
+
+
+def _read_git_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError, ValueError):
+        return None
+
+
+def _validated_object_id(value: str) -> str | None:
+    if re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", value):
+        return value
+    return None
+
+
+def _is_safe_git_ref(ref: str) -> bool:
+    if not ref.startswith("refs/") or "\\" in ref:
+        return False
+    if any(ord(character) < 32 or ord(character) == 127 for character in ref):
+        return False
+    if any(character in ref for character in " ~^:?*["):
+        return False
+    if ".." in ref or "@{" in ref or "//" in ref:
+        return False
+
+    components = ref.split("/")
+    return all(
+        component
+        and component not in {".", ".."}
+        and not component.startswith(".")
+        and not component.endswith((".", ".lock"))
+        for component in components
+    )
 
 
 def _candidate_git_ref_dirs(gitdir: Path) -> list[Path]:
@@ -791,12 +1000,13 @@ def _candidate_git_ref_dirs(gitdir: Path) -> list[Path]:
 
 def _common_gitdir(gitdir: Path) -> Path:
     common_dir_file = gitdir / "commondir"
-    if not common_dir_file.exists():
+    raw_common_dir = _read_git_text(common_dir_file)
+    if raw_common_dir is None or not raw_common_dir:
         return gitdir
-    raw_common_dir = common_dir_file.read_text(encoding="utf-8").strip()
-    if not raw_common_dir:
+    try:
+        common_gitdir = Path(raw_common_dir).expanduser()
+        if not common_gitdir.is_absolute():
+            common_gitdir = (gitdir / common_gitdir).resolve()
+        return common_gitdir
+    except (OSError, RuntimeError, ValueError):
         return gitdir
-    common_gitdir = Path(raw_common_dir).expanduser()
-    if not common_gitdir.is_absolute():
-        common_gitdir = (gitdir / common_gitdir).resolve()
-    return common_gitdir
