@@ -2,6 +2,7 @@ import json
 import ntpath
 import os
 import shutil
+import unicodedata
 from pathlib import Path
 from urllib.parse import quote
 
@@ -2403,6 +2404,100 @@ def test_report_redacts_source_and_workspace_paths_from_errors(
         "workspace_uri=<workspace> workspace_encoded=<workspace> "
         "workspace_encoded_all=<workspace> workspace_case=<workspace> "
         "diagnostic=keep-me"
+    ]
+
+
+def test_report_redacts_unicode_equivalent_paths_from_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_source_repo(tmp_path / "café-source").resolve()
+    temp_root = (tmp_path / "café-workspace").resolve()
+    workspace = temp_root / "sample"
+    monkeypatch.setenv("CST_SAMPLE_REPO", str(source))
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {
+                "smoke": {
+                    "embedding": {
+                        "provider": "hash",
+                        "model": "hash-v1",
+                        "dimensions": 384,
+                    },
+                    "query_planner": {"enabled": False},
+                }
+            },
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "path_env": "CST_SAMPLE_REPO",
+                    "profiles": ["smoke"],
+                    "queries": [{"id": "target", "query": "targetToken"}],
+                }
+            ],
+        },
+    )
+    source_nfd = unicodedata.normalize("NFD", source.as_posix())
+    workspace_nfd = unicodedata.normalize("NFD", workspace.as_posix())
+    assert source_nfd != source.as_posix()
+    assert workspace_nfd != workspace.as_posix()
+
+    def fail_query(repo: Path, query: str, config: ToolConfig) -> QueryBundle:
+        assert repo == workspace
+        raise RuntimeError(
+            " ".join(
+                [
+                    f"source={source_nfd}",
+                    f"source_uri={Path(source_nfd).as_uri()}",
+                    f"source_encoded={quote(source_nfd, safe='/')}",
+                    f"source_encoded_all={quote(source_nfd, safe='')}",
+                    f"workspace={workspace_nfd}",
+                    f"workspace_uri={Path(workspace_nfd).as_uri()}",
+                    f"workspace_encoded={quote(workspace_nfd, safe='/')}",
+                    f"workspace_encoded_all={quote(workspace_nfd, safe='')}",
+                    "diagnostic=keep-me",
+                ]
+            )
+        )
+
+    def fake_mkdtemp(*, prefix: str) -> str:
+        assert prefix == "cst-quality-"
+        temp_root.mkdir()
+        return str(temp_root)
+
+    monkeypatch.setattr(
+        "context_search_tool.quality.runner.query_repository",
+        fail_query,
+    )
+    monkeypatch.setattr(quality_runner.tempfile, "mkdtemp", fake_mkdtemp)
+
+    report = run_quality_fixture(
+        fixture,
+        "smoke",
+        None,
+        None,
+        allow_empty=True,
+    )
+
+    rendered = json.dumps(report, ensure_ascii=False)
+    sensitive_variants = {
+        source_nfd,
+        Path(source_nfd).as_uri(),
+        quote(source_nfd, safe="/"),
+        quote(source_nfd, safe=""),
+        workspace_nfd,
+        Path(workspace_nfd).as_uri(),
+        quote(workspace_nfd, safe="/"),
+        quote(workspace_nfd, safe=""),
+    }
+    assert all(variant not in rendered for variant in sensitive_variants)
+    assert report["cases"][0]["failures"] == [
+        "source=<source> source_uri=<source> source_encoded=<source> "
+        "source_encoded_all=<source> workspace=<workspace> "
+        "workspace_uri=<workspace> workspace_encoded=<workspace> "
+        "workspace_encoded_all=<workspace> diagnostic=keep-me"
     ]
 
 

@@ -747,13 +747,19 @@ def _path_redaction_variants(path: Path) -> set[str]:
     for candidate in candidates:
         path_spellings.add(str(candidate))
         path_spellings.add(candidate.as_posix())
-        try:
-            variants.add(candidate.as_uri())
-        except ValueError:
-            pass
+
+    path_spellings = {
+        unicodedata.normalize(form, spelling)
+        for spelling in path_spellings
+        for form in ("NFC", "NFD")
+    }
 
     variants.update(path_spellings)
     for spelling in path_spellings:
+        try:
+            variants.add(Path(spelling).as_uri())
+        except ValueError:
+            pass
         variants.add(quote(spelling, safe="/"))
         variants.add(quote(spelling, safe=""))
     return {variant for variant in variants if variant}
