@@ -1,10 +1,15 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 import context_search_tool.quality as quality
-from context_search_tool.config import EmbeddingConfig, ToolConfig
+from context_search_tool.config import (
+    EmbeddingConfig,
+    QueryPlannerConfig,
+    ToolConfig,
+)
 from context_search_tool.quality.cases import (
     Gate,
     LegacyProvenance,
@@ -13,6 +18,13 @@ from context_search_tool.quality.cases import (
     load_quality_fixture,
     normalize_result_path,
     validate_profile_compatible,
+)
+
+
+_VALID_BGE_EMBEDDING = EmbeddingConfig(
+    provider="bge",
+    model="bge-m3",
+    dimensions=1024,
 )
 
 
@@ -97,6 +109,7 @@ def test_matcher_from_raw_detects_globs_and_rejects_unknown_fields() -> None:
 
 
 def test_quality_package_exports_public_helpers() -> None:
+    assert quality.LegacyProvenance is LegacyProvenance
     assert quality.adapt_legacy_query_case is adapt_legacy_query_case
     assert quality.normalize_result_path is normalize_result_path
     assert quality.validate_profile_compatible is validate_profile_compatible
@@ -485,6 +498,28 @@ def test_load_fixture_parses_profile_registry_case_profiles_and_legacy(
     )
 
 
+def test_canonical_fixture_allows_registry_defined_profile_name(
+    tmp_path: Path,
+) -> None:
+    data = _minimal_fixture(repo_overrides={"profiles": ["custom"]})
+    data["profile_configs"] = {"custom": {}}
+
+    fixture = load_quality_fixture(_write_fixture(tmp_path, data))
+
+    assert fixture.profile_configs == {"custom": {}}
+
+
+def test_canonical_config_accepts_integer_for_float_field(tmp_path: Path) -> None:
+    data = _minimal_fixture()
+    data["profile_configs"] = {
+        "ci": {"query_planner": {"timeout_seconds": 8}},
+    }
+
+    fixture = load_quality_fixture(_write_fixture(tmp_path, data))
+
+    assert fixture.profile_configs["ci"]["query_planner"]["timeout_seconds"] == 8
+
+
 @pytest.mark.parametrize(
     "mutate, message",
     [
@@ -523,6 +558,18 @@ def test_load_fixture_parses_profile_registry_case_profiles_and_legacy(
                 {"dimensions": "384"}
             ),
             "profile ci.embedding.dimensions",
+        ),
+        (
+            lambda data: data["profile_configs"]["ci"]["embedding"].update(
+                {"dimensions": True}
+            ),
+            "profile ci.embedding.dimensions",
+        ),
+        (
+            lambda data: data["profile_configs"]["ci"]["query_planner"].update(
+                {"enabled": 0}
+            ),
+            "profile ci.query_planner.enabled",
         ),
         (
             lambda data: data["profile_configs"]["ci"]["query_planner"].update(
@@ -656,3 +703,77 @@ def test_loader_rejects_invalid_unused_canonical_profile(
 
     with pytest.raises(ValueError, match=message):
         load_quality_fixture(_write_fixture(tmp_path, data))
+
+
+@pytest.mark.parametrize(
+    "profile,bad_config,message",
+    [
+        (
+            "smoke",
+            ToolConfig(embedding=EmbeddingConfig(provider="bge")),
+            "smoke profile requires hash embeddings",
+        ),
+        (
+            "ab_hash",
+            ToolConfig(query_planner=QueryPlannerConfig(enabled=True)),
+            "ab_hash profile requires the query planner disabled",
+        ),
+        (
+            "ci",
+            ToolConfig(embedding=EmbeddingConfig(base_url="https://example.test")),
+            "ci profile does not allow remote embedding settings",
+        ),
+        (
+            "planner",
+            ToolConfig(
+                embedding=EmbeddingConfig(provider="bge"),
+                query_planner=QueryPlannerConfig(enabled=True),
+            ),
+            "planner profile requires hash embeddings",
+        ),
+        (
+            "planner",
+            ToolConfig(query_planner=QueryPlannerConfig(enabled=False)),
+            "planner profile requires the query planner enabled",
+        ),
+        (
+            "planner",
+            ToolConfig(
+                query_planner=QueryPlannerConfig(enabled=True, provider="remote")
+            ),
+            "planner profile requires the Ollama planner",
+        ),
+        (
+            "calibration_bge",
+            ToolConfig(
+                embedding=replace(_VALID_BGE_EMBEDDING, provider="hash")
+            ),
+            "calibration_bge profile requires BGE M3",
+        ),
+        (
+            "calibration_bge",
+            ToolConfig(embedding=replace(_VALID_BGE_EMBEDDING, model="other")),
+            "calibration_bge profile requires BGE M3",
+        ),
+        (
+            "calibration_bge",
+            ToolConfig(embedding=replace(_VALID_BGE_EMBEDDING, dimensions=384)),
+            "calibration_bge profile requires BGE M3",
+        ),
+        (
+            "calibration_bge",
+            ToolConfig(
+                embedding=_VALID_BGE_EMBEDDING,
+                query_planner=QueryPlannerConfig(enabled=True),
+            ),
+            "calibration_bge profile requires the query planner disabled",
+        ),
+    ],
+)
+def test_canonical_profile_invariants_reject_each_invalid_property(
+    profile: str,
+    bad_config: ToolConfig,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_profile_compatible(profile, bad_config, canonical=True)
