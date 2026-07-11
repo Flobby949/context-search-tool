@@ -301,6 +301,28 @@ def test_informational_metrics_are_casefolded_unique_and_fixed_denominator() -> 
     assert evaluation.failures == []
 
 
+def test_informational_mrr_uses_full_result_list_beyond_metric_k() -> None:
+    case = QualityCase(
+        case_id="full-list-mrr",
+        query="relevant service",
+        gate=Gate.INFORMATIONAL,
+        metric_k=2,
+        relevance_matchers=(Matcher(contains="relevant"),),
+    )
+    results = [
+        _result("src/Alpha.java"),
+        _result("src/Beta.java"),
+        _result("src/RelevantService.java"),
+    ]
+
+    evaluation = evaluate_case(case, results, latency_ms=4)
+
+    assert evaluation.metrics["precision_at_2"] == 0.0
+    assert evaluation.metrics["mrr"] == pytest.approx(1 / 3)
+    assert evaluation.status == "informational"
+    assert evaluation.failures == []
+
+
 @pytest.mark.parametrize(
     ("metric_k", "measurement_noise_key"),
     [(5, "noise_top5_measurement"), (10, "noise_top10_measurement")],
