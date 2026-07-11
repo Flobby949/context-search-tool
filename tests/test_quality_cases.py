@@ -16,6 +16,7 @@ from context_search_tool.quality.cases import (
     LegacyProvenance,
     Matcher,
     TopKMatcher,
+    _parse_measurement_matchers,
     adapt_legacy_query_case,
     load_quality_fixture,
     normalize_result_path,
@@ -181,6 +182,51 @@ def test_informational_measurement_fields_parse(tmp_path: Path) -> None:
         Matcher(contains="whitelist"), Matcher(contains="blacklist"),
     )
     assert case.noise_matchers == (Matcher(contains="region"),)
+
+
+@pytest.mark.parametrize("field_name", ["relevance_matchers", "noise_matchers"])
+@pytest.mark.parametrize("value", [None, False, 0, "", {}])
+def test_measurement_matchers_reject_explicit_malformed_falsy_values(
+    tmp_path: Path,
+    field_name: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match=field_name):
+        load_quality_fixture(
+            _write_fixture(
+                tmp_path,
+                _minimal_fixture(case_overrides={field_name: value}),
+            )
+        )
+
+
+def test_measurement_matchers_accept_empty_lists_and_missing_defaults(
+    tmp_path: Path,
+) -> None:
+    explicit_empty = load_quality_fixture(
+        _write_fixture(
+            tmp_path,
+            _minimal_fixture(
+                case_overrides={
+                    "relevance_matchers": [],
+                    "noise_matchers": [],
+                }
+            ),
+        )
+    ).repos[0].queries[0]
+    missing = load_quality_fixture(
+        _write_fixture(tmp_path, _minimal_fixture())
+    ).repos[0].queries[0]
+
+    assert explicit_empty.relevance_matchers == ()
+    assert explicit_empty.noise_matchers == ()
+    assert missing.relevance_matchers == ()
+    assert missing.noise_matchers == ()
+
+
+@pytest.mark.parametrize("field_name", ["relevance_matchers", "noise_matchers"])
+def test_parse_measurement_matchers_accepts_empty_tuple(field_name: str) -> None:
+    assert _parse_measurement_matchers((), field_name) == ()
 
 
 def test_explicit_null_metric_k_requires_relevance_matchers(tmp_path: Path) -> None:

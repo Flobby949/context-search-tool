@@ -296,8 +296,43 @@ def test_informational_metrics_are_casefolded_unique_and_fixed_denominator() -> 
     assert evaluation.status == "informational"
     assert evaluation.metrics["precision_at_12"] == pytest.approx(2 / 12)
     assert evaluation.metrics["noise_top12"] == 1
+    assert "noise_top12_measurement" not in evaluation.metrics
     assert evaluation.metrics["mrr"] == 1.0
     assert evaluation.failures == []
+
+
+@pytest.mark.parametrize(
+    ("metric_k", "measurement_noise_key"),
+    [(5, "noise_top5_measurement"), (10, "noise_top10_measurement")],
+)
+def test_measurement_noise_does_not_overwrite_gate_noise(
+    metric_k: int,
+    measurement_noise_key: str,
+) -> None:
+    case = QualityCase(
+        case_id=f"measurement-noise-{metric_k}",
+        query="noise collision",
+        gate=Gate.INFORMATIONAL,
+        metric_k=metric_k,
+        relevance_matchers=(Matcher(contains="relevant"),),
+        noise_matchers=(Matcher(contains="measurement-noise"),),
+        absent_top_k=(
+            TopKMatcher(Matcher(path="src/GateNoise.java"), metric_k),
+        ),
+    )
+    results = [
+        _result("src/RelevantMeasurement-Noise.java"),
+        _result("src/Measurement-Noise.java"),
+        _result("src/GateNoise.java"),
+    ]
+
+    evaluation = evaluate_case(case, results, latency_ms=4)
+
+    assert evaluation.metrics[f"noise_top{metric_k}"] == 1
+    assert evaluation.metrics[measurement_noise_key] == 2
+    assert evaluation.metrics[f"precision_at_{metric_k}"] == pytest.approx(
+        1 / metric_k
+    )
 
 
 def test_anchor_expected_passes_when_anchor_path_is_present() -> None:

@@ -240,9 +240,12 @@ def _measurement_metrics(
         ),
         None,
     )
+    noise_metric_key = f"noise_top{case.metric_k}"
+    if case.metric_k in (5, 10):
+        noise_metric_key += "_measurement"
     return {
         f"precision_at_{case.metric_k}": len(relevant) / case.metric_k,
-        f"noise_top{case.metric_k}": len(noise),
+        noise_metric_key: len(noise),
         "mrr": 0.0 if first_rank is None else 1.0 / first_rank,
     }
 

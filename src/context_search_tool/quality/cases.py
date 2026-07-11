@@ -491,11 +491,12 @@ def _parse_measurement_matchers(
     raw: Any,
     field_name: str,
 ) -> tuple[Matcher, ...]:
+    raw = _require_sequence(raw, field_name)
     if not raw:
         return ()
     matchers = tuple(
         Matcher.from_raw(item)
-        for item in _require_sequence(raw, field_name)
+        for item in raw
     )
     if any(matcher.contains is None for matcher in matchers):
         raise ValueError(f"{field_name} measurement matcher requires contains")
