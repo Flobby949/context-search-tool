@@ -1,3 +1,4 @@
+from context_search_tool.quality.aggregate import aggregate_cases
 from context_search_tool.quality.cases import (
     AtLeastTopKGroup,
     Gate,
@@ -20,6 +21,7 @@ __all__ = [
     "QualityCase",
     "QualityFixture",
     "QualityRepo",
+    "aggregate_cases",
     "adapt_legacy_query_case",
     "load_quality_fixture",
     "normalize_result_path",
