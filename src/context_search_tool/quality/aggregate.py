@@ -8,6 +8,11 @@ from typing import Any, Callable
 
 _EXECUTED_STATUSES = {"pass", "fail", "known_gap", "informational"}
 _ALL_STATUSES = _EXECUTED_STATUSES | {"skipped", "error"}
+_RESERVED_DERIVED_METRICS = {
+    "entrypoint_top1",
+    "entrypoint_top3",
+    "expected_coverage_top5_ratio",
+}
 _BOOLEAN_METRICS = {
     "hit_at_1",
     "hit_at_3",
@@ -28,8 +33,23 @@ def aggregate_cases(
         status = case.get("status")
         if not isinstance(status, str) or status not in _ALL_STATUSES:
             raise ValueError(f"case {case_id!r} has invalid status {status!r}")
-        if type(case.get("attempted")) is not bool:
+        attempted = case.get("attempted")
+        if type(attempted) is not bool:
             raise ValueError(f"case {case_id!r} attempted must be a bool")
+        if status in _EXECUTED_STATUSES and not attempted:
+            raise ValueError(
+                f"case {case_id!r} attempted must be True for status {status!r}"
+            )
+        if status == "skipped" and attempted:
+            raise ValueError(
+                f"case {case_id!r} attempted must be False for status {status!r}"
+            )
+        reserved_metrics = sorted(
+            _RESERVED_DERIVED_METRICS.intersection(case.get("metrics", {}))
+        )
+        if reserved_metrics:
+            names = ", ".join(repr(name) for name in reserved_metrics)
+            raise ValueError(f"case {case_id!r} uses reserved metric name(s): {names}")
 
     statuses = [case.get("status") for case in cases]
     executed = [case for case in cases if case.get("status") in _EXECUTED_STATUSES]

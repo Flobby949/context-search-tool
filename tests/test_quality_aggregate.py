@@ -48,6 +48,10 @@ def test_aggregate_counts_selected_attempted_executed_error_and_skipped() -> Non
     assert aggregate["errors"] == 2
     assert aggregate["skipped"] == 1
     assert aggregate["informational"] == 1
+    attempted_errors = sum(
+        case["attempted"] for case in cases if case["status"] == "error"
+    )
+    assert aggregate["attempted"] == aggregate["executed"] + attempted_errors
     assert aggregate["selected"] == (
         aggregate["executed"] + aggregate["errors"] + aggregate["skipped"]
     )
@@ -327,6 +331,99 @@ def test_all_six_statuses_are_accepted() -> None:
 
     assert aggregate["total"] == 6
     assert aggregate["executed"] == 4
+
+
+@pytest.mark.parametrize(
+    "status", ["pass", "fail", "known_gap", "informational"]
+)
+def test_executed_status_requires_attempted_true(status: str) -> None:
+    with pytest.raises(ValueError, match="attempted.*status"):
+        aggregate_cases(
+            [_case("a", "not-attempted", status, attempted=False)],
+            [_repo("a")],
+            "ci",
+        )
+
+
+def test_skipped_status_requires_attempted_false() -> None:
+    with pytest.raises(ValueError, match="attempted.*status"):
+        aggregate_cases(
+            [_case("a", "attempted-skip", "skipped", attempted=True)],
+            [_repo("a")],
+            "ci",
+        )
+
+
+@pytest.mark.parametrize("attempted", [False, True])
+def test_error_status_accepts_both_attempted_values(attempted: bool) -> None:
+    aggregate = aggregate_cases(
+        [_case("a", "error", "error", attempted=attempted)],
+        [_repo("a")],
+        "ci",
+    )
+
+    assert aggregate["selected"] == 1
+    assert aggregate["attempted"] == int(attempted)
+    assert aggregate["executed"] == 0
+    assert aggregate["errors"] == 1
+
+
+@pytest.mark.parametrize(
+    "metric_name",
+    ["expected_coverage_top5_ratio", "entrypoint_top1", "entrypoint_top3"],
+)
+def test_reserved_derived_metric_name_is_rejected(metric_name: str) -> None:
+    with pytest.raises(ValueError, match=rf"reserved metric.*{metric_name}"):
+        aggregate_cases(
+            [
+                _case(
+                    "a",
+                    "reserved-metric",
+                    "pass",
+                    attempted=True,
+                    metrics={metric_name: 1},
+                )
+            ],
+            [_repo("a")],
+            "ci",
+        )
+
+
+def test_dynamic_and_source_metric_names_remain_accepted() -> None:
+    aggregate = aggregate_cases(
+        [
+            _case(
+                "a",
+                "valid-metrics",
+                "pass",
+                attempted=True,
+                tags=["entrypoint"],
+                metrics={
+                    "precision_at_37": 0.25,
+                    "noise_top37": 2,
+                    "expected_coverage_top5": {"ratio": 0.75},
+                    "entrypoint_rank": 3,
+                },
+            )
+        ],
+        [_repo("a")],
+        "ci",
+    )
+
+    metrics = aggregate["metrics"]["overall"]
+    assert metrics["precision_at_37"] == {"count": 1, "mean": 0.25}
+    assert metrics["noise_top37"] == {"count": 1, "mean": 2.0}
+    assert metrics["expected_coverage_top5_ratio"] == {"count": 1, "mean": 0.75}
+    assert metrics["entrypoint_top1"] == {
+        "successes": 0,
+        "total": 1,
+        "rate": 0.0,
+    }
+    assert metrics["entrypoint_top3"] == {
+        "successes": 1,
+        "total": 1,
+        "rate": 1.0,
+    }
 
 
 def test_non_finite_numeric_metrics_are_excluded_from_summaries() -> None:
