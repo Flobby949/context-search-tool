@@ -766,6 +766,41 @@ def test_at_least_group_rejects_duplicate_matchers(tmp_path: Path) -> None:
         )
 ```
 
+In the existing `test_rank_fields_require_positive_int`, replace its final
+legacy-minimum loop with:
+
+```python
+for value in [-1, True, 1.5, "3"]:
+    assert_invalid(
+        {
+            "expected_core": ["src/App.java"],
+            "expected_top5_min": value,
+        }
+    )
+```
+
+Replace `test_expected_top5_min_accepts_zero` with:
+
+```python
+def test_legacy_expected_top5_min_zero_becomes_zero_minimum_group() -> None:
+    case = adapt_legacy_query_case(
+        {
+            "id": "legacy-zero-min",
+            "query": "login",
+            "expected_core": ["src/AuthController.java"],
+            "expected_top5_min": 0,
+        }
+    )
+
+    assert case.expected_at_least_top_k == (
+        AtLeastTopKGroup(
+            matchers=(Matcher(path="src/AuthController.java"),),
+            top_k=5,
+            min_matches=0,
+        ),
+    )
+```
+
 - [ ] **Step 3: Add the failing evaluator parity test**
 
 Append to `tests/test_quality_metrics.py`:
@@ -853,7 +888,7 @@ def test_legacy_forbidden_window_matches_absolute_rank_semantics() -> None:
 
     fails = evaluate_case(
         case,
-        [_result("src/FundService.go"), _result("legacy/Old.java")],
+        [_result("src/FundService.go"), _result("legacy/pkg/Old.java")],
         latency_ms=1,
     )
     passes = evaluate_case(
@@ -861,7 +896,7 @@ def test_legacy_forbidden_window_matches_absolute_rank_semantics() -> None:
         [
             _result("src/FundService.go"),
             _result("src/Other.go"),
-            _result("legacy/Old.java"),
+            _result("legacy/pkg/Old.java"),
         ],
         latency_ms=1,
     )
@@ -906,6 +941,8 @@ conda run -n base python -m pytest \
   tests/test_quality_cases.py::test_legacy_forbidden_above_max_rank_becomes_absent_window \
   tests/test_quality_cases.py::test_at_least_group_rejects_invalid_minimum \
   tests/test_quality_cases.py::test_at_least_group_rejects_duplicate_matchers \
+  tests/test_quality_cases.py::test_rank_fields_require_positive_int \
+  tests/test_quality_cases.py::test_legacy_expected_top5_min_zero_becomes_zero_minimum_group \
   tests/test_quality_metrics.py::test_at_least_group_gates_n_of_m_but_counts_each_relevance_target \
   tests/test_quality_metrics.py::test_zero_minimum_records_relevance_without_failure \
   tests/test_quality_metrics.py::test_informational_cross_language_metrics_without_legacy_minimum \
@@ -1000,6 +1037,8 @@ if "expected_core" in raw:
     at_least_groups += (
         AtLeastTopKGroup(core_matchers, top_k=5, min_matches=minimum),
     )
+elif "expected_top5_min" in raw:
+    raise ValueError("expected_top5_min requires expected_core")
 ```
 
 Append legacy `required_top3` paths with:
@@ -5155,6 +5194,8 @@ Expected: all commands exit 0; self-comparison has zero gating regressions and z
 Use the repositories already available in this workspace environment:
 
 ```bash
+smoke_status=failed
+set +e
 CST_SMOKE_REPOS_DIR=/Users/flobby/vibe_coding \
 CST_SMOKE_PROGRAM_TOOL_REPO=/Users/flobby/vueProject/program-tool \
 conda run -n base cst quality run \
@@ -5162,23 +5203,33 @@ conda run -n base cst quality run \
   --profile smoke \
   --output /tmp/cst-p0-smoke.json \
   --markdown /tmp/cst-p0-smoke.md
+run_status=$?
 
 conda run -n base python -c '
 import json
 report = json.load(open("/tmp/cst-p0-smoke.json", encoding="utf-8"))
+aggregate = report["aggregate"]
+assert aggregate["failed"] == 0
+assert aggregate["errors"] == 0
 external = {
     repo["repo_key"] for repo in report["repos"]
     if repo["source"]["type"] in {"path_env", "smoke_root"}
 }
-executed = {"pass", "fail", "known_gap", "informational"}
+successful = {"pass", "known_gap", "informational"}
 assert external
 assert any(
-    case["repo_key"] in external and case["status"] in executed
+    case["repo_key"] in external and case["status"] in successful
     for case in report["cases"]
 )
 '
+validation_status=$?
+set -e
 
-printf 'verified\n' > /tmp/cst-p0-smoke.status
+if test "$run_status" -eq 0 && test "$validation_status" -eq 0; then
+  smoke_status=verified
+fi
+printf '%s\n' "$smoke_status" > /tmp/cst-p0-smoke.status
+test "$smoke_status" = verified
 ```
 
 Expected: both commands exit 0 and at least one case from an external repository executes.
