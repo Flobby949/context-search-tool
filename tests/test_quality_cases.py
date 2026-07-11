@@ -11,9 +11,11 @@ from context_search_tool.config import (
     ToolConfig,
 )
 from context_search_tool.quality.cases import (
+    AtLeastTopKGroup,
     Gate,
     LegacyProvenance,
     Matcher,
+    TopKMatcher,
     adapt_legacy_query_case,
     load_quality_fixture,
     normalize_result_path,
@@ -261,6 +263,53 @@ def test_load_quality_fixture_rejects_empty_expected_any_groups(tmp_path: Path) 
         load_quality_fixture(fixture_path)
 
 
+@pytest.mark.parametrize("min_matches", [-1, 4, True, 1.5, "2"])
+def test_at_least_group_rejects_invalid_minimum(
+    tmp_path: Path, min_matches: object
+) -> None:
+    with pytest.raises(ValueError, match="min_matches"):
+        load_quality_fixture(
+            _write_fixture(
+                tmp_path,
+                _minimal_fixture(
+                    case_overrides={
+                        "expected_at_least_top_k": [
+                            {
+                                "matchers": [
+                                    "src/A.java",
+                                    "src/B.java",
+                                    "src/C.java",
+                                ],
+                                "top_k": 5,
+                                "min_matches": min_matches,
+                            }
+                        ]
+                    }
+                ),
+            )
+        )
+
+
+def test_at_least_group_rejects_duplicate_matchers(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="duplicate matcher"):
+        load_quality_fixture(
+            _write_fixture(
+                tmp_path,
+                _minimal_fixture(
+                    case_overrides={
+                        "expected_at_least_top_k": [
+                            {
+                                "matchers": ["src/A.java", "src/A.java"],
+                                "top_k": 5,
+                                "min_matches": 1,
+                            }
+                        ]
+                    }
+                ),
+            )
+        )
+
+
 def test_rank_fields_require_positive_int() -> None:
     invalid_values = [0, -1, True, 1.5, "3"]
 
@@ -305,15 +354,27 @@ def test_rank_fields_require_positive_int() -> None:
             }
         )
     for value in [-1, True, 1.5, "3"]:
-        assert_invalid({"expected_top5_min": value})
+        assert_invalid(
+            {"expected_core": ["src/App.java"], "expected_top5_min": value}
+        )
 
 
-def test_expected_top5_min_accepts_zero() -> None:
+def test_legacy_expected_top5_min_zero_becomes_zero_minimum_group() -> None:
     case = adapt_legacy_query_case(
-        {"id": "legacy-zero-min", "query": "login", "expected_top5_min": 0}
+        {
+            "id": "legacy-zero-min",
+            "query": "login",
+            "expected_core": ["src/AuthController.java"],
+            "expected_top5_min": 0,
+        }
     )
-
-    assert case.expected_top5_min == 0
+    assert case.expected_at_least_top_k == (
+        AtLeastTopKGroup(
+            matchers=(Matcher(path="src/AuthController.java"),),
+            top_k=5,
+            min_matches=0,
+        ),
+    )
 
 
 def test_legacy_known_gap_is_reason_not_gate() -> None:
@@ -351,7 +412,7 @@ def test_legacy_expected_any_top_k_flat_list_becomes_group() -> None:
     )
 
 
-def test_legacy_calibration_expected_core_becomes_relevance_targets() -> None:
+def test_legacy_calibration_maps_n_of_m_required_and_forbidden_paths() -> None:
     case = adapt_legacy_query_case(
         {
             "id": "legacy-core",
@@ -359,18 +420,31 @@ def test_legacy_calibration_expected_core_becomes_relevance_targets() -> None:
             "expected_core": [
                 "src/FeedbackController.java",
                 "src/FeedbackService.java",
+                "src/FeedbackServiceImpl.java",
             ],
+            "expected_top5_min": 2,
+            "required_top3": ["src/FeedbackController.java"],
             "forbidden_top3": ["src/WxMiniLoginClient.java"],
         }
     )
 
-    assert [item.top_k for item in case.expected_top_k] == [5, 5]
-    assert [item.matcher for item in case.expected_top_k] == [
-        Matcher(path="src/FeedbackController.java"),
-        Matcher(path="src/FeedbackService.java"),
-    ]
-    assert case.absent_top_k[0].top_k == 3
-    assert case.absent_top_k[0].matcher == Matcher(path="src/WxMiniLoginClient.java")
+    assert case.expected_top_k == (
+        TopKMatcher(Matcher(path="src/FeedbackController.java"), 3),
+    )
+    assert case.expected_at_least_top_k == (
+        AtLeastTopKGroup(
+            matchers=(
+                Matcher(path="src/FeedbackController.java"),
+                Matcher(path="src/FeedbackService.java"),
+                Matcher(path="src/FeedbackServiceImpl.java"),
+            ),
+            top_k=5,
+            min_matches=2,
+        ),
+    )
+    assert case.absent_top_k == (
+        TopKMatcher(Matcher(path="src/WxMiniLoginClient.java"), 3),
+    )
 
 
 def test_legacy_forbidden_above_shape_becomes_target_and_noise() -> None:
@@ -409,27 +483,28 @@ def test_legacy_forbidden_above_shape_becomes_target_and_noise() -> None:
     assert explicit.forbidden_above[0].top_k == 3
 
 
-def test_legacy_forbidden_above_dict_shorthand_uses_first_expected_target() -> None:
+def test_legacy_forbidden_above_max_rank_becomes_absent_window() -> None:
     case = adapt_legacy_query_case(
         {
-            "id": "legacy-dict-shorthand",
-            "query": "open door",
+            "id": "legacy-window",
+            "query": "fund service",
             "expected_top_k": [
-                {"path": "src/AccessControlService.java", "top_k": 7}
+                {"path": "collector/internal/service/fund_service.go", "top_k": 5}
             ],
-            "forbidden_above": {
-                "glob": "src/generated/**/*.java",
-                "top_k": 5,
-                "max_rank": 2,
-            },
+            "forbidden_above": [
+                {
+                    "glob": "investment-assistant-backend/**/*.java",
+                    "top_k": 5,
+                    "max_rank": 2,
+                }
+            ],
         }
     )
 
-    assert case.forbidden_above[0].source == Matcher(
-        path="src/AccessControlService.java"
+    assert case.absent_top_k == (
+        TopKMatcher(Matcher(glob="investment-assistant-backend/**/*.java"), 2),
     )
-    assert case.forbidden_above[0].noise == Matcher(glob="src/generated/**/*.java")
-    assert case.forbidden_above[0].top_k == 5
+    assert case.forbidden_above == ()
 
 
 def test_ci_profile_rejects_model_backed_config() -> None:

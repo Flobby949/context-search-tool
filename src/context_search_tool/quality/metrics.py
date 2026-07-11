@@ -83,20 +83,19 @@ def evaluate_case(
         if rank is None or rank > group.top_k:
             failures.append(f"expected_any_top_k missing within top {group.top_k}")
 
-    expected_top5_count = sum(
-        1
-        for expected in case.expected_top_k
-        if _rank_within(_first_rank(normalized, (expected.matcher,)), 5)
-    )
-    coverage_top5_count = sum(1 for rank in target_ranks if _rank_within(rank, 5))
-    if (
-        case.expected_top5_min is not None
-        and expected_top5_count < case.expected_top5_min
-    ):
-        failures.append(
-            f"expected_top5_min expected {case.expected_top5_min}, "
-            f"found {expected_top5_count}"
+    for group in case.expected_at_least_top_k:
+        match_count = sum(
+            1
+            for matcher in group.matchers
+            if _rank_within(_first_rank(normalized, (matcher,)), group.top_k)
         )
+        if match_count < group.min_matches:
+            failures.append(
+                f"expected_at_least_top_k expected {group.min_matches} "
+                f"within top {group.top_k}, found {match_count}"
+            )
+
+    coverage_top5_count = sum(1 for rank in target_ranks if _rank_within(rank, 5))
 
     preferred_rank_pass = True
     entrypoint_rank = None
@@ -128,10 +127,16 @@ def evaluate_case(
     _add_outrank_failures("forbidden_above", case.forbidden_above, normalized, failures)
     if anchor_paths is not None:
         normalized_anchors = {normalize_result_path(path) for path in anchor_paths}
+        ranked_paths = {result.path for result in normalized}
         for expected_anchor in case.anchor_expected:
             expected_path = normalize_result_path(expected_anchor)
             if expected_path not in normalized_anchors:
                 failures.append(f"anchor_expected missing: {expected_path}")
+            elif expected_path in ranked_paths:
+                failures.append(
+                    "anchor_expected must remain outside ranked results: "
+                    f"{expected_path}"
+                )
 
     metrics = _metrics(
         case=case,
@@ -206,6 +211,11 @@ def _relevance_targets(case: QualityCase) -> list[_RelevanceTarget]:
             matchers=group.matchers,
         )
         for group in case.expected_any_top_k
+    )
+    targets.extend(
+        _RelevanceTarget(matchers=(matcher,))
+        for group in case.expected_at_least_top_k
+        for matcher in group.matchers
     )
     return targets
 

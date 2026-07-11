@@ -1,4 +1,5 @@
 from context_search_tool.quality.cases import (
+    AtLeastTopKGroup,
     Gate,
     LegacyProvenance,
     Matcher,
@@ -12,6 +13,7 @@ from context_search_tool.quality.cases import (
 )
 
 __all__ = [
+    "AtLeastTopKGroup",
     "Gate",
     "LegacyProvenance",
     "Matcher",

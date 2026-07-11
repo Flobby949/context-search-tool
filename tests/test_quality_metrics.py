@@ -4,6 +4,7 @@ import pytest
 
 from context_search_tool.models import RetrievalResult
 from context_search_tool.quality.cases import (
+    AtLeastTopKGroup,
     ExpectedAnyGroup,
     Gate,
     Matcher,
@@ -11,6 +12,7 @@ from context_search_tool.quality.cases import (
     PreferredRank,
     QualityCase,
     TopKMatcher,
+    adapt_legacy_query_case,
 )
 from context_search_tool.quality.metrics import evaluate_case, normalize_results
 
@@ -124,6 +126,47 @@ def test_expected_any_group_counts_as_one_relevance_target() -> None:
     }
 
 
+def test_at_least_group_gates_n_of_m_but_counts_each_relevance_target() -> None:
+    group = AtLeastTopKGroup(
+        matchers=tuple(Matcher(path=f"src/{name}.java") for name in "ABCDE"),
+        top_k=5,
+        min_matches=2,
+    )
+    case = QualityCase(
+        case_id="two-of-five",
+        query="auth",
+        expected_at_least_top_k=(group,),
+    )
+    passes = evaluate_case(
+        case, [_result("src/A.java"), _result("src/C.java")], latency_ms=1
+    )
+    fails = evaluate_case(case, [_result("src/A.java")], latency_ms=1)
+    assert passes.status == "pass"
+    assert passes.failures == []
+    assert passes.metrics["recall_at_5"] == pytest.approx(2 / 5)
+    assert fails.status == "fail"
+    assert fails.failures == [
+        "expected_at_least_top_k expected 2 within top 5, found 1"
+    ]
+
+
+def test_zero_minimum_records_relevance_without_failure() -> None:
+    case = QualityCase(
+        case_id="zero-minimum",
+        query="alarm",
+        expected_at_least_top_k=(
+            AtLeastTopKGroup(
+                matchers=(Matcher(path="src/AlarmService.java"),),
+                top_k=5,
+                min_matches=0,
+            ),
+        ),
+    )
+    evaluation = evaluate_case(case, [], latency_ms=1)
+    assert evaluation.status == "pass"
+    assert evaluation.metrics["recall_at_5"] == 0.0
+
+
 def test_known_gap_status_preserves_failures() -> None:
     case = QualityCase(
         case_id="known-gap",
@@ -216,24 +259,19 @@ def test_noise_metrics_count_unique_paths_matched_by_eligible_absent_assertions(
     assert evaluation.metrics["noise_top10"] == 4
 
 
-def test_expected_top5_min_informational_and_cross_language_metrics() -> None:
+def test_informational_cross_language_metrics_without_legacy_minimum() -> None:
     case = QualityCase(
-        case_id="edge-metrics",
-        query="edge",
+        case_id="cross-language-info",
+        query="数据看板",
         tags=("cross_language",),
         gate=Gate.INFORMATIONAL,
-        expected_top_k=(
-            _expected("src/A.java", 5),
-            _expected("src/B.java", 5),
-        ),
-        expected_top5_min=2,
+        expected_top_k=(TopKMatcher(Matcher(path="src/Dashboard.java"), 5),),
     )
 
-    evaluation = evaluate_case(case, [_result("src/A.java")], latency_ms=3)
+    evaluation = evaluate_case(case, [_result("src/Dashboard.java")], latency_ms=1)
 
     assert evaluation.status == "informational"
     assert evaluation.metrics["cross_language_success"] is True
-    assert any("expected_top5_min" in failure for failure in evaluation.failures)
 
 
 def test_anchor_expected_passes_when_anchor_path_is_present() -> None:
@@ -282,6 +320,56 @@ def test_anchor_expected_is_ignored_without_anchor_paths() -> None:
     evaluation = evaluate_case(case, [], latency_ms=1)
 
     assert evaluation.status == "pass"
+
+
+def test_expected_anchor_must_remain_outside_ranked_results() -> None:
+    case = QualityCase(
+        case_id="anchor-separation",
+        query="readme",
+        anchor_expected=("README.md",),
+    )
+    evaluation = evaluate_case(
+        case,
+        [_result("README.md")],
+        latency_ms=1,
+        anchor_paths=["README.md"],
+    )
+    assert evaluation.status == "fail"
+    assert evaluation.failures == [
+        "anchor_expected must remain outside ranked results: README.md"
+    ]
+
+
+def test_legacy_forbidden_window_matches_absolute_rank_semantics() -> None:
+    case = adapt_legacy_query_case(
+        {
+            "id": "legacy-window",
+            "query": "fund service",
+            "expected_top_k": [{"path": "src/FundService.go", "top_k": 5}],
+            "forbidden_above": [
+                {"glob": "legacy/**/*.java", "top_k": 5, "max_rank": 2}
+            ],
+        }
+    )
+    fails = evaluate_case(
+        case,
+        [_result("src/FundService.go"), _result("legacy/pkg/Old.java")],
+        latency_ms=1,
+    )
+    passes = evaluate_case(
+        case,
+        [
+            _result("src/FundService.go"),
+            _result("src/Other.go"),
+            _result("legacy/pkg/Old.java"),
+        ],
+        latency_ms=1,
+    )
+    assert fails.status == "fail"
+    assert fails.failures == [
+        "absent_top_k present within top 2: legacy/**/*.java"
+    ]
+    assert passes.status == "pass"
 
 
 def test_outranks_and_forbidden_above_fail_when_noise_appears_first() -> None:

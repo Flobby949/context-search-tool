@@ -84,6 +84,13 @@ class ExpectedAnyGroup:
 
 
 @dataclass(frozen=True)
+class AtLeastTopKGroup:
+    matchers: tuple[Matcher, ...]
+    top_k: int
+    min_matches: int
+
+
+@dataclass(frozen=True)
 class PreferredRank:
     matcher: Matcher
     top_k: int
@@ -114,6 +121,7 @@ class QualityCase:
     gate: Gate = Gate.REQUIRED
     expected_top_k: tuple[TopKMatcher, ...] = ()
     expected_any_top_k: tuple[ExpectedAnyGroup, ...] = ()
+    expected_at_least_top_k: tuple[AtLeastTopKGroup, ...] = ()
     preferred_rank: tuple[PreferredRank, ...] = ()
     absent_top_k: tuple[TopKMatcher, ...] = ()
     outranks: tuple[Outranks, ...] = ()
@@ -121,7 +129,6 @@ class QualityCase:
     anchor_expected: tuple[str, ...] = ()
     known_gap_reason: str = ""
     notes: str = ""
-    expected_top5_min: int | None = None
     legacy: LegacyProvenance | None = None
 
 
@@ -374,14 +381,38 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         )
 
     profiles = _require_str_tuple(raw.get("profiles", ()), "profiles")
-    expected_top5_min = raw.get("expected_top5_min")
-
     expected_top_k = _parse_top_k_matchers(raw.get("expected_top_k", ()))
+    if "required_top3" in raw:
+        raw_required_top3 = _require_sequence(raw["required_top3"], "required_top3")
+        expected_top_k += tuple(
+            TopKMatcher(Matcher.from_raw(item), 3) for item in raw_required_top3
+        )
+
+    at_least_groups = _parse_at_least_groups(
+        raw.get("expected_at_least_top_k", ())
+    )
     if "expected_core" in raw:
         raw_expected_core = _require_sequence(raw["expected_core"], "expected_core")
-        expected_top_k += tuple(
-            TopKMatcher(Matcher.from_raw(item), 5) for item in raw_expected_core
+        expected_core = tuple(Matcher.from_raw(item) for item in raw_expected_core)
+        if not expected_core:
+            raise ValueError("expected_core requires at least one matcher")
+        if len(set(expected_core)) != len(expected_core):
+            raise ValueError("expected_core has duplicate matcher")
+        minimum = _require_non_negative_int(
+            raw.get("expected_top5_min", len(expected_core)),
+            "expected_top5_min",
         )
+        if minimum > len(expected_core):
+            raise ValueError("expected_top5_min cannot exceed expected_core count")
+        at_least_groups += (
+            AtLeastTopKGroup(
+                matchers=expected_core,
+                top_k=5,
+                min_matches=minimum,
+            ),
+        )
+    elif "expected_top5_min" in raw:
+        raise ValueError("expected_top5_min requires expected_core")
 
     absent_top_k = _parse_top_k_matchers(raw.get("absent_top_k", ()))
     if "forbidden_top3" in raw:
@@ -389,6 +420,14 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         absent_top_k += tuple(
             TopKMatcher(Matcher.from_raw(item), 3) for item in raw_forbidden_top3
         )
+    absent_windows, relational_forbidden_above = _partition_forbidden_above(
+        raw.get("forbidden_above")
+    )
+    absent_top_k += absent_windows
+    forbidden_above = _parse_forbidden_above(
+        relational_forbidden_above,
+        expected_top_k,
+    )
 
     return QualityCase(
         case_id=case_id,
@@ -399,12 +438,11 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         gate=Gate(gate),
         expected_top_k=expected_top_k,
         expected_any_top_k=_parse_expected_any(raw.get("expected_any_top_k", ())),
+        expected_at_least_top_k=at_least_groups,
         preferred_rank=_parse_preferred_rank(raw.get("preferred_rank", ())),
         absent_top_k=absent_top_k,
         outranks=_parse_outranks(raw.get("outranks", ())),
-        forbidden_above=_parse_forbidden_above(
-            raw.get("forbidden_above"), expected_top_k
-        ),
+        forbidden_above=forbidden_above,
         anchor_expected=_require_str_tuple(
             raw.get("anchor_expected", ()), "anchor_expected"
         ),
@@ -413,9 +451,6 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
             "known_gap_reason",
         ),
         notes=_require_str(raw.get("notes", ""), "notes"),
-        expected_top5_min=None
-        if expected_top5_min is None
-        else _require_non_negative_int(expected_top5_min, "expected_top5_min"),
         legacy=legacy,
     )
 
@@ -432,6 +467,33 @@ def _parse_top_k_matchers(raw_items: Any) -> tuple[TopKMatcher, ...]:
 def _parse_top_k_matcher(raw: Any, default_top_k: int = 5) -> TopKMatcher:
     top_k = raw.get("top_k", default_top_k) if isinstance(raw, dict) else default_top_k
     return TopKMatcher(Matcher.from_raw(raw), _require_positive_int(top_k, "top_k"))
+
+
+def _parse_at_least_groups(raw: Any) -> tuple[AtLeastTopKGroup, ...]:
+    if not raw:
+        return ()
+    groups: list[AtLeastTopKGroup] = []
+    for item in _require_sequence(raw, "expected_at_least_top_k"):
+        item = _require_dict(item, "expected_at_least_top_k group")
+        matchers = tuple(
+            Matcher.from_raw(value)
+            for value in _require_sequence(item.get("matchers"), "matchers")
+        )
+        if not matchers:
+            raise ValueError("expected_at_least_top_k requires matchers")
+        if len(set(matchers)) != len(matchers):
+            raise ValueError("expected_at_least_top_k has duplicate matcher")
+        minimum = _require_non_negative_int(item.get("min_matches"), "min_matches")
+        if minimum > len(matchers):
+            raise ValueError("min_matches cannot exceed matcher count")
+        groups.append(
+            AtLeastTopKGroup(
+                matchers=matchers,
+                top_k=_require_positive_int(item.get("top_k"), "top_k"),
+                min_matches=minimum,
+            )
+        )
+    return tuple(groups)
 
 
 def _parse_expected_any(raw: Any) -> tuple[ExpectedAnyGroup, ...]:
@@ -491,6 +553,30 @@ def _parse_outranks(raw_items: Any) -> tuple[Outranks, ...]:
         _parse_outrank(raw_item)
         for raw_item in _require_sequence(raw_items, "outranks")
     )
+
+
+def _partition_forbidden_above(
+    raw: Any,
+) -> tuple[tuple[TopKMatcher, ...], tuple[Any, ...]]:
+    if not raw:
+        return (), ()
+    raw_items = raw if isinstance(raw, (list, tuple)) else (raw,)
+    absent_windows: list[TopKMatcher] = []
+    relational: list[Any] = []
+    for item in raw_items:
+        if (
+            isinstance(item, dict)
+            and "max_rank" in item
+            and not {"source", "noise"}.issubset(item)
+        ):
+            top_k = _require_positive_int(item.get("top_k", 5), "top_k")
+            max_rank = _require_positive_int(item.get("max_rank"), "max_rank")
+            if max_rank > top_k:
+                raise ValueError("forbidden_above max_rank cannot exceed top_k")
+            absent_windows.append(TopKMatcher(Matcher.from_raw(item), max_rank))
+        else:
+            relational.append(item)
+    return tuple(absent_windows), tuple(relational)
 
 
 def _parse_forbidden_above(
