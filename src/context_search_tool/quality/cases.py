@@ -71,6 +71,15 @@ class Matcher:
         return self.contains in normalized
 
 
+def _matcher_identity(matcher: Matcher) -> tuple[str, str]:
+    if matcher.path is not None:
+        return ("path", normalize_result_path(matcher.path))
+    if matcher.glob is not None:
+        return ("glob", normalize_result_path(matcher.glob))
+    assert matcher.contains is not None
+    return ("contains", matcher.contains)
+
+
 @dataclass(frozen=True)
 class TopKMatcher:
     matcher: Matcher
@@ -396,7 +405,9 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         expected_core = tuple(Matcher.from_raw(item) for item in raw_expected_core)
         if not expected_core:
             raise ValueError("expected_core requires at least one matcher")
-        if len(set(expected_core)) != len(expected_core):
+        if len({_matcher_identity(matcher) for matcher in expected_core}) != len(
+            expected_core
+        ):
             raise ValueError("expected_core has duplicate matcher")
         minimum = _require_non_negative_int(
             raw.get("expected_top5_min", len(expected_core)),
@@ -470,10 +481,11 @@ def _parse_top_k_matcher(raw: Any, default_top_k: int = 5) -> TopKMatcher:
 
 
 def _parse_at_least_groups(raw: Any) -> tuple[AtLeastTopKGroup, ...]:
+    raw = _require_sequence(raw, "expected_at_least_top_k")
     if not raw:
         return ()
     groups: list[AtLeastTopKGroup] = []
-    for item in _require_sequence(raw, "expected_at_least_top_k"):
+    for item in raw:
         item = _require_dict(item, "expected_at_least_top_k group")
         matchers = tuple(
             Matcher.from_raw(value)
@@ -481,7 +493,7 @@ def _parse_at_least_groups(raw: Any) -> tuple[AtLeastTopKGroup, ...]:
         )
         if not matchers:
             raise ValueError("expected_at_least_top_k requires matchers")
-        if len(set(matchers)) != len(matchers):
+        if len({_matcher_identity(matcher) for matcher in matchers}) != len(matchers):
             raise ValueError("expected_at_least_top_k has duplicate matcher")
         minimum = _require_non_negative_int(item.get("min_matches"), "min_matches")
         if minimum > len(matchers):

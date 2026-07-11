@@ -310,6 +310,125 @@ def test_at_least_group_rejects_duplicate_matchers(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "matchers",
+    [
+        pytest.param(
+            ["src/A.java", "./src/A.java"],
+            id="path-dot-prefix",
+        ),
+        pytest.param(
+            ["src/A.java", r"src\A.java"],
+            id="path-backslash",
+        ),
+        pytest.param(
+            [
+                {"glob": "src/**/*.java"},
+                {"glob": "./src/**/*.java"},
+            ],
+            id="glob-dot-prefix",
+        ),
+        pytest.param(
+            [
+                {"glob": "src/**/*.java"},
+                {"glob": r"src\**\*.java"},
+            ],
+            id="glob-backslash",
+        ),
+    ],
+)
+def test_at_least_group_rejects_semantically_duplicate_matchers(
+    tmp_path: Path,
+    matchers: list[object],
+) -> None:
+    with pytest.raises(ValueError, match="duplicate matcher"):
+        load_quality_fixture(
+            _write_fixture(
+                tmp_path,
+                _minimal_fixture(
+                    case_overrides={
+                        "expected_at_least_top_k": [
+                            {
+                                "matchers": matchers,
+                                "top_k": 5,
+                                "min_matches": 1,
+                            }
+                        ]
+                    }
+                ),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "expected_core",
+    [
+        pytest.param(
+            ["src/A.java", "./src/A.java"],
+            id="dot-prefix",
+        ),
+        pytest.param(
+            ["src/A.java", r"src\A.java"],
+            id="backslash",
+        ),
+    ],
+)
+def test_legacy_expected_core_rejects_semantically_duplicate_matchers(
+    expected_core: list[str],
+) -> None:
+    with pytest.raises(ValueError, match="expected_core has duplicate matcher"):
+        adapt_legacy_query_case(
+            {
+                "id": "legacy-duplicate-core",
+                "query": "login",
+                "expected_core": expected_core,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    [
+        pytest.param(None, id="none"),
+        pytest.param(False, id="false"),
+        pytest.param(0, id="zero"),
+        pytest.param("", id="empty-string"),
+        pytest.param({}, id="empty-object"),
+    ],
+)
+def test_at_least_groups_reject_malformed_top_level_value(raw_value: object) -> None:
+    with pytest.raises(ValueError, match="expected_at_least_top_k"):
+        adapt_legacy_query_case(
+            {
+                "id": "malformed-at-least-groups",
+                "query": "login",
+                "expected_at_least_top_k": raw_value,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "case_overrides",
+    [
+        pytest.param({}, id="missing"),
+        pytest.param({"expected_at_least_top_k": []}, id="empty-list"),
+        pytest.param({"expected_at_least_top_k": ()}, id="empty-tuple"),
+    ],
+)
+def test_at_least_groups_accept_empty_or_missing_sequence(
+    case_overrides: dict,
+) -> None:
+    case = adapt_legacy_query_case(
+        {
+            "id": "empty-at-least-groups",
+            "query": "login",
+            **case_overrides,
+        }
+    )
+
+    assert case.expected_at_least_top_k == ()
+
+
 def test_rank_fields_require_positive_int() -> None:
     invalid_values = [0, -1, True, 1.5, "3"]
 
