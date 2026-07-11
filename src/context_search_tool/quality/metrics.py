@@ -172,7 +172,7 @@ def _metrics(
     hit_at_5 = _hit_at(target_ranks, 5) if has_targets else None
     target_count = len(target_ranks)
 
-    return {
+    metrics = {
         "hit_at_1": _hit_at(target_ranks, 1) if has_targets else None,
         "hit_at_3": _hit_at(target_ranks, 3) if has_targets else None,
         "hit_at_5": hit_at_5,
@@ -196,6 +196,54 @@ def _metrics(
         "latency_ms": latency_ms,
         "result_count": len(normalized),
         "top_score": normalized[0].score if normalized else None,
+    }
+    metrics.update(_measurement_metrics(case, normalized))
+    return metrics
+
+
+def _measurement_matches(matcher: Matcher, path: str) -> bool:
+    assert matcher.contains is not None
+    return matcher.contains.casefold() in normalize_result_path(path).casefold()
+
+
+def _measurement_metrics(
+    case: QualityCase,
+    results: list[NormalizedResult],
+) -> dict[str, Any]:
+    if case.metric_k is None:
+        return {}
+    top = results[: case.metric_k]
+    relevant = [
+        result
+        for result in top
+        if any(
+            _measurement_matches(matcher, result.path)
+            for matcher in case.relevance_matchers
+        )
+    ]
+    noise = [
+        result
+        for result in top
+        if any(
+            _measurement_matches(matcher, result.path)
+            for matcher in case.noise_matchers
+        )
+    ]
+    first_rank = next(
+        (
+            result.rank
+            for result in results
+            if any(
+                _measurement_matches(matcher, result.path)
+                for matcher in case.relevance_matchers
+            )
+        ),
+        None,
+    )
+    return {
+        f"precision_at_{case.metric_k}": len(relevant) / case.metric_k,
+        f"noise_top{case.metric_k}": len(noise),
+        "mrr": 0.0 if first_rank is None else 1.0 / first_rank,
     }
 
 

@@ -158,6 +158,44 @@ def test_load_quality_fixture_parses_v1_schema(tmp_path: Path) -> None:
     )
 
 
+def test_informational_measurement_fields_parse(tmp_path: Path) -> None:
+    fixture = load_quality_fixture(
+        _write_fixture(
+            tmp_path,
+            _minimal_fixture(
+                case_overrides={
+                    "gate": "informational",
+                    "metric_k": 12,
+                    "relevance_matchers": [
+                        {"contains": "whitelist"},
+                        {"contains": "blacklist"},
+                    ],
+                    "noise_matchers": [{"contains": "region"}],
+                }
+            ),
+        )
+    )
+    case = fixture.repos[0].queries[0]
+    assert case.metric_k == 12
+    assert case.relevance_matchers == (
+        Matcher(contains="whitelist"), Matcher(contains="blacklist"),
+    )
+    assert case.noise_matchers == (Matcher(contains="region"),)
+
+
+def test_measurement_matchers_require_contains_selector(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="measurement matcher requires contains"):
+        load_quality_fixture(_write_fixture(tmp_path, _minimal_fixture(case_overrides={
+            "metric_k": 12,
+            "relevance_matchers": [{"path": "src/App.java"}],
+        })))
+    with pytest.raises(ValueError, match="metric_k requires relevance_matchers"):
+        load_quality_fixture(_write_fixture(tmp_path, _minimal_fixture(case_overrides={
+            "metric_k": 12,
+            "noise_matchers": [{"contains": "region"}],
+        })))
+
+
 def test_load_quality_fixture_rejects_invalid_container_shapes(tmp_path: Path) -> None:
     invalid_fixtures = [
         {"schema_version": 2, "repos": [{"repo_key": "sample", "queries": []}]},

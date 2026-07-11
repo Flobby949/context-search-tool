@@ -128,6 +128,9 @@ class QualityCase:
     tags: tuple[str, ...] = ()
     mode: str = "results"
     gate: Gate = Gate.REQUIRED
+    metric_k: int | None = None
+    relevance_matchers: tuple[Matcher, ...] = ()
+    noise_matchers: tuple[Matcher, ...] = ()
     expected_top_k: tuple[TopKMatcher, ...] = ()
     expected_any_top_k: tuple[ExpectedAnyGroup, ...] = ()
     expected_at_least_top_k: tuple[AtLeastTopKGroup, ...] = ()
@@ -439,6 +442,21 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         relational_forbidden_above,
         expected_top_k,
     )
+    relevance_matchers = _parse_measurement_matchers(
+        raw.get("relevance_matchers", ()),
+        "relevance_matchers",
+    )
+    noise_matchers = _parse_measurement_matchers(
+        raw.get("noise_matchers", ()),
+        "noise_matchers",
+    )
+    raw_metric_k = raw.get("metric_k")
+    if (noise_matchers or raw_metric_k is not None) and not relevance_matchers:
+        raise ValueError("metric_k requires relevance_matchers")
+    if relevance_matchers:
+        metric_k = _require_positive_int(raw_metric_k, "metric_k")
+    else:
+        metric_k = None
 
     return QualityCase(
         case_id=case_id,
@@ -447,6 +465,9 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         tags=_require_str_tuple(raw.get("tags", ()), "tags"),
         mode=_require_str(raw.get("mode", "results"), "mode"),
         gate=Gate(gate),
+        metric_k=metric_k,
+        relevance_matchers=relevance_matchers,
+        noise_matchers=noise_matchers,
         expected_top_k=expected_top_k,
         expected_any_top_k=_parse_expected_any(raw.get("expected_any_top_k", ())),
         expected_at_least_top_k=at_least_groups,
@@ -464,6 +485,21 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         notes=_require_str(raw.get("notes", ""), "notes"),
         legacy=legacy,
     )
+
+
+def _parse_measurement_matchers(
+    raw: Any,
+    field_name: str,
+) -> tuple[Matcher, ...]:
+    if not raw:
+        return ()
+    matchers = tuple(
+        Matcher.from_raw(item)
+        for item in _require_sequence(raw, field_name)
+    )
+    if any(matcher.contains is None for matcher in matchers):
+        raise ValueError(f"{field_name} measurement matcher requires contains")
+    return matchers
 
 
 def _parse_top_k_matchers(raw_items: Any) -> tuple[TopKMatcher, ...]:

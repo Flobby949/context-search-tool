@@ -274,6 +274,32 @@ def test_informational_cross_language_metrics_without_legacy_minimum() -> None:
     assert evaluation.metrics["cross_language_success"] is True
 
 
+def test_informational_metrics_are_casefolded_unique_and_fixed_denominator() -> None:
+    case = QualityCase(
+        case_id="embedding-ab",
+        query="黑白名单管理",
+        gate=Gate.INFORMATIONAL,
+        metric_k=12,
+        relevance_matchers=(
+            Matcher(contains="whitelist"),
+            Matcher(contains="blacklist"),
+        ),
+        noise_matchers=(Matcher(contains="region"),),
+    )
+    results = [
+        _result("src/WhitelistManager.java"),
+        _result("src/WhitelistManager.java"),
+        _result("src/BLACKLISTService.java"),
+        _result("src/RegionService.java"),
+    ]
+    evaluation = evaluate_case(case, results, latency_ms=4)
+    assert evaluation.status == "informational"
+    assert evaluation.metrics["precision_at_12"] == pytest.approx(2 / 12)
+    assert evaluation.metrics["noise_top12"] == 1
+    assert evaluation.metrics["mrr"] == 1.0
+    assert evaluation.failures == []
+
+
 def test_anchor_expected_passes_when_anchor_path_is_present() -> None:
     case = QualityCase(
         case_id="anchor-pass",
