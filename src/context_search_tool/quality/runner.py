@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import ntpath
 import os
 import shutil
 import stat
@@ -44,8 +45,10 @@ _WINDOWS_RESERVED_NAMES = {
     "prn",
     "aux",
     "nul",
-    *(f"com{number}" for number in range(1, 10)),
-    *(f"lpt{number}" for number in range(1, 10)),
+    "conin$",
+    "conout$",
+    *(f"com{suffix}" for suffix in "123456789¹²³"),
+    *(f"lpt{suffix}" for suffix in "123456789¹²³"),
 }
 
 _WINDOWS_INVALID_COMPONENT_CHARS = frozenset('<>:"/\\|?*')
@@ -316,7 +319,6 @@ def _existing_directory(raw_path: str | Path) -> Path | None:
 
 def _safe_path_component(value: str, field_name: str) -> str:
     windows_path = PureWindowsPath(value)
-    windows_basename = value.split(".", 1)[0].casefold()
     has_invalid_character = any(
         character in _WINDOWS_INVALID_COMPONENT_CHARS or ord(character) < 32
         for character in value
@@ -328,16 +330,27 @@ def _safe_path_component(value: str, field_name: str) -> str:
         or bool(windows_path.drive)
         or has_invalid_character
         or value.endswith((".", " "))
-        or windows_basename in _WINDOWS_RESERVED_NAMES
+        or _is_windows_reserved_component(value)
     ):
         raise ValueError(f"{field_name} must be a safe path component")
     return value
 
 
+def _is_windows_reserved_component(value: str) -> bool:
+    is_reserved = getattr(ntpath, "isreserved", None)
+    if is_reserved is not None:
+        return is_reserved(value)
+    basename = value.split(".", 1)[0].rstrip(" ").casefold()
+    return basename in _WINDOWS_RESERVED_NAMES
+
+
 def _safe_snapshot_locator(raw_path: str) -> str:
     path = Path(raw_path).expanduser()
     if path.is_absolute():
-        return path.name
+        locator = path.resolve().name
+        if not locator:
+            raise ValueError("absolute snapshot_path must resolve to a named directory")
+        return locator
     return _safe_relative_snapshot_path(raw_path).as_posix()
 
 

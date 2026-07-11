@@ -1,4 +1,5 @@
 import json
+import ntpath
 import os
 import shutil
 from pathlib import Path
@@ -879,6 +880,11 @@ def test_all_canonical_profiles_wire_without_external_dependencies(
         pytest.param("repo\x1fname", id="unit-separator-control"),
         pytest.param("CON", id="windows-reserved"),
         pytest.param("con.txt", id="windows-reserved-extension"),
+        pytest.param("COM¹", id="windows-reserved-com-superscript"),
+        pytest.param("LPT².txt", id="windows-reserved-lpt-superscript-extension"),
+        pytest.param("CON .txt", id="windows-reserved-space-before-extension"),
+        pytest.param("CONIN$", id="windows-reserved-console-input"),
+        pytest.param("CONOUT$", id="windows-reserved-console-output"),
         pytest.param("repo.", id="trailing-dot"),
         pytest.param("repo ", id="trailing-space"),
     ],
@@ -996,7 +1002,10 @@ def test_quality_runner_rejects_duplicate_workspace_repo_key_aliases(
     assert not temp_root.exists()
 
 
-@pytest.mark.parametrize("repo_key", ["sample_repo", "sample-repo", "仓库"])
+@pytest.mark.parametrize(
+    "repo_key",
+    ["sample_repo", "sample-repo", "仓库", "COM⁴", "LPT⁵.txt"],
+)
 def test_quality_runner_keeps_safe_repo_keys_inside_temp_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1049,6 +1058,30 @@ def test_quality_runner_keeps_safe_repo_keys_inside_temp_root(
 
 
 @pytest.mark.parametrize(
+    "value",
+    ["COM¹", "LPT².txt", "CON .txt", "CONIN$", "CONOUT$"],
+)
+def test_safe_path_component_fallback_rejects_windows_reserved_names(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.delattr(ntpath, "isreserved", raising=False)
+
+    with pytest.raises(ValueError, match=r"repo_key.*safe.*component"):
+        quality_runner._safe_path_component(value, "repo_key")
+
+
+@pytest.mark.parametrize("value", ["COM⁴", "LPT⁵.txt", "CON文档"])
+def test_safe_path_component_fallback_keeps_non_reserved_unicode_names(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.delattr(ntpath, "isreserved", raising=False)
+
+    assert quality_runner._safe_path_component(value, "repo_key") == value
+
+
+@pytest.mark.parametrize(
     "unsafe_repo_dir_name",
     [
         pytest.param("<absolute>", id="absolute"),
@@ -1069,6 +1102,11 @@ def test_quality_runner_keeps_safe_repo_keys_inside_temp_root(
         pytest.param("repo\x1fname", id="unit-separator-control"),
         pytest.param("AUX", id="windows-reserved"),
         pytest.param("lpt9.log", id="windows-reserved-extension"),
+        pytest.param("COM¹", id="windows-reserved-com-superscript"),
+        pytest.param("LPT².txt", id="windows-reserved-lpt-superscript-extension"),
+        pytest.param("CON .txt", id="windows-reserved-space-before-extension"),
+        pytest.param("CONIN$", id="windows-reserved-console-input"),
+        pytest.param("CONOUT$", id="windows-reserved-console-output"),
         pytest.param("repo.", id="trailing-dot"),
         pytest.param("repo ", id="trailing-space"),
     ],
@@ -1126,16 +1164,18 @@ def test_smoke_source_rejects_child_symlink_escaping_resolved_root(
         _resolve_repo_source(repo, tmp_path / "quality.json", "smoke")
 
 
+@pytest.mark.parametrize("repo_dir_name", ["safe_repo-仓库", "COM⁴", "LPT⁵.txt"])
 def test_smoke_source_keeps_safe_child_and_component_locator(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    repo_dir_name: str,
 ) -> None:
     smoke_root = tmp_path / "smoke"
-    source = smoke_root / "safe_repo-仓库"
+    source = smoke_root / repo_dir_name
     source.mkdir(parents=True)
     repo = QualityRepo(
         repo_key="sample",
-        repo_dir_name="safe_repo-仓库",
+        repo_dir_name=repo_dir_name,
         profiles=("smoke",),
     )
     monkeypatch.setenv("CST_SMOKE_REPOS_DIR", str(smoke_root))
@@ -1147,7 +1187,7 @@ def test_smoke_source_keeps_safe_child_and_component_locator(
     ) == ResolvedSource(
         source.resolve(),
         "smoke_root",
-        "safe_repo-仓库",
+        repo_dir_name,
     )
 
 
@@ -1232,6 +1272,43 @@ def test_snapshot_source_allows_absolute_directory_with_redacted_locator(
         "snapshot_path",
         "absolute-source",
     )
+
+
+def test_snapshot_source_normalizes_absolute_directory_before_redacting_locator(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "absolute-source"
+    child = source / "child"
+    child.mkdir(parents=True)
+    repo = QualityRepo(
+        repo_key="sample",
+        snapshot_path=str(child / ".."),
+        profiles=("ci",),
+    )
+
+    assert _resolve_repo_source(
+        repo,
+        tmp_path / "quality.json",
+        "ci",
+    ) == ResolvedSource(
+        source.resolve(),
+        "snapshot_path",
+        source.resolve().name,
+    )
+
+
+def test_snapshot_source_rejects_filesystem_root_without_safe_locator(
+    tmp_path: Path,
+) -> None:
+    root = Path(tmp_path.anchor)
+    repo = QualityRepo(
+        repo_key="sample",
+        snapshot_path=str(root),
+        profiles=("ci",),
+    )
+
+    with pytest.raises(ValueError, match=r"snapshot_path.*named directory"):
+        _resolve_repo_source(repo, tmp_path / "quality.json", "ci")
 
 
 def test_snapshot_source_rejects_relative_symlink_escape(tmp_path: Path) -> None:
