@@ -867,6 +867,16 @@ def test_all_canonical_profiles_wire_without_external_dependencies(
         pytest.param(r"a\b", id="backslash"),
         pytest.param("./alias", id="dot-alias"),
         pytest.param("C:repo", id="windows-drive-relative"),
+        pytest.param("repo:name", id="colon"),
+        pytest.param("repo?name", id="question-mark"),
+        pytest.param("repo*name", id="asterisk"),
+        pytest.param('repo"name', id="double-quote"),
+        pytest.param("repo<name", id="less-than"),
+        pytest.param("repo>name", id="greater-than"),
+        pytest.param("repo|name", id="pipe"),
+        pytest.param("repo\x00name", id="nul-control"),
+        pytest.param("repo\x01name", id="control"),
+        pytest.param("repo\x1fname", id="unit-separator-control"),
         pytest.param("CON", id="windows-reserved"),
         pytest.param("con.txt", id="windows-reserved-extension"),
         pytest.param("repo.", id="trailing-dot"),
@@ -1047,6 +1057,16 @@ def test_quality_runner_keeps_safe_repo_keys_inside_temp_root(
         pytest.param("a/b", id="forward-slash"),
         pytest.param(r"a\b", id="backslash"),
         pytest.param("C:repo", id="windows-drive-relative"),
+        pytest.param("repo:name", id="colon"),
+        pytest.param("repo?name", id="question-mark"),
+        pytest.param("repo*name", id="asterisk"),
+        pytest.param('repo"name', id="double-quote"),
+        pytest.param("repo<name", id="less-than"),
+        pytest.param("repo>name", id="greater-than"),
+        pytest.param("repo|name", id="pipe"),
+        pytest.param("repo\x00name", id="nul-control"),
+        pytest.param("repo\x01name", id="control"),
+        pytest.param("repo\x1fname", id="unit-separator-control"),
         pytest.param("AUX", id="windows-reserved"),
         pytest.param("lpt9.log", id="windows-reserved-extension"),
         pytest.param("repo.", id="trailing-dot"),
@@ -1243,6 +1263,114 @@ def test_snapshot_source_rejects_absolute_top_level_symlink(tmp_path: Path) -> N
 
     with pytest.raises(ValueError, match=r"snapshot_path.*symlink"):
         _resolve_repo_source(repo, tmp_path / "quality.json", "ci")
+
+
+def test_copy_source_repo_fails_closed_without_descriptor_support(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "normal.txt").write_text("normal\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    monkeypatch.setattr(quality_runner, "_descriptor_copy_supported", lambda: False)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"secure repository copy is not supported on this platform",
+    ):
+        _copy_source_repo(source, workspace)
+
+    assert not workspace.exists()
+
+
+def test_quality_runner_records_unsupported_secure_copy_for_each_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_source = _write_source_repo(tmp_path / "first-source")
+    second_source = _write_source_repo(tmp_path / "second-source")
+    temp_root = tmp_path / "temp-root"
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {"ci": {}, "smoke": {}},
+            "repos": [
+                {
+                    "repo_key": "first",
+                    "snapshot_path": str(first_source),
+                    "profiles": ["ci", "smoke"],
+                    "queries": [
+                        {
+                            "id": "first-selected",
+                            "query": "first",
+                            "profiles": ["ci"],
+                        },
+                        {
+                            "id": "first-unselected",
+                            "query": "first",
+                            "profiles": ["smoke"],
+                        },
+                    ],
+                },
+                {
+                    "repo_key": "second",
+                    "snapshot_path": str(second_source),
+                    "profiles": ["ci", "smoke"],
+                    "queries": [
+                        {
+                            "id": "second-selected",
+                            "query": "second",
+                            "profiles": ["ci"],
+                        },
+                        {
+                            "id": "second-unselected",
+                            "query": "second",
+                            "profiles": ["smoke"],
+                        },
+                    ],
+                },
+            ],
+        },
+    )
+    captured: list[tuple[Path, ToolConfig]] = []
+    _patch_runner_dependencies(monkeypatch, captured)
+
+    def fake_mkdtemp(*, prefix: str) -> str:
+        assert prefix == "cst-quality-"
+        temp_root.mkdir()
+        return str(temp_root)
+
+    monkeypatch.setattr(quality_runner, "_descriptor_copy_supported", lambda: False)
+    monkeypatch.setattr(quality_runner.tempfile, "mkdtemp", fake_mkdtemp)
+
+    try:
+        report = run_quality_fixture(
+            fixture,
+            profile="ci",
+            output_path=None,
+            markdown_path=None,
+            keep_workspace=True,
+        )
+
+        assert report["repos"] == []
+        assert [
+            (case["repo_key"], case["case_id"], case["status"])
+            for case in report["cases"]
+        ] == [
+            ("first", "first-selected", "error"),
+            ("second", "second-selected", "error"),
+        ]
+        assert [case["failures"] for case in report["cases"]] == [
+            ["secure repository copy is not supported on this platform"],
+            ["secure repository copy is not supported on this platform"],
+        ]
+        assert captured == []
+        assert not (temp_root / "first").exists()
+        assert not (temp_root / "second").exists()
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def test_copy_source_repo_ignores_nested_file_and_directory_symlinks(

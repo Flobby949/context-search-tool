@@ -48,6 +48,8 @@ _WINDOWS_RESERVED_NAMES = {
     *(f"lpt{number}" for number in range(1, 10)),
 }
 
+_WINDOWS_INVALID_COMPONENT_CHARS = frozenset('<>:"/\\|?*')
+
 _DESCRIPTOR_COPY_SUPPORTED = (
     os.name == "posix"
     and hasattr(os, "O_DIRECTORY")
@@ -315,13 +317,16 @@ def _existing_directory(raw_path: str | Path) -> Path | None:
 def _safe_path_component(value: str, field_name: str) -> str:
     windows_path = PureWindowsPath(value)
     windows_basename = value.split(".", 1)[0].casefold()
+    has_invalid_character = any(
+        character in _WINDOWS_INVALID_COMPONENT_CHARS or ord(character) < 32
+        for character in value
+    )
     if (
         not value
         or value in {".", ".."}
         or Path(value).is_absolute()
         or bool(windows_path.drive)
-        or "/" in value
-        or "\\" in value
+        or has_invalid_character
         or value.endswith((".", " "))
         or windows_basename in _WINDOWS_RESERVED_NAMES
     ):
@@ -374,10 +379,9 @@ def _contained_snapshot_path(root: Path, candidate: Path) -> Path:
 
 def _copy_source_repo(source: Path, workspace: Path) -> None:
     """Copy regular files/directories while omitting all link-like entries."""
-    if _descriptor_copy_supported():
-        _copy_source_repo_with_descriptors(source, workspace)
-        return
-    _copy_source_repo_fallback(source, workspace)
+    if not _descriptor_copy_supported():
+        raise RuntimeError("secure repository copy is not supported on this platform")
+    _copy_source_repo_with_descriptors(source, workspace)
 
 
 def _descriptor_copy_supported() -> bool:
@@ -472,47 +476,6 @@ def _copy_directory_fd(
         finally:
             if file_fd >= 0:
                 os.close(file_fd)
-
-
-def _copy_source_repo_fallback(source: Path, workspace: Path) -> None:
-    if source.is_symlink() or _is_junction_or_reparse(source):
-        raise ValueError("source repository must not be a symlink or reparse point")
-
-    def ignore(directory: str, names: list[str]) -> set[str]:
-        ignored: set[str] = set()
-        for name in names:
-            path = Path(directory) / name
-            if name in _COPY_EXCLUDES:
-                ignored.add(name)
-                continue
-            try:
-                mode = path.lstat().st_mode
-            except OSError:
-                ignored.add(name)
-                continue
-            if _is_junction_or_reparse(path) and not stat.S_ISLNK(mode):
-                ignored.add(name)
-            elif not (
-                stat.S_ISDIR(mode) or stat.S_ISREG(mode) or stat.S_ISLNK(mode)
-            ):
-                ignored.add(name)
-        return ignored
-
-    shutil.copytree(source, workspace, symlinks=True, ignore=ignore)
-    _remove_link_like_entries(workspace)
-
-
-def _remove_link_like_entries(directory: Path) -> None:
-    with os.scandir(directory) as iterator:
-        entries = list(iterator)
-    for entry in entries:
-        path = directory / entry.name
-        if entry.is_symlink() or _is_junction_or_reparse(path):
-            path.unlink(missing_ok=True)
-        elif entry.is_dir(follow_symlinks=False):
-            _remove_link_like_entries(path)
-        elif not entry.is_file(follow_symlinks=False):
-            path.unlink(missing_ok=True)
 
 
 def _is_junction_or_reparse(path: Path) -> bool:
