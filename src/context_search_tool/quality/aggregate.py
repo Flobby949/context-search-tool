@@ -45,21 +45,19 @@ def _grouped_metrics(
     repos: list[dict[str, Any]],
     profile: str,
 ) -> dict[str, Any]:
-    repo_embedding = {
-        repo["repo_key"]: repo.get("config", {}).get("embedding", {})
-        for repo in repos
-    }
+    repo_embedding: dict[str, str] = {}
+    for repo in repos:
+        embedding = repo.get("config", {}).get("embedding", {})
+        provider = embedding.get("provider")
+        model = embedding.get("model")
+        if provider and model:
+            repo_embedding[repo["repo_key"]] = f"{provider}/{model}"
     by_repository = _group(cases, lambda case: [case["repo_key"]])
     by_tag = _group(cases, lambda case: case.get("tags", []))
-    by_profile = {profile: _metric_summary(cases)}
+    by_profile = {profile: _metric_summary(cases)} if profile else {}
     by_embedding = _group(
         cases,
-        lambda case: [
-            "{provider}/{model}".format(
-                provider=repo_embedding.get(case["repo_key"], {}).get("provider", ""),
-                model=repo_embedding.get(case["repo_key"], {}).get("model", ""),
-            )
-        ],
+        lambda case: [repo_embedding.get(case["repo_key"], "")],
     )
     return {
         "overall": _metric_summary(cases),
@@ -101,7 +99,7 @@ def _metric_summary(cases: list[dict[str, Any]]) -> dict[str, Any]:
         if "entrypoint" in case.get("tags", []):
             rank = metrics.get("entrypoint_rank")
             entrypoint_ranks.append(
-                rank if isinstance(rank, int) and not isinstance(rank, bool) else None
+                rank if type(rank) is int and rank > 0 else None
             )
 
     summary: dict[str, Any] = {}

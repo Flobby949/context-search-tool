@@ -190,3 +190,71 @@ def test_missing_declared_entrypoint_stays_in_rate_denominator() -> None:
         "total": 1,
         "rate": 0.0,
     }
+
+
+@pytest.mark.parametrize("rank", [0, -1])
+def test_non_positive_entrypoint_rank_stays_in_rate_denominator(rank: int) -> None:
+    aggregate = aggregate_cases(
+        [
+            _case(
+                "a",
+                "invalid-entrypoint",
+                "fail",
+                attempted=True,
+                tags=["entrypoint"],
+                metrics={"entrypoint_rank": rank},
+            )
+        ],
+        [_repo("a")],
+        "ci",
+    )
+
+    assert aggregate["metrics"]["overall"]["entrypoint_top1"] == {
+        "successes": 0,
+        "total": 1,
+        "rate": 0.0,
+    }
+    assert aggregate["metrics"]["overall"]["entrypoint_top3"] == {
+        "successes": 0,
+        "total": 1,
+        "rate": 0.0,
+    }
+
+
+def test_empty_profile_is_not_grouped() -> None:
+    aggregate = aggregate_cases(
+        [_case("a", "one", "pass", attempted=True, metrics={"mrr": 1.0})],
+        [_repo("a")],
+        "",
+    )
+
+    assert aggregate["metrics"]["by_profile"] == {}
+
+
+def test_incomplete_embedding_config_is_not_grouped() -> None:
+    cases = [
+        _case("missing-both", "one", "pass", attempted=True, metrics={"mrr": 1.0}),
+        _case(
+            "missing-provider",
+            "two",
+            "pass",
+            attempted=True,
+            metrics={"mrr": 1.0},
+        ),
+        _case("missing-model", "three", "pass", attempted=True, metrics={"mrr": 1.0}),
+    ]
+    repos = [
+        {"repo_key": "missing-both", "config": {"embedding": {}}},
+        {
+            "repo_key": "missing-provider",
+            "config": {"embedding": {"model": "model"}},
+        },
+        {
+            "repo_key": "missing-model",
+            "config": {"embedding": {"provider": "hash"}},
+        },
+    ]
+
+    aggregate = aggregate_cases(cases, repos, "ci")
+
+    assert aggregate["metrics"]["by_embedding"] == {}
