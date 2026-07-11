@@ -6,7 +6,7 @@ import os
 import shutil
 import tempfile
 import time
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -37,6 +37,13 @@ _COPY_EXCLUDES = {
 }
 
 
+@dataclass(frozen=True)
+class ResolvedSource:
+    path: Path
+    source_type: str
+    locator: str
+
+
 def run_quality_fixture(
     fixture_path: Path,
     profile: str,
@@ -46,7 +53,8 @@ def run_quality_fixture(
     config: ToolConfig = DEFAULT_CONFIG,
 ) -> dict[str, Any]:
     fixture = load_quality_fixture(fixture_path)
-    validate_profile_compatible(profile, config)
+    if profile not in fixture.profile_configs:
+        raise ValueError(f"unknown quality profile: {profile}")
 
     temp_root = Path(tempfile.mkdtemp(prefix="cst-quality-"))
     repos: list[dict[str, Any]] = []
@@ -54,34 +62,63 @@ def run_quality_fixture(
 
     try:
         for repo in fixture.repos:
-            if profile not in repo.profiles:
+            selected_cases = tuple(
+                case
+                for case in repo.queries
+                if not case.profiles or profile in case.profiles
+            )
+            if profile not in repo.profiles or not selected_cases:
                 continue
 
-            repo_config = _apply_repo_config(config, repo.default_config)
-            validate_profile_compatible(profile, repo_config)
+            profile_overrides = fixture.profile_configs[profile]
+            base_config = DEFAULT_CONFIG if fixture.canonical else config
+            repo_config = _effective_config(
+                base_config,
+                repo.default_config,
+                profile_overrides,
+            )
+            validate_profile_compatible(
+                profile,
+                repo_config,
+                canonical=fixture.canonical,
+            )
             source = _resolve_repo_source(repo, fixture.path, profile)
-            if source is None or not source.is_dir():
-                cases.extend(_case_records_for_repo(repo, "skipped", "repo not found"))
+            if source is None:
+                cases.extend(
+                    _case_records_for_cases(
+                        repo.repo_key,
+                        selected_cases,
+                        "skipped",
+                        "repo not found",
+                    )
+                )
                 continue
 
             workspace = temp_root / repo.repo_key
-            _copy_source_repo(source, workspace)
+            _copy_source_repo(source.path, workspace)
 
             try:
                 summary = index_repository(workspace, repo_config)
                 manifest = load_manifest(workspace)
             except Exception as exc:
-                cases.extend(_case_records_for_repo(repo, "error", str(exc)))
+                cases.extend(
+                    _case_records_for_cases(
+                        repo.repo_key,
+                        selected_cases,
+                        "error",
+                        str(exc),
+                    )
+                )
                 continue
 
             repos.append(
                 {
                     "repo_key": repo.repo_key,
                     "source": {
-                        "type": "snapshot_path" if repo.snapshot_path else "external",
-                        "path": str(source),
-                        "git_commit": _git_commit(source),
-                        "content_hash": _content_identity(source),
+                        "type": source.source_type,
+                        "path": source.locator,
+                        "git_commit": _git_commit(source.path),
+                        "content_hash": _content_identity(source.path),
                     },
                     "workspace": {
                         "path": str(workspace),
@@ -97,7 +134,7 @@ def run_quality_fixture(
                 }
             )
 
-            for case in repo.queries:
+            for case in selected_cases:
                 started = time.perf_counter()
                 try:
                     bundle = query_repository(workspace, case.query, repo_config)
@@ -131,27 +168,52 @@ def run_quality_fixture(
             shutil.rmtree(temp_root, ignore_errors=True)
 
 
-def _apply_repo_config(
+def _apply_config_sections(
     config: ToolConfig,
     overrides: dict[str, Any],
 ) -> ToolConfig:
     result = config
-    if "index" in overrides:
-        result = replace(result, index=replace(result.index, **overrides["index"]))
-    if "retrieval" in overrides:
+    for section_name in ("index", "retrieval", "embedding", "query_planner"):
+        if section_name in overrides:
+            current = getattr(result, section_name)
+            result = replace(
+                result,
+                **{section_name: replace(current, **overrides[section_name])},
+            )
+    return result
+
+
+def _effective_config(
+    base: ToolConfig,
+    repo_overrides: dict[str, Any],
+    profile_overrides: dict[str, Any],
+) -> ToolConfig:
+    result = _apply_config_sections(base, repo_overrides)
+    if "index" in profile_overrides:
         result = replace(
             result,
-            retrieval=replace(result.retrieval, **overrides["retrieval"]),
+            index=replace(result.index, **profile_overrides["index"]),
         )
-    if "embedding" in overrides:
+    if "retrieval" in profile_overrides:
         result = replace(
             result,
-            embedding=replace(result.embedding, **overrides["embedding"]),
+            retrieval=replace(result.retrieval, **profile_overrides["retrieval"]),
         )
-    if "query_planner" in overrides:
+    if "embedding" in profile_overrides:
         result = replace(
             result,
-            query_planner=replace(result.query_planner, **overrides["query_planner"]),
+            embedding=replace(
+                DEFAULT_CONFIG.embedding,
+                **profile_overrides["embedding"],
+            ),
+        )
+    if "query_planner" in profile_overrides:
+        result = replace(
+            result,
+            query_planner=replace(
+                DEFAULT_CONFIG.query_planner,
+                **profile_overrides["query_planner"],
+            ),
         )
     return result
 
@@ -160,25 +222,56 @@ def _resolve_repo_source(
     repo: QualityRepo,
     fixture_path: Path,
     profile: str,
-) -> Path | None:
+) -> ResolvedSource | None:
     if profile == "ci":
         if not repo.snapshot_path:
             raise ValueError(
                 f"ci profile requires snapshot_path for repo {repo.repo_key}"
             )
-        return _resolve_snapshot_path(fixture_path, repo.snapshot_path)
+        snapshot = _existing_directory(
+            _resolve_snapshot_path(fixture_path, repo.snapshot_path)
+        )
+        if snapshot is None:
+            raise ValueError(f"ci snapshot not found for repo {repo.repo_key}")
+        return ResolvedSource(
+            path=snapshot,
+            source_type="snapshot_path",
+            locator=_safe_snapshot_locator(repo.snapshot_path),
+        )
 
-    if repo.snapshot_path:
-        return _resolve_snapshot_path(fixture_path, repo.snapshot_path)
     if repo.path_env:
         env_path = os.environ.get(repo.path_env)
         if env_path:
-            return Path(env_path).expanduser().resolve()
+            source = _existing_directory(env_path)
+            if source is not None:
+                return ResolvedSource(source, "path_env", repo.path_env)
     if repo.repo_dir_name:
         smoke_root = os.environ.get("CST_SMOKE_REPOS_DIR")
         if smoke_root:
-            return (Path(smoke_root).expanduser() / repo.repo_dir_name).resolve()
+            source = _existing_directory(Path(smoke_root) / repo.repo_dir_name)
+            if source is not None:
+                return ResolvedSource(source, "smoke_root", repo.repo_dir_name)
+    if repo.snapshot_path:
+        source = _existing_directory(
+            _resolve_snapshot_path(fixture_path, repo.snapshot_path)
+        )
+        if source is not None:
+            return ResolvedSource(
+                source,
+                "snapshot_path",
+                _safe_snapshot_locator(repo.snapshot_path),
+            )
     return None
+
+
+def _existing_directory(raw_path: str | Path) -> Path | None:
+    path = Path(raw_path).expanduser().resolve()
+    return path if path.is_dir() else None
+
+
+def _safe_snapshot_locator(raw_path: str) -> str:
+    path = Path(raw_path).expanduser()
+    return path.name if path.is_absolute() else path.as_posix()
 
 
 def _resolve_snapshot_path(fixture_path: Path, raw_path: str) -> Path:
@@ -254,14 +347,15 @@ def _case_record(
     }
 
 
-def _case_records_for_repo(
-    repo: QualityRepo,
+def _case_records_for_cases(
+    repo_key: str,
+    selected_cases: tuple[QualityCase, ...],
     status: str,
     reason: str,
 ) -> list[dict[str, Any]]:
     return [
-        _empty_case_record(repo.repo_key, case, status, reason)
-        for case in repo.queries
+        _empty_case_record(repo_key, case, status, reason)
+        for case in selected_cases
     ]
 
 
