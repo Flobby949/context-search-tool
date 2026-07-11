@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from context_search_tool.quality.aggregate import aggregate_cases
@@ -65,6 +67,7 @@ def test_typed_metric_summary_rates_means_and_latency_percentiles() -> None:
                 "entrypoint_rank": 1,
                 "mrr": 1.0,
                 "latency_ms": 10,
+                "noise_top5_measurement": 1,
                 "expected_coverage_top5": {"count": 2, "ratio": 1.0},
             },
         ),
@@ -80,8 +83,16 @@ def test_typed_metric_summary_rates_means_and_latency_percentiles() -> None:
                 "entrypoint_rank": 3,
                 "mrr": 0.5,
                 "latency_ms": 30,
+                "noise_top5_measurement": 3,
                 "expected_coverage_top5": {"count": 1, "ratio": 0.5},
             },
+        ),
+        _case(
+            "a",
+            "three",
+            "pass",
+            attempted=True,
+            metrics={"latency_ms": 20},
         ),
     ]
 
@@ -102,11 +113,12 @@ def test_typed_metric_summary_rates_means_and_latency_percentiles() -> None:
     assert metrics["entrypoint_top3"]["rate"] == 1.0
     assert metrics["mrr"] == {"count": 2, "mean": 0.75}
     assert metrics["latency_ms"] == {
-        "count": 2,
+        "count": 3,
         "mean": 20.0,
-        "p50": 10,
+        "p50": 20,
         "p95": 30,
     }
+    assert metrics["noise_top5_measurement"] == {"count": 2, "mean": 2.0}
     assert metrics["expected_coverage_top5_ratio"] == {
         "count": 2,
         "mean": 0.75,
@@ -258,3 +270,146 @@ def test_incomplete_embedding_config_is_not_grouped() -> None:
     aggregate = aggregate_cases(cases, repos, "ci")
 
     assert aggregate["metrics"]["by_embedding"] == {}
+
+
+def test_duplicate_tag_contributes_case_once_to_group_metrics() -> None:
+    aggregate = aggregate_cases(
+        [
+            _case(
+                "a",
+                "duplicate-tag",
+                "pass",
+                attempted=True,
+                tags=["dup", "dup"],
+                metrics={"hit_at_5": True, "latency_ms": 10},
+            )
+        ],
+        [_repo("a")],
+        "ci",
+    )
+
+    metrics = aggregate["metrics"]["by_tag"]["dup"]
+    assert metrics["hit_at_5"] == {"successes": 1, "total": 1, "rate": 1.0}
+    assert metrics["latency_ms"] == {
+        "count": 1,
+        "mean": 10.0,
+        "p50": 10,
+        "p95": 10,
+    }
+
+
+def test_unknown_status_is_rejected() -> None:
+    with pytest.raises(ValueError, match="status"):
+        aggregate_cases(
+            [_case("a", "bad-status", "unknown", attempted=True)],
+            [_repo("a")],
+            "ci",
+        )
+
+
+@pytest.mark.parametrize("attempted", [1, 0, "false", None])
+def test_attempted_must_be_an_exact_bool(attempted: object) -> None:
+    case = _case("a", "bad-attempted", "pass", attempted=True)
+    case["attempted"] = attempted
+
+    with pytest.raises(ValueError, match="attempted"):
+        aggregate_cases([case], [_repo("a")], "ci")
+
+
+def test_all_six_statuses_are_accepted() -> None:
+    statuses = ["pass", "fail", "known_gap", "informational", "skipped", "error"]
+    cases = [
+        _case("a", status, status, attempted=status != "skipped")
+        for status in statuses
+    ]
+
+    aggregate = aggregate_cases(cases, [_repo("a")], "ci")
+
+    assert aggregate["total"] == 6
+    assert aggregate["executed"] == 4
+
+
+def test_non_finite_numeric_metrics_are_excluded_from_summaries() -> None:
+    cases = [
+        _case(
+            "a",
+            "non-finite",
+            "pass",
+            attempted=True,
+            metrics={
+                "latency_ms": float("nan"),
+                "expected_coverage_top5": {"ratio": float("inf")},
+                "custom_metric": float("-inf"),
+            },
+        ),
+        _case(
+            "a",
+            "finite",
+            "pass",
+            attempted=True,
+            metrics={
+                "latency_ms": 20,
+                "expected_coverage_top5": {"ratio": 0.5},
+                "custom_metric": 2,
+            },
+        ),
+    ]
+
+    aggregate = aggregate_cases(cases, [_repo("a")], "ci")
+    metrics = aggregate["metrics"]["overall"]
+
+    assert metrics["latency_ms"] == {
+        "count": 1,
+        "mean": 20.0,
+        "p50": 20,
+        "p95": 20,
+    }
+    assert metrics["expected_coverage_top5_ratio"] == {"count": 1, "mean": 0.5}
+    assert metrics["custom_metric"] == {"count": 1, "mean": 2.0}
+    assert json.loads(json.dumps(aggregate, allow_nan=False)) == aggregate
+
+
+def test_duplicate_repo_key_is_rejected_even_when_config_is_incomplete() -> None:
+    repos = [
+        {"repo_key": "a", "config": {"embedding": {}}},
+        _repo("a"),
+    ]
+
+    with pytest.raises(ValueError, match="repo_key"):
+        aggregate_cases(
+            [_case("a", "duplicate-repo", "pass", attempted=True)],
+            repos,
+            "ci",
+        )
+
+
+def test_metric_order_is_independent_of_case_order() -> None:
+    cases = [
+        _case(
+            "a",
+            "zeta-first",
+            "pass",
+            attempted=True,
+            tags=["entrypoint"],
+            metrics={"zeta": 1, "entrypoint_rank": 1},
+        ),
+        _case(
+            "a",
+            "alpha-second",
+            "pass",
+            attempted=True,
+            tags=["entrypoint"],
+            metrics={"alpha": 3, "entrypoint_rank": 3},
+        ),
+    ]
+
+    forward = aggregate_cases(cases, [_repo("a")], "ci")["metrics"]
+    reverse = aggregate_cases(list(reversed(cases)), [_repo("a")], "ci")["metrics"]
+
+    assert list(forward["overall"]) == [
+        "alpha",
+        "zeta",
+        "entrypoint_top1",
+        "entrypoint_top3",
+    ]
+    assert json.dumps(forward) == json.dumps(reverse)
