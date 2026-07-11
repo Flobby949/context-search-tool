@@ -18,6 +18,8 @@ from typing import Any
 from context_search_tool.config import DEFAULT_CONFIG, ToolConfig
 from context_search_tool.indexer import index_repository
 from context_search_tool.manifest import load_manifest
+from context_search_tool.models import QueryPlan
+from context_search_tool.quality.aggregate import aggregate_cases
 from context_search_tool.quality.cases import (
     QualityCase,
     QualityFixture,
@@ -26,7 +28,7 @@ from context_search_tool.quality.cases import (
     validate_profile_compatible,
 )
 from context_search_tool.quality.metrics import CaseEvaluation, evaluate_case
-from context_search_tool.retrieval import query_repository
+from context_search_tool.retrieval import QueryBundle, query_repository
 
 
 _COPY_EXCLUDES = {
@@ -76,10 +78,17 @@ def run_quality_fixture(
     markdown_path: Path | None,
     keep_workspace: bool = False,
     config: ToolConfig = DEFAULT_CONFIG,
+    allow_empty: bool = False,
 ) -> dict[str, Any]:
     fixture = load_quality_fixture(fixture_path)
     if profile not in fixture.profile_configs:
         raise ValueError(f"unknown quality profile: {profile}")
+
+    selected_config = _effective_config(
+        DEFAULT_CONFIG,
+        {},
+        fixture.profile_configs[profile],
+    )
 
     temp_root = Path(tempfile.mkdtemp(prefix="cst-quality-")).resolve()
     repos: list[dict[str, Any]] = []
@@ -132,46 +141,58 @@ def run_quality_fixture(
             if workspace.parent != temp_root:
                 raise ValueError("repo_key must be a safe path component")
 
+            repo_record = {
+                "repo_key": repo.repo_key,
+                "source": {
+                    "type": source.source_type,
+                    "locator": source.locator,
+                    "git_commit": None,
+                    "content_hash": None,
+                },
+                "workspace": {
+                    "copied": False,
+                    "preserved": keep_workspace,
+                    **({"path": str(workspace)} if keep_workspace else {}),
+                },
+                "config": {
+                    "config_hash": _config_hash(repo_config),
+                    "index": asdict(repo_config.index),
+                    "retrieval": asdict(repo_config.retrieval),
+                    "embedding": asdict(repo_config.embedding),
+                    "query_planner": asdict(repo_config.query_planner),
+                },
+                "index": {"status": "pending"},
+            }
+            repos.append(repo_record)
+
             try:
                 _copy_source_repo(source.path, workspace)
+                repo_record["workspace"]["copied"] = True
                 summary = index_repository(workspace, repo_config)
                 manifest = load_manifest(workspace)
-                git_commit = _git_commit(source.path)
-                content_hash = _content_identity(workspace)
+                repo_record["source"]["git_commit"] = _git_commit(source.path)
+                repo_record["source"]["content_hash"] = _content_identity(workspace)
             except Exception as exc:
                 shutil.rmtree(workspace, ignore_errors=True)
+                repo_record["index"] = {"status": "error"}
                 cases.extend(
                     _case_records_for_cases(
                         repo.repo_key,
                         selected_cases,
                         "error",
-                        str(exc),
+                        _safe_error(exc, source.path, workspace),
                     )
                 )
                 continue
 
-            repos.append(
-                {
-                    "repo_key": repo.repo_key,
-                    "source": {
-                        "type": source.source_type,
-                        "path": source.locator,
-                        "git_commit": git_commit,
-                        "content_hash": content_hash,
-                    },
-                    "workspace": {
-                        "path": str(workspace),
-                        "copied": True,
-                    },
-                    "index": {
-                        "manifest_schema_version": manifest.schema_version,
-                        "embedding_config_hash": manifest.embedding_config_hash,
-                        "config_hash": _config_hash(repo_config),
-                        "files_indexed": summary.files_indexed,
-                        "chunks_indexed": summary.chunks_indexed,
-                    },
-                }
-            )
+            repo_record["index"] = {
+                "status": "ok",
+                "manifest_schema_version": manifest.schema_version,
+                "embedding_config_hash": manifest.embedding_config_hash,
+                "config_hash": _config_hash(repo_config),
+                "files_indexed": summary.files_indexed,
+                "chunks_indexed": summary.chunks_indexed,
+            }
 
             for case in selected_cases:
                 started = time.perf_counter()
@@ -187,11 +208,21 @@ def run_quality_fixture(
                             for anchor in bundle.evidence_anchors
                         ],
                     )
-                    cases.append(_case_record(repo.repo_key, case, evaluation))
+                    cases.append(
+                        _case_record(repo.repo_key, case, evaluation, bundle)
+                    )
                 except Exception as exc:
-                    cases.append(_error_case_record(repo.repo_key, case, str(exc)))
+                    cases.append(
+                        _error_case_record(
+                            repo.repo_key,
+                            case,
+                            _safe_error(exc, source.path, workspace),
+                        )
+                    )
 
-        report = _report(fixture, profile, config, repos, cases)
+        report = _report(fixture, profile, selected_config, repos, cases)
+        _ensure_parent(output_path)
+        _ensure_parent(markdown_path)
         if output_path is not None:
             output_path.write_text(
                 json.dumps(report, indent=2, ensure_ascii=False) + "\n",
@@ -201,6 +232,12 @@ def run_quality_fixture(
             from context_search_tool.quality.reports import render_markdown_report
 
             markdown_path.write_text(render_markdown_report(report), encoding="utf-8")
+
+        aggregate = report["aggregate"]
+        if aggregate["selected"] == 0:
+            raise ValueError("no cases selected for quality profile")
+        if aggregate["executed"] == 0 and not allow_empty:
+            raise ValueError("no cases executed for quality profile")
         return report
     finally:
         if not keep_workspace:
@@ -531,7 +568,7 @@ def _report(
     cases: list[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": datetime.now(UTC).isoformat(),
         "command_args": {
             "fixture_path": str(fixture.path),
@@ -554,7 +591,7 @@ def _report(
             "embedding": asdict(config.embedding),
         },
         "planner": asdict(config.query_planner),
-        "aggregate": _aggregate(cases),
+        "aggregate": aggregate_cases(cases, repos, profile),
         "repos": repos,
         "cases": cases,
     }
@@ -564,6 +601,7 @@ def _case_record(
     repo_key: str,
     case: QualityCase,
     evaluation: CaseEvaluation,
+    bundle: QueryBundle,
 ) -> dict[str, Any]:
     return {
         "repo_key": repo_key,
@@ -571,6 +609,20 @@ def _case_record(
         "query": case.query,
         "tags": list(case.tags),
         "gate": case.gate.value,
+        "attempted": True,
+        "known_gap_reason": case.known_gap_reason,
+        "expanded_tokens": list(bundle.expanded_tokens),
+        "planner": _planner_payload(bundle.planner),
+        **(
+            {
+                "legacy": {
+                    "fixture": case.legacy.fixture,
+                    "key": case.legacy.key,
+                }
+            }
+            if case.legacy is not None
+            else {}
+        ),
         "status": evaluation.status,
         "metrics": evaluation.metrics,
         "top_results": evaluation.top_results,
@@ -595,7 +647,7 @@ def _error_case_record(
     case: QualityCase,
     reason: str,
 ) -> dict[str, Any]:
-    return _empty_case_record(repo_key, case, "error", reason)
+    return _empty_case_record(repo_key, case, "error", reason, attempted=True)
 
 
 def _empty_case_record(
@@ -603,6 +655,7 @@ def _empty_case_record(
     case: QualityCase,
     status: str,
     reason: str,
+    attempted: bool = False,
 ) -> dict[str, Any]:
     return {
         "repo_key": repo_key,
@@ -610,6 +663,19 @@ def _empty_case_record(
         "query": case.query,
         "tags": list(case.tags),
         "gate": case.gate.value,
+        "attempted": attempted,
+        "known_gap_reason": case.known_gap_reason,
+        "expanded_tokens": [],
+        **(
+            {
+                "legacy": {
+                    "fixture": case.legacy.fixture,
+                    "key": case.legacy.key,
+                }
+            }
+            if case.legacy is not None
+            else {}
+        ),
         "status": status,
         "metrics": {},
         "top_results": [],
@@ -617,16 +683,36 @@ def _empty_case_record(
     }
 
 
-def _aggregate(cases: list[dict[str, Any]]) -> dict[str, int]:
-    statuses = [case["status"] for case in cases]
+def _planner_payload(plan: QueryPlan) -> dict[str, Any]:
     return {
-        "total": len(cases),
-        "passed": statuses.count("pass"),
-        "failed": statuses.count("fail"),
-        "skipped": statuses.count("skipped"),
-        "known_gaps": statuses.count("known_gap"),
-        "errors": statuses.count("error"),
+        "status": plan.status,
+        "rewritten_queries": list(plan.rewritten_queries),
+        "grep_keywords": list(plan.grep_keywords),
+        "symbol_hints": list(plan.symbol_hints),
+        "discarded_hints": list(plan.discarded_hints),
+        "provider": plan.provider,
+        "model": plan.model,
+        "prompt_version": plan.prompt_version,
+        "prompt_hash": plan.prompt_hash,
+        "latency_ms": plan.latency_ms,
+        "repo_profile_hash": plan.repo_profile_hash,
+        "repo_profile_truncated": plan.repo_profile_truncated,
     }
+
+
+def _safe_error(exc: Exception, source: Path, workspace: Path) -> str:
+    message = str(exc)
+    for path, replacement in (
+        (workspace, "<workspace>"),
+        (source, "<source>"),
+    ):
+        message = message.replace(str(path), replacement)
+    return message
+
+
+def _ensure_parent(path: Path | None) -> None:
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def _file_sha256(path: Path) -> str:

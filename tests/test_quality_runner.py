@@ -17,6 +17,7 @@ from context_search_tool.config import (
 )
 from context_search_tool.indexer import IndexSummary
 from context_search_tool.manifest import Manifest
+from context_search_tool.models import QueryPlan
 from context_search_tool.quality.cases import QualityRepo
 from context_search_tool.quality.runner import (
     ResolvedSource,
@@ -233,6 +234,7 @@ def test_quality_runner_records_skip_for_missing_repo(tmp_path: Path) -> None:
         profile="smoke",
         output_path=None,
         markdown_path=None,
+        allow_empty=True,
     )
 
     assert report["aggregate"]["skipped"] == 1
@@ -305,6 +307,7 @@ def test_quality_runner_records_query_errors(
         profile="ci",
         output_path=None,
         markdown_path=None,
+        allow_empty=True,
     )
 
     assert report["aggregate"]["errors"] == 1
@@ -372,7 +375,11 @@ def test_quality_runner_contains_copy_errors_and_continues_later_repos(
             ("second-case", "pass"),
         ]
         assert report["cases"][0]["failures"] == ["copy denied"]
-        assert [repo["repo_key"] for repo in report["repos"]] == ["second"]
+        assert [repo["repo_key"] for repo in report["repos"]] == [
+            "first",
+            "second",
+        ]
+        assert report["repos"][0]["index"] == {"status": "error"}
         assert [workspace.name for workspace, _config in captured] == ["second"]
         assert not (temp_root / "first").exists()
         assert (temp_root / "second").is_dir()
@@ -467,7 +474,11 @@ def test_quality_runner_contains_post_index_setup_errors(
             ("second-case", "pass"),
         ]
         assert report["cases"][0]["failures"] == [reason]
-        assert [repo["repo_key"] for repo in report["repos"]] == ["second"]
+        assert [repo["repo_key"] for repo in report["repos"]] == [
+            "first",
+            "second",
+        ]
+        assert report["repos"][0]["index"] == {"status": "error"}
         assert [workspace.name for workspace, _config in captured] == [
             "first",
             "second",
@@ -1431,6 +1442,7 @@ def test_snapshot_source_swap_never_recanonicalizes_to_external_target(
                 output_path=None,
                 markdown_path=None,
                 keep_workspace=True,
+                allow_empty=True,
             )
             assert report["aggregate"]["skipped"] == 1
             assert report["cases"][0]["status"] == "skipped"
@@ -1583,9 +1595,17 @@ def test_quality_runner_records_unsupported_secure_copy_for_each_repo(
             output_path=None,
             markdown_path=None,
             keep_workspace=True,
+            allow_empty=True,
         )
 
-        assert report["repos"] == []
+        assert [repo["repo_key"] for repo in report["repos"]] == [
+            "first",
+            "second",
+        ]
+        assert [repo["index"] for repo in report["repos"]] == [
+            {"status": "error"},
+            {"status": "error"},
+        ]
         assert [
             (case["repo_key"], case["case_id"], case["status"])
             for case in report["cases"]
@@ -1915,3 +1935,320 @@ def test_effective_config_copies_repo_and_profile_override_lists() -> None:
     assert profile_exclude == ["profile-exclude"]
     assert second.index.include == ["repo-include"]
     assert second.index.exclude == ["profile-exclude"]
+
+
+def test_report_v2_records_effective_config_safe_source_and_planner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_source_repo(tmp_path)
+    monkeypatch.setenv("CST_SAMPLE_REPO", str(source))
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {
+                "planner": {
+                    "embedding": {
+                        "provider": "hash",
+                        "model": "hash-v1",
+                        "dimensions": 384,
+                    },
+                    "query_planner": {"enabled": True, "timeout_seconds": 30},
+                }
+            },
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "path_env": "CST_SAMPLE_REPO",
+                    "profiles": ["planner"],
+                    "queries": [{"id": "target", "query": "targetToken"}],
+                }
+            ],
+        },
+    )
+    plan = QueryPlan(
+        original_query="targetToken",
+        rewritten_queries=["target helper"],
+        grep_keywords=["helper"],
+        symbol_hints=["TargetHelper"],
+        status="ok",
+        provider="ollama",
+        model="qwen3.5:4b-mlx",
+        prompt_version="v2",
+        prompt_hash="sha256:prompt",
+        latency_ms=4,
+        repo_profile_hash="sha256:profile",
+        discarded_hints=["RestTemplate"],
+    )
+    monkeypatch.setattr(
+        "context_search_tool.quality.runner.query_repository",
+        lambda *args, **kwargs: QueryBundle(
+            query="targetToken",
+            expanded_tokens=["target", "token", "helper"],
+            results=[],
+            followup_keywords=[],
+            planner=plan,
+        ),
+    )
+
+    report = run_quality_fixture(fixture, "planner", None, None)
+
+    assert report["schema_version"] == 2
+    repo = report["repos"][0]
+    assert set(repo["config"]) == {
+        "config_hash",
+        "index",
+        "retrieval",
+        "embedding",
+        "query_planner",
+    }
+    assert repo["source"]["type"] == "path_env"
+    assert repo["source"]["locator"] == "CST_SAMPLE_REPO"
+    assert str(source) not in json.dumps(report)
+    assert repo["workspace"] == {"copied": True, "preserved": False}
+    assert report["cases"][0]["expanded_tokens"] == ["target", "token", "helper"]
+    assert report["cases"][0]["planner"] == {
+        "status": "ok",
+        "rewritten_queries": ["target helper"],
+        "grep_keywords": ["helper"],
+        "symbol_hints": ["TargetHelper"],
+        "discarded_hints": ["RestTemplate"],
+        "provider": "ollama",
+        "model": "qwen3.5:4b-mlx",
+        "prompt_version": "v2",
+        "prompt_hash": "sha256:prompt",
+        "latency_ms": 4,
+        "repo_profile_hash": "sha256:profile",
+        "repo_profile_truncated": False,
+    }
+
+
+def test_report_redacts_source_and_workspace_paths_from_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_source_repo(tmp_path)
+    monkeypatch.setenv("CST_SAMPLE_REPO", str(source))
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {
+                "smoke": {
+                    "embedding": {
+                        "provider": "hash",
+                        "model": "hash-v1",
+                        "dimensions": 384,
+                    },
+                    "query_planner": {"enabled": False},
+                }
+            },
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "path_env": "CST_SAMPLE_REPO",
+                    "profiles": ["smoke"],
+                    "queries": [{"id": "target", "query": "targetToken"}],
+                }
+            ],
+        },
+    )
+
+    def fail_query(repo: Path, query: str, config: ToolConfig) -> QueryBundle:
+        raise RuntimeError(f"source={source} workspace={repo}")
+
+    monkeypatch.setattr(
+        "context_search_tool.quality.runner.query_repository",
+        fail_query,
+    )
+
+    report = run_quality_fixture(
+        fixture,
+        "smoke",
+        None,
+        None,
+        allow_empty=True,
+    )
+
+    rendered = json.dumps(report)
+    assert str(source) not in rendered
+    assert "/cst-quality-" not in rendered
+    assert report["cases"][0]["failures"] == [
+        "source=<source> workspace=<workspace>"
+    ]
+
+
+def test_runner_counters_distinguish_setup_and_query_outcomes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    index_source = _write_source_repo(tmp_path / "index")
+    query_source = _write_source_repo(tmp_path / "query")
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {
+                "smoke": {
+                    "embedding": {
+                        "provider": "hash",
+                        "model": "hash-v1",
+                        "dimensions": 384,
+                    },
+                    "query_planner": {"enabled": False},
+                }
+            },
+            "repos": [
+                {
+                    "repo_key": "missing",
+                    "snapshot_path": str(tmp_path / "missing"),
+                    "profiles": ["smoke"],
+                    "queries": [{"id": "skipped", "query": "q"}],
+                },
+                {
+                    "repo_key": "index-error",
+                    "snapshot_path": str(index_source),
+                    "profiles": ["smoke"],
+                    "queries": [{"id": "setup", "query": "q"}],
+                },
+                {
+                    "repo_key": "query",
+                    "snapshot_path": str(query_source),
+                    "profiles": ["smoke"],
+                    "queries": [
+                        {"id": "passes", "query": "ok"},
+                        {"id": "errors", "query": "explode"},
+                    ],
+                },
+            ],
+        },
+    )
+
+    def fake_index(repo: Path, config: ToolConfig) -> IndexSummary:
+        if repo.name == "index-error":
+            raise RuntimeError("index exploded")
+        return IndexSummary(
+            files_seen=1,
+            files_indexed=1,
+            files_skipped=0,
+            files_deleted=0,
+            chunks_indexed=1,
+        )
+
+    def fake_query(repo: Path, query: str, config: ToolConfig) -> QueryBundle:
+        if query == "explode":
+            raise RuntimeError("query exploded")
+        return QueryBundle(
+            query=query,
+            expanded_tokens=[query],
+            results=[],
+            followup_keywords=[],
+        )
+
+    monkeypatch.setattr("context_search_tool.quality.runner.index_repository", fake_index)
+    monkeypatch.setattr(
+        "context_search_tool.quality.runner.load_manifest",
+        lambda repo: Manifest(embedding_config_hash="sha256:test"),
+    )
+    monkeypatch.setattr("context_search_tool.quality.runner.query_repository", fake_query)
+
+    report = run_quality_fixture(fixture, "smoke", None, None)
+
+    aggregate = report["aggregate"]
+    assert aggregate["selected"] == 4
+    assert aggregate["attempted"] == 2
+    assert aggregate["executed"] == 1
+    assert aggregate["errors"] == 2
+    assert aggregate["skipped"] == 1
+    assert aggregate["selected"] == (
+        aggregate["executed"] + aggregate["errors"] + aggregate["skipped"]
+    )
+    assert [(case["status"], case["attempted"]) for case in report["cases"]] == [
+        ("skipped", False),
+        ("error", False),
+        ("pass", True),
+        ("error", True),
+    ]
+    repo_records = {repo["repo_key"]: repo for repo in report["repos"]}
+    assert set(repo_records) == {"index-error", "query"}
+    assert repo_records["index-error"]["config"]["embedding"]["provider"] == "hash"
+    assert repo_records["index-error"]["index"] == {"status": "error"}
+
+
+def test_runner_rejects_zero_selected_or_executed_without_allow_empty(
+    tmp_path: Path,
+) -> None:
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {
+                "smoke": {
+                    "embedding": {
+                        "provider": "hash",
+                        "model": "hash-v1",
+                        "dimensions": 384,
+                    },
+                    "query_planner": {"enabled": False},
+                }
+            },
+            "repos": [
+                {
+                    "repo_key": "missing",
+                    "repo_dir_name": "missing",
+                    "profiles": ["smoke"],
+                    "queries": [{"id": "q", "query": "q"}],
+                }
+            ],
+        },
+    )
+    output = tmp_path / "nested" / "reports" / "quality.json"
+
+    with pytest.raises(ValueError, match="no cases executed"):
+        run_quality_fixture(fixture, "smoke", output, None)
+
+    assert output.exists()
+    report = run_quality_fixture(fixture, "smoke", output, None, allow_empty=True)
+    assert report["aggregate"]["executed"] == 0
+
+    zero_selected = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {
+                "ci": {
+                    "embedding": {
+                        "provider": "hash",
+                        "model": "hash-v1",
+                        "dimensions": 384,
+                    },
+                    "query_planner": {"enabled": False},
+                },
+                "smoke": {
+                    "embedding": {
+                        "provider": "hash",
+                        "model": "hash-v1",
+                        "dimensions": 384,
+                    },
+                    "query_planner": {"enabled": False},
+                },
+            },
+            "repos": [
+                {
+                    "repo_key": "ci-only",
+                    "snapshot_path": str(tmp_path / "unused"),
+                    "profiles": ["ci"],
+                    "queries": [{"id": "q", "query": "q"}],
+                }
+            ],
+        },
+    )
+    with pytest.raises(ValueError, match="no cases selected"):
+        run_quality_fixture(
+            zero_selected,
+            "smoke",
+            None,
+            None,
+            allow_empty=True,
+        )
