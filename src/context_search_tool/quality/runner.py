@@ -73,6 +73,14 @@ class ResolvedSource:
     locator: str
 
 
+@dataclass(frozen=True)
+class _ArtifactVersion:
+    device: int
+    inode: int
+    size: int
+    sha256: str
+
+
 def run_quality_fixture(
     fixture_path: Path,
     profile: str,
@@ -723,15 +731,10 @@ def _safe_error(exc: Exception, source: Path, workspace: Path) -> str:
     ]
     for variant, replacement in sorted(
         replacements,
-        key=lambda item: len(item[0]),
+        key=lambda item: len(_casefold_text(item[0])),
         reverse=True,
     ):
-        message = re.sub(
-            re.escape(variant),
-            replacement,
-            message,
-            flags=re.IGNORECASE,
-        )
+        message = _replace_casefold_equivalent(message, variant, replacement)
     return message
 
 
@@ -755,7 +758,10 @@ def _path_redaction_variants(path: Path) -> set[str]:
     }
 
     variants.update(path_spellings)
-    for spelling in path_spellings:
+    encoded_spellings = path_spellings | {
+        spelling.casefold() for spelling in path_spellings
+    }
+    for spelling in encoded_spellings:
         try:
             variants.add(Path(spelling).as_uri())
         except ValueError:
@@ -765,11 +771,67 @@ def _path_redaction_variants(path: Path) -> set[str]:
     return {variant for variant in variants if variant}
 
 
+def _replace_casefold_equivalent(
+    message: str,
+    sensitive: str,
+    replacement: str,
+) -> str:
+    folded_message, offsets = _casefold_text_with_offsets(message)
+    folded_sensitive = _casefold_text(sensitive)
+    if not folded_sensitive:
+        return message
+
+    spans: list[tuple[int, int]] = []
+    search_from = 0
+    while True:
+        folded_start = folded_message.find(folded_sensitive, search_from)
+        if folded_start < 0:
+            break
+        folded_end = folded_start + len(folded_sensitive)
+        starts_at_character = (
+            folded_start == 0
+            or offsets[folded_start - 1] != offsets[folded_start]
+        )
+        ends_at_character = (
+            folded_end == len(offsets)
+            or offsets[folded_end - 1] != offsets[folded_end]
+        )
+        if starts_at_character and ends_at_character:
+            spans.append((offsets[folded_start], offsets[folded_end - 1] + 1))
+            search_from = folded_end
+        else:
+            search_from = folded_start + 1
+
+    for start, end in reversed(spans):
+        message = message[:start] + replacement + message[end:]
+    return message
+
+
+def _casefold_text(value: str) -> str:
+    return "".join(
+        unicodedata.normalize("NFD", character).casefold()
+        for character in value
+    )
+
+
+def _casefold_text_with_offsets(value: str) -> tuple[str, list[int]]:
+    folded_parts: list[str] = []
+    offsets: list[int] = []
+    for index, character in enumerate(value):
+        folded = _casefold_text(character)
+        folded_parts.append(folded)
+        offsets.extend([index] * len(folded))
+    return "".join(folded_parts), offsets
+
+
 def _render_artifacts(
     report: dict[str, Any],
     output_path: Path | None,
     markdown_path: Path | None,
 ) -> list[tuple[Path, str]]:
+    _validate_artifact_destinations(
+        [path for path in (output_path, markdown_path) if path is not None]
+    )
     artifacts: list[tuple[Path, str]] = []
     if output_path is not None:
         artifacts.append(
@@ -786,9 +848,13 @@ def _render_artifacts(
 
 
 def _publish_artifacts(artifacts: list[tuple[Path, str]]) -> None:
+    _validate_artifact_destinations(
+        [destination for destination, _content in artifacts]
+    )
     staged: list[tuple[Path, Path]] = []
     backups: dict[Path, Path] = {}
     replaced: list[Path] = []
+    published_versions: dict[Path, _ArtifactVersion] = {}
     publication_error: BaseException | None = None
 
     try:
@@ -811,10 +877,21 @@ def _publish_artifacts(artifacts: list[tuple[Path, str]]) -> None:
 
         try:
             for destination, stage in staged:
+                published_versions[destination] = _artifact_version(stage)
                 os.replace(stage, destination)
                 replaced.append(destination)
         except Exception as exc:
             for destination in reversed(replaced):
+                if not _artifact_matches_version(
+                    destination,
+                    published_versions[destination],
+                ):
+                    exc.add_note(
+                        f"Artifact rollback skipped for {destination.name}: "
+                        "destination changed by another writer; "
+                        "artifact pair may require recovery"
+                    )
+                    continue
                 try:
                     backup = backups.pop(destination, None)
                     if backup is None:
@@ -846,6 +923,61 @@ def _publish_artifacts(artifacts: list[tuple[Path, str]]) -> None:
             publication_error.add_note(
                 f"Artifact staging cleanup failed: {cleanup_error}"
             )
+
+
+def _validate_artifact_destinations(destinations: list[Path]) -> None:
+    normalized: list[tuple[Path, str]] = []
+    for destination in destinations:
+        try:
+            identity = os.path.normcase(str(destination.expanduser().resolve()))
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ValueError(f"invalid artifact destination: {destination}") from exc
+
+        for previous, previous_identity in normalized:
+            aliases = identity == previous_identity
+            if not aliases:
+                try:
+                    aliases = os.path.samefile(destination, previous)
+                except (FileNotFoundError, OSError, ValueError):
+                    aliases = False
+            if aliases:
+                raise ValueError("artifact destinations must be distinct")
+        normalized.append((destination, identity))
+
+
+def _artifact_version(path: Path) -> _ArtifactVersion:
+    status = path.lstat()
+    if not stat.S_ISREG(status.st_mode):
+        raise OSError(f"artifact staging path is not a regular file: {path.name}")
+    content = path.read_bytes()
+    return _ArtifactVersion(
+        device=status.st_dev,
+        inode=status.st_ino,
+        size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+
+def _artifact_matches_version(path: Path, version: _ArtifactVersion) -> bool:
+    try:
+        before = path.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_dev != version.device
+            or before.st_ino != version.inode
+            or before.st_size != version.size
+        ):
+            return False
+        content = path.read_bytes()
+        after = path.lstat()
+    except OSError:
+        return False
+    return (
+        after.st_dev == before.st_dev
+        and after.st_ino == before.st_ino
+        and after.st_size == before.st_size
+        and hashlib.sha256(content).hexdigest() == version.sha256
+    )
 
 
 def _stage_sibling_file(
@@ -911,24 +1043,13 @@ def _content_identity(root: Path) -> str:
 
 
 def _git_commit(repo: Path) -> str | None:
-    dot_git = repo / ".git"
-    gitdir = dot_git
-    if dot_git.is_file():
-        gitdir_text = _read_git_text(dot_git)
-        if gitdir_text is None or not gitdir_text.startswith("gitdir:"):
-            return None
-        raw_gitdir = gitdir_text.removeprefix("gitdir:").strip()
-        if not raw_gitdir:
-            return None
-        try:
-            gitdir = Path(raw_gitdir).expanduser()
-            if not gitdir.is_absolute():
-                gitdir = (repo / gitdir).resolve()
-        except (OSError, RuntimeError, ValueError):
-            return None
+    metadata_dirs = _git_metadata_dirs(repo)
+    if metadata_dirs is None:
+        return None
+    gitdir, ref_dirs = metadata_dirs
 
     head_path = gitdir / "HEAD"
-    head = _read_git_text(head_path)
+    head = _read_git_text(head_path, gitdir)
     if head is None:
         return None
     if not head.startswith("ref: "):
@@ -937,21 +1058,27 @@ def _git_commit(repo: Path) -> str | None:
     ref = head.removeprefix("ref: ").strip()
     if not _is_safe_git_ref(ref):
         return None
-    for candidate_gitdir in _candidate_git_ref_dirs(gitdir):
+    for candidate_gitdir in ref_dirs:
         try:
-            candidate_root = candidate_gitdir.resolve()
-            refs_root = (candidate_root / "refs").resolve()
-            ref_path = (candidate_root / ref).resolve()
+            refs_path = candidate_gitdir / "refs"
+            if not stat.S_ISDIR(refs_path.lstat().st_mode):
+                continue
+            candidate_root = candidate_gitdir.resolve(strict=True)
+            refs_root = refs_path.resolve(strict=True)
+            if not refs_root.is_relative_to(candidate_root):
+                continue
+            ref_path = candidate_gitdir / ref
         except (OSError, RuntimeError, ValueError):
             continue
-        if not ref_path.is_relative_to(refs_root):
-            continue
-        object_id = _read_git_text(ref_path)
+        object_id = _read_git_text(ref_path, refs_root)
         if object_id is not None:
             return _validated_object_id(object_id)
 
-    for candidate_gitdir in _candidate_git_ref_dirs(gitdir):
-        packed_refs_text = _read_git_text(candidate_gitdir / "packed-refs")
+    for candidate_gitdir in ref_dirs:
+        packed_refs_text = _read_git_text(
+            candidate_gitdir / "packed-refs",
+            candidate_gitdir,
+        )
         if packed_refs_text is None:
             continue
         for line in packed_refs_text.splitlines():
@@ -963,8 +1090,82 @@ def _git_commit(repo: Path) -> str | None:
     return None
 
 
-def _read_git_text(path: Path) -> str | None:
+def _git_metadata_dirs(repo: Path) -> tuple[Path, tuple[Path, ...]] | None:
     try:
+        repo_root = repo.resolve(strict=True)
+        dot_git = repo_root / ".git"
+        dot_git_mode = dot_git.lstat().st_mode
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    if stat.S_ISDIR(dot_git_mode):
+        return dot_git, (dot_git,)
+    if not stat.S_ISREG(dot_git_mode):
+        return None
+
+    gitdir_text = _read_git_text(dot_git, repo_root)
+    if gitdir_text is None or not gitdir_text.startswith("gitdir:"):
+        return None
+    raw_gitdir = gitdir_text.removeprefix("gitdir:").strip()
+    gitdir = _resolved_metadata_directory(repo_root, raw_gitdir)
+    if gitdir is None or gitdir.parent.name != "worktrees":
+        return None
+
+    common_gitdir = gitdir.parent.parent
+    try:
+        if not stat.S_ISDIR(common_gitdir.lstat().st_mode):
+            return None
+    except OSError:
+        return None
+
+    raw_common_dir = _read_git_text(gitdir / "commondir", gitdir)
+    if raw_common_dir is None:
+        return None
+    resolved_common_dir = _resolved_metadata_directory(gitdir, raw_common_dir)
+    if resolved_common_dir != common_gitdir:
+        return None
+
+    raw_backlink = _read_git_text(gitdir / "gitdir", gitdir)
+    if raw_backlink is None:
+        return None
+    try:
+        backlink = _resolve_metadata_path(gitdir, raw_backlink)
+        expected_backlink = dot_git.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if backlink != expected_backlink:
+        return None
+
+    return gitdir, (gitdir, common_gitdir)
+
+
+def _resolved_metadata_directory(base: Path, raw_path: str) -> Path | None:
+    try:
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            candidate = base / candidate
+        if not stat.S_ISDIR(candidate.lstat().st_mode):
+            return None
+        return candidate.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _resolve_metadata_path(base: Path, raw_path: str) -> Path:
+    candidate = Path(raw_path)
+    if not candidate.is_absolute():
+        candidate = base / candidate
+    return candidate.resolve(strict=True)
+
+
+def _read_git_text(path: Path, boundary: Path) -> str | None:
+    try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            return None
+        resolved_path = path.resolve(strict=True)
+        resolved_boundary = boundary.resolve(strict=True)
+        if not resolved_path.is_relative_to(resolved_boundary):
+            return None
         return path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeError, ValueError):
         return None
@@ -994,25 +1195,3 @@ def _is_safe_git_ref(ref: str) -> bool:
         and not component.endswith((".", ".lock"))
         for component in components
     )
-
-
-def _candidate_git_ref_dirs(gitdir: Path) -> list[Path]:
-    candidates = [gitdir]
-    common_gitdir = _common_gitdir(gitdir)
-    if common_gitdir != gitdir:
-        candidates.append(common_gitdir)
-    return candidates
-
-
-def _common_gitdir(gitdir: Path) -> Path:
-    common_dir_file = gitdir / "commondir"
-    raw_common_dir = _read_git_text(common_dir_file)
-    if raw_common_dir is None or not raw_common_dir:
-        return gitdir
-    try:
-        common_gitdir = Path(raw_common_dir).expanduser()
-        if not common_gitdir.is_absolute():
-            common_gitdir = (gitdir / common_gitdir).resolve()
-        return common_gitdir
-    except (OSError, RuntimeError, ValueError):
-        return gitdir

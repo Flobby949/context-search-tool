@@ -2,6 +2,8 @@ import json
 import ntpath
 import os
 import shutil
+import subprocess
+import threading
 import unicodedata
 from pathlib import Path
 from urllib.parse import quote
@@ -188,57 +190,112 @@ def test_quality_runner_copies_repo_without_mutating_source(tmp_path: Path) -> N
 def test_quality_runner_records_git_commit_from_worktree_gitdir_file(
     tmp_path: Path,
 ) -> None:
-    fake_sha = "1234567890abcdef1234567890abcdef12345678"
-    source = _write_source_repo(tmp_path)
-    shutil_git = source / ".git"
-    for path in sorted(shutil_git.rglob("*"), reverse=True):
-        if path.is_file():
-            path.unlink()
-        else:
-            path.rmdir()
-    shutil_git.rmdir()
-    common_gitdir = tmp_path / "source.git"
-    gitdir = common_gitdir / "worktrees" / "source"
+    main = tmp_path / "main"
+    source = tmp_path / "source"
+    subprocess.run(["git", "init", "-q", str(main)], check=True)
+    (main / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(main), "add", "tracked.txt"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(main),
+            "-c",
+            "user.name=Quality Test",
+            "-c",
+            "user.email=quality@example.test",
+            "commit",
+            "-q",
+            "-m",
+            "initial",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(main), "worktree", "add", "-q", str(source)],
+        check=True,
+    )
+    expected = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    assert _git_commit(source) == expected
+
+
+def test_git_commit_rejects_symlinked_dot_git(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    external = tmp_path / "external.git"
+    external.mkdir()
+    (external / "HEAD").write_text(f"{'a' * 40}\n", encoding="utf-8")
+    (repo / ".git").symlink_to(external, target_is_directory=True)
+
+    assert _git_commit(repo) is None
+
+
+def test_git_commit_rejects_refs_directory_symlink_outside_metadata(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    gitdir = repo / ".git"
     gitdir.mkdir(parents=True)
-    (gitdir / "HEAD").write_text("ref: refs/heads/feature\n", encoding="utf-8")
-    (gitdir / "commondir").write_text("../..\n", encoding="utf-8")
-    (common_gitdir / "packed-refs").write_text(
-        f"# pack-refs with: peeled fully-peeled sorted\n{fake_sha} refs/heads/feature\n",
+    external_refs = tmp_path / "external-refs"
+    (external_refs / "heads").mkdir(parents=True)
+    (external_refs / "heads" / "main").write_text(
+        f"{'d' * 40}\n",
         encoding="utf-8",
     )
-    (source / ".git").write_text(
-        "gitdir: ../source.git/worktrees/source\n",
-        encoding="utf-8",
-    )
-    fixture = _write_fixture(
-        tmp_path,
-        {
-            "schema_version": 1,
-            "repos": [
-                {
-                    "repo_key": "sample",
-                    "snapshot_path": str(source),
-                    "profiles": ["ci"],
-                    "queries": [
-                        {
-                            "id": "target",
-                            "query": "targetToken",
-                            "expected_top_k": [{"path": "src/App.java", "top_k": 5}],
-                        }
-                    ],
-                }
-            ],
-        },
-    )
+    (gitdir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (gitdir / "refs").symlink_to(external_refs, target_is_directory=True)
 
-    report = run_quality_fixture(
-        fixture,
-        profile="ci",
-        output_path=None,
-        markdown_path=None,
-    )
+    assert _git_commit(repo) is None
 
-    assert report["repos"][0]["source"]["git_commit"] == fake_sha
+
+@pytest.mark.parametrize("gitdir_kind", ["absolute", "traversal"])
+def test_git_commit_rejects_unowned_gitdir_indirection(
+    tmp_path: Path,
+    gitdir_kind: str,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    external = tmp_path / "external.git"
+    external.mkdir()
+    (external / "HEAD").write_text(f"{'b' * 40}\n", encoding="utf-8")
+    raw_gitdir = str(external) if gitdir_kind == "absolute" else "../external.git"
+    (repo / ".git").write_text(f"gitdir: {raw_gitdir}\n", encoding="utf-8")
+
+    assert _git_commit(repo) is None
+
+
+@pytest.mark.parametrize("commondir_kind", ["absolute", "traversal"])
+def test_git_commit_rejects_commondir_outside_linked_worktree_metadata(
+    tmp_path: Path,
+    commondir_kind: str,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    common_gitdir = tmp_path / "common.git"
+    gitdir = common_gitdir / "worktrees" / "repo"
+    gitdir.mkdir(parents=True)
+    external = tmp_path / "external.git"
+    external.mkdir()
+    oid = "c" * 40
+    ref = "refs/heads/main"
+    (external / "packed-refs").write_text(f"{oid} {ref}\n", encoding="utf-8")
+    (gitdir / "HEAD").write_text(f"ref: {ref}\n", encoding="utf-8")
+    (gitdir / "gitdir").write_text(str(repo / ".git") + "\n", encoding="utf-8")
+    raw_commondir = (
+        str(external)
+        if commondir_kind == "absolute"
+        else "../../../external.git"
+    )
+    (gitdir / "commondir").write_text(raw_commondir + "\n", encoding="utf-8")
+    (repo / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+
+    assert _git_commit(repo) is None
 
 
 @pytest.mark.parametrize(
@@ -2407,12 +2464,12 @@ def test_report_redacts_source_and_workspace_paths_from_errors(
     ]
 
 
-def test_report_redacts_unicode_equivalent_paths_from_errors(
+def test_report_redacts_normalized_and_full_casefold_paths_from_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = _write_source_repo(tmp_path / "café-source").resolve()
-    temp_root = (tmp_path / "café-workspace").resolve()
+    source = _write_source_repo(tmp_path / "Straße-café-source").resolve()
+    temp_root = (tmp_path / "Straße-café-workspace").resolve()
     workspace = temp_root / "sample"
     monkeypatch.setenv("CST_SAMPLE_REPO", str(source))
     fixture = _write_fixture(
@@ -2441,8 +2498,12 @@ def test_report_redacts_unicode_equivalent_paths_from_errors(
     )
     source_nfd = unicodedata.normalize("NFD", source.as_posix())
     workspace_nfd = unicodedata.normalize("NFD", workspace.as_posix())
+    source_upper = source_nfd.upper()
+    workspace_upper = workspace_nfd.upper()
     assert source_nfd != source.as_posix()
     assert workspace_nfd != workspace.as_posix()
+    assert "STRASSE-CAFE" in source_upper
+    assert "STRASSE-CAFE" in workspace_upper
 
     def fail_query(repo: Path, query: str, config: ToolConfig) -> QueryBundle:
         assert repo == workspace
@@ -2453,10 +2514,16 @@ def test_report_redacts_unicode_equivalent_paths_from_errors(
                     f"source_uri={Path(source_nfd).as_uri()}",
                     f"source_encoded={quote(source_nfd, safe='/')}",
                     f"source_encoded_all={quote(source_nfd, safe='')}",
+                    f"source_casefold={source_upper}",
+                    f"source_casefold_uri={Path(source_upper).as_uri()}",
+                    f"source_casefold_encoded={quote(source_upper, safe='/')}",
                     f"workspace={workspace_nfd}",
                     f"workspace_uri={Path(workspace_nfd).as_uri()}",
                     f"workspace_encoded={quote(workspace_nfd, safe='/')}",
                     f"workspace_encoded_all={quote(workspace_nfd, safe='')}",
+                    f"workspace_casefold={workspace_upper}",
+                    f"workspace_casefold_uri={Path(workspace_upper).as_uri()}",
+                    f"workspace_casefold_encoded={quote(workspace_upper, safe='/')}",
                     "diagnostic=keep-me",
                 ]
             )
@@ -2487,17 +2554,27 @@ def test_report_redacts_unicode_equivalent_paths_from_errors(
         Path(source_nfd).as_uri(),
         quote(source_nfd, safe="/"),
         quote(source_nfd, safe=""),
+        source_upper,
+        Path(source_upper).as_uri(),
+        quote(source_upper, safe="/"),
         workspace_nfd,
         Path(workspace_nfd).as_uri(),
         quote(workspace_nfd, safe="/"),
         quote(workspace_nfd, safe=""),
+        workspace_upper,
+        Path(workspace_upper).as_uri(),
+        quote(workspace_upper, safe="/"),
     }
     assert all(variant not in rendered for variant in sensitive_variants)
     assert report["cases"][0]["failures"] == [
         "source=<source> source_uri=<source> source_encoded=<source> "
-        "source_encoded_all=<source> workspace=<workspace> "
+        "source_encoded_all=<source> source_casefold=<source> "
+        "source_casefold_uri=<source> source_casefold_encoded=<source> "
+        "workspace=<workspace> "
         "workspace_uri=<workspace> workspace_encoded=<workspace> "
-        "workspace_encoded_all=<workspace> diagnostic=keep-me"
+        "workspace_encoded_all=<workspace> workspace_casefold=<workspace> "
+        "workspace_casefold_uri=<workspace> "
+        "workspace_casefold_encoded=<workspace> diagnostic=keep-me"
     ]
 
 
@@ -2720,6 +2797,163 @@ def test_quality_runner_atomically_replaces_all_artifacts(
         "# Retrieval Quality Report\n"
     )
     assert {path.name for path in reports.iterdir()} == {
+        "quality.json",
+        "quality.md",
+    }
+
+
+@pytest.mark.parametrize(
+    "alias_kind",
+    [
+        pytest.param("same", id="same-path"),
+        pytest.param("normalized", id="normalized-path"),
+        pytest.param("symlink", id="symlink-alias"),
+        pytest.param("hardlink", id="hardlink-alias"),
+    ],
+)
+def test_quality_runner_rejects_aliasing_artifact_destinations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    alias_kind: str,
+) -> None:
+    fixture = _write_successful_ci_fixture(tmp_path, monkeypatch)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    output = reports / "quality.json"
+    output.write_text("old-artifact\n", encoding="utf-8")
+
+    if alias_kind == "same":
+        markdown = output
+    elif alias_kind == "normalized":
+        (reports / "nested").mkdir()
+        markdown = reports / "nested" / ".." / "quality.json"
+    elif alias_kind == "symlink":
+        markdown = reports / "quality.md"
+        markdown.symlink_to(output.name)
+    else:
+        markdown = reports / "quality.md"
+        os.link(output, markdown)
+
+    original_inode = output.stat().st_ino
+    original_link = os.readlink(markdown) if markdown.is_symlink() else None
+
+    with pytest.raises(ValueError, match="artifact destinations must be distinct"):
+        run_quality_fixture(fixture, "ci", output, markdown)
+
+    assert output.read_text(encoding="utf-8") == "old-artifact\n"
+    if alias_kind == "symlink":
+        assert markdown.is_symlink()
+        assert os.readlink(markdown) == original_link
+    elif alias_kind == "hardlink":
+        assert markdown.stat().st_ino == original_inode
+        assert markdown.read_text(encoding="utf-8") == "old-artifact\n"
+    assert not any(path.name.startswith(".") for path in reports.rglob("*"))
+
+
+def test_artifact_rollback_does_not_overwrite_concurrent_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "quality.json"
+    markdown = tmp_path / "quality.md"
+    output.write_text("old-json\n", encoding="utf-8")
+    markdown.write_text("old-markdown\n", encoding="utf-8")
+    original_replace = os.replace
+    failing_writer_paused = threading.Event()
+    release_failing_writer = threading.Event()
+    successful_writer_done = threading.Event()
+    failures: list[BaseException] = []
+
+    def controlled_replace(source: str | Path, destination: str | Path) -> None:
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if (
+            threading.current_thread().name == "failing-writer"
+            and destination_path == markdown
+            and ".stage-" in source_path.name
+        ):
+            failing_writer_paused.set()
+            if not release_failing_writer.wait(timeout=5):
+                raise AssertionError("concurrent writer was not released")
+            raise OSError("second replace failed")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(quality_runner.os, "replace", controlled_replace)
+
+    def publish_failing() -> None:
+        try:
+            quality_runner._publish_artifacts(
+                [(output, "failing-json\n"), (markdown, "failing-markdown\n")]
+            )
+        except BaseException as exc:
+            failures.append(exc)
+
+    def publish_successful() -> None:
+        quality_runner._publish_artifacts(
+            [(output, "new-json\n"), (markdown, "new-markdown\n")]
+        )
+        successful_writer_done.set()
+
+    failing_thread = threading.Thread(target=publish_failing, name="failing-writer")
+    successful_thread = threading.Thread(
+        target=publish_successful,
+        name="successful-writer",
+    )
+    failing_thread.start()
+    assert failing_writer_paused.wait(timeout=5)
+    successful_thread.start()
+    try:
+        assert successful_writer_done.wait(timeout=5)
+    finally:
+        release_failing_writer.set()
+        failing_thread.join(timeout=5)
+        successful_thread.join(timeout=5)
+
+    assert not failing_thread.is_alive()
+    assert not successful_thread.is_alive()
+    assert len(failures) == 1
+    assert isinstance(failures[0], OSError)
+    assert "second replace failed" in str(failures[0])
+    assert any(
+        "rollback skipped" in note
+        for note in getattr(failures[0], "__notes__", [])
+    )
+    assert output.read_text(encoding="utf-8") == "new-json\n"
+    assert markdown.read_text(encoding="utf-8") == "new-markdown\n"
+
+
+def test_artifact_rollback_does_not_overwrite_noncooperative_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "quality.json"
+    markdown = tmp_path / "quality.md"
+    output.write_text("old-json\n", encoding="utf-8")
+    markdown.write_text("old-markdown\n", encoding="utf-8")
+    original_replace = os.replace
+
+    def overwrite_then_fail(source: str | Path, destination: str | Path) -> None:
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if destination_path == markdown and ".stage-" in source_path.name:
+            output.write_text("external-json\n", encoding="utf-8")
+            raise OSError("second replace failed")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(quality_runner.os, "replace", overwrite_then_fail)
+
+    with pytest.raises(OSError, match="second replace failed") as error:
+        quality_runner._publish_artifacts(
+            [(output, "new-json\n"), (markdown, "new-markdown\n")]
+        )
+
+    assert any(
+        "rollback skipped" in note
+        for note in getattr(error.value, "__notes__", [])
+    )
+    assert output.read_text(encoding="utf-8") == "external-json\n"
+    assert markdown.read_text(encoding="utf-8") == "old-markdown\n"
+    assert {path.name for path in tmp_path.iterdir()} == {
         "quality.json",
         "quality.md",
     }
