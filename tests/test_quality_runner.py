@@ -3,6 +3,7 @@ import ntpath
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import unicodedata
 from pathlib import Path
@@ -2500,10 +2501,22 @@ def test_report_redacts_normalized_and_full_casefold_paths_from_errors(
     workspace_nfd = unicodedata.normalize("NFD", workspace.as_posix())
     source_upper = source_nfd.upper()
     workspace_upper = workspace_nfd.upper()
+    source_upper_nfc = unicodedata.normalize("NFC", source.as_posix()).upper()
+    workspace_upper_nfc = unicodedata.normalize("NFC", workspace.as_posix()).upper()
+    source_upper_nfc_encoded = quote(source_upper_nfc, safe="/")
+    workspace_upper_nfc_encoded = quote(workspace_upper_nfc, safe="/")
+    source_upper_nfc_mixed = source_upper_nfc_encoded.replace(
+        "STRASSE", "%53TRASSE", 1
+    )
+    workspace_upper_nfc_mixed = workspace_upper_nfc_encoded.replace(
+        "STRASSE", "%53TRASSE", 1
+    )
     assert source_nfd != source.as_posix()
     assert workspace_nfd != workspace.as_posix()
     assert "STRASSE-CAFE" in source_upper
     assert "STRASSE-CAFE" in workspace_upper
+    assert "%C3%89" in source_upper_nfc_encoded
+    assert "%C3%89" in workspace_upper_nfc_encoded
 
     def fail_query(repo: Path, query: str, config: ToolConfig) -> QueryBundle:
         assert repo == workspace
@@ -2517,6 +2530,10 @@ def test_report_redacts_normalized_and_full_casefold_paths_from_errors(
                     f"source_casefold={source_upper}",
                     f"source_casefold_uri={Path(source_upper).as_uri()}",
                     f"source_casefold_encoded={quote(source_upper, safe='/')}",
+                    f"source_nfc_upper_uri={Path(source_upper_nfc).as_uri()}",
+                    f"source_nfc_upper_encoded={source_upper_nfc_encoded}",
+                    f"source_nfc_upper_encoded_all={quote(source_upper_nfc, safe='')}",
+                    f"source_nfc_upper_mixed={source_upper_nfc_mixed}",
                     f"workspace={workspace_nfd}",
                     f"workspace_uri={Path(workspace_nfd).as_uri()}",
                     f"workspace_encoded={quote(workspace_nfd, safe='/')}",
@@ -2524,6 +2541,10 @@ def test_report_redacts_normalized_and_full_casefold_paths_from_errors(
                     f"workspace_casefold={workspace_upper}",
                     f"workspace_casefold_uri={Path(workspace_upper).as_uri()}",
                     f"workspace_casefold_encoded={quote(workspace_upper, safe='/')}",
+                    f"workspace_nfc_upper_uri={Path(workspace_upper_nfc).as_uri()}",
+                    f"workspace_nfc_upper_encoded={workspace_upper_nfc_encoded}",
+                    f"workspace_nfc_upper_encoded_all={quote(workspace_upper_nfc, safe='')}",
+                    f"workspace_nfc_upper_mixed={workspace_upper_nfc_mixed}",
                     "diagnostic=keep-me",
                 ]
             )
@@ -2557,6 +2578,10 @@ def test_report_redacts_normalized_and_full_casefold_paths_from_errors(
         source_upper,
         Path(source_upper).as_uri(),
         quote(source_upper, safe="/"),
+        Path(source_upper_nfc).as_uri(),
+        source_upper_nfc_encoded,
+        quote(source_upper_nfc, safe=""),
+        source_upper_nfc_mixed,
         workspace_nfd,
         Path(workspace_nfd).as_uri(),
         quote(workspace_nfd, safe="/"),
@@ -2564,17 +2589,28 @@ def test_report_redacts_normalized_and_full_casefold_paths_from_errors(
         workspace_upper,
         Path(workspace_upper).as_uri(),
         quote(workspace_upper, safe="/"),
+        Path(workspace_upper_nfc).as_uri(),
+        workspace_upper_nfc_encoded,
+        quote(workspace_upper_nfc, safe=""),
+        workspace_upper_nfc_mixed,
     }
     assert all(variant not in rendered for variant in sensitive_variants)
     assert report["cases"][0]["failures"] == [
         "source=<source> source_uri=<source> source_encoded=<source> "
         "source_encoded_all=<source> source_casefold=<source> "
         "source_casefold_uri=<source> source_casefold_encoded=<source> "
+        "source_nfc_upper_uri=<source> source_nfc_upper_encoded=<source> "
+        "source_nfc_upper_encoded_all=<source> "
+        "source_nfc_upper_mixed=<source> "
         "workspace=<workspace> "
         "workspace_uri=<workspace> workspace_encoded=<workspace> "
         "workspace_encoded_all=<workspace> workspace_casefold=<workspace> "
         "workspace_casefold_uri=<workspace> "
-        "workspace_casefold_encoded=<workspace> diagnostic=keep-me"
+        "workspace_casefold_encoded=<workspace> "
+        "workspace_nfc_upper_uri=<workspace> "
+        "workspace_nfc_upper_encoded=<workspace> "
+        "workspace_nfc_upper_encoded_all=<workspace> "
+        "workspace_nfc_upper_mixed=<workspace> diagnostic=keep-me"
     ]
 
 
@@ -2859,8 +2895,8 @@ def test_artifact_rollback_does_not_overwrite_concurrent_publication(
     output.write_text("old-json\n", encoding="utf-8")
     markdown.write_text("old-markdown\n", encoding="utf-8")
     original_replace = os.replace
-    failing_writer_paused = threading.Event()
-    release_failing_writer = threading.Event()
+    rollback_replace_reached = threading.Event()
+    successful_writer_attempted = threading.Event()
     successful_writer_done = threading.Event()
     failures: list[BaseException] = []
 
@@ -2872,10 +2908,16 @@ def test_artifact_rollback_does_not_overwrite_concurrent_publication(
             and destination_path == markdown
             and ".stage-" in source_path.name
         ):
-            failing_writer_paused.set()
-            if not release_failing_writer.wait(timeout=5):
-                raise AssertionError("concurrent writer was not released")
             raise OSError("second replace failed")
+        if (
+            threading.current_thread().name == "failing-writer"
+            and destination_path == output
+            and ".backup-" in source_path.name
+        ):
+            rollback_replace_reached.set()
+            if not successful_writer_attempted.wait(timeout=5):
+                raise AssertionError("concurrent writer did not attempt publication")
+            successful_writer_done.wait(timeout=1)
         original_replace(source, destination)
 
     monkeypatch.setattr(quality_runner.os, "replace", controlled_replace)
@@ -2889,6 +2931,10 @@ def test_artifact_rollback_does_not_overwrite_concurrent_publication(
             failures.append(exc)
 
     def publish_successful() -> None:
+        if not rollback_replace_reached.wait(timeout=5):
+            failures.append(AssertionError("rollback replacement was not reached"))
+            return
+        successful_writer_attempted.set()
         quality_runner._publish_artifacts(
             [(output, "new-json\n"), (markdown, "new-markdown\n")]
         )
@@ -2899,27 +2945,57 @@ def test_artifact_rollback_does_not_overwrite_concurrent_publication(
         target=publish_successful,
         name="successful-writer",
     )
-    failing_thread.start()
-    assert failing_writer_paused.wait(timeout=5)
     successful_thread.start()
-    try:
-        assert successful_writer_done.wait(timeout=5)
-    finally:
-        release_failing_writer.set()
-        failing_thread.join(timeout=5)
-        successful_thread.join(timeout=5)
+    failing_thread.start()
+    failing_thread.join(timeout=5)
+    successful_thread.join(timeout=5)
 
     assert not failing_thread.is_alive()
     assert not successful_thread.is_alive()
+    assert rollback_replace_reached.is_set()
+    assert successful_writer_attempted.is_set()
+    assert successful_writer_done.is_set()
     assert len(failures) == 1
     assert isinstance(failures[0], OSError)
     assert "second replace failed" in str(failures[0])
-    assert any(
-        "rollback skipped" in note
-        for note in getattr(failures[0], "__notes__", [])
-    )
     assert output.read_text(encoding="utf-8") == "new-json\n"
     assert markdown.read_text(encoding="utf-8") == "new-markdown\n"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX advisory locks")
+def test_artifact_publication_lock_coordinates_processes(tmp_path: Path) -> None:
+    output = tmp_path / "quality.json"
+    output.write_text("old-json\n", encoding="utf-8")
+    script = """
+import sys
+from pathlib import Path
+from context_search_tool.quality.runner import _publish_artifacts
+
+print("ready", flush=True)
+_publish_artifacts([(Path(sys.argv[1]), "new-json\\n")])
+print("done", flush=True)
+"""
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(Path(__file__).parents[1] / "src")
+
+    with quality_runner._artifact_publication_lock():
+        process = subprocess.Popen(
+            [sys.executable, "-c", script, str(output)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+        assert process.stdout is not None
+        assert process.stdout.readline() == "ready\n"
+        assert process.poll() is None
+        assert output.read_text(encoding="utf-8") == "old-json\n"
+
+    stdout, stderr = process.communicate(timeout=5)
+
+    assert process.returncode == 0, stderr
+    assert stdout == "done\n"
+    assert output.read_text(encoding="utf-8") == "new-json\n"
 
 
 def test_artifact_rollback_does_not_overwrite_noncooperative_writer(

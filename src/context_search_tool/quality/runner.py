@@ -8,14 +8,22 @@ import re
 import shutil
 import stat
 import tempfile
+import threading
 import time
 import unicodedata
+from collections.abc import Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.parse import quote
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - POSIX quality runs use fcntl.
+    fcntl = None  # type: ignore[assignment]
 
 from context_search_tool.config import DEFAULT_CONFIG, ToolConfig
 from context_search_tool.indexer import index_repository
@@ -63,6 +71,12 @@ _DESCRIPTOR_COPY_SUPPORTED = (
     and hasattr(os, "O_NOFOLLOW")
     and os.open in os.supports_dir_fd
     and os.scandir in os.supports_fd
+)
+
+_ARTIFACT_PUBLICATION_THREAD_LOCK = threading.Lock()
+_ARTIFACT_PUBLICATION_LOCK_PATH = Path(tempfile.gettempdir()) / (
+    ".context-search-tool-quality-publication-"
+    f"{os.getuid() if hasattr(os, 'getuid') else 'user'}.lock"
 )
 
 
@@ -731,7 +745,9 @@ def _safe_error(exc: Exception, source: Path, workspace: Path) -> str:
     ]
     for variant, replacement in sorted(
         replacements,
-        key=lambda item: len(_casefold_text(item[0])),
+        key=lambda item: len(
+            _casefold_text(_percent_decode_text_with_spans(item[0])[0])
+        ),
         reverse=True,
     ):
         message = _replace_casefold_equivalent(message, variant, replacement)
@@ -776,8 +792,10 @@ def _replace_casefold_equivalent(
     sensitive: str,
     replacement: str,
 ) -> str:
-    folded_message, offsets = _casefold_text_with_offsets(message)
-    folded_sensitive = _casefold_text(sensitive)
+    decoded_message, decoded_spans = _percent_decode_text_with_spans(message)
+    decoded_sensitive, _sensitive_spans = _percent_decode_text_with_spans(sensitive)
+    folded_message, offsets = _casefold_text_with_offsets(decoded_message)
+    folded_sensitive = _casefold_text(decoded_sensitive)
     if not folded_sensitive:
         return message
 
@@ -797,7 +815,9 @@ def _replace_casefold_equivalent(
             or offsets[folded_end - 1] != offsets[folded_end]
         )
         if starts_at_character and ends_at_character:
-            spans.append((offsets[folded_start], offsets[folded_end - 1] + 1))
+            start = decoded_spans[offsets[folded_start]][0]
+            end = decoded_spans[offsets[folded_end - 1]][1]
+            spans.append((start, end))
             search_from = folded_end
         else:
             search_from = folded_start + 1
@@ -805,6 +825,57 @@ def _replace_casefold_equivalent(
     for start, end in reversed(spans):
         message = message[:start] + replacement + message[end:]
     return message
+
+
+def _percent_decode_text_with_spans(
+    value: str,
+) -> tuple[str, list[tuple[int, int]]]:
+    decoded_parts: list[str] = []
+    spans: list[tuple[int, int]] = []
+    index = 0
+    while index < len(value):
+        run_start = index
+        encoded_bytes = bytearray()
+        byte_spans: list[tuple[int, int]] = []
+        while index + 2 < len(value) and value[index] == "%":
+            try:
+                encoded_byte = int(value[index + 1 : index + 3], 16)
+            except ValueError:
+                break
+            encoded_bytes.append(encoded_byte)
+            byte_spans.append((index, index + 3))
+            index += 3
+
+        if encoded_bytes:
+            try:
+                decoded_run = bytes(encoded_bytes).decode("utf-8")
+            except UnicodeDecodeError:
+                decoded_run = value[run_start:index]
+                decoded_parts.extend(decoded_run)
+                spans.extend(
+                    (run_start + offset, run_start + offset + 1)
+                    for offset in range(len(decoded_run))
+                )
+                continue
+
+            byte_offset = 0
+            for character in decoded_run:
+                byte_length = len(character.encode("utf-8"))
+                decoded_parts.append(character)
+                spans.append(
+                    (
+                        byte_spans[byte_offset][0],
+                        byte_spans[byte_offset + byte_length - 1][1],
+                    )
+                )
+                byte_offset += byte_length
+            continue
+
+        decoded_parts.append(value[index])
+        spans.append((index, index + 1))
+        index += 1
+
+    return "".join(decoded_parts), spans
 
 
 def _casefold_text(value: str) -> str:
@@ -848,9 +919,37 @@ def _render_artifacts(
 
 
 def _publish_artifacts(artifacts: list[tuple[Path, str]]) -> None:
-    _validate_artifact_destinations(
-        [destination for destination, _content in artifacts]
-    )
+    with _artifact_publication_lock():
+        _validate_artifact_destinations(
+            [destination for destination, _content in artifacts]
+        )
+        _publish_artifact_transaction(artifacts)
+
+
+@contextmanager
+def _artifact_publication_lock() -> Iterator[None]:
+    with _ARTIFACT_PUBLICATION_THREAD_LOCK:
+        lock_descriptor: int | None = None
+        try:
+            if fcntl is not None:
+                flags = os.O_CREAT | os.O_RDWR
+                flags |= getattr(os, "O_CLOEXEC", 0)
+                flags |= getattr(os, "O_NOFOLLOW", 0)
+                lock_descriptor = os.open(
+                    _ARTIFACT_PUBLICATION_LOCK_PATH,
+                    flags,
+                    0o600,
+                )
+                if not stat.S_ISREG(os.fstat(lock_descriptor).st_mode):
+                    raise OSError("artifact publication lock is not a regular file")
+                fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            if lock_descriptor is not None:
+                os.close(lock_descriptor)
+
+
+def _publish_artifact_transaction(artifacts: list[tuple[Path, str]]) -> None:
     staged: list[tuple[Path, Path]] = []
     backups: dict[Path, Path] = {}
     replaced: list[Path] = []
@@ -882,6 +981,9 @@ def _publish_artifacts(artifacts: list[tuple[Path, str]]) -> None:
                 replaced.append(destination)
         except Exception as exc:
             for destination in reversed(replaced):
+                # Cooperative publishers hold the transaction lock. The version
+                # guard catches noncooperative changes observed before rollback;
+                # filesystems do not offer a portable CAS across check and rename.
                 if not _artifact_matches_version(
                     destination,
                     published_versions[destination],
