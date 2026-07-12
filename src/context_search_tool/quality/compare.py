@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections import Counter
 from typing import Any
 
@@ -8,6 +9,15 @@ _SUPPORTED_SCHEMAS = {1, 2}
 _STATUSES = {"pass", "fail", "known_gap", "informational", "error", "skipped"}
 _GATES = {"required", "known_gap", "informational"}
 _REQUIRED_STATUSES = {"pass", "fail", "error", "skipped"}
+_BOOLEAN_METRICS = {"cross_language_success", "preferred_rank_pass"}
+_RATE_METRICS = {"mrr"}
+_NONNEGATIVE_METRICS = {
+    "entrypoint_rank",
+    "latency_ms",
+    "result_count",
+}
+_UNBOUNDED_NUMERIC_METRICS = {"top_score"}
+_AGGREGATE_LEAVES = {"count", "mean", "p50", "p95", "rate", "successes", "total"}
 _HIGHER_IS_BETTER = {
     "hit_at_1",
     "hit_at_3",
@@ -51,11 +61,11 @@ def compare_reports(
     candidate_cases = _index_cases(candidate)
     cases = [
         _compare_case(
-            case_key,
-            baseline_cases.get(case_key),
-            candidate_cases.get(case_key),
+            _format_case_key(identity),
+            baseline_cases.get(identity),
+            candidate_cases.get(identity),
         )
-        for case_key in sorted(baseline_cases.keys() | candidate_cases.keys())
+        for identity in sorted(baseline_cases.keys() | candidate_cases.keys())
     ]
 
     counts = Counter(case["classification"] for case in cases)
@@ -76,38 +86,231 @@ def compare_reports(
         "metadata_warnings": _metadata_warnings(baseline, candidate),
         "aggregate": aggregate,
         "metric_deltas": _aggregate_metric_deltas(
-            baseline.get("aggregate", {}).get("metrics", {}),
-            candidate.get("aggregate", {}).get("metrics", {}),
+            _aggregate_metrics(baseline),
+            _aggregate_metrics(candidate),
         ),
         "cases": cases,
     }
 
 
-def _index_cases(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _index_cases(
+    report: dict[str, Any],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    if not isinstance(report, dict):
+        raise ValueError("report must be an object")
+
     schema = report.get("schema_version")
     if type(schema) is not int or schema not in _SUPPORTED_SCHEMAS:
         raise ValueError(f"unsupported report schema: {schema}")
 
-    indexed: dict[str, dict[str, Any]] = {}
-    for case in report.get("cases", []):
-        key = _case_key(case)
-        if key in indexed:
+    _validate_report_containers(report)
+    cases = report.get("cases")
+    if not isinstance(cases, list):
+        raise ValueError("report cases must be a list")
+
+    indexed: dict[tuple[str, str], dict[str, Any]] = {}
+    for case in cases:
+        if not isinstance(case, dict):
+            raise ValueError("report case must be an object")
+        repo_key = case.get("repo_key")
+        if not isinstance(repo_key, str) or not repo_key.strip():
+            raise ValueError("case repo_key must be a non-empty string")
+        case_id = case.get("case_id")
+        if not isinstance(case_id, str) or not case_id.strip():
+            raise ValueError("case case_id must be a non-empty string")
+
+        identity = (repo_key, case_id)
+        key = _format_case_key(identity)
+        if identity in indexed:
             raise ValueError(f"duplicate case key: {key}")
 
         status = case.get("status")
+        if not isinstance(status, str) or not status.strip():
+            raise ValueError(f"status must be a non-empty string for case {key}")
         if status not in _STATUSES:
             raise ValueError(f"unknown status for case {key}: {status}")
-        gate = case.get("gate", "required")
+        if schema == 1 and "gate" not in case:
+            gate = "required"
+        else:
+            gate = case.get("gate")
+        if not isinstance(gate, str) or not gate.strip():
+            raise ValueError(f"gate must be a non-empty string for case {key}")
         if gate not in _GATES:
             raise ValueError(f"unknown gate for case {key}: {gate}")
         if gate == "required" and status not in _REQUIRED_STATUSES:
             raise ValueError(
                 f"inconsistent required gate/status for case {key}: {status}"
             )
-        if status == "pass" and not isinstance(case.get("metrics"), dict):
+        metrics = case.get("metrics")
+        if not isinstance(metrics, dict) and (
+            schema == 2 or metrics is not None or status == "pass"
+        ):
+            if status == "pass":
+                raise ValueError(f"pass case missing metrics: {key}")
+            raise ValueError(f"case {key} metrics must be an object")
+        if status == "pass" and not isinstance(metrics, dict):
             raise ValueError(f"pass case missing metrics: {key}")
-        indexed[key] = case
+        if isinstance(metrics, dict):
+            _validate_case_metrics(metrics, key)
+        indexed[identity] = case
     return indexed
+
+
+def _validate_report_containers(report: dict[str, Any]) -> None:
+    for field in ("fixture", "config", "planner"):
+        if field in report and not isinstance(report[field], dict):
+            raise ValueError(f"report {field} must be an object")
+
+    config = report.get("config", {})
+    if "embedding" in config and not isinstance(config["embedding"], dict):
+        raise ValueError("report config embedding must be an object")
+
+    repos = report.get("repos", [])
+    if not isinstance(repos, list):
+        raise ValueError("report repos must be a list")
+    repo_keys: set[str] = set()
+    for repo in repos:
+        if not isinstance(repo, dict):
+            raise ValueError("report repo must be an object")
+        repo_key = repo.get("repo_key")
+        if not isinstance(repo_key, str) or not repo_key.strip():
+            raise ValueError("report repo_key must be a non-empty string")
+        if repo_key in repo_keys:
+            raise ValueError(f"duplicate report repo_key: {repo_key}")
+        repo_keys.add(repo_key)
+        for field in ("source", "config"):
+            if field in repo and not isinstance(repo[field], dict):
+                raise ValueError(f"repo {field} must be an object")
+
+    aggregate = report.get("aggregate", {})
+    if not isinstance(aggregate, dict):
+        raise ValueError("report aggregate must be an object")
+    metrics = aggregate.get("metrics", {})
+    if not isinstance(metrics, dict):
+        raise ValueError("aggregate metrics must be an object")
+    _validate_aggregate_metrics(metrics, ())
+
+
+def _validate_case_metrics(metrics: dict[str, Any], case_key: str) -> None:
+    for name, value in metrics.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"case {case_key} metric name must be a non-empty string")
+        owner = f"case {case_key} metric {name}"
+        if name == "expected_coverage_top5":
+            _validate_expected_coverage(value, owner)
+        elif name.startswith("hit_at_") or name in _BOOLEAN_METRICS:
+            if value is not None and type(value) is not bool:
+                raise ValueError(f"{owner} must be a bool or null")
+        elif _is_known_numeric_metric(name):
+            if value is not None:
+                number = _finite_number(value, owner)
+                _validate_metric_bounds(name, number, owner)
+        elif value is not None and type(value) is not bool:
+            _finite_number(value, owner)
+
+
+def _validate_expected_coverage(value: Any, owner: str) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"{owner} must be an object")
+    unknown = set(value) - {"count", "ratio"}
+    if unknown:
+        field = sorted(repr(item) for item in unknown)[0]
+        raise ValueError(f"{owner} has unknown field {field}")
+    if value.get("count") is not None:
+        count = _finite_number(value["count"], f"{owner}.count")
+        if count < 0:
+            raise ValueError(f"{owner}.count must be nonnegative")
+    if value.get("ratio") is not None:
+        ratio = _finite_number(value["ratio"], f"{owner}.ratio")
+        if not 0 <= ratio <= 1:
+            raise ValueError(f"{owner}.ratio must be between 0 and 1")
+
+
+def _is_known_numeric_metric(name: str) -> bool:
+    return (
+        name in _RATE_METRICS
+        or name in _NONNEGATIVE_METRICS
+        or name in _UNBOUNDED_NUMERIC_METRICS
+        or name.startswith("recall_at_")
+        or name.startswith("precision_at_")
+        or name.startswith("noise_top")
+        or name.startswith("expected_coverage_")
+    )
+
+
+def _finite_number(value: Any, owner: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ValueError(f"{owner} must be a finite number or null")
+    try:
+        number = float(value)
+    except OverflowError as error:
+        raise ValueError(f"{owner} must be a finite number or null") from error
+    if not math.isfinite(number):
+        raise ValueError(f"{owner} must be a finite number or null")
+    return number
+
+
+def _validate_metric_bounds(name: str, number: float, owner: str) -> None:
+    if (
+        name in _RATE_METRICS
+        or name.startswith("recall_at_")
+        or name.startswith("precision_at_")
+        or name.startswith("expected_coverage_")
+    ) and not 0 <= number <= 1:
+        raise ValueError(f"{owner} must be between 0 and 1")
+    if (
+        name in _NONNEGATIVE_METRICS or name.startswith("noise_top")
+    ) and number < 0:
+        raise ValueError(f"{owner} must be nonnegative")
+
+
+def _validate_aggregate_metrics(
+    metrics: dict[str, Any],
+    path: tuple[str, ...],
+) -> None:
+    for name, value in metrics.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("aggregate metrics keys must be non-empty strings")
+        current_path = (*path, name)
+        label = ".".join(current_path)
+        if not isinstance(value, dict):
+            raise ValueError(f"aggregate metrics {label} must be an object")
+        leaves = {
+            field
+            for field in _AGGREGATE_LEAVES
+            if field in value and not isinstance(value[field], dict)
+        }
+        if not leaves:
+            _validate_aggregate_metrics(value, current_path)
+            continue
+        unknown = set(value) - _AGGREGATE_LEAVES
+        if unknown:
+            field = sorted(repr(item) for item in unknown)[0]
+            raise ValueError(
+                f"aggregate metrics {label} has unknown summary field "
+                f"{field}"
+            )
+        _validate_aggregate_summary(name, value, label)
+
+
+def _validate_aggregate_summary(
+    metric_name: str,
+    summary: dict[str, Any],
+    label: str,
+) -> None:
+    for field, value in summary.items():
+        owner = f"aggregate metrics {label}.{field}"
+        number = _finite_number(value, owner)
+        if field in {"count", "successes", "total"} and number < 0:
+            raise ValueError(f"{owner} must be nonnegative")
+        if field == "rate" and not 0 <= number <= 1:
+            raise ValueError(f"{owner} must be between 0 and 1")
+        if field in {"mean", "p50", "p95"}:
+            _validate_metric_bounds(metric_name, number, owner)
+
+
+def _aggregate_metrics(report: dict[str, Any]) -> dict[str, Any]:
+    return report.get("aggregate", {}).get("metrics", {})
 
 
 def _compare_case(
@@ -141,6 +344,7 @@ def _compare_case(
     metric_deltas = _scalar_metric_deltas(
         _case_metrics(baseline),
         _case_metrics(candidate),
+        case_key,
     )
     if baseline_gate == "required":
         classification, gating = _classify_required(
@@ -241,6 +445,7 @@ def _flatten_case_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
 def _scalar_metric_deltas(
     baseline: dict[str, Any],
     candidate: dict[str, Any],
+    case_key: str,
 ) -> dict[str, dict[str, float | bool]]:
     baseline = _flatten_case_metrics(baseline)
     candidate = _flatten_case_metrics(candidate)
@@ -260,10 +465,19 @@ def _scalar_metric_deltas(
             and isinstance(after, (int, float))
             and not isinstance(after, bool)
         ):
+            delta = after - before
+            try:
+                delta_is_finite = math.isfinite(float(delta))
+            except OverflowError:
+                delta_is_finite = False
+            if not delta_is_finite:
+                raise ValueError(
+                    f"case {case_key} metric {name} delta must be finite"
+                )
             deltas[name] = {
                 "baseline": before,
                 "candidate": after,
-                "delta": after - before,
+                "delta": delta,
             }
     return deltas
 
@@ -337,10 +551,18 @@ def _delta_payload(before: Any, after: Any) -> dict[str, float] | None:
         and isinstance(after, (int, float))
         and not isinstance(after, bool)
     ):
+        before_number = float(before)
+        after_number = float(after)
+        delta = after_number - before_number
+        if not all(
+            math.isfinite(number)
+            for number in (before_number, after_number, delta)
+        ):
+            raise ValueError("aggregate metric delta must be finite")
         return {
-            "baseline": float(before),
-            "candidate": float(after),
-            "delta": float(after) - float(before),
+            "baseline": before_number,
+            "candidate": after_number,
+            "delta": delta,
         }
     return None
 
@@ -361,7 +583,7 @@ def _aggregate_metric_deltas(
             if (payload := _delta_payload(before.get(field), after.get(field)))
             is not None
         }
-        if set(leaves) in ({"rate"}, {"mean"}):
+        if key != "latency_ms" and set(leaves) in ({"rate"}, {"mean"}):
             output[key] = next(iter(leaves.values()))
             continue
         if leaves:
@@ -417,7 +639,10 @@ def _metadata_warnings(
         warnings.append("embedding config differs")
     if baseline.get("planner") != candidate.get("planner"):
         warnings.append("planner config differs")
-    if _repo_config_identity(baseline) != _repo_config_identity(candidate):
+    if (
+        _should_compare_repo_configs(baseline, candidate)
+        and _repo_config_identity(baseline) != _repo_config_identity(candidate)
+    ):
         warnings.append("repo effective config differs")
     if _repo_identity(baseline) != _repo_identity(candidate):
         warnings.append("repo identity differs")
@@ -429,6 +654,26 @@ def _repo_config_identity(report: dict[str, Any]) -> dict[str, Any]:
         repo.get("repo_key", ""): repo.get("config", {}).get("config_hash")
         for repo in report.get("repos", [])
     }
+
+
+def _should_compare_repo_configs(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+) -> bool:
+    if baseline["schema_version"] == candidate["schema_version"] == 2:
+        return True
+    return _repo_config_hashes_available(baseline) and _repo_config_hashes_available(
+        candidate
+    )
+
+
+def _repo_config_hashes_available(report: dict[str, Any]) -> bool:
+    repos = report.get("repos", [])
+    return bool(repos) and all(
+        isinstance(repo.get("config", {}).get("config_hash"), str)
+        and bool(repo["config"]["config_hash"])
+        for repo in repos
+    )
 
 
 def _repo_identity(report: dict[str, Any]) -> dict[str, Any]:
@@ -443,5 +688,5 @@ def _case_metrics(case: dict[str, Any]) -> dict[str, Any]:
     return metrics if isinstance(metrics, dict) else {}
 
 
-def _case_key(case: dict[str, Any]) -> str:
-    return f"{case.get('repo_key', '')}/{case.get('case_id', '')}"
+def _format_case_key(identity: tuple[str, str]) -> str:
+    return f"{identity[0]}/{identity[1]}"

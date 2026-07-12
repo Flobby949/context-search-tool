@@ -351,22 +351,90 @@ def test_required_threshold_boundaries_are_not_protected_changes(
     assert comparison["cases"][0]["classification"] == "unchanged_pass"
 
 
-def test_boolean_numeric_metrics_do_not_trigger_numeric_thresholds() -> None:
+@pytest.mark.parametrize(
+    "metric_name,value",
+    [
+        ("hit_at_5", 1),
+        ("mrr", False),
+        ("mrr", "0.5"),
+        ("mrr", float("nan")),
+        ("mrr", float("inf")),
+        ("mrr", -0.1),
+        ("mrr", 1.1),
+        ("noise_top5", True),
+        ("noise_top5", float("nan")),
+        ("noise_top5", float("inf")),
+        ("noise_top5", -1),
+        ("latency_ms", -1),
+    ],
+)
+def test_compare_rejects_invalid_known_case_metrics_with_case_key(
+    metric_name: str,
+    value: object,
+) -> None:
+    invalid = _report(
+        [_case("sample", "target", "pass", {metric_name: value})]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=rf"sample/target.*{metric_name}",
+    ):
+        compare_reports(invalid, _report([]))
+
+
+@pytest.mark.parametrize("value", ["value", [], {"nested": 1}, object()])
+def test_compare_rejects_non_scalar_custom_case_metrics(value: object) -> None:
+    invalid = _report(
+        [_case("sample", "target", "pass", {"custom_metric": value})]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"sample/target.*custom_metric",
+    ):
+        compare_reports(invalid, _report([]))
+
+
+def test_compare_accepts_supported_nullable_and_custom_scalar_metrics() -> None:
     comparison = compare_reports(
         _report(
-            [_case("sample", "target", "pass", {"mrr": False, "noise_top5": True})]
+            [
+                _case(
+                    "sample",
+                    "target",
+                    "pass",
+                    {
+                        "hit_at_5": None,
+                        "mrr": None,
+                        "noise_top5": 0,
+                        "custom_bool": True,
+                        "custom_number": -2.5,
+                        "custom_missing": None,
+                    },
+                )
+            ]
         ),
         _report(
-            [_case("sample", "target", "pass", {"mrr": True, "noise_top5": False})]
+            [
+                _case(
+                    "sample",
+                    "target",
+                    "pass",
+                    {
+                        "hit_at_5": None,
+                        "mrr": None,
+                        "noise_top5": 1,
+                        "custom_bool": False,
+                        "custom_number": -1.5,
+                        "custom_missing": None,
+                    },
+                )
+            ]
         ),
     )
 
-    case = comparison["cases"][0]
-    assert case["classification"] == "unchanged_pass"
-    assert case["metric_deltas"] == {
-        "mrr": {"baseline": False, "candidate": True, "delta": 1},
-        "noise_top5": {"baseline": True, "candidate": False, "delta": -1},
-    }
+    assert comparison["cases"][0]["metric_deltas"]["custom_number"]["delta"] == 1
 
 
 def test_informational_mixed_metrics_use_decline_first_without_gating() -> None:
@@ -443,6 +511,106 @@ def test_compare_requires_integer_report_schema(schema_version: object) -> None:
         compare_reports(_report([], schema_version=schema_version), _report([]))
 
 
+@pytest.mark.parametrize("report", [None, [], "report"])
+def test_compare_requires_report_objects(report: object) -> None:
+    with pytest.raises(ValueError, match="report must be an object"):
+        compare_reports(report, _report([]))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "field,value,message",
+    [
+        ("cases", None, "report cases must be a list"),
+        ("fixture", [], "report fixture must be an object"),
+        ("config", [], "report config must be an object"),
+        ("planner", [], "report planner must be an object"),
+        ("repos", {}, "report repos must be a list"),
+        ("aggregate", [], "report aggregate must be an object"),
+    ],
+)
+def test_compare_rejects_malformed_top_level_containers(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    invalid = _report([])
+    invalid[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        compare_reports(invalid, _report([]))
+
+
+@pytest.mark.parametrize(
+    "case,message",
+    [
+        (None, "report case must be an object"),
+        (
+            {"repo_key": "", "case_id": "target", "status": "pass", "metrics": {}},
+            "repo_key must be a non-empty string",
+        ),
+        (
+            {"repo_key": "sample", "case_id": "", "status": "pass", "metrics": {}},
+            "case_id must be a non-empty string",
+        ),
+        (
+            {
+                "repo_key": "sample",
+                "case_id": "target",
+                "status": "fail",
+                "gate": "required",
+                "metrics": [],
+            },
+            "metrics must be an object",
+        ),
+        (
+            {
+                "repo_key": "sample",
+                "case_id": "target",
+                "status": "fail",
+                "gate": "required",
+            },
+            "metrics must be an object",
+        ),
+    ],
+)
+def test_compare_rejects_malformed_case_containers(
+    case: object,
+    message: str,
+) -> None:
+    invalid = _report([])
+    invalid["cases"] = [case]
+
+    with pytest.raises(ValueError, match=message):
+        compare_reports(invalid, _report([]))
+
+
+@pytest.mark.parametrize(
+    "repos,message",
+    [
+        ([None], "report repo must be an object"),
+        ([{"repo_key": "sample", "source": []}], "repo source must be an object"),
+        ([{"repo_key": "sample", "config": []}], "repo config must be an object"),
+    ],
+)
+def test_compare_rejects_malformed_repo_metadata(
+    repos: list[object],
+    message: str,
+) -> None:
+    invalid = _report([])
+    invalid["repos"] = repos
+
+    with pytest.raises(ValueError, match=message):
+        compare_reports(invalid, _report([]))
+
+
+def test_compare_rejects_malformed_aggregate_metrics_container() -> None:
+    invalid = _report([])
+    invalid["aggregate"]["metrics"] = []
+
+    with pytest.raises(ValueError, match="aggregate metrics must be an object"):
+        compare_reports(invalid, _report([]))
+
+
 def test_v1_case_without_gate_defaults_to_required() -> None:
     baseline_case = _case("sample", "target", "pass")
     baseline_case.pop("gate")
@@ -486,6 +654,22 @@ def test_compare_rejects_pass_case_without_metric_object() -> None:
         compare_reports(_report([invalid]), _report([]))
 
 
+def test_case_identity_uses_tuple_keys_internally() -> None:
+    comparison = compare_reports(
+        _report([_case("a", "b/c", "pass")]),
+        _report([_case("a/b", "c", "pass")]),
+    )
+
+    assert [case["case_key"] for case in comparison["cases"]] == [
+        "a/b/c",
+        "a/b/c",
+    ]
+    assert [case["classification"] for case in comparison["cases"]] == [
+        "removed_required",
+        "new_case",
+    ]
+
+
 def test_comparison_emits_nested_aggregate_metric_deltas() -> None:
     baseline = _report([])
     candidate = _report([])
@@ -523,9 +707,66 @@ def test_comparison_preserves_latency_aggregate_leaves() -> None:
     }
 
 
+def test_comparison_keeps_single_latency_mean_nested() -> None:
+    baseline = _report([])
+    candidate = _report([])
+    baseline["aggregate"]["metrics"]["overall"] = {
+        "latency_ms": {"count": 1, "mean": 10},
+    }
+    candidate["aggregate"]["metrics"]["overall"] = {
+        "latency_ms": {"count": 1, "mean": 12},
+    }
+
+    comparison = compare_reports(baseline, candidate)
+
+    assert comparison["metric_deltas"]["overall"]["latency_ms"] == {
+        "mean": {"baseline": 10.0, "candidate": 12.0, "delta": 2.0},
+    }
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_compare_rejects_non_finite_aggregate_metric_leaves(value: float) -> None:
+    invalid = _report([])
+    invalid["aggregate"]["metrics"]["overall"] = {
+        "mrr": {"count": 1, "mean": value},
+    }
+
+    with pytest.raises(ValueError, match=r"aggregate metrics.*mrr.*mean"):
+        compare_reports(invalid, _report([]))
+
+
 def test_v2_repo_effective_config_difference_is_reported() -> None:
     baseline = _report([])
     candidate = _report([])
+    baseline["repos"][0]["config"] = {"config_hash": "sha256:baseline"}
+    candidate["repos"][0]["config"] = {"config_hash": "sha256:candidate"}
+
+    comparison = compare_reports(baseline, candidate)
+
+    assert "repo effective config differs" in comparison["metadata_warnings"]
+
+
+def test_v1_reports_without_repo_config_hashes_do_not_warn_about_config() -> None:
+    baseline = _report(
+        [],
+        schema_version=1,
+        repos=[_repo("baseline", "sha256:baseline")],
+    )
+    candidate = _report(
+        [],
+        schema_version=1,
+        repos=[_repo("candidate", "sha256:candidate")],
+    )
+
+    comparison = compare_reports(baseline, candidate)
+
+    assert "repo effective config differs" not in comparison["metadata_warnings"]
+    assert "repo identity differs" in comparison["metadata_warnings"]
+
+
+def test_v1_reports_with_repo_config_hashes_still_compare_them() -> None:
+    baseline = _report([], schema_version=1)
+    candidate = _report([], schema_version=1)
     baseline["repos"][0]["config"] = {"config_hash": "sha256:baseline"}
     candidate["repos"][0]["config"] = {"config_hash": "sha256:candidate"}
 
