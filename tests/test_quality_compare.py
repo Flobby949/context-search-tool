@@ -1,6 +1,14 @@
+from pathlib import Path
+
 import pytest
 
 from context_search_tool.quality.compare import compare_reports
+from context_search_tool.quality.runner import run_quality_fixture
+
+
+CATALOG_PATH = (
+    Path(__file__).parent / "fixtures" / "retrieval_quality" / "queries.json"
+)
 
 
 def _case(
@@ -28,6 +36,7 @@ def _repo(repo_key: str, content_hash: str) -> dict:
         "source": {
             "content_hash": content_hash,
         },
+        "config": {"config_hash": "sha256:config"},
     }
 
 
@@ -654,20 +663,12 @@ def test_compare_rejects_pass_case_without_metric_object() -> None:
         compare_reports(_report([invalid]), _report([]))
 
 
-def test_case_identity_uses_tuple_keys_internally() -> None:
-    comparison = compare_reports(
-        _report([_case("a", "b/c", "pass")]),
-        _report([_case("a/b", "c", "pass")]),
-    )
-
-    assert [case["case_key"] for case in comparison["cases"]] == [
-        "a/b/c",
-        "a/b/c",
-    ]
-    assert [case["classification"] for case in comparison["cases"]] == [
-        "removed_required",
-        "new_case",
-    ]
+def test_compare_rejects_ambiguous_formatted_case_keys() -> None:
+    with pytest.raises(ValueError, match=r"ambiguous case key: a/b/c"):
+        compare_reports(
+            _report([_case("a", "b/c", "pass")]),
+            _report([_case("a/b", "c", "pass")]),
+        )
 
 
 def test_comparison_emits_nested_aggregate_metric_deltas() -> None:
@@ -707,9 +708,9 @@ def test_comparison_preserves_latency_aggregate_leaves() -> None:
     }
 
 
-def test_comparison_keeps_single_latency_mean_nested() -> None:
-    baseline = _report([])
-    candidate = _report([])
+def test_v1_comparison_keeps_single_latency_mean_nested() -> None:
+    baseline = _report([], schema_version=1)
+    candidate = _report([], schema_version=1)
     baseline["aggregate"]["metrics"]["overall"] = {
         "latency_ms": {"count": 1, "mean": 10},
     }
@@ -747,15 +748,19 @@ def test_v2_repo_effective_config_difference_is_reported() -> None:
 
 
 def test_v1_reports_without_repo_config_hashes_do_not_warn_about_config() -> None:
+    baseline_repo = _repo("baseline", "sha256:baseline")
+    candidate_repo = _repo("candidate", "sha256:candidate")
+    baseline_repo.pop("config")
+    candidate_repo.pop("config")
     baseline = _report(
         [],
         schema_version=1,
-        repos=[_repo("baseline", "sha256:baseline")],
+        repos=[baseline_repo],
     )
     candidate = _report(
         [],
         schema_version=1,
-        repos=[_repo("candidate", "sha256:candidate")],
+        repos=[candidate_repo],
     )
 
     comparison = compare_reports(baseline, candidate)
@@ -802,3 +807,245 @@ def test_case_delta_flattens_expected_coverage_ratio() -> None:
     assert comparison["cases"][0]["metric_deltas"][
         "expected_coverage_top5_ratio"
     ]["delta"] == 0.5
+
+
+@pytest.mark.parametrize(
+    "metric_name,summary",
+    [
+        ("hit_at_5", {"successes": 1, "total": 1}),
+        (
+            "entrypoint_top1",
+            {"successes": 1, "total": 1, "rate": 1.0, "count": 1},
+        ),
+        ("mrr", {"mean": 0.5}),
+        ("mrr", {"count": 1, "mean": 0.5, "rate": 0.5}),
+        ("latency_ms", {"count": 1, "mean": 1.0, "p50": 1}),
+    ],
+)
+def test_v2_aggregate_summaries_require_exact_shapes(
+    metric_name: str,
+    summary: dict,
+) -> None:
+    invalid = _report([])
+    invalid["aggregate"]["metrics"]["overall"] = {metric_name: summary}
+
+    with pytest.raises(ValueError, match=rf"aggregate metrics.*{metric_name}"):
+        compare_reports(invalid, _report([]))
+
+
+@pytest.mark.parametrize(
+    "metric_name,summary,message",
+    [
+        (
+            "mrr",
+            {"count": 1.5, "mean": 0.5},
+            "count must be a positive integer",
+        ),
+        (
+            "mrr",
+            {"count": True, "mean": 0.5},
+            "count must be a positive integer",
+        ),
+        (
+            "mrr",
+            {"count": 0, "mean": 0.5},
+            "count must be a positive integer",
+        ),
+        (
+            "hit_at_5",
+            {"successes": True, "total": 1, "rate": 1.0},
+            "successes must be a nonnegative integer",
+        ),
+        (
+            "hit_at_5",
+            {"successes": 1, "total": 0, "rate": 1.0},
+            "total must be a positive integer",
+        ),
+        (
+            "hit_at_5",
+            {"successes": 2, "total": 1, "rate": 1.0},
+            "successes cannot exceed total",
+        ),
+        (
+            "hit_at_5",
+            {"successes": 1, "total": 2, "rate": 1.0},
+            "rate is inconsistent",
+        ),
+        (
+            "hit_at_5",
+            {"successes": 1, "total": 1, "rate": float("nan")},
+            "rate must be a finite number",
+        ),
+        (
+            "latency_ms",
+            {"count": 1, "mean": -1, "p50": 0, "p95": 0},
+            "mean must be nonnegative",
+        ),
+    ],
+)
+def test_v2_aggregate_summaries_validate_counts_rates_and_bounds(
+    metric_name: str,
+    summary: dict,
+    message: str,
+) -> None:
+    invalid = _report([])
+    invalid["aggregate"]["metrics"]["overall"] = {metric_name: summary}
+
+    with pytest.raises(ValueError, match=message):
+        compare_reports(invalid, _report([]))
+
+
+def test_v2_aggregate_accepts_empty_groupings_and_v1_keeps_legacy_summaries() -> None:
+    v2 = _report([])
+    v2["aggregate"]["metrics"] = {
+        "overall": {},
+        "by_repository": {},
+        "by_tag": {},
+        "by_profile": {},
+        "by_embedding": {},
+    }
+    legacy = _report([], schema_version=1)
+    legacy["aggregate"]["metrics"]["overall"] = {
+        "mrr": {"mean": 0.5},
+    }
+
+    assert compare_reports(v2, v2)["metric_deltas"] == {}
+    assert compare_reports(legacy, legacy)["metric_deltas"]["overall"]["mrr"] == {
+        "baseline": 0.5,
+        "candidate": 0.5,
+        "delta": 0.0,
+    }
+
+
+@pytest.mark.parametrize(
+    "metrics,message",
+    [
+        (
+            {"expected_coverage_top5": {"ratio": 0.5}},
+            "expected_coverage_top5 must contain exactly count and ratio",
+        ),
+        (
+            {"expected_coverage_top5": {"count": 1, "ratio": 0.5, "extra": 0}},
+            "expected_coverage_top5 must contain exactly count and ratio",
+        ),
+        (
+            {"expected_coverage_top5": {"count": 1.5, "ratio": 0.5}},
+            "expected_coverage_top5.count must be a nonnegative integer",
+        ),
+        (
+            {"entrypoint_rank": 0},
+            "entrypoint_rank must be a positive integer or null",
+        ),
+        (
+            {"entrypoint_rank": 1.5},
+            "entrypoint_rank must be a positive integer or null",
+        ),
+        (
+            {"latency_ms": 1.5},
+            "latency_ms must be a nonnegative integer",
+        ),
+        (
+            {"result_count": True},
+            "result_count must be a nonnegative integer",
+        ),
+        (
+            {"noise_top12_measurement": -1},
+            "noise_top12_measurement must be a nonnegative integer",
+        ),
+    ],
+)
+def test_v2_case_metrics_enforce_runner_integer_contracts(
+    metrics: dict,
+    message: str,
+) -> None:
+    invalid = _report([_case("sample", "target", "pass", metrics)])
+
+    with pytest.raises(ValueError, match=message):
+        compare_reports(invalid, _report([]))
+
+
+def test_v2_case_metrics_allow_runner_nullable_values() -> None:
+    metrics = {
+        "hit_at_5": None,
+        "recall_at_5": None,
+        "mrr": None,
+        "expected_coverage_top5": {"count": 0, "ratio": None},
+        "preferred_rank_pass": True,
+        "noise_top5": 0,
+        "entrypoint_rank": None,
+        "cross_language_success": None,
+        "latency_ms": 0,
+        "result_count": 0,
+        "top_score": None,
+    }
+
+    comparison = compare_reports(
+        _report([_case("sample", "target", "pass", metrics)]),
+        _report([_case("sample", "target", "pass", metrics)]),
+    )
+
+    assert comparison["cases"][0]["classification"] == "unchanged_pass"
+
+
+@pytest.mark.parametrize(
+    "repo,message",
+    [
+        (
+            {"repo_key": "sample", "source": {}},
+            "repo config must be an object",
+        ),
+        (
+            {"repo_key": "sample", "source": {}, "config": {}},
+            "repo config_hash must be a non-empty string",
+        ),
+        (
+            {"repo_key": "sample", "source": {}, "config": {"config_hash": None}},
+            "repo config_hash must be a non-empty string",
+        ),
+        (
+            {"repo_key": "sample", "source": {}, "config": {"config_hash": ""}},
+            "repo config_hash must be a non-empty string",
+        ),
+        (
+            {
+                "repo_key": "sample",
+                "source": {},
+                "config": {"config_hash": "   "},
+            },
+            "repo config_hash must be a non-empty string",
+        ),
+    ],
+)
+def test_v2_repos_require_non_empty_effective_config_hash(
+    repo: dict,
+    message: str,
+) -> None:
+    invalid = _report([], repos=[repo])
+
+    with pytest.raises(ValueError, match=message):
+        compare_reports(invalid, _report([]))
+
+
+def test_v1_repo_metadata_remains_permissive_without_effective_config() -> None:
+    legacy = _report(
+        [],
+        schema_version=1,
+        repos=[{"repo_key": "sample", "source": {}}],
+    )
+
+    comparison = compare_reports(legacy, legacy)
+
+    assert "repo effective config differs" not in comparison["metadata_warnings"]
+
+
+def test_compare_accepts_real_schema_v2_runner_report() -> None:
+    report = run_quality_fixture(CATALOG_PATH, "ci", None, None)
+
+    comparison = compare_reports(report, report)
+
+    assert comparison["schema_version"] == 2
+    assert comparison["aggregate"]["gating_regressions"] == 0
+    assert all(
+        case["classification"] == "unchanged_pass"
+        for case in comparison["cases"]
+    )

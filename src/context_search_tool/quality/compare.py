@@ -18,6 +18,23 @@ _NONNEGATIVE_METRICS = {
 }
 _UNBOUNDED_NUMERIC_METRICS = {"top_score"}
 _AGGREGATE_LEAVES = {"count", "mean", "p50", "p95", "rate", "successes", "total"}
+_AGGREGATE_GROUPS = {
+    "overall",
+    "by_repository",
+    "by_tag",
+    "by_profile",
+    "by_embedding",
+}
+_AGGREGATE_RATE_METRICS = {
+    "hit_at_1",
+    "hit_at_3",
+    "hit_at_5",
+    "hit_at_10",
+    "cross_language_success",
+    "preferred_rank_pass",
+    "entrypoint_top1",
+    "entrypoint_top3",
+}
 _HIGHER_IS_BETTER = {
     "hit_at_1",
     "hit_at_3",
@@ -59,13 +76,15 @@ def compare_reports(
 ) -> dict[str, Any]:
     baseline_cases = _index_cases(baseline)
     candidate_cases = _index_cases(candidate)
+    identities = baseline_cases.keys() | candidate_cases.keys()
+    _validate_unambiguous_case_keys(identities)
     cases = [
         _compare_case(
             _format_case_key(identity),
             baseline_cases.get(identity),
             candidate_cases.get(identity),
         )
-        for identity in sorted(baseline_cases.keys() | candidate_cases.keys())
+        for identity in sorted(identities)
     ]
 
     counts = Counter(case["classification"] for case in cases)
@@ -103,7 +122,7 @@ def _index_cases(
     if type(schema) is not int or schema not in _SUPPORTED_SCHEMAS:
         raise ValueError(f"unsupported report schema: {schema}")
 
-    _validate_report_containers(report)
+    _validate_report_containers(report, schema)
     cases = report.get("cases")
     if not isinstance(cases, list):
         raise ValueError("report cases must be a list")
@@ -151,12 +170,24 @@ def _index_cases(
         if status == "pass" and not isinstance(metrics, dict):
             raise ValueError(f"pass case missing metrics: {key}")
         if isinstance(metrics, dict):
-            _validate_case_metrics(metrics, key)
+            _validate_case_metrics(metrics, key, schema)
         indexed[identity] = case
     return indexed
 
 
-def _validate_report_containers(report: dict[str, Any]) -> None:
+def _validate_unambiguous_case_keys(
+    identities: set[tuple[str, str]],
+) -> None:
+    formatted: dict[str, tuple[str, str]] = {}
+    for identity in identities:
+        key = _format_case_key(identity)
+        previous = formatted.get(key)
+        if previous is not None and previous != identity:
+            raise ValueError(f"ambiguous case key: {key}")
+        formatted[key] = identity
+
+
+def _validate_report_containers(report: dict[str, Any], schema: int) -> None:
     for field in ("fixture", "config", "planner"):
         if field in report and not isinstance(report[field], dict):
             raise ValueError(f"report {field} must be an object")
@@ -181,6 +212,13 @@ def _validate_report_containers(report: dict[str, Any]) -> None:
         for field in ("source", "config"):
             if field in repo and not isinstance(repo[field], dict):
                 raise ValueError(f"repo {field} must be an object")
+        if schema == 2:
+            repo_config = repo.get("config")
+            if not isinstance(repo_config, dict):
+                raise ValueError("repo config must be an object")
+            config_hash = repo_config.get("config_hash")
+            if not isinstance(config_hash, str) or not config_hash.strip():
+                raise ValueError("repo config_hash must be a non-empty string")
 
     aggregate = report.get("aggregate", {})
     if not isinstance(aggregate, dict):
@@ -188,19 +226,33 @@ def _validate_report_containers(report: dict[str, Any]) -> None:
     metrics = aggregate.get("metrics", {})
     if not isinstance(metrics, dict):
         raise ValueError("aggregate metrics must be an object")
-    _validate_aggregate_metrics(metrics, ())
+    if schema == 2:
+        _validate_v2_aggregate_metrics(metrics)
+    else:
+        _validate_aggregate_metrics(metrics, ())
 
 
-def _validate_case_metrics(metrics: dict[str, Any], case_key: str) -> None:
+def _validate_case_metrics(
+    metrics: dict[str, Any],
+    case_key: str,
+    schema: int,
+) -> None:
     for name, value in metrics.items():
         if not isinstance(name, str) or not name.strip():
             raise ValueError(f"case {case_key} metric name must be a non-empty string")
         owner = f"case {case_key} metric {name}"
         if name == "expected_coverage_top5":
-            _validate_expected_coverage(value, owner)
+            _validate_expected_coverage(value, owner, strict=schema == 2)
         elif name.startswith("hit_at_") or name in _BOOLEAN_METRICS:
             if value is not None and type(value) is not bool:
                 raise ValueError(f"{owner} must be a bool or null")
+        elif schema == 2 and name == "entrypoint_rank":
+            if value is not None and (type(value) is not int or value <= 0):
+                raise ValueError(f"{owner} must be a positive integer or null")
+        elif schema == 2 and (
+            name in {"latency_ms", "result_count"} or name.startswith("noise_top")
+        ):
+            _require_nonnegative_integer(value, owner)
         elif _is_known_numeric_metric(name):
             if value is not None:
                 number = _finite_number(value, owner)
@@ -209,14 +261,23 @@ def _validate_case_metrics(metrics: dict[str, Any], case_key: str) -> None:
             _finite_number(value, owner)
 
 
-def _validate_expected_coverage(value: Any, owner: str) -> None:
+def _validate_expected_coverage(
+    value: Any,
+    owner: str,
+    *,
+    strict: bool,
+) -> None:
     if not isinstance(value, dict):
         raise ValueError(f"{owner} must be an object")
+    if strict and set(value) != {"count", "ratio"}:
+        raise ValueError(f"{owner} must contain exactly count and ratio")
     unknown = set(value) - {"count", "ratio"}
     if unknown:
         field = sorted(repr(item) for item in unknown)[0]
         raise ValueError(f"{owner} has unknown field {field}")
-    if value.get("count") is not None:
+    if strict:
+        _require_nonnegative_integer(value.get("count"), f"{owner}.count")
+    elif value.get("count") is not None:
         count = _finite_number(value["count"], f"{owner}.count")
         if count < 0:
             raise ValueError(f"{owner}.count must be nonnegative")
@@ -224,6 +285,12 @@ def _validate_expected_coverage(value: Any, owner: str) -> None:
         ratio = _finite_number(value["ratio"], f"{owner}.ratio")
         if not 0 <= ratio <= 1:
             raise ValueError(f"{owner}.ratio must be between 0 and 1")
+
+
+def _require_nonnegative_integer(value: Any, owner: str) -> int:
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{owner} must be a nonnegative integer")
+    return value
 
 
 def _is_known_numeric_metric(name: str) -> bool:
@@ -291,6 +358,104 @@ def _validate_aggregate_metrics(
                 f"{field}"
             )
         _validate_aggregate_summary(name, value, label)
+
+
+def _validate_v2_aggregate_metrics(metrics: dict[str, Any]) -> None:
+    for grouping, grouped in metrics.items():
+        if not isinstance(grouping, str) or not grouping.strip():
+            raise ValueError("aggregate metrics keys must be non-empty strings")
+        if grouping not in _AGGREGATE_GROUPS:
+            raise ValueError(f"unknown aggregate metrics grouping: {grouping}")
+        if not isinstance(grouped, dict):
+            raise ValueError(f"aggregate metrics {grouping} must be an object")
+        if grouping == "overall":
+            _validate_v2_metric_map(grouped, (grouping,))
+            continue
+        for group_name, metric_map in grouped.items():
+            if not isinstance(group_name, str) or not group_name.strip():
+                raise ValueError(
+                    f"aggregate metrics {grouping} keys must be non-empty strings"
+                )
+            if not isinstance(metric_map, dict):
+                raise ValueError(
+                    f"aggregate metrics {grouping}.{group_name} must be an object"
+                )
+            _validate_v2_metric_map(metric_map, (grouping, group_name))
+
+
+def _validate_v2_metric_map(
+    metrics: dict[str, Any],
+    path: tuple[str, ...],
+) -> None:
+    for metric_name, summary in metrics.items():
+        if not isinstance(metric_name, str) or not metric_name.strip():
+            raise ValueError("aggregate metric names must be non-empty strings")
+        label = ".".join((*path, metric_name))
+        if not isinstance(summary, dict):
+            raise ValueError(f"aggregate metrics {label} must be an object")
+        _validate_v2_aggregate_summary(metric_name, summary, label)
+
+
+def _validate_v2_aggregate_summary(
+    metric_name: str,
+    summary: dict[str, Any],
+    label: str,
+) -> None:
+    if metric_name in _AGGREGATE_RATE_METRICS:
+        expected_fields = {"successes", "total", "rate"}
+    elif metric_name == "latency_ms":
+        expected_fields = {"count", "mean", "p50", "p95"}
+    else:
+        expected_fields = {"count", "mean"}
+    if set(summary) != expected_fields:
+        raise ValueError(
+            f"aggregate metrics {label} must contain exactly "
+            f"{', '.join(sorted(expected_fields))}"
+        )
+
+    if "successes" in summary:
+        successes = _require_nonnegative_integer(
+            summary["successes"],
+            f"aggregate metrics {label}.successes",
+        )
+        total = summary["total"]
+        if type(total) is not int or total <= 0:
+            raise ValueError(
+                f"aggregate metrics {label}.total must be a positive integer"
+            )
+        if successes > total:
+            raise ValueError(
+                f"aggregate metrics {label}.successes cannot exceed total"
+            )
+        rate = _finite_number(
+            summary["rate"],
+            f"aggregate metrics {label}.rate",
+        )
+        if not 0 <= rate <= 1:
+            raise ValueError(
+                f"aggregate metrics {label}.rate must be between 0 and 1"
+            )
+        if not math.isclose(
+            rate,
+            successes / total,
+            rel_tol=_TOLERANCE,
+            abs_tol=_TOLERANCE,
+        ):
+            raise ValueError(
+                f"aggregate metrics {label}.rate is inconsistent with "
+                "successes and total"
+            )
+        return
+
+    count = summary["count"]
+    if type(count) is not int or count <= 0:
+        raise ValueError(
+            f"aggregate metrics {label}.count must be a positive integer"
+        )
+    for field in expected_fields - {"count"}:
+        owner = f"aggregate metrics {label}.{field}"
+        number = _finite_number(summary[field], owner)
+        _validate_metric_bounds(metric_name, number, owner)
 
 
 def _validate_aggregate_summary(
