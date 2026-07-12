@@ -163,6 +163,8 @@ def run_quality_fixture(
                 repo_config,
                 canonical=fixture.canonical,
             )
+            api_key_env = repo_config.embedding.api_key_env
+            api_key = (os.environ.get(api_key_env) or None) if api_key_env else None
             source = _resolve_repo_source(repo, fixture.path, profile)
             if source is None:
                 cases.extend(
@@ -220,7 +222,7 @@ def run_quality_fixture(
                         repo.repo_key,
                         selected_cases,
                         "error",
-                        _safe_error(exc, source.path, workspace),
+                        _safe_error(exc, source.path, workspace, api_key),
                     )
                 )
                 continue
@@ -256,7 +258,7 @@ def run_quality_fixture(
                         _error_case_record(
                             repo.repo_key,
                             case,
-                            _safe_error(exc, source.path, workspace),
+                            _safe_error(exc, source.path, workspace, api_key),
                         )
                     )
 
@@ -745,16 +747,24 @@ def _planner_payload(plan: QueryPlan) -> dict[str, Any]:
     }
 
 
-def _safe_error(exc: Exception, source: Path, workspace: Path) -> str:
+def _safe_error(
+    exc: Exception,
+    source: Path,
+    workspace: Path,
+    api_key: str | None = None,
+) -> str:
     message = str(exc)
     replacements = [
         (variant, replacement)
         for path, replacement in (
             (workspace, "<workspace>"),
+            (workspace.parent, "<workspace>"),
             (source, "<source>"),
         )
         for variant in _path_redaction_variants(path)
     ]
+    if api_key:
+        replacements.append((api_key, "<api-key>"))
     for variant, replacement in sorted(
         replacements,
         key=lambda item: len(
@@ -824,17 +834,27 @@ def _replace_casefold_equivalent(
             folded_start == 0
             or ranges[folded_start - 1] != ranges[folded_start]
         )
-        ends_at_cluster = (
-            folded_end == len(ranges)
-            or ranges[folded_end - 1] != ranges[folded_end]
-        )
-        if starts_at_cluster and ends_at_cluster:
+        match_end = folded_end
+        if (
+            match_end < len(ranges)
+            and ranges[match_end - 1] == ranges[match_end]
+        ):
+            cluster_range = ranges[match_end - 1]
+            while match_end < len(ranges) and ranges[match_end] == cluster_range:
+                match_end += 1
+            if not all(
+                unicodedata.combining(character) != 0
+                for character in folded_message[folded_end:match_end]
+            ):
+                search_from = folded_start + 1
+                continue
+        if starts_at_cluster:
             decoded_start, _ = ranges[folded_start]
-            _, decoded_end = ranges[folded_end - 1]
+            _, decoded_end = ranges[match_end - 1]
             start = decoded_spans[decoded_start][0]
             end = decoded_spans[decoded_end - 1][1]
             spans.append((start, end))
-            search_from = folded_end
+            search_from = match_end
         else:
             search_from = folded_start + 1
 

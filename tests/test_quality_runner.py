@@ -2749,6 +2749,174 @@ def test_report_redacts_normalized_and_full_casefold_paths_from_errors(
     ]
 
 
+@pytest.mark.parametrize("canonical", [False, True], ids=["legacy", "canonical"])
+@pytest.mark.parametrize("failure_stage", ["setup", "query"])
+def test_report_redacts_configured_embedding_api_key_from_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    canonical: bool,
+    failure_stage: str,
+) -> None:
+    source = _write_source_repo(tmp_path / "source")
+    secret = "quality-secret-token-not-for-reports"
+    monkeypatch.setenv("QUALITY_SECRET", secret)
+    fixture_data: dict = {
+        "schema_version": 1,
+        "repos": [
+            {
+                "repo_key": "sample",
+                "snapshot_path": str(source),
+                "profiles": ["smoke"],
+                "queries": [{"id": "target", "query": "targetToken"}],
+            }
+        ],
+    }
+    if canonical:
+        fixture_data["profile_configs"] = {
+            "smoke": {
+                "embedding": {
+                    "provider": "hash",
+                    "model": "hash-v1",
+                    "dimensions": 384,
+                    "api_key_env": "QUALITY_SECRET",
+                },
+                "query_planner": {"enabled": False},
+            }
+        }
+        config = DEFAULT_CONFIG
+    else:
+        config = ToolConfig(
+            embedding=EmbeddingConfig(api_key_env="QUALITY_SECRET"),
+        )
+    fixture = _write_fixture(tmp_path, fixture_data)
+    captured: list[tuple[Path, ToolConfig]] = []
+    _patch_runner_dependencies(monkeypatch, captured)
+
+    def fail_setup(repo: Path, effective: ToolConfig) -> IndexSummary:
+        raise RuntimeError(f"embedding rejected api-key={secret}")
+
+    def fail_query(repo: Path, query: str, effective: ToolConfig) -> QueryBundle:
+        raise RuntimeError(f"query rejected api-key={secret}")
+
+    if failure_stage == "setup":
+        monkeypatch.setattr(quality_runner, "index_repository", fail_setup)
+    else:
+        monkeypatch.setattr(quality_runner, "query_repository", fail_query)
+
+    output = tmp_path / "reports" / "quality.json"
+    markdown = tmp_path / "reports" / "quality.md"
+    report = run_quality_fixture(
+        fixture,
+        "smoke",
+        output,
+        markdown,
+        config=config,
+        allow_empty=True,
+    )
+
+    serialized = "\n".join(
+        [
+            json.dumps(report, ensure_ascii=False),
+            output.read_text(encoding="utf-8"),
+            markdown.read_text(encoding="utf-8"),
+        ]
+    )
+    assert secret not in serialized
+    assert "<api-key>" in serialized
+
+
+def test_report_redacts_temporary_root_variants_from_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_source_repo(tmp_path / "source")
+    temp_root = (tmp_path / "cst-quality-root with spaces").resolve()
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "snapshot_path": str(source),
+                    "profiles": ["smoke"],
+                    "queries": [{"id": "target", "query": "targetToken"}],
+                }
+            ],
+        },
+    )
+    captured: list[tuple[Path, ToolConfig]] = []
+    _patch_runner_dependencies(monkeypatch, captured)
+    root_variants = {
+        str(temp_root),
+        temp_root.as_uri(),
+        quote(temp_root.as_posix(), safe="/"),
+        quote(temp_root.as_posix(), safe=""),
+    }
+
+    def fail_query(repo: Path, query: str, config: ToolConfig) -> QueryBundle:
+        raise RuntimeError(
+            " ".join(
+                f"temp_root_{index}={value}"
+                for index, value in enumerate(sorted(root_variants))
+            )
+        )
+
+    def fake_mkdtemp(*, prefix: str) -> str:
+        assert prefix == "cst-quality-"
+        temp_root.mkdir()
+        return str(temp_root)
+
+    monkeypatch.setattr(quality_runner, "query_repository", fail_query)
+    monkeypatch.setattr(quality_runner.tempfile, "mkdtemp", fake_mkdtemp)
+    output = tmp_path / "reports" / "quality.json"
+    markdown = tmp_path / "reports" / "quality.md"
+
+    report = run_quality_fixture(
+        fixture,
+        "smoke",
+        output,
+        markdown,
+        allow_empty=True,
+    )
+
+    serialized = "\n".join(
+        [
+            json.dumps(report, ensure_ascii=False),
+            output.read_text(encoding="utf-8"),
+            markdown.read_text(encoding="utf-8"),
+        ]
+    )
+    assert all(variant not in serialized for variant in root_variants)
+    assert str(temp_root) not in serialized
+    assert "/cst-quality-" not in serialized
+    assert "<workspace>" in serialized
+
+
+@pytest.mark.parametrize(
+    ("sensitive_kind", "placeholder"),
+    [("source", "<source>"), ("workspace", "<workspace>")],
+)
+def test_safe_error_redacts_path_with_trailing_combining_mark(
+    tmp_path: Path,
+    sensitive_kind: str,
+    placeholder: str,
+) -> None:
+    source = (tmp_path / "source").resolve()
+    workspace = (tmp_path / "workspace").resolve()
+    sensitive = source if sensitive_kind == "source" else workspace
+    message = f"{sensitive}\u0301"
+
+    redacted = quality_runner._safe_error(
+        RuntimeError(message),
+        source,
+        workspace,
+    )
+
+    assert str(sensitive) not in redacted
+    assert redacted == placeholder
+
+
 def test_safe_error_redacts_reordered_combining_path_spellings(
     tmp_path: Path,
 ) -> None:
