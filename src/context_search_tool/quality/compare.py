@@ -563,13 +563,13 @@ def _classify_required(
     if baseline_status == candidate_status == "pass":
         decline = (
             _bool_transition(deltas, "hit_at_5", True, False)
-            or _numeric_drop(deltas, "mrr") > 0.25
-            or _numeric_gain(deltas, "noise_top5") >= 2
+            or _numeric_drop(deltas, "mrr") > 0.25 + _TOLERANCE
+            or _numeric_gain(deltas, "noise_top5") >= 2 - _TOLERANCE
         )
         improvement = (
             _bool_transition(deltas, "hit_at_5", False, True)
-            or _numeric_gain(deltas, "mrr") > 0.25
-            or _numeric_drop(deltas, "noise_top5") >= 2
+            or _numeric_gain(deltas, "mrr") > 0.25 + _TOLERANCE
+            or _numeric_drop(deltas, "noise_top5") >= 2 - _TOLERANCE
         )
         if decline:
             return "regressed", True

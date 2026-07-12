@@ -361,6 +361,70 @@ def test_required_threshold_boundaries_are_not_protected_changes(
 
 
 @pytest.mark.parametrize(
+    "baseline_mrr,candidate_mrr",
+    [(0.54, 0.29), (0.29, 0.54)],
+)
+def test_required_mrr_exact_mathematical_boundary_is_unchanged(
+    baseline_mrr: float,
+    candidate_mrr: float,
+) -> None:
+    comparison = compare_reports(
+        _report([_case("sample", "target", "pass", {"mrr": baseline_mrr})]),
+        _report([_case("sample", "target", "pass", {"mrr": candidate_mrr})]),
+    )
+
+    assert comparison["cases"][0]["classification"] == "unchanged_pass"
+
+
+@pytest.mark.parametrize(
+    "baseline_mrr,candidate_mrr,classification",
+    [
+        (0.54, 0.289999999998, "regressed"),
+        (0.29, 0.540000000002, "improved"),
+    ],
+)
+def test_required_mrr_change_beyond_tolerance_crosses_threshold(
+    baseline_mrr: float,
+    candidate_mrr: float,
+    classification: str,
+) -> None:
+    comparison = compare_reports(
+        _report([_case("sample", "target", "pass", {"mrr": baseline_mrr})]),
+        _report([_case("sample", "target", "pass", {"mrr": candidate_mrr})]),
+    )
+
+    assert comparison["cases"][0]["classification"] == classification
+
+
+@pytest.mark.parametrize(
+    "baseline_noise,candidate_noise,classification",
+    [
+        (0.01, 2.01, "regressed"),
+        (2.01, 0.01, "improved"),
+        (0.01, 2.009999999998, "unchanged_pass"),
+        (2.009999999998, 0.01, "unchanged_pass"),
+    ],
+)
+def test_schema_v1_noise_threshold_is_float_stable(
+    baseline_noise: float,
+    candidate_noise: float,
+    classification: str,
+) -> None:
+    comparison = compare_reports(
+        _report(
+            [_case("sample", "target", "pass", {"noise_top5": baseline_noise})],
+            schema_version=1,
+        ),
+        _report(
+            [_case("sample", "target", "pass", {"noise_top5": candidate_noise})],
+            schema_version=1,
+        ),
+    )
+
+    assert comparison["cases"][0]["classification"] == classification
+
+
+@pytest.mark.parametrize(
     "metric_name,value",
     [
         ("hit_at_5", 1),
