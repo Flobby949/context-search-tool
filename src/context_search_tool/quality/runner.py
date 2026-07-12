@@ -73,8 +73,20 @@ _DESCRIPTOR_COPY_SUPPORTED = (
     and os.scandir in os.supports_fd
 )
 
+_DESCRIPTOR_GIT_READ_SUPPORTED = (
+    os.name == "posix"
+    and hasattr(os, "O_DIRECTORY")
+    and hasattr(os, "O_NOFOLLOW")
+    and os.open in os.supports_dir_fd
+)
+
 _ARTIFACT_PUBLICATION_THREAD_LOCK = threading.Lock()
-_ARTIFACT_PUBLICATION_LOCK_PATH = Path(tempfile.gettempdir()) / (
+_ARTIFACT_PUBLICATION_LOCK_ROOT = (
+    Path("/tmp").resolve()
+    if os.name == "posix"
+    else Path(tempfile.gettempdir()).resolve()
+)
+_ARTIFACT_PUBLICATION_LOCK_PATH = _ARTIFACT_PUBLICATION_LOCK_ROOT / (
     ".context-search-tool-quality-publication-"
     f"{os.getuid() if hasattr(os, 'getuid') else 'user'}.lock"
 )
@@ -940,8 +952,17 @@ def _artifact_publication_lock() -> Iterator[None]:
                     flags,
                     0o600,
                 )
-                if not stat.S_ISREG(os.fstat(lock_descriptor).st_mode):
+                lock_status = os.fstat(lock_descriptor)
+                if not stat.S_ISREG(lock_status.st_mode):
                     raise OSError("artifact publication lock is not a regular file")
+                if (
+                    hasattr(os, "getuid")
+                    and lock_status.st_uid != os.getuid()
+                ):
+                    raise OSError("artifact publication lock has an unexpected owner")
+                os.fchmod(lock_descriptor, 0o600)
+                if stat.S_IMODE(os.fstat(lock_descriptor).st_mode) != 0o600:
+                    raise OSError("artifact publication lock has unsafe permissions")
                 fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
             yield
         finally:
@@ -1031,7 +1052,7 @@ def _validate_artifact_destinations(destinations: list[Path]) -> None:
     normalized: list[tuple[Path, str]] = []
     for destination in destinations:
         try:
-            identity = os.path.normcase(str(destination.expanduser().resolve()))
+            identity = _artifact_destination_identity(destination)
         except (OSError, RuntimeError, ValueError) as exc:
             raise ValueError(f"invalid artifact destination: {destination}") from exc
 
@@ -1045,6 +1066,14 @@ def _validate_artifact_destinations(destinations: list[Path]) -> None:
             if aliases:
                 raise ValueError("artifact destinations must be distinct")
         normalized.append((destination, identity))
+
+
+def _artifact_destination_identity(destination: Path) -> str:
+    normalized = os.path.normpath(str(destination.expanduser().resolve()))
+    normalized = normalized.replace(os.sep, "/")
+    if os.altsep is not None:
+        normalized = normalized.replace(os.altsep, "/")
+    return unicodedata.normalize("NFD", normalized).casefold()
 
 
 def _artifact_version(path: Path) -> _ArtifactVersion:
@@ -1261,16 +1290,66 @@ def _resolve_metadata_path(base: Path, raw_path: str) -> Path:
 
 
 def _read_git_text(path: Path, boundary: Path) -> str | None:
+    if not _DESCRIPTOR_GIT_READ_SUPPORTED:
+        return None
+
+    directory_descriptors: list[int] = []
+    file_descriptor: int | None = None
     try:
-        if not stat.S_ISREG(path.lstat().st_mode):
-            return None
-        resolved_path = path.resolve(strict=True)
         resolved_boundary = boundary.resolve(strict=True)
-        if not resolved_path.is_relative_to(resolved_boundary):
+        if not stat.S_ISDIR(resolved_boundary.lstat().st_mode):
             return None
-        return path.read_text(encoding="utf-8").strip()
+        try:
+            relative = path.relative_to(boundary)
+        except ValueError:
+            relative = path.relative_to(resolved_boundary)
+        if (
+            not relative.parts
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            return None
+
+        directory_flags = (
+            os.O_RDONLY
+            | os.O_DIRECTORY
+            | os.O_NOFOLLOW
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        directory_descriptors.append(
+            _open_directory_no_follow(resolved_boundary, directory_flags)
+        )
+        for component in relative.parts[:-1]:
+            directory_descriptors.append(
+                os.open(
+                    component,
+                    directory_flags,
+                    dir_fd=directory_descriptors[-1],
+                )
+            )
+
+        file_flags = (
+            os.O_RDONLY
+            | os.O_NOFOLLOW
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        file_descriptor = os.open(
+            relative.parts[-1],
+            file_flags,
+            dir_fd=directory_descriptors[-1],
+        )
+        if not stat.S_ISREG(os.fstat(file_descriptor).st_mode):
+            return None
+        with os.fdopen(file_descriptor, "r", encoding="utf-8") as metadata_file:
+            file_descriptor = None
+            return metadata_file.read().strip()
     except (OSError, UnicodeError, ValueError):
         return None
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+        for directory_descriptor in reversed(directory_descriptors):
+            os.close(directory_descriptor)
 
 
 def _validated_object_id(value: str) -> str | None:

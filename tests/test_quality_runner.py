@@ -424,6 +424,41 @@ def test_git_commit_accepts_valid_object_ids(
     assert _git_commit(repo) == oid
 
 
+def test_git_commit_does_not_retraverse_ref_swapped_after_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    gitdir = repo / ".git"
+    ref_path = gitdir / "refs" / "heads" / "main"
+    ref_path.parent.mkdir(parents=True)
+    original_oid = "a" * 40
+    external_oid = "b" * 40
+    external_ref = tmp_path / "external-ref"
+    ref_path.write_text(f"{original_oid}\n", encoding="utf-8")
+    external_ref.write_text(f"{external_oid}\n", encoding="utf-8")
+    (gitdir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    original_resolve = Path.resolve
+    swapped = False
+
+    def swap_ref_after_resolve(
+        path: Path,
+        *args: object,
+        **kwargs: object,
+    ) -> Path:
+        nonlocal swapped
+        resolved = original_resolve(path, *args, **kwargs)
+        if path == ref_path and not swapped:
+            swapped = True
+            ref_path.replace(gitdir / "original-ref")
+            ref_path.symlink_to(external_ref)
+        return resolved
+
+    monkeypatch.setattr(Path, "resolve", swap_ref_after_resolve)
+
+    assert _git_commit(repo) == original_oid
+
+
 def test_quality_runner_records_skip_for_missing_repo(tmp_path: Path) -> None:
     fixture = _write_fixture(
         tmp_path,
@@ -2886,6 +2921,94 @@ def test_quality_runner_rejects_aliasing_artifact_destinations(
     assert not any(path.name.startswith(".") for path in reports.rglob("*"))
 
 
+@pytest.mark.parametrize(
+    ("output_name", "markdown_name"),
+    [
+        pytest.param("Report.JSON", "report.json", id="casefold"),
+        pytest.param(
+            unicodedata.normalize("NFC", "café.json"),
+            unicodedata.normalize("NFD", "café.json"),
+            id="unicode-normalization",
+        ),
+    ],
+)
+def test_quality_runner_rejects_portable_artifact_aliases_before_rendering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output_name: str,
+    markdown_name: str,
+) -> None:
+    fixture = _write_successful_ci_fixture(tmp_path, monkeypatch)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    rendered = False
+
+    def record_markdown_render(report: dict) -> str:
+        nonlocal rendered
+        rendered = True
+        return "markdown\n"
+
+    monkeypatch.setattr(
+        "context_search_tool.quality.reports.render_markdown_report",
+        record_markdown_render,
+    )
+
+    with pytest.raises(ValueError, match="artifact destinations must be distinct"):
+        run_quality_fixture(
+            fixture,
+            "ci",
+            reports / output_name,
+            reports / markdown_name,
+        )
+
+    assert rendered is False
+    assert list(reports.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("output_name", "markdown_name"),
+    [
+        pytest.param("Report.JSON", "report.json", id="casefold"),
+        pytest.param(
+            unicodedata.normalize("NFC", "café.json"),
+            unicodedata.normalize("NFD", "café.json"),
+            id="unicode-normalization",
+        ),
+    ],
+)
+def test_quality_runner_rejects_nonexistent_aliases_on_insensitive_filesystem(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output_name: str,
+    markdown_name: str,
+) -> None:
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    first_probe = probe_dir / output_name
+    second_probe = probe_dir / markdown_name
+    first_probe.write_text("probe\n", encoding="utf-8")
+    aliases_on_filesystem = second_probe.exists() and os.path.samefile(
+        first_probe,
+        second_probe,
+    )
+    first_probe.unlink()
+    if not aliases_on_filesystem:
+        pytest.skip("filesystem distinguishes these spellings")
+
+    fixture = _write_successful_ci_fixture(tmp_path, monkeypatch)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    output = reports / output_name
+    markdown = reports / markdown_name
+    assert not output.exists()
+    assert not markdown.exists()
+
+    with pytest.raises(ValueError, match="artifact destinations must be distinct"):
+        run_quality_fixture(fixture, "ci", output, markdown)
+
+    assert list(reports.iterdir()) == []
+
+
 def test_artifact_rollback_does_not_overwrite_concurrent_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2917,7 +3040,6 @@ def test_artifact_rollback_does_not_overwrite_concurrent_publication(
             rollback_replace_reached.set()
             if not successful_writer_attempted.wait(timeout=5):
                 raise AssertionError("concurrent writer did not attempt publication")
-            successful_writer_done.wait(timeout=1)
         original_replace(source, destination)
 
     monkeypatch.setattr(quality_runner.os, "replace", controlled_replace)
@@ -2996,6 +3118,94 @@ print("done", flush=True)
     assert process.returncode == 0, stderr
     assert stdout == "done\n"
     assert output.read_text(encoding="utf-8") == "new-json\n"
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or quality_runner.fcntl is None,
+    reason="requires POSIX advisory locks",
+)
+def test_artifact_publication_lock_is_independent_of_process_tmpdir(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "quality.json"
+    output.write_text("old-json\n", encoding="utf-8")
+    child_tmp = tmp_path / "child-tmp"
+    child_tmp.mkdir()
+    script = """
+import fcntl
+import sys
+from pathlib import Path
+import context_search_tool.quality.runner as runner
+
+real_flock = runner.fcntl.flock
+
+def nonblocking_flock(descriptor, operation):
+    return real_flock(descriptor, operation | fcntl.LOCK_NB)
+
+runner.fcntl.flock = nonblocking_flock
+try:
+    runner._publish_artifacts([(Path(sys.argv[1]), "new-json\\n")])
+except BlockingIOError:
+    print("blocked")
+else:
+    print("acquired")
+"""
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(Path(__file__).parents[1] / "src")
+    environment["TMPDIR"] = str(child_tmp)
+
+    with quality_runner._artifact_publication_lock():
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(output)],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+        assert result.stdout == "blocked\n"
+        assert output.read_text(encoding="utf-8") == "old-json\n"
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or quality_runner.fcntl is None,
+    reason="requires POSIX advisory locks",
+)
+def test_artifact_publication_lock_rejects_unexpected_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_fstat = os.fstat
+
+    class WrongOwnerStatus:
+        def __init__(self, descriptor: int) -> None:
+            status = original_fstat(descriptor)
+            self.st_mode = status.st_mode
+            self.st_uid = status.st_uid + 1
+
+    monkeypatch.setattr(
+        quality_runner.os,
+        "fstat",
+        lambda descriptor: WrongOwnerStatus(descriptor),
+    )
+
+    with pytest.raises(OSError, match="unexpected owner"):
+        with quality_runner._artifact_publication_lock():
+            raise AssertionError("untrusted lock owner was accepted")
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or quality_runner.fcntl is None,
+    reason="requires POSIX advisory locks",
+)
+def test_artifact_publication_lock_enforces_private_permissions() -> None:
+    lock_path = quality_runner._ARTIFACT_PUBLICATION_LOCK_PATH
+    lock_path.touch(mode=0o600, exist_ok=True)
+    lock_path.chmod(0o644)
+    try:
+        with quality_runner._artifact_publication_lock():
+            assert lock_path.stat().st_mode & 0o777 == 0o600
+    finally:
+        lock_path.chmod(0o600)
 
 
 def test_artifact_rollback_does_not_overwrite_noncooperative_writer(
