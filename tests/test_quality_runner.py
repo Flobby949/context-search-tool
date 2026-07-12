@@ -424,39 +424,75 @@ def test_git_commit_accepts_valid_object_ids(
     assert _git_commit(repo) == oid
 
 
+@pytest.mark.skipif(
+    not quality_runner._DESCRIPTOR_GIT_READ_SUPPORTED,
+    reason="requires descriptor-relative no-follow reads",
+)
+@pytest.mark.parametrize(
+    "swap_directory",
+    [False, True],
+    ids=["ref-file", "ref-directory"],
+)
 def test_git_commit_does_not_retraverse_ref_swapped_after_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    swap_directory: bool,
 ) -> None:
     repo = tmp_path / "repo"
     gitdir = repo / ".git"
-    ref_path = gitdir / "refs" / "heads" / "main"
-    ref_path.parent.mkdir(parents=True)
+    ref_dir = gitdir / "refs" / "race-guard-heads"
+    ref_path = ref_dir / "race-guard-ref"
+    ref_dir.mkdir(parents=True)
     original_oid = "a" * 40
     external_oid = "b" * 40
-    external_ref = tmp_path / "external-ref"
+    external_dir = tmp_path / "external-refs"
+    external_dir.mkdir()
+    external_ref = external_dir / ref_path.name
     ref_path.write_text(f"{original_oid}\n", encoding="utf-8")
     external_ref.write_text(f"{external_oid}\n", encoding="utf-8")
-    (gitdir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
-    original_resolve = Path.resolve
+    (gitdir / "HEAD").write_text(
+        "ref: refs/race-guard-heads/race-guard-ref\n",
+        encoding="utf-8",
+    )
+    swap_path = ref_dir if swap_directory else ref_path
+    moved_path = (
+        gitdir / "original-ref-directory"
+        if swap_directory
+        else ref_dir / "original-ref"
+    )
+    external_target = external_dir if swap_directory else external_ref
+    original_open = os.open
     swapped = False
 
-    def swap_ref_after_resolve(
-        path: Path,
-        *args: object,
-        **kwargs: object,
-    ) -> Path:
+    def racing_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
         nonlocal swapped
-        resolved = original_resolve(path, *args, **kwargs)
-        if path == ref_path and not swapped:
+        if (
+            dir_fd is not None
+            and os.fspath(path) == swap_path.name
+            and not swapped
+        ):
+            swap_path.rename(moved_path)
+            swap_path.symlink_to(
+                external_target,
+                target_is_directory=swap_directory,
+            )
             swapped = True
-            ref_path.replace(gitdir / "original-ref")
-            ref_path.symlink_to(external_ref)
-        return resolved
+        if dir_fd is None:
+            return original_open(path, flags, mode)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
 
-    monkeypatch.setattr(Path, "resolve", swap_ref_after_resolve)
+    monkeypatch.setattr(quality_runner.os, "open", racing_open)
 
-    assert _git_commit(repo) == original_oid
+    commit = _git_commit(repo)
+    assert swapped
+    assert commit is None
+    assert commit != external_oid
 
 
 def test_quality_runner_records_skip_for_missing_repo(tmp_path: Path) -> None:
