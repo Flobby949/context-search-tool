@@ -220,9 +220,13 @@ def _validate_report_containers(report: dict[str, Any], schema: int) -> None:
             if not isinstance(config_hash, str) or not config_hash.strip():
                 raise ValueError("repo config_hash must be a non-empty string")
 
+    if schema == 2 and "aggregate" not in report:
+        raise ValueError("report aggregate must be an object")
     aggregate = report.get("aggregate", {})
     if not isinstance(aggregate, dict):
         raise ValueError("report aggregate must be an object")
+    if schema == 2 and "metrics" not in aggregate:
+        raise ValueError("aggregate metrics must be an object")
     metrics = aggregate.get("metrics", {})
     if not isinstance(metrics, dict):
         raise ValueError("aggregate metrics must be an object")
@@ -361,6 +365,11 @@ def _validate_aggregate_metrics(
 
 
 def _validate_v2_aggregate_metrics(metrics: dict[str, Any]) -> None:
+    if set(metrics) != _AGGREGATE_GROUPS:
+        raise ValueError(
+            "aggregate metrics must contain exactly "
+            f"{', '.join(sorted(_AGGREGATE_GROUPS))}"
+        )
     for grouping, grouped in metrics.items():
         if not isinstance(grouping, str) or not grouping.strip():
             raise ValueError("aggregate metrics keys must be non-empty strings")
@@ -452,6 +461,23 @@ def _validate_v2_aggregate_summary(
         raise ValueError(
             f"aggregate metrics {label}.count must be a positive integer"
         )
+    if metric_name == "latency_ms":
+        mean_owner = f"aggregate metrics {label}.mean"
+        mean = _finite_number(summary["mean"], mean_owner)
+        _validate_metric_bounds(metric_name, mean, mean_owner)
+        p50 = _require_nonnegative_integer(
+            summary["p50"],
+            f"aggregate metrics {label}.p50",
+        )
+        p95 = _require_nonnegative_integer(
+            summary["p95"],
+            f"aggregate metrics {label}.p95",
+        )
+        if p50 > p95:
+            raise ValueError(
+                f"aggregate metrics {label}.p50 cannot exceed p95"
+            )
+        return
     for field in expected_fields - {"count"}:
         owner = f"aggregate metrics {label}.{field}"
         number = _finite_number(summary[field], owner)

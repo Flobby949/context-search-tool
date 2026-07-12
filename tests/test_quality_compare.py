@@ -620,6 +620,56 @@ def test_compare_rejects_malformed_aggregate_metrics_container() -> None:
         compare_reports(invalid, _report([]))
 
 
+@pytest.mark.parametrize("missing", ["aggregate", "metrics"])
+def test_v2_requires_aggregate_metrics_container(missing: str) -> None:
+    invalid = _report([])
+    if missing == "aggregate":
+        invalid.pop("aggregate")
+    else:
+        invalid["aggregate"].pop("metrics")
+
+    with pytest.raises(ValueError, match="aggregate.*must be an object"):
+        compare_reports(invalid, _report([]))
+
+
+@pytest.mark.parametrize(
+    "grouping",
+    [
+        "overall",
+        "by_repository",
+        "by_tag",
+        "by_profile",
+        "by_embedding",
+    ],
+)
+def test_v2_requires_every_aggregate_metric_grouping(grouping: str) -> None:
+    invalid = _report([])
+    invalid["aggregate"]["metrics"].pop(grouping)
+
+    with pytest.raises(ValueError, match="aggregate metrics.*exactly"):
+        compare_reports(invalid, _report([]))
+
+
+def test_v2_rejects_extra_aggregate_metric_grouping() -> None:
+    invalid = _report([])
+    invalid["aggregate"]["metrics"]["extra"] = {}
+
+    with pytest.raises(ValueError, match="aggregate metrics.*exactly"):
+        compare_reports(invalid, _report([]))
+
+
+def test_v1_defaults_missing_aggregate_metrics_to_empty() -> None:
+    missing_aggregate = _report([], schema_version=1)
+    missing_aggregate.pop("aggregate")
+    missing_metrics = _report([], schema_version=1)
+    missing_metrics["aggregate"].pop("metrics")
+
+    assert compare_reports(missing_aggregate, missing_aggregate)[
+        "metric_deltas"
+    ] == {}
+    assert compare_reports(missing_metrics, missing_metrics)["metric_deltas"] == {}
+
+
 def test_v1_case_without_gate_defaults_to_required() -> None:
     baseline_case = _case("sample", "target", "pass")
     baseline_case.pop("gate")
@@ -895,6 +945,41 @@ def test_v2_aggregate_summaries_validate_counts_rates_and_bounds(
         compare_reports(invalid, _report([]))
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("p50", True),
+        ("p50", 0.5),
+        ("p95", False),
+        ("p95", 1.5),
+    ],
+)
+def test_v2_latency_percentiles_require_nonnegative_integers(
+    field: str,
+    value: object,
+) -> None:
+    invalid = _report([])
+    summary = {"count": 1, "mean": 1.0, "p50": 1, "p95": 1}
+    summary[field] = value
+    invalid["aggregate"]["metrics"]["overall"] = {"latency_ms": summary}
+
+    with pytest.raises(
+        ValueError,
+        match=rf"latency_ms\.{field} must be a nonnegative integer",
+    ):
+        compare_reports(invalid, _report([]))
+
+
+def test_v2_latency_p50_cannot_exceed_p95() -> None:
+    invalid = _report([])
+    invalid["aggregate"]["metrics"]["overall"] = {
+        "latency_ms": {"count": 2, "mean": 2.0, "p50": 3, "p95": 2},
+    }
+
+    with pytest.raises(ValueError, match="latency_ms.p50 cannot exceed p95"):
+        compare_reports(invalid, _report([]))
+
+
 def test_v2_aggregate_accepts_empty_groupings_and_v1_keeps_legacy_summaries() -> None:
     v2 = _report([])
     v2["aggregate"]["metrics"] = {
@@ -1040,9 +1125,12 @@ def test_v1_repo_metadata_remains_permissive_without_effective_config() -> None:
 
 def test_compare_accepts_real_schema_v2_runner_report() -> None:
     report = run_quality_fixture(CATALOG_PATH, "ci", None, None)
+    latency = report["aggregate"]["metrics"]["overall"]["latency_ms"]
 
     comparison = compare_reports(report, report)
 
+    assert type(latency["p50"]) is int
+    assert type(latency["p95"]) is int
     assert comparison["schema_version"] == 2
     assert comparison["aggregate"]["gating_regressions"] == 0
     assert all(
