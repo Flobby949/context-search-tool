@@ -765,13 +765,16 @@ def _safe_error(
     ]
     if api_key:
         replacements.append((api_key, "<api-key>"))
-    for variant, replacement in sorted(
+    ordered_replacements = sorted(
         replacements,
         key=lambda item: len(
             _casefold_text(_percent_decode_text_with_spans(item[0])[0])
         ),
         reverse=True,
-    ):
+    )
+    for variant, replacement in ordered_replacements:
+        message = _replace_literal_sensitive(message, variant, replacement)
+    for variant, replacement in ordered_replacements:
         message = _replace_casefold_equivalent(message, variant, replacement)
     return message
 
@@ -809,6 +812,25 @@ def _path_redaction_variants(path: Path) -> set[str]:
         variants.add(quote(spelling, safe="/"))
         variants.add(quote(spelling, safe=""))
     return {variant for variant in variants if variant}
+
+
+def _replace_literal_sensitive(
+    message: str,
+    sensitive: str,
+    replacement: str,
+) -> str:
+    parts: list[str] = []
+    search_from = 0
+    while True:
+        start = message.find(sensitive, search_from)
+        if start < 0:
+            parts.append(message[search_from:])
+            return "".join(parts)
+        end = start + len(sensitive)
+        while end < len(message) and unicodedata.combining(message[end]) != 0:
+            end += 1
+        parts.extend((message[search_from:start], replacement))
+        search_from = end
 
 
 def _replace_casefold_equivalent(

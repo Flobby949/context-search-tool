@@ -2758,7 +2758,7 @@ def test_report_redacts_configured_embedding_api_key_from_errors(
     failure_stage: str,
 ) -> None:
     source = _write_source_repo(tmp_path / "source")
-    secret = "quality-secret-token-not-for-reports"
+    secret = "quality-secret-token-not-for-reports-a\u0301"
     monkeypatch.setenv("QUALITY_SECRET", secret)
     fixture_data: dict = {
         "schema_version": 1,
@@ -2793,10 +2793,10 @@ def test_report_redacts_configured_embedding_api_key_from_errors(
     _patch_runner_dependencies(monkeypatch, captured)
 
     def fail_setup(repo: Path, effective: ToolConfig) -> IndexSummary:
-        raise RuntimeError(f"embedding rejected api-key={secret}")
+        raise RuntimeError(f"embedding rejected api-key={secret}\u0327")
 
     def fail_query(repo: Path, query: str, effective: ToolConfig) -> QueryBundle:
-        raise RuntimeError(f"query rejected api-key={secret}")
+        raise RuntimeError(f"query rejected api-key={secret}\u0327")
 
     if failure_stage == "setup":
         monkeypatch.setattr(quality_runner, "index_repository", fail_setup)
@@ -2830,7 +2830,7 @@ def test_report_redacts_temporary_root_variants_from_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = _write_source_repo(tmp_path / "source")
-    temp_root = (tmp_path / "cst-quality-root with spaces").resolve()
+    temp_root = (tmp_path / "cst-quality-root with spaces-a\u0301").resolve()
     fixture = _write_fixture(
         tmp_path,
         {
@@ -2857,7 +2857,7 @@ def test_report_redacts_temporary_root_variants_from_errors(
     def fail_query(repo: Path, query: str, config: ToolConfig) -> QueryBundle:
         raise RuntimeError(
             " ".join(
-                f"temp_root_{index}={value}"
+                f"temp_root_{index}={value}\u0327"
                 for index, value in enumerate(sorted(root_variants))
             )
         )
@@ -2915,6 +2915,34 @@ def test_safe_error_redacts_path_with_trailing_combining_mark(
 
     assert str(sensitive) not in redacted
     assert redacted == placeholder
+
+
+@pytest.mark.parametrize(
+    "variant_kind",
+    ["raw", "uri", "percent_slashes", "percent_all"],
+)
+def test_safe_error_redacts_literal_source_before_combining_mark_reordering(
+    tmp_path: Path,
+    variant_kind: str,
+) -> None:
+    source = (tmp_path / "source-a\u0301").resolve()
+    workspace = (tmp_path / "workspace-root" / "sample").resolve()
+    variants = {
+        "raw": source.as_posix(),
+        "uri": source.as_uri(),
+        "percent_slashes": quote(source.as_posix(), safe="/"),
+        "percent_all": quote(source.as_posix(), safe=""),
+    }
+    sensitive = variants[variant_kind]
+
+    redacted = quality_runner._safe_error(
+        RuntimeError(f"{sensitive}\u0327"),
+        source,
+        workspace,
+    )
+
+    assert sensitive not in redacted
+    assert redacted == "<source>"
 
 
 def test_safe_error_redacts_reordered_combining_path_spellings(
