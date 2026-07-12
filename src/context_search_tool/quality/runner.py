@@ -765,8 +765,16 @@ def _safe_error(
     ]
     if api_key:
         replacements.append((api_key, "<api-key>"))
+    sentinels = _redaction_sentinels(
+        message,
+        [variant for variant, _replacement in replacements],
+        {replacement for _variant, replacement in replacements},
+    )
     ordered_replacements = sorted(
-        replacements,
+        [
+            (variant, sentinels[replacement])
+            for variant, replacement in replacements
+        ],
         key=lambda item: len(
             _casefold_text(_percent_decode_text_with_spans(item[0])[0])
         ),
@@ -774,9 +782,36 @@ def _safe_error(
     )
     for variant, replacement in ordered_replacements:
         message = _replace_literal_sensitive(message, variant, replacement)
-    for variant, replacement in ordered_replacements:
         message = _replace_casefold_equivalent(message, variant, replacement)
+    for placeholder, sentinel in sentinels.items():
+        message = message.replace(sentinel, placeholder)
     return message
+
+
+def _redaction_sentinels(
+    message: str,
+    sensitive_variants: list[str],
+    placeholders: set[str],
+) -> dict[str, str]:
+    unavailable = set(message)
+    for value in [message, *sensitive_variants]:
+        unavailable.update(value)
+        unavailable.update(_percent_decode_text_with_spans(value)[0])
+
+    candidates = (
+        character
+        for start, stop in (
+            (0xE000, 0xF900),
+            (0xF0000, 0xFFFFE),
+            (0x100000, 0x10FFFE),
+        )
+        for character in map(chr, range(start, stop))
+        if character not in unavailable
+    )
+    return {
+        placeholder: next(candidates)
+        for placeholder in sorted(placeholders)
+    }
 
 
 def _path_redaction_variants(path: Path) -> set[str]:
@@ -882,7 +917,102 @@ def _replace_casefold_equivalent(
 
     for start, end in reversed(spans):
         message = message[:start] + replacement + message[end:]
+    return _replace_terminal_cluster_equivalent(
+        message,
+        sensitive,
+        replacement,
+    )
+
+
+def _replace_terminal_cluster_equivalent(
+    message: str,
+    sensitive: str,
+    replacement: str,
+) -> str:
+    decoded_message, decoded_spans = _percent_decode_text_with_spans(message)
+    decoded_sensitive, _sensitive_spans = _percent_decode_text_with_spans(sensitive)
+    message_clusters = _text_clusters(decoded_message)
+    sensitive_clusters = _text_clusters(decoded_sensitive)
+    if not sensitive_clusters or len(sensitive_clusters) > len(message_clusters):
+        return message
+
+    spans: list[tuple[int, int]] = []
+    cluster_index = 0
+    match_width = len(sensitive_clusters)
+    while cluster_index <= len(message_clusters) - match_width:
+        candidate = message_clusters[cluster_index : cluster_index + match_width]
+        prior_clusters_match = all(
+            _casefold_text(message_cluster[2])
+            == _casefold_text(sensitive_cluster[2])
+            for message_cluster, sensitive_cluster in zip(
+                candidate[:-1],
+                sensitive_clusters[:-1],
+                strict=True,
+            )
+        )
+        if prior_clusters_match and _terminal_cluster_contains(
+            candidate[-1][2],
+            sensitive_clusters[-1][2],
+        ):
+            decoded_start = candidate[0][0]
+            decoded_end = candidate[-1][1]
+            spans.append(
+                (
+                    decoded_spans[decoded_start][0],
+                    decoded_spans[decoded_end - 1][1],
+                )
+            )
+            cluster_index += match_width
+        else:
+            cluster_index += 1
+
+    for start, end in reversed(spans):
+        message = message[:start] + replacement + message[end:]
     return message
+
+
+def _text_clusters(value: str) -> list[tuple[int, int, str]]:
+    clusters: list[tuple[int, int, str]] = []
+    cluster_start = 0
+    for index in range(1, len(value) + 1):
+        if index < len(value) and unicodedata.combining(value[index]) != 0:
+            continue
+        clusters.append((cluster_start, index, value[cluster_start:index]))
+        cluster_start = index
+    return clusters
+
+
+def _terminal_cluster_contains(message_cluster: str, sensitive_cluster: str) -> bool:
+    message_folded = _casefold_text(message_cluster)
+    sensitive_folded = _casefold_text(sensitive_cluster)
+    message_base = "".join(
+        character
+        for character in message_folded
+        if unicodedata.combining(character) == 0
+    )
+    sensitive_base = "".join(
+        character
+        for character in sensitive_folded
+        if unicodedata.combining(character) == 0
+    )
+    if message_base != sensitive_base:
+        return False
+
+    remaining_marks = [
+        character
+        for character in message_folded
+        if unicodedata.combining(character) != 0
+    ]
+    for mark in (
+        character
+        for character in sensitive_folded
+        if unicodedata.combining(character) != 0
+    ):
+        try:
+            remaining_marks.remove(mark)
+        except ValueError:
+            return False
+    return True
 
 
 def _percent_decode_text_with_spans(
@@ -1005,8 +1135,13 @@ def _artifact_publication_lock() -> Iterator[None]:
                     0o600,
                 )
                 lock_status = os.fstat(lock_descriptor)
-                if not stat.S_ISREG(lock_status.st_mode):
-                    raise OSError("artifact publication lock is not a regular file")
+                if (
+                    not stat.S_ISREG(lock_status.st_mode)
+                    or lock_status.st_nlink != 1
+                ):
+                    raise OSError(
+                        "artifact publication lock is not a single-link regular file"
+                    )
                 if (
                     hasattr(os, "getuid")
                     and lock_status.st_uid != os.getuid()
@@ -1055,7 +1190,7 @@ def _publish_artifact_transaction(artifacts: list[tuple[Path, str]]) -> None:
                 published_versions[destination] = _artifact_version(stage)
                 os.replace(stage, destination)
                 replaced.append(destination)
-        except Exception as exc:
+        except BaseException as exc:
             for destination in reversed(replaced):
                 # Cooperative publishers hold the transaction lock. The version
                 # guard catches noncooperative changes observed before rollback;
@@ -1076,7 +1211,7 @@ def _publish_artifact_transaction(artifacts: list[tuple[Path, str]]) -> None:
                         destination.unlink(missing_ok=True)
                     else:
                         os.replace(backup, destination)
-                except Exception as rollback_error:
+                except BaseException as rollback_error:
                     exc.add_note(
                         f"Artifact rollback failed for {destination.name}: "
                         f"{rollback_error}"

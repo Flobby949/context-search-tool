@@ -3003,6 +3003,187 @@ def test_safe_error_redacts_reordered_combining_path_spellings(
     )
 
 
+@pytest.mark.parametrize(
+    ("sensitive_kind", "placeholder"),
+    [
+        ("source", "<source>"),
+        ("workspace", "<workspace>"),
+        ("temp_root", "<workspace>"),
+    ],
+)
+@pytest.mark.parametrize(
+    "variant_kind",
+    ["raw", "uri", "percent_slashes", "percent_all"],
+)
+def test_safe_error_redacts_extra_lower_class_mark_in_final_path_cluster(
+    tmp_path: Path,
+    sensitive_kind: str,
+    placeholder: str,
+    variant_kind: str,
+) -> None:
+    sensitive_cluster = "a\u0301"
+    message_cluster = "a\u0327\u0301"
+    source = (tmp_path / f"source-{sensitive_cluster}").resolve()
+    temp_root = (tmp_path / f"temp-{sensitive_cluster}").resolve()
+    workspace = (temp_root / f"workspace-{sensitive_cluster}").resolve()
+    sensitive_path = {
+        "source": source,
+        "workspace": workspace,
+        "temp_root": temp_root,
+    }[sensitive_kind]
+    raw_message = sensitive_path.as_posix().removesuffix(sensitive_cluster)
+    raw_message += message_cluster
+    variants = {
+        "raw": raw_message,
+        "uri": Path(raw_message).as_uri(),
+        "percent_slashes": quote(raw_message, safe="/"),
+        "percent_all": quote(raw_message, safe=""),
+    }
+
+    redacted = quality_runner._safe_error(
+        RuntimeError(variants[variant_kind]),
+        source,
+        workspace,
+    )
+
+    assert redacted == placeholder
+
+
+@pytest.mark.parametrize("variant_kind", ["raw", "percent"])
+def test_safe_error_redacts_extra_lower_class_mark_in_api_secret_cluster(
+    tmp_path: Path,
+    variant_kind: str,
+) -> None:
+    secret = "api-secret-a\u0301"
+    message_secret = "api-secret-a\u0327\u0301"
+    variants = {
+        "raw": message_secret,
+        "percent": quote(message_secret, safe=""),
+    }
+
+    redacted = quality_runner._safe_error(
+        RuntimeError(variants[variant_kind]),
+        (tmp_path / "source").resolve(),
+        (tmp_path / "workspace").resolve(),
+        secret,
+    )
+
+    assert redacted == "<api-key>"
+
+
+def test_quality_report_redacts_extra_final_cluster_marks_from_all_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensitive_cluster = "a\u0301"
+    message_cluster = "a\u0327\u0301"
+    source = _write_source_repo(tmp_path / "fixture")
+    marked_source = source.with_name(f"source-{sensitive_cluster}")
+    source.rename(marked_source)
+    source = marked_source.resolve()
+    temp_root = (tmp_path / f"temp-root-{sensitive_cluster}").resolve()
+    repo_key = f"sample-{sensitive_cluster}"
+    workspace = temp_root / repo_key
+    secret = f"api-secret-{sensitive_cluster}"
+    monkeypatch.setenv("QUALITY_SECRET", secret)
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "repos": [
+                {
+                    "repo_key": repo_key,
+                    "snapshot_path": str(source),
+                    "profiles": ["smoke"],
+                    "queries": [{"id": "target", "query": "targetToken"}],
+                }
+            ],
+        },
+    )
+    captured: list[tuple[Path, ToolConfig]] = []
+    _patch_runner_dependencies(monkeypatch, captured)
+
+    def add_lower_class_mark(value: str) -> str:
+        return value.removesuffix(sensitive_cluster) + message_cluster
+
+    source_message = add_lower_class_mark(source.as_posix())
+    workspace_message = add_lower_class_mark(workspace.as_posix())
+    temp_root_message = add_lower_class_mark(temp_root.as_posix())
+    secret_message = add_lower_class_mark(secret)
+    leaked_values = {
+        "source_raw": source_message,
+        "source_uri": Path(source_message).as_uri(),
+        "source_percent": quote(source_message, safe=""),
+        "workspace_raw": workspace_message,
+        "workspace_uri": Path(workspace_message).as_uri(),
+        "workspace_percent": quote(workspace_message, safe=""),
+        "temp_root_raw": temp_root_message,
+        "temp_root_uri": Path(temp_root_message).as_uri(),
+        "temp_root_percent": quote(temp_root_message, safe=""),
+        "api_raw": secret_message,
+        "api_percent": quote(secret_message, safe=""),
+    }
+
+    def fail_query(repo: Path, query: str, config: ToolConfig) -> QueryBundle:
+        assert repo == workspace
+        raise RuntimeError(
+            " ".join(f"{key}={value}" for key, value in leaked_values.items())
+        )
+
+    def fake_mkdtemp(*, prefix: str) -> str:
+        assert prefix == "cst-quality-"
+        temp_root.mkdir()
+        return str(temp_root)
+
+    monkeypatch.setattr(quality_runner, "query_repository", fail_query)
+    monkeypatch.setattr(quality_runner.tempfile, "mkdtemp", fake_mkdtemp)
+    output = tmp_path / "reports" / "quality.json"
+    markdown = tmp_path / "reports" / "quality.md"
+    config = ToolConfig(
+        embedding=EmbeddingConfig(api_key_env="QUALITY_SECRET"),
+    )
+
+    report = run_quality_fixture(
+        fixture,
+        "smoke",
+        output,
+        markdown,
+        config=config,
+        allow_empty=True,
+    )
+
+    serialized = "\n".join(
+        [
+            json.dumps(report, ensure_ascii=False),
+            output.read_text(encoding="utf-8"),
+            markdown.read_text(encoding="utf-8"),
+        ]
+    )
+    assert all(value not in serialized for value in leaked_values.values())
+    assert report["cases"][0]["failures"] == [
+        "source_raw=<source> source_uri=<source> source_percent=<source> "
+        "workspace_raw=<workspace> workspace_uri=<workspace> "
+        "workspace_percent=<workspace> temp_root_raw=<workspace> "
+        "temp_root_uri=<workspace> temp_root_percent=<workspace> "
+        "api_raw=<api-key> api_percent=<api-key>"
+    ]
+
+
+def test_safe_error_does_not_rescan_inserted_placeholders(tmp_path: Path) -> None:
+    source = (tmp_path / "source").resolve()
+    workspace = (tmp_path / "workspace").resolve()
+
+    redacted = quality_runner._safe_error(
+        RuntimeError(f"{source} source"),
+        source,
+        workspace,
+        "source",
+    )
+
+    assert redacted == "<source> <api-key>"
+    assert "<<" not in redacted
+
+
 def test_quality_runner_does_not_publish_when_setup_cleanup_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3346,6 +3527,42 @@ def test_quality_runner_second_replace_failure_rolls_back_all_artifacts(
     )
 
 
+def test_quality_runner_keyboard_interrupt_rolls_back_all_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "quality.json"
+    markdown = tmp_path / "quality.md"
+    output.write_text("old-json\n", encoding="utf-8")
+    markdown.write_text("old-markdown\n", encoding="utf-8")
+    original_replace = os.replace
+    replace_count = 0
+
+    def interrupt_second_replace(
+        source: str | Path,
+        destination: str | Path,
+    ) -> None:
+        nonlocal replace_count
+        replace_count += 1
+        if replace_count == 2:
+            raise KeyboardInterrupt("second replace interrupted")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(quality_runner.os, "replace", interrupt_second_replace)
+
+    with pytest.raises(KeyboardInterrupt, match="second replace interrupted"):
+        quality_runner._publish_artifacts(
+            [(output, "new-json\n"), (markdown, "new-markdown\n")]
+        )
+
+    assert output.read_text(encoding="utf-8") == "old-json\n"
+    assert markdown.read_text(encoding="utf-8") == "old-markdown\n"
+    assert {path.name for path in tmp_path.iterdir()} == {
+        "quality.json",
+        "quality.md",
+    }
+
+
 def test_quality_runner_atomically_replaces_all_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3677,6 +3894,7 @@ def test_artifact_publication_lock_rejects_unexpected_owner(
         def __init__(self, descriptor: int) -> None:
             status = original_fstat(descriptor)
             self.st_mode = status.st_mode
+            self.st_nlink = status.st_nlink
             self.st_uid = status.st_uid + 1
 
     monkeypatch.setattr(
@@ -3703,6 +3921,35 @@ def test_artifact_publication_lock_enforces_private_permissions() -> None:
             assert lock_path.stat().st_mode & 0o777 == 0o600
     finally:
         lock_path.chmod(0o600)
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or quality_runner.fcntl is None,
+    reason="requires POSIX advisory locks",
+)
+def test_artifact_publication_lock_rejects_hardlink_before_chmod(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    victim = tmp_path / "victim.txt"
+    victim.write_text("private\n", encoding="utf-8")
+    victim.chmod(0o640)
+    lock_path = tmp_path / "publication.lock"
+    os.link(victim, lock_path)
+    original_mode = stat.S_IMODE(victim.stat().st_mode)
+    monkeypatch.setattr(
+        quality_runner,
+        "_ARTIFACT_PUBLICATION_LOCK_PATH",
+        lock_path,
+    )
+
+    with pytest.raises(OSError, match="single-link regular file"):
+        with quality_runner._artifact_publication_lock():
+            raise AssertionError("hardlinked publication lock was accepted")
+
+    assert victim.read_text(encoding="utf-8") == "private\n"
+    assert stat.S_IMODE(victim.stat().st_mode) == original_mode
+    assert lock_path.stat().st_ino == victim.stat().st_ino
 
 
 def test_artifact_rollback_does_not_overwrite_noncooperative_writer(
