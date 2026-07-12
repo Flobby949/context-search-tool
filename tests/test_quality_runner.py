@@ -2,6 +2,7 @@ import json
 import ntpath
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -490,6 +491,69 @@ def test_git_commit_does_not_retraverse_ref_swapped_after_validation(
     monkeypatch.setattr(quality_runner.os, "open", racing_open)
 
     commit = _git_commit(repo)
+    assert swapped
+    assert commit is None
+    assert commit != external_oid
+
+
+@pytest.mark.skipif(
+    not quality_runner._DESCRIPTOR_GIT_READ_SUPPORTED,
+    reason="requires descriptor-relative no-follow reads",
+)
+def test_git_commit_fails_closed_when_dot_git_boundary_is_exchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    gitdir = repo / ".git"
+    gitdir.mkdir(parents=True)
+    original_oid = "a" * 40
+    external_oid = "b" * 40
+    (gitdir / "HEAD").write_text(f"{original_oid}\n", encoding="utf-8")
+    external_gitdir = tmp_path / "external.git"
+    external_gitdir.mkdir()
+    (external_gitdir / "HEAD").write_text(
+        f"{external_oid}\n",
+        encoding="utf-8",
+    )
+    moved_gitdir = repo / ".git-original"
+    original_resolve = Path.resolve
+    original_open = os.open
+    swapped = False
+
+    def exchange_gitdir() -> None:
+        nonlocal swapped
+        gitdir.rename(moved_gitdir)
+        external_gitdir.rename(gitdir)
+        swapped = True
+
+    def racing_resolve(
+        path: Path,
+        *args: object,
+        **kwargs: object,
+    ) -> Path:
+        if path == gitdir and not swapped:
+            exchange_gitdir()
+        return original_resolve(path, *args, **kwargs)
+
+    def racing_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if dir_fd is not None and os.fspath(path) == ".git" and not swapped:
+            exchange_gitdir()
+        if dir_fd is None:
+            return original_open(path, flags, mode)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(Path, "resolve", racing_resolve)
+    monkeypatch.setattr(quality_runner.os, "open", racing_open)
+
+    commit = _git_commit(repo)
+
     assert swapped
     assert commit is None
     assert commit != external_oid
@@ -2685,6 +2749,64 @@ def test_report_redacts_normalized_and_full_casefold_paths_from_errors(
     ]
 
 
+def test_safe_error_redacts_reordered_combining_path_spellings(
+    tmp_path: Path,
+) -> None:
+    raw_component = "a\u0315\u0300"
+    source = (tmp_path / f"source-{raw_component}").resolve()
+    workspace = (tmp_path / f"workspace-{raw_component}").resolve()
+    source.mkdir()
+    workspace.mkdir()
+
+    def path_spellings(path: Path) -> list[str]:
+        raw = path.as_posix()
+        reordered = unicodedata.normalize("NFD", raw)
+        composed = unicodedata.normalize("NFC", raw)
+        assert raw != reordered
+        return [
+            raw,
+            reordered,
+            composed,
+            Path(raw).as_uri(),
+            Path(reordered).as_uri(),
+            Path(composed).as_uri(),
+            quote(raw, safe="/"),
+            quote(reordered, safe="/"),
+            quote(composed, safe="/"),
+            quote(raw, safe=""),
+            quote(reordered, safe=""),
+            quote(composed, safe=""),
+        ]
+
+    source_spellings = path_spellings(source)
+    workspace_spellings = path_spellings(workspace)
+    sensitive_spellings = source_spellings + workspace_spellings
+    message = " ".join(
+        [
+            *(
+                f"source_{index}={value}"
+                for index, value in enumerate(source_spellings)
+            ),
+            *(
+                f"workspace_{index}={value}"
+                for index, value in enumerate(workspace_spellings)
+            ),
+            "diagnostic=keep-me",
+        ]
+    )
+    redacted = quality_runner._safe_error(RuntimeError(message), source, workspace)
+
+    assert all(spelling not in redacted for spelling in sensitive_spellings)
+    assert str(tmp_path.resolve()) not in redacted
+    assert redacted == " ".join(
+        [
+            *(f"source_{index}=<source>" for index in range(12)),
+            *(f"workspace_{index}=<workspace>" for index in range(12)),
+            "diagnostic=keep-me",
+        ]
+    )
+
+
 def test_quality_runner_does_not_publish_when_setup_cleanup_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2814,19 +2936,19 @@ def test_quality_runner_temp_write_failure_preserves_existing_artifacts(
     markdown = reports / "quality.md"
     output.write_text("old-json\n", encoding="utf-8")
     markdown.write_text("old-markdown\n", encoding="utf-8")
-    original_write_text = Path.write_text
+    original_fdopen = os.fdopen
 
     def fail_staged_write(
-        path: Path,
-        data: str,
+        descriptor: int,
+        mode: str = "r",
         *args: object,
         **kwargs: object,
-    ) -> int:
-        if path.parent == reports and path.name.startswith("."):
+    ) -> object:
+        if mode == "wb":
             raise OSError("temporary write failed")
-        return original_write_text(path, data, *args, **kwargs)
+        return original_fdopen(descriptor, mode, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "write_text", fail_staged_write)
+    monkeypatch.setattr(quality_runner.os, "fdopen", fail_staged_write)
 
     with pytest.raises(OSError, match="temporary write failed"):
         run_quality_fixture(fixture, "ci", output, markdown)
@@ -2837,6 +2959,149 @@ def test_quality_runner_temp_write_failure_preserves_existing_artifacts(
         "quality.json",
         "quality.md",
     }
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX symlinks")
+def test_stage_sibling_file_never_writes_through_swapped_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "quality.json"
+    victim = tmp_path / "victim.txt"
+    victim.write_text("private\n", encoding="utf-8")
+    original_mkstemp = quality_runner.tempfile.mkstemp
+    temporary_path: Path | None = None
+
+    def swap_staging_name_to_symlink(*args: object, **kwargs: object) -> tuple[int, str]:
+        nonlocal temporary_path
+        descriptor, name = original_mkstemp(*args, **kwargs)
+        temporary_path = Path(name)
+        temporary_path.unlink()
+        temporary_path.symlink_to(victim)
+        return descriptor, name
+
+    monkeypatch.setattr(
+        quality_runner.tempfile,
+        "mkstemp",
+        swap_staging_name_to_symlink,
+    )
+
+    with pytest.raises(OSError, match="staging path"):
+        quality_runner._stage_sibling_file(destination, "published\n", "stage")
+
+    assert victim.read_text(encoding="utf-8") == "private\n"
+    assert temporary_path is not None
+    assert not temporary_path.exists()
+    assert not temporary_path.is_symlink()
+
+
+@pytest.mark.parametrize(
+    "destination_kind",
+    [
+        pytest.param("symlink", id="symlink"),
+        pytest.param("fifo", id="fifo"),
+        pytest.param("device", id="device"),
+        pytest.param("hardlink", id="hardlink"),
+    ],
+)
+def test_quality_runner_rejects_unsafe_existing_artifact_before_rendering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    destination_kind: str,
+) -> None:
+    if destination_kind == "fifo" and not hasattr(os, "mkfifo"):
+        pytest.skip("FIFO creation is not supported on this platform")
+    if destination_kind == "device" and os.name != "posix":
+        pytest.skip("device-node assertion requires POSIX")
+
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    output = reports / "quality.json"
+    markdown = reports / "quality.md"
+    victim = reports / "victim.txt"
+    victim.write_text("private\n", encoding="utf-8")
+
+    if destination_kind == "symlink":
+        output.symlink_to(victim.name)
+    elif destination_kind == "fifo":
+        os.mkfifo(output)
+    elif destination_kind == "device":
+        output = Path("/dev/null")
+    else:
+        os.link(victim, output)
+
+    original_link = os.readlink(output) if output.is_symlink() else None
+    original_inode = output.lstat().st_ino
+    rendered = False
+    staged = False
+
+    def record_render(report: dict) -> str:
+        nonlocal rendered
+        rendered = True
+        return "markdown\n"
+
+    def record_stage(destination: Path, content: str | bytes, kind: str) -> Path:
+        nonlocal staged
+        staged = True
+        raise AssertionError("unsafe destination reached artifact staging")
+
+    monkeypatch.setattr(
+        "context_search_tool.quality.reports.render_markdown_report",
+        record_render,
+    )
+    monkeypatch.setattr(quality_runner, "_stage_sibling_file", record_stage)
+
+    with pytest.raises(ValueError, match="artifact destination"):
+        quality_runner._render_artifacts({}, output, markdown)
+    with pytest.raises(ValueError, match="artifact destination"):
+        quality_runner._publish_artifacts(
+            [(output, "json\n"), (markdown, "markdown\n")]
+        )
+
+    assert rendered is False
+    assert staged is False
+    assert output.lstat().st_ino == original_inode
+    if destination_kind == "symlink":
+        assert output.is_symlink()
+        assert os.readlink(output) == original_link
+    elif destination_kind == "fifo":
+        assert stat.S_ISFIFO(output.lstat().st_mode)
+    elif destination_kind == "hardlink":
+        assert output.stat().st_ino == victim.stat().st_ino
+    assert victim.read_text(encoding="utf-8") == "private\n"
+    assert not any(path.name.startswith(".") for path in reports.iterdir())
+
+
+def test_artifact_backup_opens_existing_file_no_follow_and_nonblocking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "quality.json"
+    output.write_text("old-json\n", encoding="utf-8")
+    original_open = os.open
+    backup_flags: list[int] = []
+
+    def tracking_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if Path(path) == output:
+            backup_flags.append(flags)
+        if dir_fd is None:
+            return original_open(path, flags, mode)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(quality_runner.os, "open", tracking_open)
+
+    quality_runner._publish_artifacts([(output, "new-json\n")])
+
+    assert backup_flags
+    assert all(flags & os.O_NOFOLLOW for flags in backup_flags)
+    assert all(flags & os.O_NONBLOCK for flags in backup_flags)
+    assert output.read_text(encoding="utf-8") == "new-json\n"
 
 
 @pytest.mark.parametrize(

@@ -779,11 +779,13 @@ def _path_redaction_variants(path: Path) -> set[str]:
         path_spellings.add(str(candidate))
         path_spellings.add(candidate.as_posix())
 
-    path_spellings = {
-        unicodedata.normalize(form, spelling)
-        for spelling in path_spellings
-        for form in ("NFC", "NFD")
-    }
+    path_spellings.update(
+        {
+            unicodedata.normalize(form, spelling)
+            for spelling in path_spellings
+            for form in ("NFC", "NFD")
+        }
+    )
 
     variants.update(path_spellings)
     encoded_spellings = path_spellings | {
@@ -806,7 +808,7 @@ def _replace_casefold_equivalent(
 ) -> str:
     decoded_message, decoded_spans = _percent_decode_text_with_spans(message)
     decoded_sensitive, _sensitive_spans = _percent_decode_text_with_spans(sensitive)
-    folded_message, offsets = _casefold_text_with_offsets(decoded_message)
+    folded_message, ranges = _casefold_text_with_ranges(decoded_message)
     folded_sensitive = _casefold_text(decoded_sensitive)
     if not folded_sensitive:
         return message
@@ -818,17 +820,19 @@ def _replace_casefold_equivalent(
         if folded_start < 0:
             break
         folded_end = folded_start + len(folded_sensitive)
-        starts_at_character = (
+        starts_at_cluster = (
             folded_start == 0
-            or offsets[folded_start - 1] != offsets[folded_start]
+            or ranges[folded_start - 1] != ranges[folded_start]
         )
-        ends_at_character = (
-            folded_end == len(offsets)
-            or offsets[folded_end - 1] != offsets[folded_end]
+        ends_at_cluster = (
+            folded_end == len(ranges)
+            or ranges[folded_end - 1] != ranges[folded_end]
         )
-        if starts_at_character and ends_at_character:
-            start = decoded_spans[offsets[folded_start]][0]
-            end = decoded_spans[offsets[folded_end - 1]][1]
+        if starts_at_cluster and ends_at_cluster:
+            decoded_start, _ = ranges[folded_start]
+            _, decoded_end = ranges[folded_end - 1]
+            start = decoded_spans[decoded_start][0]
+            end = decoded_spans[decoded_end - 1][1]
             spans.append((start, end))
             search_from = folded_end
         else:
@@ -891,20 +895,26 @@ def _percent_decode_text_with_spans(
 
 
 def _casefold_text(value: str) -> str:
-    return "".join(
-        unicodedata.normalize("NFD", character).casefold()
-        for character in value
+    return unicodedata.normalize(
+        "NFD",
+        unicodedata.normalize("NFD", value).casefold(),
     )
 
 
-def _casefold_text_with_offsets(value: str) -> tuple[str, list[int]]:
+def _casefold_text_with_ranges(
+    value: str,
+) -> tuple[str, list[tuple[int, int]]]:
     folded_parts: list[str] = []
-    offsets: list[int] = []
-    for index, character in enumerate(value):
-        folded = _casefold_text(character)
+    ranges: list[tuple[int, int]] = []
+    cluster_start = 0
+    for index in range(1, len(value) + 1):
+        if index < len(value) and unicodedata.combining(value[index]) != 0:
+            continue
+        folded = _casefold_text(value[cluster_start:index])
         folded_parts.append(folded)
-        offsets.extend([index] * len(folded))
-    return "".join(folded_parts), offsets
+        ranges.extend([(cluster_start, index)] * len(folded))
+        cluster_start = index
+    return "".join(folded_parts), ranges
 
 
 def _render_artifacts(
@@ -988,12 +998,15 @@ def _publish_artifact_transaction(artifacts: list[tuple[Path, str]]) -> None:
                 )
             )
         for destination, _content in artifacts:
-            if destination.exists():
-                backups[destination] = _stage_sibling_file(
-                    destination,
-                    destination.read_bytes(),
-                    "backup",
-                )
+            try:
+                _status, original_content = _read_regular_artifact(destination)
+            except FileNotFoundError:
+                continue
+            backups[destination] = _stage_sibling_file(
+                destination,
+                original_content,
+                "backup",
+            )
 
         try:
             for destination, stage in staged:
@@ -1049,14 +1062,18 @@ def _publish_artifact_transaction(artifacts: list[tuple[Path, str]]) -> None:
 
 
 def _validate_artifact_destinations(destinations: list[Path]) -> None:
-    normalized: list[tuple[Path, str]] = []
+    normalized: list[tuple[Path, str, os.stat_result | None]] = []
     for destination in destinations:
         try:
             identity = _artifact_destination_identity(destination)
+            try:
+                destination_status = destination.lstat()
+            except FileNotFoundError:
+                destination_status = None
         except (OSError, RuntimeError, ValueError) as exc:
             raise ValueError(f"invalid artifact destination: {destination}") from exc
 
-        for previous, previous_identity in normalized:
+        for previous, previous_identity, _previous_status in normalized:
             aliases = identity == previous_identity
             if not aliases:
                 try:
@@ -1065,7 +1082,19 @@ def _validate_artifact_destinations(destinations: list[Path]) -> None:
                     aliases = False
             if aliases:
                 raise ValueError("artifact destinations must be distinct")
-        normalized.append((destination, identity))
+        normalized.append((destination, identity, destination_status))
+
+    for destination, _identity, destination_status in normalized:
+        if destination_status is None:
+            continue
+        if (
+            not stat.S_ISREG(destination_status.st_mode)
+            or destination_status.st_nlink != 1
+        ):
+            raise ValueError(
+                "invalid artifact destination: existing destination must be "
+                f"a single-link regular file: {destination}"
+            )
 
 
 def _artifact_destination_identity(destination: Path) -> str:
@@ -1077,10 +1106,7 @@ def _artifact_destination_identity(destination: Path) -> str:
 
 
 def _artifact_version(path: Path) -> _ArtifactVersion:
-    status = path.lstat()
-    if not stat.S_ISREG(status.st_mode):
-        raise OSError(f"artifact staging path is not a regular file: {path.name}")
-    content = path.read_bytes()
+    status, content = _read_regular_artifact(path)
     return _ArtifactVersion(
         device=status.st_dev,
         inode=status.st_ino,
@@ -1091,24 +1117,41 @@ def _artifact_version(path: Path) -> _ArtifactVersion:
 
 def _artifact_matches_version(path: Path, version: _ArtifactVersion) -> bool:
     try:
-        before = path.lstat()
+        status, content = _read_regular_artifact(path)
         if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_dev != version.device
-            or before.st_ino != version.inode
-            or before.st_size != version.size
+            status.st_dev != version.device
+            or status.st_ino != version.inode
+            or status.st_size != version.size
         ):
             return False
-        content = path.read_bytes()
-        after = path.lstat()
     except OSError:
         return False
     return (
-        after.st_dev == before.st_dev
-        and after.st_ino == before.st_ino
-        and after.st_size == before.st_size
-        and hashlib.sha256(content).hexdigest() == version.sha256
+        hashlib.sha256(content).hexdigest() == version.sha256
     )
+
+
+def _read_regular_artifact(path: Path) -> tuple[os.stat_result, bytes]:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    file_descriptor = os.open(path, flags)
+    try:
+        status = os.fstat(file_descriptor)
+        if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
+            raise OSError(
+                f"artifact path is not a single-link regular file: {path.name}"
+            )
+        artifact_file = os.fdopen(file_descriptor, "rb")
+        file_descriptor = -1
+        with artifact_file:
+            return status, artifact_file.read()
+    finally:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
 
 
 def _stage_sibling_file(
@@ -1121,14 +1164,27 @@ def _stage_sibling_file(
         suffix=".tmp",
         dir=destination.parent,
     )
-    os.close(file_descriptor)
     temporary_path = Path(temporary_name)
     try:
-        if isinstance(content, bytes):
-            temporary_path.write_bytes(content)
-        else:
-            temporary_path.write_text(content, encoding="utf-8")
+        opened_status = os.fstat(file_descriptor)
+        if not stat.S_ISREG(opened_status.st_mode):
+            raise OSError("artifact staging descriptor is not a regular file")
+        payload = content if isinstance(content, bytes) else content.encode("utf-8")
+        staged_file = os.fdopen(file_descriptor, "wb")
+        file_descriptor = -1
+        with staged_file:
+            staged_file.write(payload)
+
+        named_status = temporary_path.lstat()
+        if (
+            not stat.S_ISREG(named_status.st_mode)
+            or named_status.st_dev != opened_status.st_dev
+            or named_status.st_ino != opened_status.st_ino
+        ):
+            raise OSError("artifact staging path changed during write")
     except BaseException as exc:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
         try:
             temporary_path.unlink(missing_ok=True)
         except OSError as cleanup_error:
@@ -1296,13 +1352,13 @@ def _read_git_text(path: Path, boundary: Path) -> str | None:
     directory_descriptors: list[int] = []
     file_descriptor: int | None = None
     try:
-        resolved_boundary = boundary.resolve(strict=True)
-        if not stat.S_ISDIR(resolved_boundary.lstat().st_mode):
+        boundary_status = boundary.lstat()
+        if not stat.S_ISDIR(boundary_status.st_mode):
             return None
         try:
             relative = path.relative_to(boundary)
         except ValueError:
-            relative = path.relative_to(resolved_boundary)
+            return None
         if (
             not relative.parts
             or any(part in {"", ".", ".."} for part in relative.parts)
@@ -1315,9 +1371,15 @@ def _read_git_text(path: Path, boundary: Path) -> str | None:
             | os.O_NOFOLLOW
             | getattr(os, "O_CLOEXEC", 0)
         )
-        directory_descriptors.append(
-            _open_directory_no_follow(resolved_boundary, directory_flags)
-        )
+        boundary_descriptor = _open_directory_no_follow(boundary, directory_flags)
+        directory_descriptors.append(boundary_descriptor)
+        opened_boundary_status = os.fstat(boundary_descriptor)
+        if (
+            not stat.S_ISDIR(opened_boundary_status.st_mode)
+            or opened_boundary_status.st_dev != boundary_status.st_dev
+            or opened_boundary_status.st_ino != boundary_status.st_ino
+        ):
+            return None
         for component in relative.parts[:-1]:
             directory_descriptors.append(
                 os.open(
