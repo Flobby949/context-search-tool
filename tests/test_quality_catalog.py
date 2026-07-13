@@ -175,6 +175,87 @@ AB_IDS = (
     "embedding-ab-order-cancel",
 )
 
+EXPECTED_AB_CASE_DEFAULTS = {
+    "profiles": ("ab_hash", "ab_bge"),
+    "tags": (),
+    "mode": "results",
+    "gate": Gate.INFORMATIONAL,
+    "metric_k": 12,
+    "expected_top_k": (),
+    "expected_any_top_k": (),
+    "expected_at_least_top_k": (),
+    "preferred_rank": (),
+    "absent_top_k": (),
+    "outranks": (),
+    "forbidden_above": (),
+    "anchor_expected": (),
+    "known_gap_reason": "",
+    "notes": "",
+}
+
+EXPECTED_AB_CASES = {
+    "embedding-ab-access-validation": {
+        **EXPECTED_AB_CASE_DEFAULTS,
+        "case_id": "embedding-ab-access-validation",
+        "query": "开门校验场景",
+        "relevance_matchers": (
+            {"contains": "whitelist"},
+            {"contains": "blacklist"},
+            {"contains": "access"},
+            {"contains": "validation"},
+        ),
+        "noise_matchers": (
+            {"contains": "region"},
+            {"contains": "role"},
+            {"contains": "announcement"},
+        ),
+        "legacy": {
+            "fixture": "ab_comparison",
+            "key": "embedding_ab/embedding-ab-access-validation",
+        },
+    },
+    "embedding-ab-whitelist-management": {
+        **EXPECTED_AB_CASE_DEFAULTS,
+        "case_id": "embedding-ab-whitelist-management",
+        "query": "黑白名单管理",
+        "relevance_matchers": (
+            {"contains": "whitelist"},
+            {"contains": "blacklist"},
+            {"contains": "manage"},
+            {"contains": "add"},
+            {"contains": "remove"},
+        ),
+        "noise_matchers": (
+            {"contains": "region"},
+            {"contains": "user"},
+            {"contains": "notification"},
+        ),
+        "legacy": {
+            "fixture": "ab_comparison",
+            "key": "embedding_ab/embedding-ab-whitelist-management",
+        },
+    },
+    "embedding-ab-order-cancel": {
+        **EXPECTED_AB_CASE_DEFAULTS,
+        "case_id": "embedding-ab-order-cancel",
+        "query": "OrderService cancel method",
+        "relevance_matchers": (
+            {"contains": "OrderService"},
+            {"contains": "cancel"},
+            {"contains": "order"},
+        ),
+        "noise_matchers": (
+            {"contains": "payment"},
+            {"contains": "user"},
+            {"contains": "notification"},
+        ),
+        "legacy": {
+            "fixture": "ab_comparison",
+            "key": "embedding_ab/embedding-ab-order-cancel",
+        },
+    },
+}
+
 EXPECTED_NEW_CASE_DEFAULTS = {
     "mode": "results",
     "metric_k": None,
@@ -626,6 +707,13 @@ def test_catalog_new_case_matches_approved_manifest(key: str) -> None:
     case = _catalog_cases()[key]
 
     assert _new_case_manifest(key, case) == EXPECTED_NEW_CASES[key]
+
+
+@pytest.mark.parametrize("case_id", AB_IDS)
+def test_catalog_ab_case_matches_approved_manifest(case_id: str) -> None:
+    case = _catalog_cases()[f"embedding_ab/{case_id}"]
+
+    assert _quality_case_manifest(case) == EXPECTED_AB_CASES[case_id]
 
 
 def test_catalog_repo_wiring_matches_approved_inventory() -> None:
