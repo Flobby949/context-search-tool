@@ -8,7 +8,7 @@ from typing import Any, Protocol
 import requests
 
 from context_search_tool.config import QueryPlannerConfig
-from context_search_tool.models import QueryPlan, RepoProfile
+from context_search_tool.models import QueryPlan, QueryVariant, RepoProfile
 from context_search_tool.repo_profile import (
     profile_vocabulary,
     repo_profile_payload,
@@ -18,6 +18,7 @@ from context_search_tool.repo_profile import (
 from context_search_tool.tokenizer import tokenize_query
 
 PROMPT_VERSION = "qwen-query-planner-v2"
+MAX_PLANNER_QUERY_VARIANT_CODEPOINTS = 256
 
 ALLOWED_INTENTS = {
     "feature_lookup",
@@ -188,6 +189,32 @@ def fallback_plan(
     )
 
 
+def build_query_variants(
+    query: str,
+    plan: QueryPlan,
+    max_rewritten_queries: int,
+) -> tuple[list[QueryVariant], list[str]]:
+    original_text = _normalize_query_variant_text(query)
+    variants = [QueryVariant("original", original_text, "original")]
+    if plan.status != "ok":
+        return variants, []
+
+    rewritten_queries, discarded = _retain_rewritten_queries(
+        original_text,
+        plan.rewritten_queries,
+        max_rewritten_queries,
+    )
+    variants.extend(
+        QueryVariant(
+            variant_id=f"planner:{index}",
+            text=text,
+            source="planner",
+        )
+        for index, text in enumerate(rewritten_queries)
+    )
+    return variants, discarded
+
+
 def clean_planner_payload(
     original_query: str,
     payload: dict[str, Any],
@@ -198,9 +225,12 @@ def clean_planner_payload(
     repo_profile: RepoProfile | None = None,
 ) -> QueryPlan:
     try:
-        rewritten_queries = _clean_string_list(
-            payload,
-            "rewritten_queries",
+        raw_rewritten_queries = payload.get("rewritten_queries", [])
+        if not isinstance(raw_rewritten_queries, list):
+            raise ValueError("rewritten_queries must be a list")
+        rewritten_queries, discarded_rewrites = _retain_rewritten_queries(
+            original_query,
+            raw_rewritten_queries,
             config.max_rewritten_queries,
         )
         grep_keywords = _clean_string_list(
@@ -222,7 +252,7 @@ def clean_planner_payload(
             error=str(exc),
         )
 
-    discarded_hints: list[str] = []
+    discarded_hints: list[str] = list(discarded_rewrites)
     if repo_profile is not None:
         vocabulary = profile_vocabulary(repo_profile)
         original_tokens = tokenize_query(original_query)
@@ -364,6 +394,40 @@ def _clean_string_list(payload: dict[str, Any], key: str, limit: int) -> list[st
         if len(cleaned) >= limit:
             break
     return cleaned
+
+
+def _retain_rewritten_queries(
+    original_query: str,
+    values: list[str],
+    limit: int,
+) -> tuple[list[str], list[str]]:
+    if limit <= 0:
+        return [], []
+
+    retained: list[str] = []
+    discarded: list[str] = []
+    seen = {_normalize_query_variant_text(original_query).casefold()}
+    for value in values:
+        if not isinstance(value, str):
+            raise ValueError("rewritten_queries must contain only strings")
+        normalized = _normalize_query_variant_text(value)
+        if not normalized:
+            continue
+        if len(normalized) > MAX_PLANNER_QUERY_VARIANT_CODEPOINTS:
+            discarded.append(value)
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        retained.append(normalized)
+        if len(retained) >= limit:
+            break
+    return retained, discarded
+
+
+def _normalize_query_variant_text(value: str) -> str:
+    return " ".join(value.split())
 
 
 def _filter_rewritten_queries(

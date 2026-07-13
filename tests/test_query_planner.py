@@ -1,12 +1,22 @@
 import json
+from pathlib import Path
 
+import pytest
 import requests
 
 from context_search_tool.config import QueryPlannerConfig
-from context_search_tool.models import QueryPlan, RepoProfile
+from context_search_tool.models import (
+    EvidenceAnchor,
+    QueryPlan,
+    QueryVariant,
+    RepoProfile,
+    RetrievalCandidate,
+    RetrievalResult,
+)
 from context_search_tool.query_planner import (
     OllamaQueryPlanner,
     PROMPT_VERSION,
+    build_query_variants,
     clean_planner_payload,
     disabled_plan,
     expand_query_plan_tokens,
@@ -37,6 +47,117 @@ def test_query_plan_disabled_default_uses_empty_disabled_plan() -> None:
     assert plan.grep_keywords == []
     assert plan.symbol_hints == []
     assert plan.intent == "unknown"
+
+
+def test_build_query_variants_normalizes_dedupes_bounds_and_assigns_stable_ids() -> (
+    None
+):
+    overlong = "x" * 257
+    plan = QueryPlan(
+        original_query="  Data   Dashboard  ",
+        rewritten_queries=[
+            overlong,
+            "data dashboard",
+            "  dashboard   statistics  ",
+            "DASHBOARD STATISTICS",
+            "chart service",
+            "ignored after limit",
+        ],
+        status="ok",
+    )
+
+    variants, discarded = build_query_variants(
+        "  Data   Dashboard  ",
+        plan,
+        max_rewritten_queries=2,
+    )
+
+    assert variants == [
+        QueryVariant("original", "Data Dashboard", "original"),
+        QueryVariant("planner:0", "dashboard statistics", "planner"),
+        QueryVariant("planner:1", "chart service", "planner"),
+    ]
+    assert discarded == [overlong]
+
+
+@pytest.mark.parametrize("status", ["disabled", "fallback"])
+def test_build_query_variants_uses_original_only_unless_plan_is_ok(status: str) -> None:
+    plan = QueryPlan(
+        original_query="  target   query ",
+        rewritten_queries=["ignored rewrite"],
+        status=status,
+    )
+
+    variants, discarded = build_query_variants(
+        "  target   query ",
+        plan,
+        max_rewritten_queries=2,
+    )
+
+    assert variants == [QueryVariant("original", "target query", "original")]
+    assert discarded == []
+
+
+def test_build_query_variants_ok_without_rewrites_is_original_only() -> None:
+    plan = QueryPlan(original_query="target query", status="ok")
+
+    variants, discarded = build_query_variants(
+        "target query",
+        plan,
+        max_rewritten_queries=2,
+    )
+
+    assert variants == [QueryVariant("original", "target query", "original")]
+    assert discarded == []
+
+
+def test_build_query_variants_accepts_256_code_points_without_truncation() -> None:
+    accepted = "界" * 256
+    plan = QueryPlan(
+        original_query="target query",
+        rewritten_queries=[accepted],
+        status="ok",
+    )
+
+    variants, discarded = build_query_variants(
+        "target query",
+        plan,
+        max_rewritten_queries=1,
+    )
+
+    assert variants == [
+        QueryVariant("original", "target query", "original"),
+        QueryVariant("planner:0", accepted, "planner"),
+    ]
+    assert discarded == []
+
+
+def test_semantic_provenance_models_keep_existing_constructors_compatible() -> None:
+    candidate = RetrievalCandidate("chunk", 0.4, "lexical")
+    result = RetrievalResult(
+        Path("App.py"),
+        1,
+        1,
+        "pass",
+        0.4,
+        {},
+        [],
+        [],
+    )
+    anchor = EvidenceAnchor(
+        Path("README.md"),
+        1,
+        1,
+        "docs",
+        0.1,
+        {},
+        [],
+        "document",
+    )
+
+    assert candidate.semantic_matches == []
+    assert result.semantic_matches == []
+    assert anchor.semantic_matches == []
 
 
 def test_expand_query_plan_tokens_keeps_original_tokens_first() -> None:
@@ -127,6 +248,31 @@ def test_clean_planner_payload_strips_dedupes_truncates_and_validates_intent() -
     assert plan.grep_keywords == ["Dashboard", "Chart"]
     assert plan.symbol_hints == ["DashboardService"]
     assert plan.intent == "feature_lookup"
+
+
+def test_clean_planner_payload_discards_overlong_rewrite_before_count_limit() -> None:
+    overlong = "x" * 257
+
+    plan = clean_planner_payload(
+        original_query="target",
+        payload={
+            "rewritten_queries": [
+                overlong,
+                "target",
+                "first valid",
+                "second valid",
+                "third valid",
+            ]
+        },
+        config=QueryPlannerConfig(max_rewritten_queries=2),
+        provider="ollama",
+        model="qwen3.5:4b-mlx",
+        latency_ms=10,
+    )
+
+    assert plan.status == "ok"
+    assert plan.rewritten_queries == ["first valid", "second valid"]
+    assert plan.discarded_hints == [overlong]
 
 
 def test_clean_planner_payload_falls_back_on_wrong_field_types() -> None:

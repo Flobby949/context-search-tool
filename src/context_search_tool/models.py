@@ -92,6 +92,19 @@ class QueryPlan:
 
 
 @dataclass(frozen=True)
+class QueryVariant:
+    variant_id: str
+    text: str
+    source: str
+
+
+@dataclass(frozen=True)
+class SemanticMatch:
+    variant_id: str
+    score: float
+
+
+@dataclass(frozen=True)
 class RepoProfile:
     languages: list[str] = field(default_factory=list)
     source_roots: list[str] = field(default_factory=list)
@@ -123,6 +136,7 @@ class RetrievalCandidate:
     score: float
     source: str
     score_parts: dict[str, float] = field(default_factory=dict)
+    semantic_matches: list[SemanticMatch] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -135,6 +149,7 @@ class RetrievalResult:
     score_parts: dict[str, float]
     reasons: list[str]
     followup_keywords: list[str]
+    semantic_matches: list[SemanticMatch] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -147,6 +162,7 @@ class EvidenceAnchor:
     score_parts: dict[str, float]
     reasons: list[str]
     anchor_kind: str
+    semantic_matches: list[SemanticMatch] = field(default_factory=list)
 
 
 @dataclass
