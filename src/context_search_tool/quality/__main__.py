@@ -17,25 +17,35 @@ quality_app = typer.Typer(
 )
 
 
+def _ensure_parent(path: Path | None) -> None:
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+
 @quality_app.command()
 def run(
     fixture: Path = typer.Argument(...),
     profile: str = typer.Option("ci", "--profile"),
     output: Path = typer.Option(..., "--output"),
     markdown: Optional[Path] = typer.Option(None, "--markdown"),
+    allow_empty: bool = typer.Option(False, "--allow-empty"),
 ) -> None:
     report = run_quality_fixture(
         fixture,
         profile=profile,
         output_path=output,
         markdown_path=markdown,
+        allow_empty=allow_empty,
     )
     aggregate = report.get("aggregate", {})
     typer.echo(
-        "total={total} passed={passed} failed={failed}".format(
-            total=aggregate.get("total", 0),
+        "selected={selected} executed={executed} passed={passed} "
+        "failed={failed} errors={errors}".format(
+            selected=aggregate.get("selected", 0),
+            executed=aggregate.get("executed", 0),
             passed=aggregate.get("passed", 0),
             failed=aggregate.get("failed", 0),
+            errors=aggregate.get("errors", 0),
         )
     )
     if aggregate.get("failed", 0) > 0 or aggregate.get("errors", 0) > 0:
@@ -48,10 +58,13 @@ def compare(
     candidate: Path = typer.Option(..., "--candidate"),
     output: Path = typer.Option(..., "--output"),
     markdown: Optional[Path] = typer.Option(None, "--markdown"),
+    allow_regressions: bool = typer.Option(False, "--allow-regressions"),
 ) -> None:
     baseline_report = json.loads(baseline.read_text(encoding="utf-8"))
     candidate_report = json.loads(candidate.read_text(encoding="utf-8"))
     comparison = compare_reports(baseline_report, candidate_report)
+    _ensure_parent(output)
+    _ensure_parent(markdown)
     output.write_text(
         json.dumps(comparison, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
@@ -63,11 +76,15 @@ def compare(
         )
     aggregate = comparison.get("aggregate", {})
     typer.echo(
-        "regressed={regressed} improved={improved}".format(
-            regressed=aggregate.get("regressed", 0),
-            improved=aggregate.get("improved", 0),
+        "gating_regressions={gating} improvements={improvements} "
+        "observed_declines={declines}".format(
+            gating=aggregate.get("gating_regressions", 0),
+            improvements=aggregate.get("improvements", 0),
+            declines=aggregate.get("observed_declines", 0),
         )
     )
+    if aggregate.get("gating_regressions", 0) > 0 and not allow_regressions:
+        raise typer.Exit(code=1)
 
 
 @quality_app.command("feedback")
@@ -82,6 +99,7 @@ def feedback(
         include_query_terms=include_query_terms,
         include_query_examples=include_query_examples,
     )
+    _ensure_parent(output)
     output.write_text(
         json.dumps(summary, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
