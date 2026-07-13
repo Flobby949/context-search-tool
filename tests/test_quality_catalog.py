@@ -25,7 +25,7 @@ LEGACY_CALIBRATION = ROOT / "fixtures" / "retrieval_calibration" / "queries.json
 LEGACY_AB = ROOT / "fixtures" / "ab_comparison" / "queries.json"
 CJK_RE = re.compile(r"[\u3400-\u9fff]")
 
-TASK9_JAVA_FIXTURE_SHA256 = {
+TASK9_SNAPSHOT_SHA256 = {
     "real_projects/cross_language_dashboard/src/main/java/com/example/dashboard/ChartService.java": "732e723a2b0c122205a5860f2e94a3d5e60d0ed079574965a6398d49db2d02c7",
     "real_projects/cross_language_dashboard/src/main/java/com/example/dashboard/DashboardController.java": "fc05f4542828404ce55efb8b6c387fe017cd62d2a67fba60339b21d099fdee18",
     "real_projects/cross_language_dashboard/src/main/java/com/example/dashboard/StatisticsService.java": "48503013467710344246b5bd46bfc37fd3cd6c0021026e90dfed581632af4f24",
@@ -93,14 +93,22 @@ EXPECTED_PROFILE_CONFIGS = {
 }
 
 EXPECTED_REPO_WIRING = (
-    ("imagebed", ("smoke",), "CST_SMOKE_IMAGEBED_REPO", "imagebed", ""),
-    ("env_change", ("smoke",), "CST_SMOKE_ENV_CHANGE_REPO", "env-change", ""),
+    ("imagebed", ("smoke",), "CST_SMOKE_IMAGEBED_REPO", "imagebed", "", {}),
+    (
+        "env_change",
+        ("smoke",),
+        "CST_SMOKE_ENV_CHANGE_REPO",
+        "env-change",
+        "",
+        {},
+    ),
     (
         "investment_assistant",
         ("smoke",),
         "CST_SMOKE_INVESTMENT_ASSISTANT_REPO",
         "Investment-Assistant",
         "",
+        {},
     ),
     (
         "program_tool",
@@ -108,6 +116,7 @@ EXPECTED_REPO_WIRING = (
         "CST_SMOKE_PROGRAM_TOOL_REPO",
         "program-tool",
         "tests/fixtures/real_projects/program_tool",
+        {},
     ),
     (
         "java_spring_mini",
@@ -115,6 +124,7 @@ EXPECTED_REPO_WIRING = (
         "",
         "",
         "tests/fixtures/java-spring-mini",
+        {},
     ),
     (
         "operation_client",
@@ -122,6 +132,7 @@ EXPECTED_REPO_WIRING = (
         "CST_CALIBRATION_OPERATION_CLIENT_REPO",
         "operation-client-api",
         "",
+        {},
     ),
     (
         "console_iot",
@@ -129,6 +140,7 @@ EXPECTED_REPO_WIRING = (
         "CST_CALIBRATION_CONSOLE_IOT_REPO",
         "console-iot-api",
         "",
+        {},
     ),
     (
         "psf_requests",
@@ -136,6 +148,7 @@ EXPECTED_REPO_WIRING = (
         "CST_PLANNER_REQUESTS_REPO",
         "requests",
         "",
+        {},
     ),
     (
         "cross_language_dashboard",
@@ -143,6 +156,7 @@ EXPECTED_REPO_WIRING = (
         "",
         "",
         "tests/fixtures/real_projects/cross_language_dashboard",
+        {},
     ),
     (
         "embedding_ab",
@@ -150,6 +164,7 @@ EXPECTED_REPO_WIRING = (
         "CST_QUALITY_AB_REPO",
         "embedding-ab",
         "tests/fixtures/real_projects/embedding_ab",
+        {},
     ),
 )
 
@@ -169,6 +184,87 @@ AB_IDS = (
     "embedding-ab-whitelist-management",
     "embedding-ab-order-cancel",
 )
+
+EXPECTED_AB_CASE_DEFAULTS = {
+    "profiles": ("ab_hash", "ab_bge"),
+    "tags": (),
+    "mode": "results",
+    "gate": Gate.INFORMATIONAL,
+    "metric_k": 12,
+    "expected_top_k": (),
+    "expected_any_top_k": (),
+    "expected_at_least_top_k": (),
+    "preferred_rank": (),
+    "absent_top_k": (),
+    "outranks": (),
+    "forbidden_above": (),
+    "anchor_expected": (),
+    "known_gap_reason": "",
+    "notes": "",
+}
+
+EXPECTED_AB_CASES = {
+    "embedding-ab-access-validation": {
+        **EXPECTED_AB_CASE_DEFAULTS,
+        "case_id": "embedding-ab-access-validation",
+        "query": "开门校验场景",
+        "relevance_matchers": (
+            {"contains": "whitelist"},
+            {"contains": "blacklist"},
+            {"contains": "access"},
+            {"contains": "validation"},
+        ),
+        "noise_matchers": (
+            {"contains": "region"},
+            {"contains": "role"},
+            {"contains": "announcement"},
+        ),
+        "legacy": {
+            "fixture": "ab_comparison",
+            "key": "embedding_ab/embedding-ab-access-validation",
+        },
+    },
+    "embedding-ab-whitelist-management": {
+        **EXPECTED_AB_CASE_DEFAULTS,
+        "case_id": "embedding-ab-whitelist-management",
+        "query": "黑白名单管理",
+        "relevance_matchers": (
+            {"contains": "whitelist"},
+            {"contains": "blacklist"},
+            {"contains": "manage"},
+            {"contains": "add"},
+            {"contains": "remove"},
+        ),
+        "noise_matchers": (
+            {"contains": "region"},
+            {"contains": "user"},
+            {"contains": "notification"},
+        ),
+        "legacy": {
+            "fixture": "ab_comparison",
+            "key": "embedding_ab/embedding-ab-whitelist-management",
+        },
+    },
+    "embedding-ab-order-cancel": {
+        **EXPECTED_AB_CASE_DEFAULTS,
+        "case_id": "embedding-ab-order-cancel",
+        "query": "OrderService cancel method",
+        "relevance_matchers": (
+            {"contains": "OrderService"},
+            {"contains": "cancel"},
+            {"contains": "order"},
+        ),
+        "noise_matchers": (
+            {"contains": "payment"},
+            {"contains": "user"},
+            {"contains": "notification"},
+        ),
+        "legacy": {
+            "fixture": "ab_comparison",
+            "key": "embedding_ab/embedding-ab-order-cancel",
+        },
+    },
+}
 
 EXPECTED_NEW_CASE_DEFAULTS = {
     "mode": "results",
@@ -436,6 +532,17 @@ def _expected_any_manifest(items) -> tuple[dict[str, object], ...]:
     )
 
 
+def _expected_at_least_manifest(items) -> tuple[dict[str, object], ...]:
+    return tuple(
+        {
+            "matchers": tuple(_matcher_manifest(matcher) for matcher in item.matchers),
+            "top_k": item.top_k,
+            "min_matches": item.min_matches,
+        }
+        for item in items
+    )
+
+
 def _preferred_rank_manifest(items) -> tuple[dict[str, object], ...]:
     return tuple(
         {
@@ -448,10 +555,19 @@ def _preferred_rank_manifest(items) -> tuple[dict[str, object], ...]:
     )
 
 
-def _new_case_manifest(key: str, case: QualityCase) -> dict[str, object]:
-    repo_key, _ = key.split("/", 1)
+def _outranks_manifest(items) -> tuple[dict[str, object], ...]:
+    return tuple(
+        {
+            "source": _matcher_manifest(item.source),
+            "noise": _matcher_manifest(item.noise),
+            "top_k": item.top_k,
+        }
+        for item in items
+    )
+
+
+def _quality_case_manifest(case: QualityCase) -> dict[str, object]:
     return {
-        "repo_key": repo_key,
         "case_id": case.case_id,
         "query": case.query,
         "profiles": case.profiles,
@@ -459,20 +575,38 @@ def _new_case_manifest(key: str, case: QualityCase) -> dict[str, object]:
         "mode": case.mode,
         "gate": case.gate,
         "metric_k": case.metric_k,
-        "relevance_matchers": case.relevance_matchers,
-        "noise_matchers": case.noise_matchers,
+        "relevance_matchers": tuple(
+            _matcher_manifest(matcher) for matcher in case.relevance_matchers
+        ),
+        "noise_matchers": tuple(
+            _matcher_manifest(matcher) for matcher in case.noise_matchers
+        ),
         "expected_top_k": _top_k_manifest(case.expected_top_k),
         "expected_any_top_k": _expected_any_manifest(case.expected_any_top_k),
-        "expected_at_least_top_k": case.expected_at_least_top_k,
+        "expected_at_least_top_k": _expected_at_least_manifest(
+            case.expected_at_least_top_k
+        ),
         "preferred_rank": _preferred_rank_manifest(case.preferred_rank),
-        "absent_top_k": case.absent_top_k,
-        "outranks": case.outranks,
-        "forbidden_above": case.forbidden_above,
+        "absent_top_k": _top_k_manifest(case.absent_top_k),
+        "outranks": _outranks_manifest(case.outranks),
+        "forbidden_above": _outranks_manifest(case.forbidden_above),
         "anchor_expected": case.anchor_expected,
         "known_gap_reason": case.known_gap_reason,
         "notes": case.notes,
-        "legacy": case.legacy,
+        "legacy": (
+            {
+                "fixture": case.legacy.fixture,
+                "key": case.legacy.key,
+            }
+            if case.legacy is not None
+            else None
+        ),
     }
+
+
+def _new_case_manifest(key: str, case: QualityCase) -> dict[str, object]:
+    repo_key, _ = key.split("/", 1)
+    return {"repo_key": repo_key, **_quality_case_manifest(case)}
 
 
 def _without_catalog_metadata(case: QualityCase) -> QualityCase:
@@ -487,13 +621,18 @@ def _without_catalog_metadata(case: QualityCase) -> QualityCase:
     )
 
 
-def test_task9_java_snapshots_match_approved_contents() -> None:
+def test_task9_snapshots_match_approved_regular_files() -> None:
     fixture_root = ROOT / "fixtures"
     snapshot_roots = (
         fixture_root / "real_projects" / "cross_language_dashboard",
         fixture_root / "real_projects" / "embedding_ab",
     )
-    files = sorted(path for root in snapshot_roots for path in root.rglob("*.java"))
+    files = sorted(
+        path
+        for root in snapshot_roots
+        for path in root.rglob("*")
+        if path.is_file()
+    )
     actual = {
         path.relative_to(fixture_root).as_posix(): hashlib.sha256(
             path.read_bytes()
@@ -501,11 +640,16 @@ def test_task9_java_snapshots_match_approved_contents() -> None:
         for path in files
     }
 
-    assert actual == TASK9_JAVA_FIXTURE_SHA256
+    assert actual == TASK9_SNAPSHOT_SHA256
+    dashboard_java_files = (
+        fixture_root / relative_path
+        for relative_path in TASK9_SNAPSHOT_SHA256
+        if relative_path.startswith("real_projects/cross_language_dashboard/")
+        and relative_path.endswith(".java")
+    )
     assert all(
         CJK_RE.search(path.read_text(encoding="utf-8")) is None
-        for path in files
-        if "cross_language_dashboard" in path.parts
+        for path in dashboard_java_files
     )
 
 
@@ -546,6 +690,7 @@ def test_catalog_repo_wiring_matches_approved_inventory() -> None:
             repo.path_env,
             repo.repo_dir_name,
             repo.snapshot_path,
+            repo.default_config,
         )
         for repo in fixture.repos
     )
@@ -632,19 +777,21 @@ def test_ab_legacy_parity() -> None:
 
     for case_id, raw_case in zip(AB_IDS, legacy_cases, strict=True):
         case = canonical[f"embedding_ab/{case_id}"]
-        assert case.query == raw_case["query"]
-        assert case.gate is Gate.INFORMATIONAL
-        assert case.metric_k == 12
-        assert [matcher.contains for matcher in case.relevance_matchers] == raw_case[
-            "expected_relevant"
-        ]
-        assert [matcher.contains for matcher in case.noise_matchers] == raw_case[
-            "expected_noise"
-        ]
-        assert case.legacy == LegacyProvenance(
-            fixture="ab_comparison",
-            key=f"embedding_ab/{case_id}",
-        )
+        expected = EXPECTED_AB_CASES[case_id]
+
+        assert _quality_case_manifest(case) == expected
+        assert {
+            "query": raw_case["query"],
+            "relevance_matchers": tuple(
+                {"contains": value} for value in raw_case["expected_relevant"]
+            ),
+            "noise_matchers": tuple(
+                {"contains": value} for value in raw_case["expected_noise"]
+            ),
+        } == {
+            name: expected[name]
+            for name in ("query", "relevance_matchers", "noise_matchers")
+        }
 
 
 def test_legacy_provenance_inventory() -> None:
