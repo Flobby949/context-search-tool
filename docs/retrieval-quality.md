@@ -31,7 +31,8 @@ cst quality run tests/fixtures/retrieval_quality/queries.json \
 From the baseline worktree, write its report to a shared absolute directory:
 
 ```bash
-cst quality run tests/fixtures/retrieval_quality/queries.json \
+PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality run \
+  tests/fixtures/retrieval_quality/queries.json \
   --profile ci \
   --output /tmp/cst-quality-comparison/main.json \
   --markdown /tmp/cst-quality-comparison/main.md
@@ -40,16 +41,18 @@ cst quality run tests/fixtures/retrieval_quality/queries.json \
 From the candidate worktree, write the same profile to that directory:
 
 ```bash
-cst quality run tests/fixtures/retrieval_quality/queries.json \
+PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality run \
+  tests/fixtures/retrieval_quality/queries.json \
   --profile ci \
   --output /tmp/cst-quality-comparison/branch.json \
   --markdown /tmp/cst-quality-comparison/branch.md
 ```
 
-Then compare the two shared reports from either worktree:
+Then compare the two shared reports from the candidate worktree:
 
 ```bash
-cst quality compare --baseline /tmp/cst-quality-comparison/main.json \
+PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality compare \
+  --baseline /tmp/cst-quality-comparison/main.json \
   --candidate /tmp/cst-quality-comparison/branch.json \
   --output /tmp/cst-quality-comparison/comparison.json \
   --markdown /tmp/cst-quality-comparison/comparison.md
