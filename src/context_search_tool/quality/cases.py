@@ -19,6 +19,12 @@ class Gate(str, Enum):
 
 _WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _GLOB_CHARS = set("*?[")
+_PLANNER_STATUSES = {"disabled", "ok", "fallback"}
+_VARIANT_RETRIEVAL_STATUSES = {
+    "original_only",
+    "hybrid",
+    "embedding_fallback",
+}
 
 
 @dataclass(frozen=True)
@@ -121,6 +127,13 @@ class LegacyProvenance:
 
 
 @dataclass(frozen=True)
+class ProfileExpectation:
+    planner_status: str | None = None
+    variant_retrieval_status: str | None = None
+    top_result_planner_semantic_match: bool | None = None
+
+
+@dataclass(frozen=True)
 class QualityCase:
     case_id: str
     query: str
@@ -142,6 +155,7 @@ class QualityCase:
     known_gap_reason: str = ""
     notes: str = ""
     legacy: LegacyProvenance | None = None
+    profile_expectations: dict[str, ProfileExpectation] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -297,6 +311,30 @@ def validate_profile_compatible(
         if config.query_planner.provider != "ollama":
             raise ValueError("planner profile requires the Ollama planner")
         return
+    if profile in {"p1_vector_bge", "p1_hybrid_bge"}:
+        if (
+            config.embedding.provider != "bge"
+            or config.embedding.model != "bge-m3"
+            or config.embedding.dimensions != 1024
+        ):
+            raise ValueError(
+                f"{profile} profile requires BGE M3 at 1024 dimensions"
+            )
+        if profile == "p1_vector_bge":
+            if config.query_planner.enabled:
+                raise ValueError(
+                    "p1_vector_bge profile requires the query planner disabled"
+                )
+            return
+        if not config.query_planner.enabled:
+            raise ValueError(
+                "p1_hybrid_bge profile requires the query planner enabled"
+            )
+        if config.query_planner.provider != "ollama":
+            raise ValueError("p1_hybrid_bge profile requires the Ollama planner")
+        if config.query_planner.model != "qwen3.5:4b-mlx":
+            raise ValueError("p1_hybrid_bge profile requires qwen3.5:4b-mlx")
+        return
     if profile in {"calibration_bge", "ab_bge"}:
         if (
             config.embedding.provider != "bge"
@@ -376,6 +414,56 @@ def _validate_fixture_profiles(
             for profile in case.profiles:
                 if profile not in repo.profiles or profile not in profile_configs:
                     raise ValueError(f"unknown profile: {profile}")
+            selected_profiles = case.profiles or repo.profiles
+            for expectation_profile in case.profile_expectations:
+                if expectation_profile not in selected_profiles:
+                    raise ValueError(
+                        "profile expectation uses unselected profile: "
+                        f"{expectation_profile}"
+                    )
+
+
+def _parse_profile_expectations(raw: Any) -> dict[str, ProfileExpectation]:
+    values = _require_dict(raw, "profile_expectations")
+    parsed: dict[str, ProfileExpectation] = {}
+    allowed = {
+        "planner_status",
+        "variant_retrieval_status",
+        "top_result_planner_semantic_match",
+    }
+    for raw_profile, raw_expectation in values.items():
+        profile = _require_non_empty_str(raw_profile, "profile expectation name")
+        expectation = _require_dict(
+            raw_expectation,
+            f"profile_expectations.{profile}",
+        )
+        unknown = set(expectation) - allowed
+        if unknown:
+            raise ValueError(
+                f"unknown profile expectation field: {sorted(unknown)[0]}"
+            )
+
+        planner_status = expectation.get("planner_status")
+        if planner_status is not None and (
+            not isinstance(planner_status, str)
+            or planner_status not in _PLANNER_STATUSES
+        ):
+            raise ValueError("invalid planner_status")
+        variant_status = expectation.get("variant_retrieval_status")
+        if variant_status is not None and (
+            not isinstance(variant_status, str)
+            or variant_status not in _VARIANT_RETRIEVAL_STATUSES
+        ):
+            raise ValueError("invalid variant_retrieval_status")
+        planner_match = expectation.get("top_result_planner_semantic_match")
+        if planner_match is not None and type(planner_match) is not bool:
+            raise ValueError("top_result_planner_semantic_match must be a bool")
+        parsed[profile] = ProfileExpectation(
+            planner_status=planner_status,
+            variant_retrieval_status=variant_status,
+            top_result_planner_semantic_match=planner_match,
+        )
+    return parsed
 
 
 def _parse_case(raw: dict[str, Any]) -> QualityCase:
@@ -484,6 +572,9 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         ),
         notes=_require_str(raw.get("notes", ""), "notes"),
         legacy=legacy,
+        profile_expectations=_parse_profile_expectations(
+            raw.get("profile_expectations", {})
+        ),
     )
 
 

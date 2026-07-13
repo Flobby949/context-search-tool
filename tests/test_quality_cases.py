@@ -15,6 +15,7 @@ from context_search_tool.quality.cases import (
     Gate,
     LegacyProvenance,
     Matcher,
+    ProfileExpectation,
     TopKMatcher,
     _parse_measurement_matchers,
     adapt_legacy_query_case,
@@ -788,6 +789,212 @@ def test_load_fixture_parses_profile_registry_case_profiles_and_legacy(
     )
 
 
+def test_case_parses_profile_specific_runtime_expectations(
+    tmp_path: Path,
+) -> None:
+    data = {
+        "schema_version": 1,
+        "profile_configs": {
+            "p1_vector_bge": {
+                "embedding": {
+                    "provider": "bge",
+                    "model": "bge-m3",
+                    "dimensions": 1024,
+                },
+                "query_planner": {"enabled": False},
+            },
+            "p1_hybrid_bge": {
+                "embedding": {
+                    "provider": "bge",
+                    "model": "bge-m3",
+                    "dimensions": 1024,
+                },
+                "query_planner": {
+                    "enabled": True,
+                    "provider": "ollama",
+                    "model": "qwen3.5:4b-mlx",
+                },
+            },
+        },
+        "repos": [
+            {
+                "repo_key": "sample",
+                "profiles": ["p1_vector_bge", "p1_hybrid_bge"],
+                "queries": [
+                    {
+                        "id": "cross-language",
+                        "query": "数据看板",
+                        "profiles": ["p1_vector_bge", "p1_hybrid_bge"],
+                        "profile_expectations": {
+                            "p1_vector_bge": {
+                                "planner_status": "disabled",
+                                "variant_retrieval_status": "original_only",
+                            },
+                            "p1_hybrid_bge": {
+                                "planner_status": "ok",
+                                "variant_retrieval_status": "hybrid",
+                                "top_result_planner_semantic_match": True,
+                            },
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+    case = load_quality_fixture(_write_fixture(tmp_path, data)).repos[0].queries[0]
+
+    assert case.profile_expectations == {
+        "p1_vector_bge": ProfileExpectation(
+            planner_status="disabled",
+            variant_retrieval_status="original_only",
+        ),
+        "p1_hybrid_bge": ProfileExpectation(
+            planner_status="ok",
+            variant_retrieval_status="hybrid",
+            top_result_planner_semantic_match=True,
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    "expectation,message",
+    [
+        ({"unknown": True}, "unknown profile expectation field"),
+        ({"planner_status": "maybe"}, "invalid planner_status"),
+        (
+            {"variant_retrieval_status": "fallback"},
+            "invalid variant_retrieval_status",
+        ),
+        (
+            {"top_result_planner_semantic_match": 1},
+            "top_result_planner_semantic_match must be a bool",
+        ),
+    ],
+)
+def test_profile_expectations_reject_unknown_or_invalid_values(
+    tmp_path: Path,
+    expectation: dict,
+    message: str,
+) -> None:
+    data = {
+        "schema_version": 1,
+        "profile_configs": {"custom": {}},
+        "repos": [
+            {
+                "repo_key": "sample",
+                "profiles": ["custom"],
+                "queries": [
+                    {
+                        "id": "case",
+                        "query": "query",
+                        "profile_expectations": {"custom": expectation},
+                    }
+                ],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match=message):
+        load_quality_fixture(_write_fixture(tmp_path, data))
+
+
+@pytest.mark.parametrize(
+    "profile_expectations,message",
+    [
+        ([], "profile_expectations must be an object"),
+        ({"": {}}, "profile expectation name must be a non-empty string"),
+        ({"custom": []}, "profile_expectations.custom must be an object"),
+    ],
+)
+def test_profile_expectations_require_object_shapes_and_nonempty_names(
+    tmp_path: Path,
+    profile_expectations: object,
+    message: str,
+) -> None:
+    data = {
+        "schema_version": 1,
+        "profile_configs": {"custom": {}},
+        "repos": [
+            {
+                "repo_key": "sample",
+                "profiles": ["custom"],
+                "queries": [
+                    {
+                        "id": "case",
+                        "query": "query",
+                        "profile_expectations": profile_expectations,
+                    }
+                ],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match=message):
+        load_quality_fixture(_write_fixture(tmp_path, data))
+
+
+def test_profile_expectation_rejects_unselected_case_profile(
+    tmp_path: Path,
+) -> None:
+    data = {
+        "schema_version": 1,
+        "profile_configs": {"selected": {}, "unselected": {}},
+        "repos": [
+            {
+                "repo_key": "sample",
+                "profiles": ["selected", "unselected"],
+                "queries": [
+                    {
+                        "id": "case",
+                        "query": "query",
+                        "profiles": ["selected"],
+                        "profile_expectations": {
+                            "unselected": {"planner_status": "disabled"}
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="profile expectation uses unselected profile",
+    ):
+        load_quality_fixture(_write_fixture(tmp_path, data))
+
+
+def test_profile_expectation_uses_repo_profiles_when_case_profiles_are_empty(
+    tmp_path: Path,
+) -> None:
+    data = {
+        "schema_version": 1,
+        "profile_configs": {"custom": {}},
+        "repos": [
+            {
+                "repo_key": "sample",
+                "profiles": ["custom"],
+                "queries": [
+                    {
+                        "id": "case",
+                        "query": "query",
+                        "profile_expectations": {
+                            "custom": {"planner_status": "fallback"}
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+    case = load_quality_fixture(_write_fixture(tmp_path, data)).repos[0].queries[0]
+
+    assert case.profile_expectations == {
+        "custom": ProfileExpectation(planner_status="fallback")
+    }
+
+
 def test_canonical_fixture_allows_registry_defined_profile_name(
     tmp_path: Path,
 ) -> None:
@@ -1057,6 +1264,58 @@ def test_loader_rejects_invalid_unused_canonical_profile(
                 query_planner=QueryPlannerConfig(enabled=True),
             ),
             "calibration_bge profile requires the query planner disabled",
+        ),
+        (
+            "p1_vector_bge",
+            ToolConfig(
+                embedding=EmbeddingConfig(
+                    provider="hash",
+                    model="bge-m3",
+                    dimensions=1024,
+                ),
+                query_planner=QueryPlannerConfig(enabled=False),
+            ),
+            "p1_vector_bge profile requires BGE M3 at 1024 dimensions",
+        ),
+        (
+            "p1_vector_bge",
+            ToolConfig(
+                embedding=_VALID_BGE_EMBEDDING,
+                query_planner=QueryPlannerConfig(enabled=True),
+            ),
+            "p1_vector_bge profile requires the query planner disabled",
+        ),
+        (
+            "p1_hybrid_bge",
+            ToolConfig(
+                embedding=_VALID_BGE_EMBEDDING,
+                query_planner=QueryPlannerConfig(enabled=False),
+            ),
+            "p1_hybrid_bge profile requires the query planner enabled",
+        ),
+        (
+            "p1_hybrid_bge",
+            ToolConfig(
+                embedding=_VALID_BGE_EMBEDDING,
+                query_planner=QueryPlannerConfig(
+                    enabled=True,
+                    provider="remote",
+                    model="qwen3.5:4b-mlx",
+                ),
+            ),
+            "p1_hybrid_bge profile requires the Ollama planner",
+        ),
+        (
+            "p1_hybrid_bge",
+            ToolConfig(
+                embedding=_VALID_BGE_EMBEDDING,
+                query_planner=QueryPlannerConfig(
+                    enabled=True,
+                    provider="ollama",
+                    model="other",
+                ),
+            ),
+            "p1_hybrid_bge profile requires qwen3.5:4b-mlx",
         ),
     ],
 )
