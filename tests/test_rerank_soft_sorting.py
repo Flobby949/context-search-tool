@@ -148,6 +148,166 @@ def test_ceiling_tie_uses_pre_ceiling_score_before_role_priority() -> None:
     assert ranked[0].chunk.chunk_id == "planner"
 
 
+def test_negative_ceiling_tie_prefers_clamped_ranked_chunk_before_role_priority() -> None:
+    clamped = retrieval._RankedChunk(
+        chunk=DocumentChunk(
+            chunk_id="clamped",
+            file_path=Path("z/Planner.java"),
+            start_line=10,
+            end_line=20,
+            content="class Planner {}",
+            chunk_type="code",
+        ),
+        score=0.8,
+        score_parts={"role_priority": 9.0},
+        reasons=[],
+        rank_tier=0,
+        rerank_score=-0.42999957,
+        evidence_class="planner_direct",
+        evidence_priority=1,
+        pre_ceiling_rerank_score=-0.33,
+        was_ceiling_clamped=True,
+    )
+    non_clamped = retrieval._RankedChunk(
+        chunk=DocumentChunk(
+            chunk_id="non_clamped",
+            file_path=Path("a/Weak.java"),
+            start_line=10,
+            end_line=20,
+            content="class Weak {}",
+            chunk_type="code",
+        ),
+        score=0.7,
+        score_parts={"role_priority": 0.0},
+        reasons=[],
+        rank_tier=0,
+        rerank_score=-0.43,
+        evidence_class="weak_original_direct",
+        evidence_priority=1,
+        pre_ceiling_rerank_score=-0.43,
+        was_ceiling_clamped=False,
+    )
+
+    ranked = sorted(
+        [non_clamped, clamped],
+        key=retrieval._ranked_chunk_sort_key,
+    )
+
+    assert ranked[0].chunk.chunk_id == "clamped"
+
+
+def test_negative_ceiling_tie_prefers_clamped_expanded_result_before_role_priority() -> None:
+    clamped = retrieval._ExpandedResult(
+        chunk_ids=["clamped"],
+        file_path=Path("z/Planner.java"),
+        start_line=10,
+        end_line=20,
+        content="class Planner {}",
+        score=0.8,
+        score_parts={"role_priority": 9.0},
+        reasons=[],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=-0.42999957,
+        evidence_class="planner_direct",
+        evidence_priority=1,
+        pre_ceiling_rerank_score=-0.33,
+        was_ceiling_clamped=True,
+    )
+    non_clamped = retrieval._ExpandedResult(
+        chunk_ids=["non_clamped"],
+        file_path=Path("a/Weak.java"),
+        start_line=10,
+        end_line=20,
+        content="class Weak {}",
+        score=0.7,
+        score_parts={"role_priority": 0.0},
+        reasons=[],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=-0.43,
+        evidence_class="weak_original_direct",
+        evidence_priority=1,
+        pre_ceiling_rerank_score=-0.43,
+        was_ceiling_clamped=False,
+    )
+
+    ranked = sorted(
+        [non_clamped, clamped],
+        key=retrieval._expanded_result_sort_key,
+    )
+
+    assert ranked[0].chunk_ids == ["clamped"]
+
+
+def test_mixed_planner_semantic_and_original_relation_is_planner_direct() -> None:
+    score_parts = {
+        "original_relation": 0.60,
+        "planner_semantic": 0.80,
+    }
+
+    evidence_class = retrieval._evidence_class(score_parts)
+
+    assert evidence_class == "planner_direct"
+    assert retrieval._evidence_priority(evidence_class) == 1
+
+
+def test_ceiling_tie_does_not_downgrade_planner_direct_with_original_relation() -> None:
+    mixed_score_parts = {
+        "planner_semantic": 0.80,
+        "original_relation": 0.60,
+        "role_priority": 5.0,
+    }
+    planner_score_parts = {
+        "planner_semantic": 0.80,
+        "role_priority": 5.0,
+    }
+    mixed_evidence_class = retrieval._evidence_class(mixed_score_parts)
+    planner_evidence_class = retrieval._evidence_class(planner_score_parts)
+    mixed = retrieval._RankedChunk(
+        chunk=DocumentChunk(
+            chunk_id="mixed",
+            file_path=Path("z/Mixed.java"),
+            start_line=10,
+            end_line=20,
+            content="class Mixed {}",
+            chunk_type="code",
+        ),
+        score=0.8,
+        score_parts=mixed_score_parts,
+        reasons=[],
+        rank_tier=0,
+        rerank_score=0.50,
+        evidence_class=mixed_evidence_class,
+        evidence_priority=retrieval._evidence_priority(mixed_evidence_class),
+        pre_ceiling_rerank_score=0.90,
+        was_ceiling_clamped=True,
+    )
+    planner = retrieval._RankedChunk(
+        chunk=DocumentChunk(
+            chunk_id="planner",
+            file_path=Path("a/Planner.java"),
+            start_line=10,
+            end_line=20,
+            content="class Planner {}",
+            chunk_type="code",
+        ),
+        score=0.8,
+        score_parts=planner_score_parts,
+        reasons=[],
+        rank_tier=0,
+        rerank_score=0.50,
+        evidence_class=planner_evidence_class,
+        evidence_priority=retrieval._evidence_priority(planner_evidence_class),
+        pre_ceiling_rerank_score=0.60,
+        was_ceiling_clamped=True,
+    )
+
+    ranked = sorted([planner, mixed], key=retrieval._ranked_chunk_sort_key)
+
+    assert ranked[0].chunk.chunk_id == "mixed"
+
+
 def test_rerank_high_score_direct_beats_low_score_relation():
     """
     Test #1: High-score direct (semantic ~2.0) must rank before low-score relation-only.
@@ -543,7 +703,7 @@ def test_evidence_class_priority_order():
     # Priority 2: original_relation (only if no direct evidence)
     assert _evidence_class({"original_relation": 0.8}) == "original_relation"
 
-    # Planner direct shares priority 1, after original relation in decision order.
+    # Planner direct shares priority 1 and precedes original relation.
     assert _evidence_class({"planner_lexical": 0.5}) == "planner_direct"
     assert _evidence_class({"planner_signal": 0.4}) == "planner_direct"
     assert _evidence_class({"planner_path_symbol": 1.0}) == "planner_direct"
@@ -573,11 +733,11 @@ def test_evidence_class_mixed_evidence():
         "planner_lexical": 0.5,
     }) == "original_direct"
 
-    # Original relation (without direct) beats planner direct
+    # Planner direct beats original relation.
     assert _evidence_class({
         "original_relation": 0.6,
         "planner_lexical": 0.4,
-    }) == "original_relation"
+    }) == "planner_direct"
 
     # Only original_relation, no direct
     assert _evidence_class({

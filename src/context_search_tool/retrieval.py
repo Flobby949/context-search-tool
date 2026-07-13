@@ -1605,10 +1605,11 @@ def _rank_chunks(
 
 def _ranked_chunk_sort_key(
     item: _RankedChunk,
-) -> tuple[float, int, float, float, float, float, str, int, str]:
+) -> tuple[float, int, int, float, float, float, float, str, int, str]:
     return (
         -round(item.rerank_score, _RERANK_SORT_DECIMALS),
         item.evidence_priority,
+        0 if item.was_ceiling_clamped else 1,
         -(item.pre_ceiling_rerank_score if item.was_ceiling_clamped else 0.0),
         item.score_parts.get("role_priority", 99.0),
         -item.rerank_score,
@@ -1930,10 +1931,11 @@ def _merge_overlapping_results(results: list[_ExpandedResult]) -> list[_Expanded
 
 def _expanded_result_sort_key(
     item: _ExpandedResult,
-) -> tuple[float, int, float, float, float, float, str, int]:
+) -> tuple[float, int, int, float, float, float, float, str, int]:
     return (
         -round(item.rerank_score, _RERANK_SORT_DECIMALS),
         item.evidence_priority,
+        0 if item.was_ceiling_clamped else 1,
         -(item.pre_ceiling_rerank_score if item.was_ceiling_clamped else 0.0),
         item.score_parts.get("role_priority", 99.0),
         -item.rerank_score,
@@ -2240,8 +2242,8 @@ def _evidence_class(score_parts: dict[str, float]) -> str:
     Decision order:
     1. original_direct: has strong direct original evidence
     2. weak_original_direct: has weak direct original evidence
-    3. original_relation: has original_relation score only
-    4. planner_direct: has planner direct evidence
+    3. planner_direct: has planner direct evidence
+    4. original_relation: has original_relation score only
     5. planner_relation: has planner_relation score only
     6. weak_or_generic: fallback for everything else
 
@@ -2255,10 +2257,10 @@ def _evidence_class(score_parts: dict[str, float]) -> str:
         return "original_direct"
     if _has_weak_original_direct_evidence(score_parts):
         return "weak_original_direct"
-    if score_parts.get("original_relation", 0.0) > 0:
-        return "original_relation"
     if _has_planner_direct_evidence(score_parts):
         return "planner_direct"
+    if score_parts.get("original_relation", 0.0) > 0:
+        return "original_relation"
     if score_parts.get("planner_relation", 0.0) > 0:
         return "planner_relation"
     return "weak_or_generic"
