@@ -3,7 +3,7 @@
 Date: 2026-07-08
 Status: Long-term roadmap
 Repository: `/Users/flobby/Documents/context-seatch-tool`
-Next-stage plan: `docs/superpowers/plans/2026-07-08-retrieval-quality-scoring-system.md`
+Next-stage review: Phase 1 Query Understanding acceptance review
 
 ## Summary
 
@@ -128,6 +128,23 @@ User Query
 ## Roadmap Phases
 
 ### Phase 0: Quality Control Loop
+
+Status: Complete (2026-07-11)
+
+Operational guide: `docs/retrieval-quality.md`
+Canonical catalog: `tests/fixtures/retrieval_quality/queries.json`
+Required verified profiles: `ci`, `smoke`, `ab_hash`
+
+Profile status:
+
+| profile | status |
+| --- | --- |
+| ci | verified |
+| smoke | verified |
+| planner | verified |
+| calibration_bge | verified |
+| ab_hash | verified |
+| ab_bge | verified |
 
 Goal: make retrieval quality measurable before deeper changes.
 
