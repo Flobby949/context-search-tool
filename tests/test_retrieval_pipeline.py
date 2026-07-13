@@ -386,15 +386,12 @@ def test_planner_rewrite_recalls_target_by_vector_and_outranks_weak_original(
 
 def test_disabled_failure_and_empty_plans_use_identical_original_vector_results(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "Target.java").write_text(
-        'class Target { String value = "literal target token"; }\n',
-        encoding="utf-8",
-    )
-    index_repository(repo, DEFAULT_CONFIG)
-    query = "target token"
+    repo, config, _ids = _controlled_semantic_repo(tmp_path)
+    provider = CapturingEmbeddingProvider([[1, 0, 0]])
+    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
+    query = "query"
     plans = [
         QueryPlan(original_query=query, status="disabled"),
         QueryPlan(
@@ -416,16 +413,23 @@ def test_disabled_failure_and_empty_plans_use_identical_original_vector_results(
     ]
 
     bundles = [
-        query_repository(repo, query, DEFAULT_CONFIG, planner=FakePlanner(plan))
+        query_repository(repo, query, config, planner=FakePlanner(plan))
         for plan in plans
     ]
     baseline_paths = [result.file_path for result in bundles[0].results]
     baseline_scores = [result.score for result in bundles[0].results]
-    assert baseline_paths == [Path("Target.java")]
+
+    assert provider.calls == [[query]] * len(plans)
+    assert baseline_paths == [Path("Incidental.java")]
+    expected_semantic = bundles[0].results[0].score_parts["semantic"]
+    expected_matches = [SemanticMatch("original", expected_semantic)]
+    assert expected_semantic == pytest.approx(0.40)
 
     for bundle in bundles:
         assert [result.file_path for result in bundle.results] == baseline_paths
         assert [result.score for result in bundle.results] == baseline_scores
+        assert bundle.results[0].score_parts["semantic"] == expected_semantic
+        assert bundle.results[0].semantic_matches == expected_matches
         assert bundle.variant_retrieval_status == "original_only"
         assert bundle.query_variants == [
             QueryVariant("original", query, "original")
@@ -459,7 +463,6 @@ def test_duplicate_rewrites_do_not_change_score_or_search_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo, config, _ids = _controlled_semantic_repo(tmp_path)
-    provider = CapturingEmbeddingProvider([[1, 0, 0], [0, 1, 0]])
     vector_store = retrieval.NumpyVectorStore(index_dir_for(repo))
     search_calls: list[tuple[tuple[float, ...], int]] = []
     real_search = vector_store.search
@@ -474,10 +477,33 @@ def test_duplicate_rewrites_do_not_change_score_or_search_count(
         )
         return real_search(query_vector, top_k, deleted_ids)
 
-    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
     monkeypatch.setattr(retrieval, "NumpyVectorStore", lambda _index_dir: vector_store)
     monkeypatch.setattr(vector_store, "search", recording_search)
-    planner = FakePlanner(
+    baseline_provider = CapturingEmbeddingProvider([[1, 0, 0], [0, 1, 0]])
+    monkeypatch.setattr(
+        retrieval,
+        "provider_from_config",
+        lambda _config: baseline_provider,
+    )
+    baseline_planner = FakePlanner(
+        QueryPlan(
+            original_query="query",
+            rewritten_queries=["semantic bridge"],
+            status="ok",
+        )
+    )
+
+    baseline = query_repository(repo, "query", config, planner=baseline_planner)
+    baseline_search_calls = list(search_calls)
+    search_calls.clear()
+
+    duplicate_provider = CapturingEmbeddingProvider([[1, 0, 0], [0, 1, 0]])
+    monkeypatch.setattr(
+        retrieval,
+        "provider_from_config",
+        lambda _config: duplicate_provider,
+    )
+    duplicate_planner = FakePlanner(
         QueryPlan(
             original_query="query",
             rewritten_queries=[
@@ -489,20 +515,35 @@ def test_duplicate_rewrites_do_not_change_score_or_search_count(
         )
     )
 
-    bundle = query_repository(repo, "query", config, planner=planner)
+    duplicate = query_repository(repo, "query", config, planner=duplicate_planner)
+    duplicate_search_calls = list(search_calls)
 
-    assert provider.calls == [["query", "semantic bridge"]]
-    assert bundle.query_variants == [
+    expected_provider_calls = [["query", "semantic bridge"]]
+    expected_variants = [
         QueryVariant("original", "query", "original"),
         QueryVariant("planner:0", "semantic bridge", "planner"),
     ]
-    assert bundle.variant_retrieval_status == "hybrid"
-    assert bundle.results[0].score_parts["planner_semantic"] == pytest.approx(1.0)
-    assert bundle.results[0].semantic_matches == [SemanticMatch("planner:0", 1.0)]
-    assert search_calls == [
+    expected_search_calls = [
         ((1.0, 0.0, 0.0), config.retrieval.semantic_top_k),
         ((0.0, 1.0, 0.0), config.retrieval.semantic_top_k),
     ]
+    assert baseline_provider.calls == expected_provider_calls
+    assert duplicate_provider.calls == expected_provider_calls
+    assert baseline_search_calls == expected_search_calls
+    assert duplicate_search_calls == expected_search_calls
+    assert [
+        (result.file_path, result.score) for result in duplicate.results
+    ] == [
+        (result.file_path, result.score) for result in baseline.results
+    ]
+
+    for bundle in (baseline, duplicate):
+        assert bundle.query_variants == expected_variants
+        assert bundle.variant_retrieval_status == "hybrid"
+        assert bundle.results[0].score_parts["planner_semantic"] == pytest.approx(1.0)
+        assert bundle.results[0].semantic_matches == [
+            SemanticMatch("planner:0", 1.0)
+        ]
 
 
 def _write_go_imagebed_fixture(repo: Path) -> None:
