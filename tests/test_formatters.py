@@ -1,7 +1,14 @@
 import json
 from pathlib import Path
 
-from context_search_tool.models import EvidenceAnchor, QueryPlan, RetrievalResult, RetrievalSummary
+from context_search_tool.models import (
+    EvidenceAnchor,
+    QueryPlan,
+    QueryVariant,
+    RetrievalResult,
+    RetrievalSummary,
+    SemanticMatch,
+)
 from context_search_tool.retrieval import QueryBundle
 from context_search_tool.formatters import format_json, format_markdown
 
@@ -136,6 +143,25 @@ def test_markdown_formatter_omits_evidence_anchors_section_when_empty() -> None:
     assert "## Evidence Anchors" not in output
 
 
+def test_markdown_does_not_add_per_result_semantic_provenance_table() -> None:
+    bundle = sample_bundle()
+    bundle = QueryBundle(
+        query=bundle.query,
+        expanded_tokens=bundle.expanded_tokens,
+        results=bundle.results,
+        followup_keywords=bundle.followup_keywords,
+        query_variants=[
+            QueryVariant("original", bundle.query, "original"),
+        ],
+        variant_retrieval_status="original_only",
+    )
+
+    output = format_markdown(bundle)
+
+    assert "Semantic matches:" not in output
+    assert "Query variants:" not in output
+
+
 def test_json_formatter_is_structured() -> None:
     output = format_json(sample_bundle())
     parsed = json.loads(output)
@@ -143,6 +169,54 @@ def test_json_formatter_is_structured() -> None:
     assert parsed["query"] == "apply audit"
     assert parsed["results"][0]["file_path"] == "ApplyAuditController.java"
     assert parsed["results"][0]["score_parts"]["lexical"] == 0.8
+
+
+def test_json_formatter_exposes_query_variants_and_semantic_matches() -> None:
+    bundle = QueryBundle(
+        query="数据看板统计图表功能",
+        expanded_tokens=["数据看板统计图表功能", "dashboard"],
+        results=[
+            RetrievalResult(
+                file_path=Path("DashboardController.java"),
+                start_line=1,
+                end_line=10,
+                content="class DashboardController {}",
+                score=0.9,
+                score_parts={
+                    "planner_semantic": 0.84,
+                    "effective_semantic": 0.714,
+                },
+                reasons=["planner semantic match"],
+                followup_keywords=[],
+                semantic_matches=[SemanticMatch("planner:0", 0.84)],
+            )
+        ],
+        followup_keywords=[],
+        query_variants=[
+            QueryVariant("original", "数据看板统计图表功能", "original"),
+            QueryVariant("planner:0", "dashboard statistics chart", "planner"),
+        ],
+        variant_retrieval_status="hybrid",
+    )
+
+    payload = json.loads(format_json(bundle))
+
+    assert payload["query_variants"] == [
+        {
+            "variant_id": "original",
+            "text": "数据看板统计图表功能",
+            "source": "original",
+        },
+        {
+            "variant_id": "planner:0",
+            "text": "dashboard statistics chart",
+            "source": "planner",
+        },
+    ]
+    assert payload["variant_retrieval_status"] == "hybrid"
+    assert payload["results"][0]["semantic_matches"] == [
+        {"variant_id": "planner:0", "score": 0.84}
+    ]
 
 
 def test_json_formatter_includes_evidence_anchors_and_keeps_results() -> None:
@@ -188,6 +262,7 @@ def test_json_formatter_includes_evidence_anchors_and_keeps_results() -> None:
             "score_parts": {"lexical": 0.8},
             "reasons": ["lexical match: apply audit"],
             "followup_keywords": ["pageEs"],
+            "semantic_matches": [],
         }
     ]
     assert parsed["evidence_anchors"] == [
@@ -200,6 +275,7 @@ def test_json_formatter_includes_evidence_anchors_and_keeps_results() -> None:
             "score_parts": {"lexical": 0.2},
             "reasons": ["configuration signal from symbol"],
             "anchor_kind": "config",
+            "semantic_matches": [],
         }
     ]
 

@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from context_search_tool.models import EvidenceAnchor, QueryPlan
+from context_search_tool.models import (
+    EvidenceAnchor,
+    QueryPlan,
+    QueryVariant,
+    SemanticMatch,
+)
 from context_search_tool.retrieval import QueryBundle
 
 
@@ -102,6 +107,10 @@ def format_json(bundle: QueryBundle) -> str:
     payload: dict[str, Any] = {
         "query": bundle.query,
         "expanded_tokens": bundle.expanded_tokens,
+        "query_variants": [
+            _query_variant_payload(variant) for variant in bundle.query_variants
+        ],
+        "variant_retrieval_status": bundle.variant_retrieval_status,
         "followup_keywords": bundle.followup_keywords,
         "summary": {
             "entry_points": bundle.summary.entry_points,
@@ -120,6 +129,10 @@ def format_json(bundle: QueryBundle) -> str:
                 "score_parts": result.score_parts,
                 "reasons": result.reasons,
                 "followup_keywords": result.followup_keywords,
+                "semantic_matches": [
+                    _semantic_match_payload(match)
+                    for match in result.semantic_matches
+                ],
             }
             for result in bundle.results
         ],
@@ -128,6 +141,21 @@ def format_json(bundle: QueryBundle) -> str:
         ],
     }
     return json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True)
+
+
+def _query_variant_payload(variant: QueryVariant) -> dict[str, Any]:
+    return {
+        "variant_id": variant.variant_id,
+        "text": variant.text,
+        "source": variant.source,
+    }
+
+
+def _semantic_match_payload(match: SemanticMatch) -> dict[str, Any]:
+    return {
+        "variant_id": match.variant_id,
+        "score": match.score,
+    }
 
 
 def _planner_payload(plan: QueryPlan) -> dict[str, Any]:
@@ -210,4 +238,7 @@ def _anchor_payload(anchor: EvidenceAnchor) -> dict[str, Any]:
         "score_parts": anchor.score_parts,
         "reasons": anchor.reasons,
         "anchor_kind": anchor.anchor_kind,
+        "semantic_matches": [
+            _semantic_match_payload(match) for match in anchor.semantic_matches
+        ],
     }

@@ -19,7 +19,9 @@ from context_search_tool.manifest import embedding_config_hash, load_manifest
 from context_search_tool.models import (
     DocumentChunk,
     EvidenceAnchor,
+    QueryVariant,
     RetrievalResult,
+    SemanticMatch,
     SymbolRef,
 )
 from context_search_tool.paths import (
@@ -204,6 +206,10 @@ def _query_payload(bundle: QueryBundle) -> dict[str, Any]:
     return {
         "query": bundle.query,
         "expanded_tokens": bundle.expanded_tokens,
+        "query_variants": [
+            _query_variant_payload(variant) for variant in bundle.query_variants
+        ],
+        "variant_retrieval_status": bundle.variant_retrieval_status,
         "followup_keywords": bundle.followup_keywords,
         "summary": {
             "entry_points": bundle.summary.entry_points,
@@ -216,6 +222,21 @@ def _query_payload(bundle: QueryBundle) -> dict[str, Any]:
         "evidence_anchors": [
             _anchor_payload(anchor) for anchor in bundle.evidence_anchors
         ],
+    }
+
+
+def _query_variant_payload(variant: QueryVariant) -> dict[str, Any]:
+    return {
+        "variant_id": variant.variant_id,
+        "text": variant.text,
+        "source": variant.source,
+    }
+
+
+def _semantic_match_payload(match: SemanticMatch) -> dict[str, Any]:
+    return {
+        "variant_id": match.variant_id,
+        "score": match.score,
     }
 
 
@@ -260,6 +281,9 @@ def _result_payload(result: RetrievalResult) -> dict[str, Any]:
         "score_parts": result.score_parts,
         "reasons": result.reasons,
         "followup_keywords": result.followup_keywords,
+        "semantic_matches": [
+            _semantic_match_payload(match) for match in result.semantic_matches
+        ],
     }
 
 
@@ -273,6 +297,9 @@ def _anchor_payload(anchor: EvidenceAnchor) -> dict[str, Any]:
         "score_parts": anchor.score_parts,
         "reasons": anchor.reasons,
         "anchor_kind": anchor.anchor_kind,
+        "semantic_matches": [
+            _semantic_match_payload(match) for match in anchor.semantic_matches
+        ],
     }
 
 
@@ -363,6 +390,7 @@ def _append_query_feedback(
         "followup_keyword_count": len(payload.get("followup_keywords", [])),
         "embedding": payload.get("index", {}).get("embedding", {}),
         "planner": _feedback_planner_payload(payload),
+        "variant_retrieval": _feedback_variant_payload(payload),
         "error_code": payload.get("error", {}).get("code"),
     }
     log_path = index_dir / "mcp_calls.jsonl"
@@ -390,6 +418,33 @@ def _feedback_planner_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "discarded_hint_count",
         )
         if key in planner
+    }
+
+
+def _feedback_variant_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    variants = payload.get("query_variants", [])
+    if not isinstance(variants, list):
+        variants = []
+    bounded = []
+    for position, item in enumerate(variants):
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text", "")
+        bounded.append(
+            {
+                "variant_id": item.get("variant_id"),
+                "source": item.get("source"),
+                "position": position,
+                "text_hash": _short_hash(text if isinstance(text, str) else ""),
+            }
+        )
+    return {
+        "status": payload.get(
+            "variant_retrieval_status",
+            "original_only",
+        ),
+        "count": len(bounded),
+        "variants": bounded,
     }
 
 

@@ -8,7 +8,13 @@ from context_search_tool.mcp_tools import (
     context_search_query_tool,
     context_search_stats_tool,
 )
-from context_search_tool.models import EvidenceAnchor, QueryPlan, RetrievalResult
+from context_search_tool.models import (
+    EvidenceAnchor,
+    QueryPlan,
+    QueryVariant,
+    RetrievalResult,
+    SemanticMatch,
+)
 from context_search_tool.retrieval import QueryBundle
 
 
@@ -264,6 +270,56 @@ def test_mcp_query_payload_includes_evidence_anchors() -> None:
     assert isinstance(payload["evidence_anchors"][0]["score_parts"]["lexical"], (int, float))
 
 
+def test_mcp_query_payload_exposes_variant_and_anchor_provenance() -> None:
+    bundle = QueryBundle(
+        query="query",
+        expanded_tokens=["query"],
+        results=[
+            RetrievalResult(
+                file_path=Path("App.java"),
+                start_line=1,
+                end_line=2,
+                content="class App {}",
+                score=0.8,
+                score_parts={"planner_semantic": 0.8},
+                reasons=["planner semantic match"],
+                followup_keywords=[],
+                semantic_matches=[SemanticMatch("planner:0", 0.8)],
+            )
+        ],
+        followup_keywords=[],
+        evidence_anchors=[
+            EvidenceAnchor(
+                file_path=Path("README.md"),
+                start_line=1,
+                end_line=2,
+                content="App docs",
+                score=0.4,
+                score_parts={"planner_semantic": 0.4},
+                reasons=["planner semantic match"],
+                anchor_kind="document",
+                semantic_matches=[SemanticMatch("planner:0", 0.4)],
+            )
+        ],
+        query_variants=[
+            QueryVariant("original", "query", "original"),
+            QueryVariant("planner:0", "application entrypoint", "planner"),
+        ],
+        variant_retrieval_status="hybrid",
+    )
+
+    payload = mcp_tools._query_payload(bundle)
+
+    assert payload["variant_retrieval_status"] == "hybrid"
+    assert payload["query_variants"][1]["variant_id"] == "planner:0"
+    assert payload["results"][0]["semantic_matches"] == [
+        {"variant_id": "planner:0", "score": 0.8}
+    ]
+    assert payload["evidence_anchors"][0]["semantic_matches"] == [
+        {"variant_id": "planner:0", "score": 0.4}
+    ]
+
+
 def test_mcp_query_payload_includes_repo_profile_planner_diagnostics() -> None:
     bundle = QueryBundle(
         query="cookies",
@@ -329,6 +385,60 @@ def test_mcp_query_feedback_includes_planner_metadata_without_prompt_text(
     assert "grep_keywords" not in planner
     assert "symbol_hints" not in planner
     assert "ApplyAuditController" not in json.dumps(event)
+
+
+def test_mcp_feedback_hashes_variants_without_storing_rewrite_text(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".context-search").mkdir()
+    payload = {
+        "ok": True,
+        "results": [],
+        "summary": {},
+        "followup_keywords": [],
+        "planner": {"status": "ok"},
+        "variant_retrieval_status": "hybrid",
+        "query_variants": [
+            {
+                "variant_id": "original",
+                "source": "original",
+                "text": "original secret query",
+            },
+            {
+                "variant_id": "planner:0",
+                "source": "planner",
+                "text": "private planner rewrite",
+            },
+        ],
+    }
+
+    mcp_tools._append_query_feedback(
+        repo,
+        query="original secret query",
+        payload=payload,
+        context_lines=None,
+        full_file=False,
+        final_top_k=None,
+    )
+    event = json.loads(
+        (repo / ".context-search" / "mcp_calls.jsonl").read_text(
+            encoding="utf-8"
+        )
+    )
+    serialized = json.dumps(event)
+
+    assert event["query"] == "original secret query"
+    assert event["variant_retrieval"]["status"] == "hybrid"
+    assert event["variant_retrieval"]["count"] == 2
+    assert event["variant_retrieval"]["variants"][1] == {
+        "variant_id": "planner:0",
+        "source": "planner",
+        "position": 1,
+        "text_hash": mcp_tools._short_hash("private planner rewrite"),
+    }
+    assert "private planner rewrite" not in serialized
 
 
 def test_mcp_query_feedback_includes_embedding_config_hash(tmp_path: Path) -> None:
