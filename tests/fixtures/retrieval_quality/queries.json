@@ -63,6 +63,29 @@
       "query_planner": {
         "enabled": false
       }
+    },
+    "p1_vector_bge": {
+      "embedding": {
+        "provider": "bge",
+        "model": "bge-m3",
+        "dimensions": 1024
+      },
+      "query_planner": {
+        "enabled": false
+      }
+    },
+    "p1_hybrid_bge": {
+      "embedding": {
+        "provider": "bge",
+        "model": "bge-m3",
+        "dimensions": 1024
+      },
+      "query_planner": {
+        "enabled": true,
+        "provider": "ollama",
+        "model": "qwen3.5:4b-mlx",
+        "timeout_seconds": 30
+      }
     }
   },
   "repos": [
@@ -805,12 +828,19 @@
       "repo_key": "java_spring_mini",
       "snapshot_path": "tests/fixtures/java-spring-mini",
       "profiles": [
-        "ci"
+        "ci",
+        "p1_vector_bge",
+        "p1_hybrid_bge"
       ],
       "queries": [
         {
           "id": "apply-audit-endpoint",
           "query": "/apply/audit/pageEs INVOLVED_BY_ME",
+          "profiles": [
+            "ci",
+            "p1_vector_bge",
+            "p1_hybrid_bge"
+          ],
           "tags": [
             "java_spring",
             "exact_identifier",
@@ -830,11 +860,23 @@
               "max_rank": 3,
               "role": "entrypoint"
             }
-          ]
+          ],
+          "profile_expectations": {
+            "p1_vector_bge": {
+              "planner_status": "disabled",
+              "variant_retrieval_status": "original_only"
+            },
+            "p1_hybrid_bge": {
+              "planner_status": "ok"
+            }
+          }
         },
         {
           "id": "workbench-audit-localized-cjk",
           "query": "工作台统计 待我审核",
+          "profiles": [
+            "ci"
+          ],
           "tags": [
             "java_spring",
             "localized_cjk",
@@ -855,6 +897,34 @@
               "role": "entrypoint"
             }
           ]
+        },
+        {
+          "id": "audit-status-literal",
+          "query": "INVOLVED_BY_ME",
+          "profiles": [
+            "p1_vector_bge",
+            "p1_hybrid_bge"
+          ],
+          "tags": [
+            "java_spring",
+            "exact_literal"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/main/java/com/example/audit/AuditStatus.java",
+              "top_k": 3
+            }
+          ],
+          "profile_expectations": {
+            "p1_vector_bge": {
+              "planner_status": "disabled",
+              "variant_retrieval_status": "original_only"
+            },
+            "p1_hybrid_bge": {
+              "planner_status": "ok"
+            }
+          }
         }
       ]
     },
@@ -1195,14 +1265,18 @@
       "repo_key": "cross_language_dashboard",
       "snapshot_path": "tests/fixtures/real_projects/cross_language_dashboard",
       "profiles": [
-        "planner"
+        "planner",
+        "p1_vector_bge",
+        "p1_hybrid_bge"
       ],
       "queries": [
         {
           "id": "dashboard-cross-language",
           "query": "数据看板统计图表功能",
           "profiles": [
-            "planner"
+            "planner",
+            "p1_vector_bge",
+            "p1_hybrid_bge"
           ],
           "tags": [
             "java_spring",
@@ -1236,7 +1310,55 @@
               "max_rank": 3,
               "role": "entrypoint"
             }
-          ]
+          ],
+          "profile_expectations": {
+            "p1_vector_bge": {
+              "planner_status": "disabled",
+              "variant_retrieval_status": "original_only"
+            },
+            "p1_hybrid_bge": {
+              "planner_status": "ok",
+              "variant_retrieval_status": "hybrid",
+              "top_result_planner_semantic_match": true
+            }
+          }
+        },
+        {
+          "id": "dashboard-controller-path",
+          "query": "src/main/java/com/example/dashboard/DashboardController.java",
+          "profiles": [
+            "p1_vector_bge",
+            "p1_hybrid_bge"
+          ],
+          "tags": [
+            "java_spring",
+            "exact_path",
+            "entrypoint"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/main/java/com/example/dashboard/DashboardController.java",
+              "top_k": 1
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "src/main/java/com/example/dashboard/DashboardController.java",
+              "top_k": 1,
+              "max_rank": 1,
+              "role": "entrypoint"
+            }
+          ],
+          "profile_expectations": {
+            "p1_vector_bge": {
+              "planner_status": "disabled",
+              "variant_retrieval_status": "original_only"
+            },
+            "p1_hybrid_bge": {
+              "planner_status": "ok"
+            }
+          }
         }
       ]
     },
@@ -1247,7 +1369,9 @@
       "snapshot_path": "tests/fixtures/real_projects/embedding_ab",
       "profiles": [
         "ab_hash",
-        "ab_bge"
+        "ab_bge",
+        "p1_vector_bge",
+        "p1_hybrid_bge"
       ],
       "queries": [
         {
@@ -1365,6 +1489,92 @@
           "legacy": {
             "fixture": "ab_comparison",
             "key": "embedding_ab/embedding-ab-order-cancel"
+          }
+        },
+        {
+          "id": "access-validation-cross-language",
+          "query": "开门校验场景",
+          "profiles": [
+            "p1_vector_bge",
+            "p1_hybrid_bge"
+          ],
+          "tags": [
+            "java",
+            "cross_language"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/access/WhitelistValidation.java",
+              "top_k": 5
+            }
+          ],
+          "profile_expectations": {
+            "p1_vector_bge": {
+              "planner_status": "disabled",
+              "variant_retrieval_status": "original_only"
+            },
+            "p1_hybrid_bge": {
+              "planner_status": "ok",
+              "variant_retrieval_status": "hybrid"
+            }
+          }
+        },
+        {
+          "id": "blacklist-management-cross-language",
+          "query": "黑白名单管理",
+          "profiles": [
+            "p1_vector_bge",
+            "p1_hybrid_bge"
+          ],
+          "tags": [
+            "java",
+            "cross_language"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/access/BlacklistManager.java",
+              "top_k": 5
+            }
+          ],
+          "profile_expectations": {
+            "p1_vector_bge": {
+              "planner_status": "disabled",
+              "variant_retrieval_status": "original_only"
+            },
+            "p1_hybrid_bge": {
+              "planner_status": "ok",
+              "variant_retrieval_status": "hybrid"
+            }
+          }
+        },
+        {
+          "id": "order-service-symbol",
+          "query": "OrderService cancel method",
+          "profiles": [
+            "p1_vector_bge",
+            "p1_hybrid_bge"
+          ],
+          "tags": [
+            "java",
+            "exact_symbol"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/order/OrderService.java",
+              "top_k": 1
+            }
+          ],
+          "profile_expectations": {
+            "p1_vector_bge": {
+              "planner_status": "disabled",
+              "variant_retrieval_status": "original_only"
+            },
+            "p1_hybrid_bge": {
+              "planner_status": "ok"
+            }
           }
         }
       ]

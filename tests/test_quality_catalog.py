@@ -92,6 +92,27 @@ EXPECTED_PROFILE_CONFIGS = {
         },
         "query_planner": {"enabled": False},
     },
+    "p1_vector_bge": {
+        "embedding": {
+            "provider": "bge",
+            "model": "bge-m3",
+            "dimensions": 1024,
+        },
+        "query_planner": {"enabled": False},
+    },
+    "p1_hybrid_bge": {
+        "embedding": {
+            "provider": "bge",
+            "model": "bge-m3",
+            "dimensions": 1024,
+        },
+        "query_planner": {
+            "enabled": True,
+            "provider": "ollama",
+            "model": "qwen3.5:4b-mlx",
+            "timeout_seconds": 30,
+        },
+    },
 }
 
 EXPECTED_REPO_WIRING = (
@@ -122,7 +143,7 @@ EXPECTED_REPO_WIRING = (
     ),
     (
         "java_spring_mini",
-        ("ci",),
+        ("ci", "p1_vector_bge", "p1_hybrid_bge"),
         "",
         "",
         "tests/fixtures/java-spring-mini",
@@ -154,7 +175,7 @@ EXPECTED_REPO_WIRING = (
     ),
     (
         "cross_language_dashboard",
-        ("planner",),
+        ("planner", "p1_vector_bge", "p1_hybrid_bge"),
         "",
         "",
         "tests/fixtures/real_projects/cross_language_dashboard",
@@ -162,7 +183,7 @@ EXPECTED_REPO_WIRING = (
     ),
     (
         "embedding_ab",
-        ("ab_hash", "ab_bge"),
+        ("ab_hash", "ab_bge", "p1_vector_bge", "p1_hybrid_bge"),
         "CST_QUALITY_AB_REPO",
         "embedding-ab",
         "tests/fixtures/real_projects/embedding_ab",
@@ -192,6 +213,7 @@ EXPECTED_AB_CASE_DEFAULTS = {
     "anchor_expected": (),
     "known_gap_reason": "",
     "notes": "",
+    "profile_expectations": {},
 }
 
 EXPECTED_AB_CASES = {
@@ -269,6 +291,7 @@ EXPECTED_NEW_CASE_DEFAULTS = {
     "anchor_expected": (),
     "known_gap_reason": "",
     "notes": "",
+    "profile_expectations": {},
     "legacy": None,
 }
 
@@ -278,7 +301,7 @@ EXPECTED_NEW_CASES = {
         "repo_key": "java_spring_mini",
         "case_id": "apply-audit-endpoint",
         "query": "/apply/audit/pageEs INVOLVED_BY_ME",
-        "profiles": (),
+        "profiles": ("ci", "p1_vector_bge", "p1_hybrid_bge"),
         "tags": ("java_spring", "exact_identifier", "entrypoint"),
         "gate": Gate.REQUIRED,
         "expected_top_k": (
@@ -296,13 +319,20 @@ EXPECTED_NEW_CASES = {
                 "role": "entrypoint",
             },
         ),
+        "profile_expectations": {
+            "p1_vector_bge": {
+                "planner_status": "disabled",
+                "variant_retrieval_status": "original_only",
+            },
+            "p1_hybrid_bge": {"planner_status": "ok"},
+        },
     },
     "java_spring_mini/workbench-audit-localized-cjk": {
         **EXPECTED_NEW_CASE_DEFAULTS,
         "repo_key": "java_spring_mini",
         "case_id": "workbench-audit-localized-cjk",
         "query": "工作台统计 待我审核",
-        "profiles": (),
+        "profiles": ("ci",),
         "tags": ("java_spring", "localized_cjk", "entrypoint"),
         "gate": Gate.REQUIRED,
         "expected_top_k": (
@@ -320,6 +350,30 @@ EXPECTED_NEW_CASES = {
                 "role": "entrypoint",
             },
         ),
+    },
+    "java_spring_mini/audit-status-literal": {
+        **EXPECTED_NEW_CASE_DEFAULTS,
+        "repo_key": "java_spring_mini",
+        "case_id": "audit-status-literal",
+        "query": "INVOLVED_BY_ME",
+        "profiles": ("p1_vector_bge", "p1_hybrid_bge"),
+        "tags": ("java_spring", "exact_literal"),
+        "gate": Gate.REQUIRED,
+        "expected_top_k": (
+            {
+                "path": "src/main/java/com/example/audit/AuditStatus.java",
+                "top_k": 3,
+            },
+        ),
+        "expected_any_top_k": (),
+        "preferred_rank": (),
+        "profile_expectations": {
+            "p1_vector_bge": {
+                "planner_status": "disabled",
+                "variant_retrieval_status": "original_only",
+            },
+            "p1_hybrid_bge": {"planner_status": "ok"},
+        },
     },
     "psf_requests/cookies-between-calls": {
         **EXPECTED_NEW_CASE_DEFAULTS,
@@ -374,7 +428,7 @@ EXPECTED_NEW_CASES = {
         "repo_key": "cross_language_dashboard",
         "case_id": "dashboard-cross-language",
         "query": "数据看板统计图表功能",
-        "profiles": ("planner",),
+        "profiles": ("planner", "p1_vector_bge", "p1_hybrid_bge"),
         "tags": ("java_spring", "cross_language", "entrypoint"),
         "gate": Gate.REQUIRED,
         "expected_top_k": (
@@ -404,7 +458,128 @@ EXPECTED_NEW_CASES = {
                 "role": "entrypoint",
             },
         ),
+        "profile_expectations": {
+            "p1_vector_bge": {
+                "planner_status": "disabled",
+                "variant_retrieval_status": "original_only",
+            },
+            "p1_hybrid_bge": {
+                "planner_status": "ok",
+                "variant_retrieval_status": "hybrid",
+                "top_result_planner_semantic_match": True,
+            },
+        },
     },
+    "cross_language_dashboard/dashboard-controller-path": {
+        **EXPECTED_NEW_CASE_DEFAULTS,
+        "repo_key": "cross_language_dashboard",
+        "case_id": "dashboard-controller-path",
+        "query": "src/main/java/com/example/dashboard/DashboardController.java",
+        "profiles": ("p1_vector_bge", "p1_hybrid_bge"),
+        "tags": ("java_spring", "exact_path", "entrypoint"),
+        "gate": Gate.REQUIRED,
+        "expected_top_k": (
+            {
+                "path": "src/main/java/com/example/dashboard/DashboardController.java",
+                "top_k": 1,
+            },
+        ),
+        "expected_any_top_k": (),
+        "preferred_rank": (
+            {
+                "path": "src/main/java/com/example/dashboard/DashboardController.java",
+                "top_k": 1,
+                "max_rank": 1,
+                "role": "entrypoint",
+            },
+        ),
+        "profile_expectations": {
+            "p1_vector_bge": {
+                "planner_status": "disabled",
+                "variant_retrieval_status": "original_only",
+            },
+            "p1_hybrid_bge": {"planner_status": "ok"},
+        },
+    },
+    "embedding_ab/access-validation-cross-language": {
+        **EXPECTED_NEW_CASE_DEFAULTS,
+        "repo_key": "embedding_ab",
+        "case_id": "access-validation-cross-language",
+        "query": "开门校验场景",
+        "profiles": ("p1_vector_bge", "p1_hybrid_bge"),
+        "tags": ("java", "cross_language"),
+        "gate": Gate.REQUIRED,
+        "expected_top_k": (
+            {"path": "src/access/WhitelistValidation.java", "top_k": 5},
+        ),
+        "expected_any_top_k": (),
+        "preferred_rank": (),
+        "profile_expectations": {
+            "p1_vector_bge": {
+                "planner_status": "disabled",
+                "variant_retrieval_status": "original_only",
+            },
+            "p1_hybrid_bge": {
+                "planner_status": "ok",
+                "variant_retrieval_status": "hybrid",
+            },
+        },
+    },
+    "embedding_ab/blacklist-management-cross-language": {
+        **EXPECTED_NEW_CASE_DEFAULTS,
+        "repo_key": "embedding_ab",
+        "case_id": "blacklist-management-cross-language",
+        "query": "黑白名单管理",
+        "profiles": ("p1_vector_bge", "p1_hybrid_bge"),
+        "tags": ("java", "cross_language"),
+        "gate": Gate.REQUIRED,
+        "expected_top_k": (
+            {"path": "src/access/BlacklistManager.java", "top_k": 5},
+        ),
+        "expected_any_top_k": (),
+        "preferred_rank": (),
+        "profile_expectations": {
+            "p1_vector_bge": {
+                "planner_status": "disabled",
+                "variant_retrieval_status": "original_only",
+            },
+            "p1_hybrid_bge": {
+                "planner_status": "ok",
+                "variant_retrieval_status": "hybrid",
+            },
+        },
+    },
+    "embedding_ab/order-service-symbol": {
+        **EXPECTED_NEW_CASE_DEFAULTS,
+        "repo_key": "embedding_ab",
+        "case_id": "order-service-symbol",
+        "query": "OrderService cancel method",
+        "profiles": ("p1_vector_bge", "p1_hybrid_bge"),
+        "tags": ("java", "exact_symbol"),
+        "gate": Gate.REQUIRED,
+        "expected_top_k": (
+            {"path": "src/order/OrderService.java", "top_k": 1},
+        ),
+        "expected_any_top_k": (),
+        "preferred_rank": (),
+        "profile_expectations": {
+            "p1_vector_bge": {
+                "planner_status": "disabled",
+                "variant_retrieval_status": "original_only",
+            },
+            "p1_hybrid_bge": {"planner_status": "ok"},
+        },
+    },
+}
+
+EXPECTED_P1_CASE_KEYS = {
+    "java_spring_mini/apply-audit-endpoint",
+    "java_spring_mini/audit-status-literal",
+    "cross_language_dashboard/dashboard-cross-language",
+    "cross_language_dashboard/dashboard-controller-path",
+    "embedding_ab/access-validation-cross-language",
+    "embedding_ab/blacklist-management-cross-language",
+    "embedding_ab/order-service-symbol",
 }
 
 EXPECTED_LEGACY_PAIRS = {
@@ -635,6 +810,22 @@ def _quality_case_manifest(case: QualityCase) -> dict[str, object]:
         "anchor_expected": case.anchor_expected,
         "known_gap_reason": case.known_gap_reason,
         "notes": case.notes,
+        "profile_expectations": {
+            profile: {
+                key: value
+                for key, value in {
+                    "planner_status": expectation.planner_status,
+                    "variant_retrieval_status": (
+                        expectation.variant_retrieval_status
+                    ),
+                    "top_result_planner_semantic_match": (
+                        expectation.top_result_planner_semantic_match
+                    ),
+                }.items()
+                if value is not None
+            }
+            for profile, expectation in case.profile_expectations.items()
+        },
         "legacy": (
             {
                 "fixture": case.legacy.fixture,
@@ -688,7 +879,7 @@ def test_catalog_profile_registry_and_inventory() -> None:
     cases = _catalog_cases()
 
     assert fixture.profile_configs == EXPECTED_PROFILE_CONFIGS
-    assert len(cases) == 39
+    assert len(cases) == 44
     assert "program_tool/qrcode-tool" in cases
     assert "program_tool_snapshot/qrcode-entrypoint" not in cases
     assert cases["cross_language_dashboard/dashboard-cross-language"].tags == (
@@ -739,13 +930,65 @@ def test_catalog_repo_wiring_matches_approved_inventory() -> None:
     ].snapshot_path
 
 
+def test_phase_one_profiles_select_identical_required_committed_cases() -> None:
+    fixture = load_quality_fixture(CATALOG_PATH)
+    selected = {}
+    for profile in ("p1_vector_bge", "p1_hybrid_bge"):
+        selected[profile] = {
+            f"{repo.repo_key}/{case.case_id}"
+            for repo in fixture.repos
+            for case in repo.queries
+            if profile in repo.profiles
+            and (not case.profiles or profile in case.profiles)
+        }
+
+    assert selected["p1_vector_bge"] == EXPECTED_P1_CASE_KEYS
+    assert selected["p1_hybrid_bge"] == EXPECTED_P1_CASE_KEYS
+    cases = _catalog_cases()
+    assert all(cases[key].gate is Gate.REQUIRED for key in EXPECTED_P1_CASE_KEYS)
+    assert sum(
+        "cross_language" in cases[key].tags
+        for key in EXPECTED_P1_CASE_KEYS
+    ) == 3
+
+
 def test_catalog_case_profiles_match_approved_selection() -> None:
     cases = _catalog_cases()
     expected = {
+        "java_spring_mini/apply-audit-endpoint": (
+            "ci",
+            "p1_vector_bge",
+            "p1_hybrid_bge",
+        ),
+        "java_spring_mini/workbench-audit-localized-cjk": ("ci",),
+        "java_spring_mini/audit-status-literal": (
+            "p1_vector_bge",
+            "p1_hybrid_bge",
+        ),
         "psf_requests/cookies-between-calls": ("planner",),
         "psf_requests/retry-proxy-pooling-natural": ("planner",),
         "psf_requests/stream-response-body-natural": ("planner",),
-        "cross_language_dashboard/dashboard-cross-language": ("planner",),
+        "cross_language_dashboard/dashboard-cross-language": (
+            "planner",
+            "p1_vector_bge",
+            "p1_hybrid_bge",
+        ),
+        "cross_language_dashboard/dashboard-controller-path": (
+            "p1_vector_bge",
+            "p1_hybrid_bge",
+        ),
+        "embedding_ab/access-validation-cross-language": (
+            "p1_vector_bge",
+            "p1_hybrid_bge",
+        ),
+        "embedding_ab/blacklist-management-cross-language": (
+            "p1_vector_bge",
+            "p1_hybrid_bge",
+        ),
+        "embedding_ab/order-service-symbol": (
+            "p1_vector_bge",
+            "p1_hybrid_bge",
+        ),
         **{
             f"embedding_ab/{case_id}": ("ab_hash", "ab_bge")
             for case_id in AB_IDS
