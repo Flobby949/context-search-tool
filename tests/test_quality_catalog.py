@@ -829,22 +829,68 @@ def test_legacy_provenance_inventory() -> None:
     )
 
 
+def _investment_assistant_source() -> Path | None:
+    candidates = []
+    direct_source = os.environ.get("CST_SMOKE_INVESTMENT_ASSISTANT_REPO")
+    if direct_source:
+        candidates.append(Path(direct_source).expanduser())
+    smoke_root = os.environ.get("CST_SMOKE_REPOS_DIR")
+    if smoke_root:
+        candidates.append(Path(smoke_root).expanduser() / "Investment-Assistant")
+
+    return next((candidate for candidate in candidates if candidate.is_dir()), None)
+
+
+def test_investment_assistant_source_falls_back_from_stale_direct_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    smoke_source = tmp_path / "smoke" / "Investment-Assistant"
+    smoke_source.mkdir(parents=True)
+    monkeypatch.setenv("CST_SMOKE_INVESTMENT_ASSISTANT_REPO", "~/missing")
+    monkeypatch.setenv("CST_SMOKE_REPOS_DIR", "~/smoke")
+
+    assert _investment_assistant_source() == smoke_source
+
+
+def test_investment_assistant_source_prefers_valid_direct_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    direct_source = tmp_path / "direct"
+    direct_source.mkdir()
+    smoke_source = tmp_path / "smoke" / "Investment-Assistant"
+    smoke_source.mkdir(parents=True)
+    monkeypatch.setenv(
+        "CST_SMOKE_INVESTMENT_ASSISTANT_REPO",
+        str(direct_source),
+    )
+    monkeypatch.setenv("CST_SMOKE_REPOS_DIR", str(smoke_source.parent))
+
+    assert _investment_assistant_source() == direct_source
+
+
+def test_investment_assistant_source_returns_none_when_neither_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "CST_SMOKE_INVESTMENT_ASSISTANT_REPO",
+        str(tmp_path / "missing-direct"),
+    )
+    monkeypatch.setenv("CST_SMOKE_REPOS_DIR", str(tmp_path / "missing-root"))
+
+    assert _investment_assistant_source() is None
+
+
 @pytest.mark.slow
 @pytest.mark.integration
 def test_investment_assistant_targets_enter_candidate_pool(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    raw_repo = os.environ.get("CST_SMOKE_INVESTMENT_ASSISTANT_REPO")
-    smoke_root = os.environ.get("CST_SMOKE_REPOS_DIR")
-    source = (
-        Path(raw_repo)
-        if raw_repo
-        else Path(smoke_root) / "Investment-Assistant"
-        if smoke_root
-        else None
-    )
-    if source is None or not source.is_dir():
+    source = _investment_assistant_source()
+    if source is None:
         pytest.skip("investment assistant repo not configured")
 
     copied = tmp_path / source.name
