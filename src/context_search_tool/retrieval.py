@@ -4,7 +4,7 @@ import re
 import sqlite3
 import logging
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from context_search_tool.chunker import expand_lines
@@ -24,9 +24,11 @@ from context_search_tool.models import (
     DocumentChunk,
     EvidenceAnchor,
     QueryPlan,
+    QueryVariant,
     RetrievalCandidate,
     RetrievalResult,
     RetrievalSummary,
+    SemanticMatch,
 )
 from context_search_tool.path_roles import PathRole, classify_path_role
 from context_search_tool.paths import index_dir_for
@@ -40,6 +42,7 @@ from context_search_tool.project_scope import (
 from context_search_tool.query_intent import QueryIntent, infer_query_intent
 from context_search_tool.query_planner import (
     QueryPlanner,
+    build_query_variants,
     expand_query_plan_tokens,
     planner_from_config,
     planner_hint_tokens,
@@ -154,6 +157,8 @@ class QueryBundle:
     summary: RetrievalSummary = field(default_factory=RetrievalSummary)
     planner: QueryPlan = field(default_factory=QueryPlan.disabled_default)
     evidence_anchors: list[EvidenceAnchor] = field(default_factory=list)
+    query_variants: list[QueryVariant] = field(default_factory=list)
+    variant_retrieval_status: str = "original_only"
 
 
 @dataclass(frozen=True)
@@ -229,6 +234,8 @@ def query_repository(
     original_tokens = _dedupe(tokenize_query(query))
     tokens = original_tokens
     plan = QueryPlan(original_query=query)
+    query_variants = [QueryVariant("original", " ".join(query.split()), "original")]
+    variant_retrieval_status = "original_only"
     index_dir = index_dir_for(repo)
     db_path = index_dir / "index.sqlite"
     if not db_path.exists():
@@ -238,6 +245,8 @@ def query_repository(
             results=[],
             followup_keywords=[],
             planner=plan,
+            query_variants=query_variants,
+            variant_retrieval_status=variant_retrieval_status,
         )
 
     assert_manifest_compatible(repo, config)
@@ -252,20 +261,35 @@ def query_repository(
             results=[],
             followup_keywords=[],
             planner=plan,
+            query_variants=query_variants,
+            variant_retrieval_status=variant_retrieval_status,
         )
 
     query_planner = planner or planner_from_config(config.query_planner)
     repo_profile = build_repo_profile(store)
     plan = query_planner.plan(query, repo_profile=repo_profile)
+    query_variants, discarded_variants = build_query_variants(
+        query,
+        plan,
+        config.query_planner.max_rewritten_queries,
+    )
+    if discarded_variants:
+        plan = replace(
+            plan,
+            discarded_hints=_ordered_unique(
+                [*plan.discarded_hints, *discarded_variants]
+            ),
+        )
     tokens = expand_query_plan_tokens(query, plan)
     hint_tokens = (
         planner_hint_tokens(original_tokens, tokens) if plan.status == "ok" else []
     )
-    initial_candidates = _initial_candidates(
+    initial_candidates, query_variants, variant_retrieval_status = _initial_candidates(
         index_dir,
         store,
         query,
         original_tokens,
+        query_variants,
         config,
         deleted_ids,
     )
@@ -306,6 +330,8 @@ def query_repository(
             results=[],
             followup_keywords=[],
             planner=plan,
+            query_variants=query_variants,
+            variant_retrieval_status=variant_retrieval_status,
         )
 
     ranked_chunks = _rank_chunks(store, candidates, original_tokens, query)
@@ -343,6 +369,8 @@ def query_repository(
         summary=summary,
         planner=plan,
         evidence_anchors=evidence_anchors,
+        query_variants=query_variants,
+        variant_retrieval_status=variant_retrieval_status,
     )
 
 
@@ -684,37 +712,69 @@ def _initial_candidates(
     store: SQLiteStore,
     query: str,
     original_tokens: list[str],
+    query_variants: list[QueryVariant],
     config: ToolConfig,
     deleted_ids: set[str],
-) -> list[RetrievalCandidate]:
+) -> tuple[list[RetrievalCandidate], list[QueryVariant], str]:
+    semantic_candidates, executed_variants, status = _semantic_candidates(
+        index_dir,
+        query_variants,
+        config,
+        deleted_ids,
+    )
     return [
-        *_semantic_candidates(index_dir, query, config, deleted_ids),
+        *semantic_candidates,
         *_lexical_candidates(store, original_tokens, config.retrieval.lexical_top_k),
         *store.path_symbol_search(original_tokens, config.retrieval.lexical_top_k),
         *_direct_text_candidates(store, query, original_tokens, config),
-    ]
+    ], executed_variants, status
 
 
 def _semantic_candidates(
     index_dir: Path,
-    query: str,
+    variants: list[QueryVariant],
     config: ToolConfig,
     deleted_ids: set[str],
-) -> list[RetrievalCandidate]:
-    query_vector = provider_from_config(config.embedding).embed_texts([query])[0]
-    return [
-        RetrievalCandidate(
-            chunk_id=item.chunk_id,
-            score=item.score,
-            source="semantic",
-            score_parts={"semantic": item.score},
+) -> tuple[list[RetrievalCandidate], list[QueryVariant], str]:
+    provider = provider_from_config(config.embedding)
+    vector_store = NumpyVectorStore(index_dir)
+    try:
+        vectors = provider.embed_texts([variant.text for variant in variants])
+        if len(vectors) != len(variants):
+            raise ValueError(
+                "embedding response count does not match query variant count"
+            )
+        executed_variants = variants
+        status = "hybrid" if len(variants) > 1 else "original_only"
+    except Exception:
+        if len(variants) == 1:
+            raise
+        executed_variants = variants[:1]
+        vectors = provider.embed_texts(
+            [variant.text for variant in executed_variants]
         )
-        for item in NumpyVectorStore(index_dir).search(
-            query_vector,
+        if len(vectors) != 1:
+            raise ValueError("embedding response count does not match original query")
+        status = "embedding_fallback"
+
+    candidates: list[RetrievalCandidate] = []
+    for variant, vector in zip(executed_variants, vectors):
+        source = "semantic" if variant.source == "original" else "planner_semantic"
+        for item in vector_store.search(
+            vector,
             config.retrieval.semantic_top_k,
             deleted_ids,
-        )
-    ]
+        ):
+            candidates.append(
+                RetrievalCandidate(
+                    chunk_id=item.chunk_id,
+                    score=item.score,
+                    source=source,
+                    score_parts={source: item.score},
+                    semantic_matches=[SemanticMatch(variant.variant_id, item.score)],
+                )
+            )
+    return candidates, executed_variants, status
 
 
 def _signal_candidates(
@@ -1245,6 +1305,7 @@ def _merge_candidates(
                 score=candidate.score,
                 source=candidate.source,
                 score_parts=score_parts,
+                semantic_matches=candidate.semantic_matches,
             )
             continue
 
@@ -1253,8 +1314,33 @@ def _merge_candidates(
             score=max(existing.score, candidate.score),
             source=f"{existing.source},{candidate.source}",
             score_parts=_merge_score_parts(existing.score_parts, score_parts),
+            semantic_matches=_merge_semantic_matches(
+                existing.semantic_matches,
+                candidate.semantic_matches,
+            ),
         )
     return merged
+
+
+def _merge_semantic_matches(
+    left: list[SemanticMatch],
+    right: list[SemanticMatch],
+) -> list[SemanticMatch]:
+    by_variant: dict[str, SemanticMatch] = {}
+    for match in [*left, *right]:
+        existing = by_variant.get(match.variant_id)
+        if existing is None or match.score > existing.score:
+            by_variant[match.variant_id] = match
+    return sorted(by_variant.values(), key=_semantic_match_sort_key)
+
+
+def _semantic_match_sort_key(match: SemanticMatch) -> tuple[int, int, str]:
+    if match.variant_id == "original":
+        return (0, 0, "")
+    prefix, separator, raw_index = match.variant_id.partition(":")
+    if prefix == "planner" and separator and raw_index.isdigit():
+        return (1, int(raw_index), "")
+    return (2, 0, match.variant_id)
 
 
 def _rank_chunks(
@@ -1884,6 +1970,13 @@ def _merge_expanded_result(
 def _normalized_score_parts(candidate: RetrievalCandidate) -> dict[str, float]:
     if candidate.source == "semantic":
         return {"semantic": candidate.score_parts.get("semantic", candidate.score)}
+    if candidate.source == "planner_semantic":
+        return {
+            "planner_semantic": candidate.score_parts.get(
+                "planner_semantic",
+                candidate.score,
+            )
+        }
     if candidate.source == "lexical":
         return {
             "lexical": candidate.score_parts.get(

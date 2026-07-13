@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from context_search_tool import retrieval
@@ -17,13 +18,16 @@ from context_search_tool.models import (
     CodeSignal,
     DocumentChunk,
     QueryPlan,
+    QueryVariant,
     RetrievalCandidate,
     RetrievalSummary,
+    SemanticMatch,
     SymbolRef,
 )
 from context_search_tool.paths import index_dir_for
 from context_search_tool.retrieval import query_repository
 from context_search_tool.sqlite_store import SQLiteStore
+from context_search_tool.vector_store import VectorSearchResult
 
 
 class FakePlanner:
@@ -54,6 +58,143 @@ class CapturingPlanner:
             status="ok",
             repo_profile_hash=repo_profile.profile_hash if repo_profile else "",
         )
+
+
+class CapturingEmbeddingProvider:
+    def __init__(self, vectors: list[list[float]], fail_multi: bool = False) -> None:
+        self.vectors = [np.asarray(vector, dtype=np.float32) for vector in vectors]
+        self.fail_multi = fail_multi
+        self.calls: list[list[str]] = []
+
+    def embed_texts(self, texts: list[str]) -> list[np.ndarray]:
+        self.calls.append(list(texts))
+        if self.fail_multi and len(texts) > 1:
+            raise RuntimeError("variant batch failed")
+        return self.vectors[: len(texts)]
+
+
+class CapturingVectorStore:
+    def __init__(
+        self,
+        results_by_vector: dict[tuple[float, ...], list[VectorSearchResult]],
+    ) -> None:
+        self.results_by_vector = results_by_vector
+        self.calls: list[tuple[tuple[float, ...], int, set[str]]] = []
+
+    def search(
+        self,
+        query_vector: np.ndarray,
+        top_k: int,
+        deleted_ids: set[str],
+    ) -> list[VectorSearchResult]:
+        key = tuple(float(value) for value in query_vector)
+        self.calls.append((key, top_k, set(deleted_ids)))
+        return self.results_by_vector[key]
+
+
+def test_semantic_candidates_embeds_once_searches_each_variant_and_merges_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    variants = [
+        QueryVariant("original", "原始查询", "original"),
+        QueryVariant("planner:0", "dashboard statistics", "planner"),
+        QueryVariant("planner:1", "chart service", "planner"),
+    ]
+    provider = CapturingEmbeddingProvider([[1, 0], [0, 1], [-1, 0]])
+    vector_store = CapturingVectorStore(
+        {
+            (1.0, 0.0): [VectorSearchResult("shared", 0.20)],
+            (0.0, 1.0): [VectorSearchResult("shared", 0.84)],
+            (-1.0, 0.0): [VectorSearchResult("shared", 0.60)],
+        }
+    )
+    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(retrieval, "NumpyVectorStore", lambda _index_dir: vector_store)
+
+    candidates, executed, status = retrieval._semantic_candidates(
+        tmp_path,
+        variants,
+        DEFAULT_CONFIG,
+        set(),
+    )
+    merged = retrieval._merge_candidates(candidates)["shared"]
+
+    assert provider.calls == [
+        ["原始查询", "dashboard statistics", "chart service"]
+    ]
+    assert vector_store.calls == [
+        ((1.0, 0.0), DEFAULT_CONFIG.retrieval.semantic_top_k, set()),
+        ((0.0, 1.0), DEFAULT_CONFIG.retrieval.semantic_top_k, set()),
+        ((-1.0, 0.0), DEFAULT_CONFIG.retrieval.semantic_top_k, set()),
+    ]
+    assert executed == variants
+    assert status == "hybrid"
+    assert merged.score_parts == {"semantic": 0.20, "planner_semantic": 0.84}
+    assert merged.semantic_matches == [
+        SemanticMatch("original", 0.20),
+        SemanticMatch("planner:0", 0.84),
+        SemanticMatch("planner:1", 0.60),
+    ]
+
+
+def test_semantic_candidates_retries_original_once_after_variant_batch_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    variants = [
+        QueryVariant("original", "query", "original"),
+        QueryVariant("planner:0", "rewrite", "planner"),
+    ]
+    provider = CapturingEmbeddingProvider([[1, 0], [0, 1]], fail_multi=True)
+    vector_store = CapturingVectorStore(
+        {(1.0, 0.0): [VectorSearchResult("original-hit", 0.75)]}
+    )
+    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(retrieval, "NumpyVectorStore", lambda _index_dir: vector_store)
+
+    candidates, executed, status = retrieval._semantic_candidates(
+        tmp_path,
+        variants,
+        DEFAULT_CONFIG,
+        set(),
+    )
+
+    assert provider.calls == [["query", "rewrite"], ["query"]]
+    assert executed == variants[:1]
+    assert status == "embedding_fallback"
+    assert [candidate.chunk_id for candidate in candidates] == ["original-hit"]
+    assert candidates[0].semantic_matches == [SemanticMatch("original", 0.75)]
+
+
+def test_semantic_candidates_propagates_original_retry_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    variants = [
+        QueryVariant("original", "query", "original"),
+        QueryVariant("planner:0", "rewrite", "planner"),
+    ]
+    provider = CapturingEmbeddingProvider([])
+    vector_store = CapturingVectorStore({})
+
+    def fail(texts: list[str]) -> list[np.ndarray]:
+        provider.calls.append(list(texts))
+        raise RuntimeError(f"failed for {len(texts)}")
+
+    monkeypatch.setattr(provider, "embed_texts", fail)
+    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(retrieval, "NumpyVectorStore", lambda _index_dir: vector_store)
+
+    with pytest.raises(RuntimeError, match="failed for 1"):
+        retrieval._semantic_candidates(
+            tmp_path,
+            variants,
+            DEFAULT_CONFIG,
+            set(),
+        )
+
+    assert provider.calls == [["query", "rewrite"], ["query"]]
 
 
 def _write_go_imagebed_fixture(repo: Path) -> None:
@@ -348,11 +489,12 @@ def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
     store = SQLiteStore(index_dir / "index.sqlite")
     original_tokens = retrieval._dedupe(retrieval.tokenize_query(query))
     deleted_ids = store.deleted_chunk_ids()
-    initial_candidates = retrieval._initial_candidates(
+    initial_candidates, _, _ = retrieval._initial_candidates(
         index_dir,
         store,
         query,
         original_tokens,
+        [QueryVariant("original", " ".join(query.split()), "original")],
         config,
         deleted_ids,
     )
