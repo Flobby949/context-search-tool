@@ -171,6 +171,7 @@ class _RankedChunk:
     rerank_score: float
     evidence_class: str
     evidence_priority: int
+    semantic_matches: list[SemanticMatch] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -220,6 +221,7 @@ class _ExpandedResult:
     rerank_score: float
     evidence_class: str
     evidence_priority: int
+    semantic_matches: list[SemanticMatch] = field(default_factory=list)
 
 
 def query_repository(
@@ -358,6 +360,7 @@ def query_repository(
             },
             reasons=_dedupe(item.reasons + result_reasons[index]),
             followup_keywords=item.followup_keywords,
+            semantic_matches=item.semantic_matches,
         )
         for index, item in enumerate(visible_results)
     ]
@@ -419,6 +422,7 @@ def _evidence_anchor_from_expanded(
         },
         reasons=item.reasons,
         anchor_kind=anchor_kind,
+        semantic_matches=item.semantic_matches,
     )
 
 
@@ -1576,6 +1580,7 @@ def _rank_chunks(
             rerank_score=item['rerank_score'],
             evidence_class=item['evidence_class'],
             evidence_priority=item['evidence_priority'],
+            semantic_matches=candidates[item['chunk'].chunk_id].semantic_matches,
         )
         for item in ranked
     ]
@@ -1668,6 +1673,7 @@ def _apply_frontend_import_cohort_rerank(
                 rerank_score=rerank_score,
                 evidence_class=ranked.evidence_class,
                 evidence_priority=ranked.evidence_priority,
+                semantic_matches=ranked.semantic_matches,
             )
         )
 
@@ -1735,6 +1741,7 @@ def _expand_ranked_chunks(
                 rerank_score=ranked.rerank_score,
                 evidence_class=ranked.evidence_class,
                 evidence_priority=ranked.evidence_priority,
+                semantic_matches=ranked.semantic_matches,
             )
         )
 
@@ -1862,6 +1869,7 @@ def _cap_expanded_result(
         rerank_score=result.rerank_score,
         evidence_class=result.evidence_class,
         evidence_priority=result.evidence_priority,
+        semantic_matches=result.semantic_matches,
     )
 
 
@@ -1964,6 +1972,10 @@ def _merge_expanded_result(
         rerank_score=winner.rerank_score,
         evidence_class=winner.evidence_class,
         evidence_priority=winner.evidence_priority,
+        semantic_matches=_merge_semantic_matches(
+            left.semantic_matches,
+            right.semantic_matches,
+        ),
     )
 
 

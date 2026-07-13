@@ -197,6 +197,101 @@ def test_semantic_candidates_propagates_original_retry_failure(
     assert provider.calls == [["query", "rewrite"], ["query"]]
 
 
+def test_merge_candidates_preserves_semantic_matches_when_lexical_evidence_merges() -> None:
+    merged = retrieval._merge_candidates(
+        [
+            RetrievalCandidate(
+                chunk_id="chunk",
+                score=0.8,
+                source="planner_semantic",
+                score_parts={"planner_semantic": 0.8},
+                semantic_matches=[SemanticMatch("planner:0", 0.8)],
+            ),
+            RetrievalCandidate(
+                chunk_id="chunk",
+                score=1.0,
+                source="lexical",
+                score_parts={"lexical": 1.0},
+            ),
+        ]
+    )["chunk"]
+
+    assert merged.semantic_matches == [SemanticMatch("planner:0", 0.8)]
+
+
+def test_merge_expanded_result_unions_matches_in_variant_order() -> None:
+    left = retrieval._ExpandedResult(
+        chunk_ids=["left"],
+        file_path=Path("App.java"),
+        start_line=1,
+        end_line=3,
+        content="one\ntwo\nthree",
+        score=0.5,
+        score_parts={"combined_score": 0.5, "rerank_score": 0.5},
+        reasons=[],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=0.5,
+        evidence_class="planner_direct",
+        evidence_priority=1,
+        semantic_matches=[
+            SemanticMatch("planner:1", 0.7),
+            SemanticMatch("original", 0.2),
+        ],
+    )
+    right = retrieval._ExpandedResult(
+        chunk_ids=["right"],
+        file_path=Path("App.java"),
+        start_line=3,
+        end_line=5,
+        content="three\nfour\nfive",
+        score=0.6,
+        score_parts={"combined_score": 0.6, "rerank_score": 0.6},
+        reasons=[],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=0.6,
+        evidence_class="planner_direct",
+        evidence_priority=1,
+        semantic_matches=[
+            SemanticMatch("planner:0", 0.8),
+            SemanticMatch("planner:1", 0.9),
+        ],
+    )
+
+    merged = retrieval._merge_expanded_result(left, right)
+
+    assert merged.semantic_matches == [
+        SemanticMatch("original", 0.2),
+        SemanticMatch("planner:0", 0.8),
+        SemanticMatch("planner:1", 0.9),
+    ]
+
+
+def test_query_repository_returns_original_variant_on_empty_results(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.py").write_text("pass\n", encoding="utf-8")
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=0,
+            final_top_k=1,
+        )
+    )
+
+    index_repository(repo, config)
+    bundle = query_repository(repo, "missing query", config)
+
+    assert bundle.results == []
+    assert bundle.query_variants == [
+        QueryVariant("original", "missing query", "original")
+    ]
+    assert bundle.variant_retrieval_status == "original_only"
+
+
 def _write_go_imagebed_fixture(repo: Path) -> None:
     (repo / "handler").mkdir(parents=True)
     (repo / "middleware").mkdir(parents=True)
