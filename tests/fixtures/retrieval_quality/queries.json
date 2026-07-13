@@ -613,7 +613,8 @@
             {
               "path": "src/views/image/WatermarkRemover.vue",
               "top_k": 5,
-              "max_rank": 1
+              "max_rank": 1,
+              "role": "entrypoint"
             }
           ],
           "absent_top_k": [
@@ -789,7 +790,8 @@
             {
               "path": "src/views/ai/AiChat.vue",
               "top_k": 5,
-              "max_rank": 1
+              "max_rank": 1,
+              "role": "entrypoint"
             }
           ],
           "legacy": {
