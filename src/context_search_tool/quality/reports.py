@@ -163,6 +163,10 @@ def _flatten_metric_values(
     return rows
 
 
+def _is_json_scalar(value: Any) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
 def _flatten_deltas(
     node: Mapping[str, Any],
     prefix: str = "",
@@ -170,7 +174,7 @@ def _flatten_deltas(
     rows: list[tuple[str, Mapping[str, Any]]] = []
     delta_fields = ("baseline", "candidate", "delta")
     if all(field in node for field in delta_fields) and all(
-        not isinstance(node[field], Mapping) for field in delta_fields
+        _is_json_scalar(node[field]) for field in delta_fields
     ):
         return [(prefix, node)]
     for key in sorted(node):

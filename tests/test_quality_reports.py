@@ -1,3 +1,5 @@
+import pytest
+
 from context_search_tool.quality.reports import (
     render_markdown_comparison,
     render_markdown_report,
@@ -315,6 +317,77 @@ def test_markdown_comparison_flattens_reserved_delta_group_names() -> None:
     assert "| by_repository.candidate.mrr | 0.3 | 0.4 | +0.1 |" in markdown
     assert "| by_repository.delta.mrr | 0.5 | 0.6 | +0.1 |" in markdown
     assert "{'mrr':" not in markdown
+
+
+@pytest.mark.parametrize(
+    ("array_field", "array_value"),
+    [
+        ("baseline", [1]),
+        ("candidate", [2]),
+        ("delta", [3]),
+    ],
+)
+def test_markdown_comparison_skips_array_delta_leaves(
+    array_field: str,
+    array_value: list[int],
+) -> None:
+    delta_values = {"baseline": 1, "candidate": 2, "delta": 1}
+    delta_values[array_field] = array_value
+    comparison = {
+        "aggregate": {},
+        "cases": [],
+        "metric_deltas": {f"array_{array_field}": delta_values},
+        "metadata_warnings": [],
+    }
+
+    markdown = render_markdown_comparison(comparison)
+
+    assert "No metric deltas." in markdown
+    assert f"| array_{array_field} |" not in markdown
+    assert str(array_value).replace("[", r"\[").replace("]", r"\]") not in markdown
+
+
+def test_markdown_comparison_flattens_json_scalars_in_reserved_groups() -> None:
+    comparison = {
+        "aggregate": {},
+        "cases": [],
+        "metric_deltas": {
+            "by_repository": {
+                "baseline": {
+                    "array": {"baseline": [1], "candidate": 2, "delta": 1},
+                    "numeric": {"baseline": 1, "candidate": 2.5, "delta": 1.5},
+                },
+                "candidate": {
+                    "boolean": {
+                        "baseline": True,
+                        "candidate": False,
+                        "delta": True,
+                    }
+                },
+                "delta": {
+                    "string": {
+                        "baseline": "old",
+                        "candidate": "new",
+                        "delta": "changed",
+                    },
+                    "null": {"baseline": None, "candidate": None, "delta": None},
+                },
+            }
+        },
+        "metadata_warnings": [],
+    }
+
+    markdown = render_markdown_comparison(comparison)
+
+    rows = [line for line in markdown.splitlines() if line.startswith("| by_repository")]
+    assert rows == [
+        "| by_repository.baseline.numeric | 1 | 2.5 | +1.5 |",
+        "| by_repository.candidate.boolean | True | False | True |",
+        "| by_repository.delta.null | None | None | None |",
+        "| by_repository.delta.string | old | new | changed |",
+    ]
+    assert "| by_repository.baseline.array |" not in markdown
+    assert r"\[1\]" not in markdown
 
 
 def test_markdown_report_escapes_dynamic_content_by_context() -> None:
