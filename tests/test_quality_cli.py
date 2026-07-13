@@ -425,6 +425,53 @@ def test_compare_cli_rejects_identical_artifact_destinations(
     }
 
 
+def test_compare_cli_rejects_identical_nested_destinations_without_side_effects(
+    tmp_path: Path,
+) -> None:
+    baseline, candidate = _write_identical_reports(tmp_path)
+    destination_tree = tmp_path / "same-destination"
+    artifact = destination_tree / "nested" / "comparison.txt"
+
+    result = _invoke_compare(baseline, candidate, artifact, artifact)
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, ValueError)
+    assert "artifact destinations must be distinct" in str(result.exception)
+    assert not destination_tree.exists()
+    assert {path.name for path in tmp_path.iterdir()} == {
+        "baseline.json",
+        "candidate.json",
+    }
+    assert not any(path.name.startswith(".") for path in tmp_path.rglob("*"))
+
+
+def test_compare_cli_rejects_normalized_nested_alias_without_side_effects(
+    tmp_path: Path,
+) -> None:
+    baseline, candidate = _write_identical_reports(tmp_path)
+    destination_tree = tmp_path / "normalized-alias"
+    output = destination_tree / "reports" / "comparison.json"
+    markdown = (
+        destination_tree
+        / "reports"
+        / "nested"
+        / ".."
+        / "comparison.json"
+    )
+
+    result = _invoke_compare(baseline, candidate, output, markdown)
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, ValueError)
+    assert "artifact destinations must be distinct" in str(result.exception)
+    assert not destination_tree.exists()
+    assert {path.name for path in tmp_path.iterdir()} == {
+        "baseline.json",
+        "candidate.json",
+    }
+    assert not any(path.name.startswith(".") for path in tmp_path.rglob("*"))
+
+
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX symlinks")
 def test_compare_cli_rejects_symlink_destination(tmp_path: Path) -> None:
     baseline, candidate = _write_identical_reports(tmp_path)

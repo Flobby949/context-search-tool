@@ -9,7 +9,11 @@ import typer
 from context_search_tool.quality.compare import compare_reports
 from context_search_tool.quality.feedback import summarize_feedback_log
 from context_search_tool.quality.reports import render_markdown_comparison
-from context_search_tool.quality.runner import _publish_artifacts, run_quality_fixture
+from context_search_tool.quality.runner import (
+    _publish_artifacts,
+    _validate_artifact_destinations,
+    run_quality_fixture,
+)
 
 quality_app = typer.Typer(
     help="Retrieval quality evaluation tools",
@@ -63,6 +67,9 @@ def compare(
     baseline_report = json.loads(baseline.read_text(encoding="utf-8"))
     candidate_report = json.loads(candidate.read_text(encoding="utf-8"))
     comparison = compare_reports(baseline_report, candidate_report)
+    _validate_artifact_destinations(
+        [path for path in (output, markdown) if path is not None]
+    )
     _ensure_parent(output)
     _ensure_parent(markdown)
     artifacts = [
