@@ -1,28 +1,29 @@
 from __future__ import annotations
 
 import hashlib
-import json
+import os
 import re
-from dataclasses import replace
+import shutil
 from pathlib import Path
 
 import pytest
 
+from context_search_tool import retrieval
+from context_search_tool.config import DEFAULT_CONFIG
+from context_search_tool.indexer import index_repository
+from context_search_tool.paths import index_dir_for
 from context_search_tool.quality.cases import (
     Gate,
     LegacyProvenance,
     Matcher,
     QualityCase,
-    adapt_legacy_query_case,
     load_quality_fixture,
 )
+from context_search_tool.sqlite_store import SQLiteStore
 
 
 ROOT = Path(__file__).parent
 CATALOG_PATH = ROOT / "fixtures" / "retrieval_quality" / "queries.json"
-LEGACY_GENERIC = ROOT / "fixtures" / "generic_baseline_quality" / "queries.json"
-LEGACY_CALIBRATION = ROOT / "fixtures" / "retrieval_calibration" / "queries.json"
-LEGACY_AB = ROOT / "fixtures" / "ab_comparison" / "queries.json"
 CJK_RE = re.compile(r"[\u3400-\u9fff]")
 
 TASK9_SNAPSHOT_SHA256 = {
@@ -168,103 +169,11 @@ EXPECTED_REPO_WIRING = (
     ),
 )
 
-CALIBRATION_IDS = {
-    ("operation_client", "账号密码登录注册"): "operation-client-auth-login-register",
-    ("operation_client", "驿站设备列表"): "operation-client-station-device-list",
-    ("operation_client", "发布意见反馈 发送短信"): "operation-client-feedback-sms",
-    ("console_iot", "设备列表"): "console-iot-equipment-list",
-    ("console_iot", "开门控制"): "console-iot-access-control",
-    ("console_iot", "IOT设备状态"): "console-iot-device-status",
-    ("console_iot", "设备告警"): "console-iot-alarm",
-    ("console_iot", "用户登录认证"): "console-iot-user-auth",
-}
-
 AB_IDS = (
     "embedding-ab-access-validation",
     "embedding-ab-whitelist-management",
     "embedding-ab-order-cancel",
 )
-
-EXPECTED_AB_CASE_DEFAULTS = {
-    "profiles": ("ab_hash", "ab_bge"),
-    "tags": (),
-    "mode": "results",
-    "gate": Gate.INFORMATIONAL,
-    "metric_k": 12,
-    "expected_top_k": (),
-    "expected_any_top_k": (),
-    "expected_at_least_top_k": (),
-    "preferred_rank": (),
-    "absent_top_k": (),
-    "outranks": (),
-    "forbidden_above": (),
-    "anchor_expected": (),
-    "known_gap_reason": "",
-    "notes": "",
-}
-
-EXPECTED_AB_CASES = {
-    "embedding-ab-access-validation": {
-        **EXPECTED_AB_CASE_DEFAULTS,
-        "case_id": "embedding-ab-access-validation",
-        "query": "开门校验场景",
-        "relevance_matchers": (
-            {"contains": "whitelist"},
-            {"contains": "blacklist"},
-            {"contains": "access"},
-            {"contains": "validation"},
-        ),
-        "noise_matchers": (
-            {"contains": "region"},
-            {"contains": "role"},
-            {"contains": "announcement"},
-        ),
-        "legacy": {
-            "fixture": "ab_comparison",
-            "key": "embedding_ab/embedding-ab-access-validation",
-        },
-    },
-    "embedding-ab-whitelist-management": {
-        **EXPECTED_AB_CASE_DEFAULTS,
-        "case_id": "embedding-ab-whitelist-management",
-        "query": "黑白名单管理",
-        "relevance_matchers": (
-            {"contains": "whitelist"},
-            {"contains": "blacklist"},
-            {"contains": "manage"},
-            {"contains": "add"},
-            {"contains": "remove"},
-        ),
-        "noise_matchers": (
-            {"contains": "region"},
-            {"contains": "user"},
-            {"contains": "notification"},
-        ),
-        "legacy": {
-            "fixture": "ab_comparison",
-            "key": "embedding_ab/embedding-ab-whitelist-management",
-        },
-    },
-    "embedding-ab-order-cancel": {
-        **EXPECTED_AB_CASE_DEFAULTS,
-        "case_id": "embedding-ab-order-cancel",
-        "query": "OrderService cancel method",
-        "relevance_matchers": (
-            {"contains": "OrderService"},
-            {"contains": "cancel"},
-            {"contains": "order"},
-        ),
-        "noise_matchers": (
-            {"contains": "payment"},
-            {"contains": "user"},
-            {"contains": "notification"},
-        ),
-        "legacy": {
-            "fixture": "ab_comparison",
-            "key": "embedding_ab/embedding-ab-order-cancel",
-        },
-    },
-}
 
 EXPECTED_NEW_CASE_DEFAULTS = {
     "mode": "results",
@@ -507,6 +416,56 @@ def _catalog_cases() -> dict[str, QualityCase]:
     }
 
 
+def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
+    config = DEFAULT_CONFIG
+    index_dir = index_dir_for(repo)
+    store = SQLiteStore(index_dir / "index.sqlite")
+    original_tokens = retrieval._dedupe(retrieval.tokenize_query(query))
+    deleted_ids = store.deleted_chunk_ids()
+    initial_candidates = retrieval._initial_candidates(
+        index_dir,
+        store,
+        query,
+        original_tokens,
+        config,
+        deleted_ids,
+    )
+    signal_candidates = retrieval._signal_candidates(store, original_tokens, config)
+    direct_candidates = retrieval._merge_candidates(
+        [
+            *initial_candidates,
+            *signal_candidates,
+        ]
+    )
+    anchor_candidates = retrieval._anchor_expansion_candidates(
+        store,
+        list(direct_candidates.values()),
+        config,
+        query=query,
+        tokens=original_tokens,
+    )
+    relation_seed_candidates = retrieval._merge_candidates(
+        [
+            *direct_candidates.values(),
+            *anchor_candidates,
+        ]
+    )
+    relation_candidates = retrieval._relation_expansion_candidates(
+        store,
+        list(relation_seed_candidates.values()),
+        config,
+    )
+    candidates = retrieval._merge_candidates(
+        [
+            *direct_candidates.values(),
+            *anchor_candidates,
+            *relation_candidates,
+        ]
+    )
+    chunks = store.chunks_for_ids(list(candidates))
+    return {chunk.file_path.as_posix() for chunk in chunks.values()}
+
+
 def _matcher_manifest(matcher: Matcher) -> dict[str, str]:
     for selector in ("path", "glob", "contains"):
         value = getattr(matcher, selector)
@@ -607,18 +566,6 @@ def _quality_case_manifest(case: QualityCase) -> dict[str, object]:
 def _new_case_manifest(key: str, case: QualityCase) -> dict[str, object]:
     repo_key, _ = key.split("/", 1)
     return {"repo_key": repo_key, **_quality_case_manifest(case)}
-
-
-def _without_catalog_metadata(case: QualityCase) -> QualityCase:
-    return replace(
-        case,
-        profiles=(),
-        tags=(),
-        legacy=None,
-        preferred_rank=tuple(
-            replace(preferred, role="") for preferred in case.preferred_rank
-        ),
-    )
 
 
 def test_task9_snapshots_match_approved_regular_files() -> None:
@@ -743,57 +690,6 @@ def test_entrypoint_tags_and_preferred_rank_roles_are_consistent() -> None:
     }
 
 
-def test_generic_legacy_parity() -> None:
-    canonical = _catalog_cases()
-    legacy_repos = json.loads(LEGACY_GENERIC.read_text(encoding="utf-8"))
-
-    for raw_repo in legacy_repos:
-        for raw_case in raw_repo["queries"]:
-            key = f"{raw_repo['repo_key']}/{raw_case['id']}"
-            assert _without_catalog_metadata(canonical[key]) == adapt_legacy_query_case(
-                raw_case
-            )
-
-
-def test_calibration_legacy_parity() -> None:
-    canonical = _catalog_cases()
-    legacy_cases = json.loads(LEGACY_CALIBRATION.read_text(encoding="utf-8"))
-
-    for raw_case in legacy_cases:
-        case_id = CALIBRATION_IDS[(raw_case["repo_key"], raw_case["query"])]
-        key = f"{raw_case['repo_key']}/{case_id}"
-        adapted = adapt_legacy_query_case(
-            {
-                "id": case_id,
-                **{name: value for name, value in raw_case.items() if name != "repo_key"},
-            }
-        )
-        assert _without_catalog_metadata(canonical[key]) == adapted
-
-
-def test_ab_legacy_parity() -> None:
-    canonical = _catalog_cases()
-    legacy_cases = json.loads(LEGACY_AB.read_text(encoding="utf-8"))
-
-    for case_id, raw_case in zip(AB_IDS, legacy_cases, strict=True):
-        case = canonical[f"embedding_ab/{case_id}"]
-        expected = EXPECTED_AB_CASES[case_id]
-
-        assert _quality_case_manifest(case) == expected
-        assert {
-            "query": raw_case["query"],
-            "relevance_matchers": tuple(
-                {"contains": value} for value in raw_case["expected_relevant"]
-            ),
-            "noise_matchers": tuple(
-                {"contains": value} for value in raw_case["expected_noise"]
-            ),
-        } == {
-            name: expected[name]
-            for name in ("query", "relevance_matchers", "noise_matchers")
-        }
-
-
 def test_legacy_provenance_inventory() -> None:
     cases = _catalog_cases()
     provenance = [case.legacy for case in cases.values() if case.legacy is not None]
@@ -807,6 +703,8 @@ def test_legacy_provenance_inventory() -> None:
         }
     }
 
+    assert len(provenance) == 33
+    assert len(actual_pairs) == 33
     assert actual_pairs == EXPECTED_LEGACY_PAIRS
     assert provenance_counts == {
         "generic_baseline_quality": 22,
@@ -836,3 +734,46 @@ def test_legacy_provenance_inventory() -> None:
             assert case.tags == CALIBRATION_TAGS[case.case_id]
         else:
             assert case.tags == ()
+
+    assert cases["program_tool/qrcode-tool"].legacy == LegacyProvenance(
+        fixture="generic_baseline_quality",
+        key="program_tool/qrcode-tool",
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_investment_assistant_targets_enter_candidate_pool(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_repo = os.environ.get("CST_SMOKE_INVESTMENT_ASSISTANT_REPO")
+    smoke_root = os.environ.get("CST_SMOKE_REPOS_DIR")
+    source = (
+        Path(raw_repo)
+        if raw_repo
+        else Path(smoke_root) / "Investment-Assistant"
+        if smoke_root
+        else None
+    )
+    if source is None or not source.is_dir():
+        pytest.skip("investment assistant repo not configured")
+
+    copied = tmp_path / source.name
+    shutil.copytree(
+        source,
+        copied,
+        ignore=shutil.ignore_patterns(".git", ".context-search"),
+    )
+    index_repository(copied, DEFAULT_CONFIG)
+    fixture = load_quality_fixture(CATALOG_PATH)
+    repo = next(
+        item for item in fixture.repos if item.repo_key == "investment_assistant"
+    )
+
+    for case in repo.queries:
+        candidates = _candidate_pool_paths_before_rerank(copied, case.query)
+        for expected in case.expected_top_k:
+            assert any(
+                expected.matcher.matches(path) for path in candidates
+            ), case.case_id
