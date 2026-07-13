@@ -109,6 +109,8 @@ _CONFIG_SUFFIXES = {
     ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".conf",
     ".properties", ".env", ".xml",
 }
+_SEMANTIC_SCORE_WEIGHT = 0.55
+_PLANNER_SEMANTIC_WEIGHT = 0.85
 _RERANK_SORT_DECIMALS = 3
 _INDEXED_LOCKFILE_NAMES = {
     "cargo.lock",
@@ -172,6 +174,8 @@ class _RankedChunk:
     evidence_class: str
     evidence_priority: int
     semantic_matches: list[SemanticMatch] = field(default_factory=list)
+    pre_ceiling_rerank_score: float = 0.0
+    was_ceiling_clamped: bool = False
 
 
 @dataclass(frozen=True)
@@ -222,6 +226,8 @@ class _ExpandedResult:
     evidence_class: str
     evidence_priority: int
     semantic_matches: list[SemanticMatch] = field(default_factory=list)
+    pre_ceiling_rerank_score: float = 0.0
+    was_ceiling_clamped: bool = False
 
 
 def query_repository(
@@ -1462,6 +1468,7 @@ def _rank_chunks(
             frontend_score_parts(chunk.file_path, query, enabled=frontend_enabled),
         )
 
+        score_parts = _with_effective_semantic(score_parts)
         score = _combined_score(score_parts)
         all_combined_scores.append(score)
         has_signal_evidence = score_parts.get("signal", 0.0) > 0
@@ -1510,6 +1517,7 @@ def _rank_chunks(
         )
 
         item['normalized_score'] = normalized_score
+        item['pre_ceiling_rerank_score'] = rerank_score
         item['rerank_score'] = rerank_score
         item['evidence_class'] = evidence_class
         item['evidence_priority'] = evidence_priority
@@ -1532,11 +1540,13 @@ def _rank_chunks(
 
     # Second pass: apply ceiling clamp to non-strong evidence classes
     for item in ranked:
-        if (
-            item['evidence_class'] in _CLAMPED_EVIDENCE_CLASSES
+        item["was_ceiling_clamped"] = (
+            item["evidence_class"] in _CLAMPED_EVIDENCE_CLASSES
             and planner_ceiling is not None
-        ):
-            item['rerank_score'] = min(item['rerank_score'], planner_ceiling)
+            and item["rerank_score"] > planner_ceiling
+        )
+        if item["was_ceiling_clamped"]:
+            item["rerank_score"] = planner_ceiling
 
         score_parts = item['score_parts']
         score_parts["combined_score"] = float(item['score'])
@@ -1581,6 +1591,8 @@ def _rank_chunks(
             evidence_class=item['evidence_class'],
             evidence_priority=item['evidence_priority'],
             semantic_matches=candidates[item['chunk'].chunk_id].semantic_matches,
+            pre_ceiling_rerank_score=item['pre_ceiling_rerank_score'],
+            was_ceiling_clamped=item['was_ceiling_clamped'],
         )
         for item in ranked
     ]
@@ -1593,10 +1605,11 @@ def _rank_chunks(
 
 def _ranked_chunk_sort_key(
     item: _RankedChunk,
-) -> tuple[float, int, float, float, float, str, int, str]:
+) -> tuple[float, int, float, float, float, float, str, int, str]:
     return (
         -round(item.rerank_score, _RERANK_SORT_DECIMALS),
         item.evidence_priority,
+        -(item.pre_ceiling_rerank_score if item.was_ceiling_clamped else 0.0),
         item.score_parts.get("role_priority", 99.0),
         -item.rerank_score,
         -item.score,
@@ -1674,6 +1687,8 @@ def _apply_frontend_import_cohort_rerank(
                 evidence_class=ranked.evidence_class,
                 evidence_priority=ranked.evidence_priority,
                 semantic_matches=ranked.semantic_matches,
+                pre_ceiling_rerank_score=ranked.pre_ceiling_rerank_score,
+                was_ceiling_clamped=ranked.was_ceiling_clamped,
             )
         )
 
@@ -1742,6 +1757,8 @@ def _expand_ranked_chunks(
                 evidence_class=ranked.evidence_class,
                 evidence_priority=ranked.evidence_priority,
                 semantic_matches=ranked.semantic_matches,
+                pre_ceiling_rerank_score=ranked.pre_ceiling_rerank_score,
+                was_ceiling_clamped=ranked.was_ceiling_clamped,
             )
         )
 
@@ -1870,6 +1887,8 @@ def _cap_expanded_result(
         evidence_class=result.evidence_class,
         evidence_priority=result.evidence_priority,
         semantic_matches=result.semantic_matches,
+        pre_ceiling_rerank_score=result.pre_ceiling_rerank_score,
+        was_ceiling_clamped=result.was_ceiling_clamped,
     )
 
 
@@ -1911,10 +1930,11 @@ def _merge_overlapping_results(results: list[_ExpandedResult]) -> list[_Expanded
 
 def _expanded_result_sort_key(
     item: _ExpandedResult,
-) -> tuple[float, int, float, float, float, str, int]:
+) -> tuple[float, int, float, float, float, float, str, int]:
     return (
         -round(item.rerank_score, _RERANK_SORT_DECIMALS),
         item.evidence_priority,
+        -(item.pre_ceiling_rerank_score if item.was_ceiling_clamped else 0.0),
         item.score_parts.get("role_priority", 99.0),
         -item.rerank_score,
         -item.score,
@@ -1976,6 +1996,8 @@ def _merge_expanded_result(
             left.semantic_matches,
             right.semantic_matches,
         ),
+        pre_ceiling_rerank_score=winner.pre_ceiling_rerank_score,
+        was_ceiling_clamped=winner.was_ceiling_clamped,
     )
 
 
@@ -2047,9 +2069,33 @@ def _chunk_role(chunk: DocumentChunk) -> _ChunkRole:
     return _ChunkRole("generic", 5, 0.0)
 
 
+def _with_effective_semantic(score_parts: dict[str, float]) -> dict[str, float]:
+    updated = dict(score_parts)
+    original_exists = "semantic" in updated
+    planner_exists = "planner_semantic" in updated
+    if not original_exists and not planner_exists:
+        return updated
+
+    adjusted_planner: float | None = None
+    if planner_exists:
+        planner_score = updated["planner_semantic"]
+        adjusted_planner = planner_score * _PLANNER_SEMANTIC_WEIGHT if planner_score > 0 else planner_score
+
+    if original_exists and adjusted_planner is not None:
+        effective = max(updated["semantic"], adjusted_planner)
+    elif original_exists:
+        effective = updated["semantic"]
+    else:
+        assert adjusted_planner is not None
+        effective = adjusted_planner
+    updated["effective_semantic"] = effective
+    return updated
+
+
 def _combined_score(score_parts: dict[str, float]) -> float:
     return (
-        (score_parts.get("semantic", 0.0) * 0.55)
+        score_parts.get("effective_semantic", score_parts.get("semantic", 0.0))
+        * _SEMANTIC_SCORE_WEIGHT
         + (score_parts.get("lexical", 0.0) * 0.25)
         + (min(score_parts.get("path_symbol", 0.0), 5.0) / 5.0 * 0.15)
         + (score_parts.get("planner_lexical", 0.0) * 0.12)
@@ -2140,11 +2186,12 @@ def _has_planner_direct_evidence(score_parts: dict[str, float]) -> bool:
         score_parts: Dictionary of score components
 
     Returns:
-        True if any planner direct evidence exists (planner_lexical, planner_signal, planner_path_symbol)
+        True if any planner direct evidence exists
     """
     return any(
         score_parts.get(key, 0.0) > 0
         for key in (
+            "planner_semantic",
             "planner_lexical",
             "planner_signal",
             "planner_path_symbol",
@@ -2188,15 +2235,15 @@ def _has_weak_original_direct_evidence(score_parts: dict[str, float]) -> bool:
 
 def _evidence_class(score_parts: dict[str, float]) -> str:
     """
-    Classify evidence type by priority.
+    Classify evidence type using the established decision order.
 
-    Priority order (lower number = higher priority):
-    0. original_direct: has strong direct original evidence
-    1. weak_original_direct: has weak direct original evidence
-    2. original_relation: has original_relation score only
-    3. planner_direct: has planner direct evidence (planner_lexical/signal/path_symbol)
-    4. planner_relation: has planner_relation score only
-    5. weak_or_generic: fallback for everything else
+    Decision order:
+    1. original_direct: has strong direct original evidence
+    2. weak_original_direct: has weak direct original evidence
+    3. original_relation: has original_relation score only
+    4. planner_direct: has planner direct evidence
+    5. planner_relation: has planner_relation score only
+    6. weak_or_generic: fallback for everything else
 
     Args:
         score_parts: Dictionary of score components
@@ -2225,17 +2272,17 @@ def _evidence_priority(evidence_class: str) -> int:
         evidence_class: Evidence class string from _evidence_class
 
     Returns:
-        Priority value 0-5
+        Priority value 0-4
     """
     priority_map = {
         "original_direct": 0,
         "weak_original_direct": 1,
+        "planner_direct": 1,
         "original_relation": 2,
-        "planner_direct": 3,
-        "planner_relation": 4,
-        "weak_or_generic": 5,
+        "planner_relation": 3,
+        "weak_or_generic": 4,
     }
-    return priority_map.get(evidence_class, 5)
+    return priority_map.get(evidence_class, 4)
 
 
 def normalize_score(scores: list[float]) -> list[float]:
@@ -2973,6 +3020,7 @@ def _has_planner_hint(score_parts: dict[str, float]) -> bool:
     return any(
         score_parts.get(key, 0.0) > 0
         for key in (
+            "planner_semantic",
             "planner_lexical",
             "planner_path_symbol",
             "planner_signal",
@@ -3873,6 +3921,8 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("same-file anchor")
     if score_parts.get("directory_anchor", 0.0) > 0:
         reasons.append("directory anchor")
+    if score_parts.get("planner_semantic", 0.0) > 0:
+        reasons.append("planner semantic match")
     if _has_planner_hint(score_parts):
         reasons.append("planner hint match")
     if score_parts.get("role_boost", 0.0) > 0:

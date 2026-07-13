@@ -7,6 +7,9 @@ direct matches, and the implemented rerank diagnostics.
 """
 
 from pathlib import Path
+
+import pytest
+
 from context_search_tool import retrieval
 from context_search_tool.models import (
     DocumentChunk,
@@ -57,6 +60,92 @@ def _setup_test_data(
         )
 
     return store, candidates
+
+
+def test_effective_semantic_uses_max_without_variant_count_inflation() -> None:
+    score_parts = retrieval._with_effective_semantic({
+        "semantic": 0.20,
+        "planner_semantic": 0.80,
+    })
+
+    assert score_parts["effective_semantic"] == pytest.approx(0.68)
+    assert retrieval._combined_score(score_parts) == pytest.approx(0.68 * 0.55)
+
+
+@pytest.mark.parametrize(
+    ("score_parts", "expected"),
+    [
+        ({"semantic": -0.40}, -0.40),
+        ({"planner_semantic": -0.40}, -0.40),
+        ({"semantic": -0.30, "planner_semantic": -0.40}, -0.30),
+        ({"semantic": 0.20, "planner_semantic": 0.80}, 0.68),
+    ],
+)
+def test_effective_semantic_preserves_absence_and_non_positive_scores(
+    score_parts: dict[str, float],
+    expected: float,
+) -> None:
+    updated = retrieval._with_effective_semantic(score_parts)
+
+    assert updated["effective_semantic"] == pytest.approx(expected)
+
+
+def test_planner_semantic_is_direct_planner_evidence_but_not_strong_original() -> None:
+    score_parts = {"planner_semantic": 0.99}
+
+    assert retrieval._has_planner_direct_evidence(score_parts)
+    assert not retrieval._has_strong_original_direct_evidence(score_parts)
+    assert retrieval._evidence_class(score_parts) == "planner_direct"
+    assert retrieval._evidence_priority("planner_direct") == 1
+    assert "planner semantic match" in retrieval._reasons(score_parts, "query")
+
+
+def test_ceiling_tie_uses_pre_ceiling_score_before_role_priority() -> None:
+    high_pre_ceiling = retrieval._RankedChunk(
+        chunk=DocumentChunk(
+            chunk_id="planner",
+            file_path=Path("z/Planner.java"),
+            start_line=10,
+            end_line=20,
+            content="class Planner {}",
+            chunk_type="code",
+        ),
+        score=0.8,
+        score_parts={"role_priority": 9.0},
+        reasons=[],
+        rank_tier=0,
+        rerank_score=0.50,
+        evidence_class="planner_direct",
+        evidence_priority=1,
+        pre_ceiling_rerank_score=0.90,
+        was_ceiling_clamped=True,
+    )
+    low_pre_ceiling = retrieval._RankedChunk(
+        chunk=DocumentChunk(
+            chunk_id="weak",
+            file_path=Path("a/Weak.java"),
+            start_line=10,
+            end_line=20,
+            content="class Weak {}",
+            chunk_type="code",
+        ),
+        score=0.7,
+        score_parts={"role_priority": 0.0},
+        reasons=[],
+        rank_tier=0,
+        rerank_score=0.50,
+        evidence_class="weak_original_direct",
+        evidence_priority=1,
+        pre_ceiling_rerank_score=0.60,
+        was_ceiling_clamped=True,
+    )
+
+    ranked = sorted(
+        [low_pre_ceiling, high_pre_ceiling],
+        key=retrieval._ranked_chunk_sort_key,
+    )
+
+    assert ranked[0].chunk.chunk_id == "planner"
 
 
 def test_rerank_high_score_direct_beats_low_score_relation():
@@ -370,13 +459,13 @@ def test_rerank_merge_field_consistency():
         end_line=20,
         content="line 10\nline 11\n...\nline 20",
         score=0.8,  # higher combined_score
-        score_parts={"semantic": 0.7, "lexical": 0.1, "combined_score": 0.8, "rerank_score": 0.6, "evidence_priority": 3.0},
+        score_parts={"semantic": 0.7, "lexical": 0.1, "combined_score": 0.8, "rerank_score": 0.6, "evidence_priority": 1.0},
         reasons=["left reasons"],
         followup_keywords=["left_kw"],
         rank_tier=1,
         rerank_score=0.6,  # lower rerank_score
         evidence_class="planner_direct",
-        evidence_priority=3,
+        evidence_priority=1,
     )
 
     # Right: lower combined_score (0.5) but higher rerank_score (0.9)
@@ -454,15 +543,15 @@ def test_evidence_class_priority_order():
     # Priority 2: original_relation (only if no direct evidence)
     assert _evidence_class({"original_relation": 0.8}) == "original_relation"
 
-    # Priority 3: planner_direct
+    # Planner direct shares priority 1, after original relation in decision order.
     assert _evidence_class({"planner_lexical": 0.5}) == "planner_direct"
     assert _evidence_class({"planner_signal": 0.4}) == "planner_direct"
     assert _evidence_class({"planner_path_symbol": 1.0}) == "planner_direct"
 
-    # Priority 4: planner_relation
+    # Priority 3: planner_relation
     assert _evidence_class({"planner_relation": 0.7}) == "planner_relation"
 
-    # Priority 5: weak_or_generic
+    # Priority 4: weak_or_generic
     assert _evidence_class({}) == "weak_or_generic"
 
 
@@ -598,11 +687,11 @@ def test_evidence_priority_mapping():
 
     assert _evidence_priority("original_direct") == 0
     assert _evidence_priority("weak_original_direct") == 1
+    assert _evidence_priority("planner_direct") == 1
     assert _evidence_priority("original_relation") == 2
-    assert _evidence_priority("planner_direct") == 3
-    assert _evidence_priority("planner_relation") == 4
-    assert _evidence_priority("weak_or_generic") == 5
-    assert _evidence_priority("unknown") == 5  # Default fallback
+    assert _evidence_priority("planner_relation") == 3
+    assert _evidence_priority("weak_or_generic") == 4
+    assert _evidence_priority("unknown") == 4  # Default fallback
 
 
 def test_generic_hint_penalty():
