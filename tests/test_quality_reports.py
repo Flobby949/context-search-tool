@@ -97,6 +97,34 @@ def test_render_markdown_report_says_when_no_failures_or_known_gaps() -> None:
     assert "No known gaps." in markdown
 
 
+@pytest.mark.parametrize(
+    ("profile", "expected_profile_line"),
+    [
+        pytest.param("`ci", "Profile: `` `ci ``", id="leading-backtick"),
+        pytest.param("ci`", "Profile: `` ci` ``", id="trailing-backtick"),
+        pytest.param("`ci`", "Profile: `` `ci` ``", id="boundary-backticks"),
+        pytest.param(
+            "`</code>\n## Forged Heading\n<h2>Forged HTML</h2>",
+            (
+                "Profile: `` `</code> ## Forged Heading "
+                "<h2>Forged HTML</h2> ``"
+            ),
+            id="embedded-html",
+        ),
+    ],
+)
+def test_markdown_report_pads_profile_code_spans_with_boundary_backticks(
+    profile: str,
+    expected_profile_line: str,
+) -> None:
+    markdown = render_markdown_report({"profile": profile})
+    lines = markdown.splitlines()
+
+    assert expected_profile_line in lines
+    assert "## Forged Heading" not in lines
+    assert "<h2>Forged HTML</h2>" not in lines
+
+
 def test_markdown_report_renders_metrics_and_reason_only_known_gaps() -> None:
     report = {
         "profile": "ci",

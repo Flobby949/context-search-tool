@@ -278,4 +278,6 @@ def _markdown_code_span(value: Any) -> str:
     text = _one_line(value)
     longest_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
     delimiter = "`" * (longest_run + 1)
+    if text.startswith("`") or text.endswith("`"):
+        return f"{delimiter} {text} {delimiter}"
     return f"{delimiter}{text}{delimiter}"
