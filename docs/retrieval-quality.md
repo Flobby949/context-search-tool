@@ -28,13 +28,31 @@ cst quality run tests/fixtures/retrieval_quality/queries.json \
 
 ## Baseline And Candidate Comparison
 
-Run the same profile from the baseline and candidate worktrees, then:
+From the baseline worktree, write its report to a shared absolute directory:
 
 ```bash
-cst quality compare --baseline .quality/main.json \
-  --candidate .quality/branch.json \
-  --output .quality/comparison.json \
-  --markdown .quality/comparison.md
+cst quality run tests/fixtures/retrieval_quality/queries.json \
+  --profile ci \
+  --output /tmp/cst-quality-comparison/main.json \
+  --markdown /tmp/cst-quality-comparison/main.md
+```
+
+From the candidate worktree, write the same profile to that directory:
+
+```bash
+cst quality run tests/fixtures/retrieval_quality/queries.json \
+  --profile ci \
+  --output /tmp/cst-quality-comparison/branch.json \
+  --markdown /tmp/cst-quality-comparison/branch.md
+```
+
+Then compare the two shared reports from either worktree:
+
+```bash
+cst quality compare --baseline /tmp/cst-quality-comparison/main.json \
+  --candidate /tmp/cst-quality-comparison/branch.json \
+  --output /tmp/cst-quality-comparison/comparison.json \
+  --markdown /tmp/cst-quality-comparison/comparison.md
 ```
 
 ## Planner, Calibration, And A/B

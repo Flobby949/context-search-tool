@@ -146,6 +146,23 @@ def _plan_from_record(case: dict) -> QueryPlan:
     )
 
 
+def _requests_source() -> Path | None:
+    raw_direct = os.environ.get("CST_PLANNER_REQUESTS_REPO")
+    if raw_direct:
+        direct = Path(raw_direct).expanduser().resolve()
+        if direct.is_dir():
+            return direct
+
+    raw_smoke_root = os.environ.get("CST_SMOKE_REPOS_DIR")
+    if raw_smoke_root:
+        smoke_root = Path(raw_smoke_root).expanduser().resolve()
+        if smoke_root.is_dir():
+            fallback = (smoke_root / "requests").resolve()
+            if fallback.is_dir():
+                return fallback
+    return None
+
+
 def test_plan_from_record_uses_only_query_plan_fields() -> None:
     plan = _plan_from_record(
         {
@@ -166,11 +183,64 @@ def test_plan_from_record_uses_only_query_plan_fields() -> None:
     assert plan.repo_profile_hash == "sha256:profile"
 
 
+def test_requests_source_prefers_valid_direct_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    direct_source = tmp_path / "direct"
+    direct_source.mkdir()
+    smoke_source = tmp_path / "smoke" / "requests"
+    smoke_source.mkdir(parents=True)
+    monkeypatch.setenv("CST_PLANNER_REQUESTS_REPO", str(direct_source))
+    monkeypatch.setenv("CST_SMOKE_REPOS_DIR", str(smoke_source.parent))
+
+    assert _requests_source() == direct_source
+
+
+def test_requests_source_uses_smoke_root_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smoke_source = tmp_path / "smoke" / "requests"
+    smoke_source.mkdir(parents=True)
+    monkeypatch.delenv("CST_PLANNER_REQUESTS_REPO", raising=False)
+    monkeypatch.setenv("CST_SMOKE_REPOS_DIR", str(smoke_source.parent))
+
+    assert _requests_source() == smoke_source
+
+
+def test_requests_source_falls_back_from_stale_direct_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smoke_source = tmp_path / "smoke" / "requests"
+    smoke_source.mkdir(parents=True)
+    monkeypatch.setenv(
+        "CST_PLANNER_REQUESTS_REPO",
+        str(tmp_path / "missing-direct"),
+    )
+    monkeypatch.setenv("CST_SMOKE_REPOS_DIR", str(smoke_source.parent))
+
+    assert _requests_source() == smoke_source
+
+
+def test_requests_source_returns_none_when_neither_source_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "CST_PLANNER_REQUESTS_REPO",
+        str(tmp_path / "missing-direct"),
+    )
+    monkeypatch.setenv("CST_SMOKE_REPOS_DIR", str(tmp_path / "missing-root"))
+
+    assert _requests_source() is None
+
+
 @pytest.fixture(scope="module")
 def real_planner_report() -> dict:
-    raw_repo = os.environ.get("CST_PLANNER_REQUESTS_REPO")
-    if not raw_repo or not Path(raw_repo).is_dir():
-        pytest.skip("CST_PLANNER_REQUESTS_REPO is not configured")
+    if _requests_source() is None:
+        pytest.skip("requests checkout is not configured")
     return run_quality_fixture(CATALOG, "planner", None, None)
 
 
