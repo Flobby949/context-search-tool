@@ -900,6 +900,40 @@ def test_profile_expectations_reject_unknown_or_invalid_values(
 
 
 @pytest.mark.parametrize(
+    "field,message",
+    [
+        ("planner_status", "invalid planner_status"),
+        ("variant_retrieval_status", "invalid variant_retrieval_status"),
+    ],
+)
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param([], id="list"),
+        pytest.param({}, id="dict"),
+        pytest.param(True, id="bool"),
+        pytest.param(1, id="number"),
+    ],
+)
+def test_profile_expectations_reject_non_string_status_values(
+    tmp_path: Path,
+    field: str,
+    message: str,
+    value: object,
+) -> None:
+    data = _minimal_fixture(
+        repo_overrides={"profiles": ["custom"]},
+        case_overrides={
+            "profile_expectations": {"custom": {field: value}},
+        },
+    )
+    data["profile_configs"] = {"custom": {}}
+
+    with pytest.raises(ValueError, match=f"^{message}$"):
+        load_quality_fixture(_write_fixture(tmp_path, data))
+
+
+@pytest.mark.parametrize(
     "profile_expectations,message",
     [
         ([], "profile_expectations must be an object"),
@@ -1275,6 +1309,16 @@ def test_loader_rejects_invalid_unused_canonical_profile(
                 ),
                 query_planner=QueryPlannerConfig(enabled=False),
             ),
+            "p1_vector_bge profile requires BGE M3 at 1024 dimensions",
+        ),
+        (
+            "p1_vector_bge",
+            ToolConfig(embedding=replace(_VALID_BGE_EMBEDDING, model="other")),
+            "p1_vector_bge profile requires BGE M3 at 1024 dimensions",
+        ),
+        (
+            "p1_vector_bge",
+            ToolConfig(embedding=replace(_VALID_BGE_EMBEDDING, dimensions=384)),
             "p1_vector_bge profile requires BGE M3 at 1024 dimensions",
         ),
         (
