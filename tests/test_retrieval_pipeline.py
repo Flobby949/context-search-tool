@@ -92,6 +92,62 @@ class CapturingVectorStore:
         return self.results_by_vector[key]
 
 
+def _controlled_semantic_repo(
+    tmp_path: Path,
+) -> tuple[Path, ToolConfig, dict[str, str]]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "Incidental.java").write_text(
+        "class Incidental { void weak() {} }",
+        encoding="utf-8",
+    )
+    (repo / "PlannerTarget.java").write_text(
+        "class PlannerTarget { void bridge() {} }",
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        embedding=EmbeddingConfig(
+            provider="hash",
+            model="hash-v1",
+            dimensions=3,
+        ),
+        retrieval=RetrievalConfig(
+            semantic_top_k=1,
+            lexical_top_k=0,
+            final_top_k=2,
+            context_before_lines=0,
+            context_after_lines=0,
+        ),
+    )
+    index_repository(repo, config)
+
+    index_dir = index_dir_for(repo)
+    store = SQLiteStore(index_dir / "index.sqlite")
+    ids = {
+        "Incidental.java": store.chunk_for_line(
+            Path("Incidental.java"), 1
+        ).chunk_id,
+        "PlannerTarget.java": store.chunk_for_line(
+            Path("PlannerTarget.java"), 1
+        ).chunk_id,
+    }
+    vector_store = retrieval.NumpyVectorStore(index_dir)
+    vector_store.upsert_many(
+        [
+            (
+                ids["Incidental.java"],
+                np.asarray([0.40, 0.0, 0.916515], dtype=np.float32),
+            ),
+            (
+                ids["PlannerTarget.java"],
+                np.asarray([0.0, 1.0, 0.0], dtype=np.float32),
+            ),
+        ]
+    )
+    vector_store.persist()
+    return repo, config, ids
+
+
 def test_semantic_candidates_embeds_once_searches_each_variant_and_merges_provenance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -290,6 +346,163 @@ def test_query_repository_returns_original_variant_on_empty_results(
         QueryVariant("original", "missing query", "original")
     ]
     assert bundle.variant_retrieval_status == "original_only"
+
+
+def test_planner_rewrite_recalls_target_by_vector_and_outranks_weak_original(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, config, _ids = _controlled_semantic_repo(tmp_path)
+    provider = CapturingEmbeddingProvider([[1, 0, 0], [0, 1, 0]])
+    planner = FakePlanner(
+        QueryPlan(
+            original_query="原始问题",
+            rewritten_queries=["semantic bridge"],
+            status="ok",
+        )
+    )
+    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
+
+    bundle = query_repository(repo, "原始问题", config, planner=planner)
+
+    assert planner.calls == ["原始问题"]
+    assert provider.calls == [["原始问题", "semantic bridge"]]
+    assert bundle.variant_retrieval_status == "hybrid"
+    assert [result.file_path for result in bundle.results] == [
+        Path("PlannerTarget.java"),
+        Path("Incidental.java"),
+    ]
+    assert [
+        match.variant_id for match in bundle.results[0].semantic_matches
+    ] == ["planner:0"]
+    assert [
+        match.score for match in bundle.results[0].semantic_matches
+    ] == pytest.approx([1.0])
+    assert bundle.results[0].score_parts["planner_semantic"] == pytest.approx(1.0)
+    assert "semantic" not in bundle.results[0].score_parts
+    assert "planner_lexical" not in bundle.results[0].score_parts
+    assert bundle.results[1].score_parts["semantic"] == pytest.approx(0.40)
+
+
+def test_disabled_failure_and_empty_plans_use_identical_original_vector_results(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "Target.java").write_text(
+        'class Target { String value = "literal target token"; }\n',
+        encoding="utf-8",
+    )
+    index_repository(repo, DEFAULT_CONFIG)
+    query = "target token"
+    plans = [
+        QueryPlan(original_query=query, status="disabled"),
+        QueryPlan(
+            original_query=query,
+            status="fallback",
+            error="planner timed out",
+        ),
+        QueryPlan(
+            original_query=query,
+            status="fallback",
+            error="planner returned invalid JSON",
+        ),
+        QueryPlan(
+            original_query=query,
+            status="fallback",
+            error="planner returned unsupported payload",
+        ),
+        QueryPlan(original_query=query, rewritten_queries=[], status="ok"),
+    ]
+
+    bundles = [
+        query_repository(repo, query, DEFAULT_CONFIG, planner=FakePlanner(plan))
+        for plan in plans
+    ]
+    baseline_paths = [result.file_path for result in bundles[0].results]
+    baseline_scores = [result.score for result in bundles[0].results]
+    assert baseline_paths == [Path("Target.java")]
+
+    for bundle in bundles:
+        assert [result.file_path for result in bundle.results] == baseline_paths
+        assert [result.score for result in bundle.results] == baseline_scores
+        assert bundle.variant_retrieval_status == "original_only"
+        assert bundle.query_variants == [
+            QueryVariant("original", query, "original")
+        ]
+
+
+def test_variant_embedding_fallback_reports_only_executed_original_variant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, config, _ids = _controlled_semantic_repo(tmp_path)
+    provider = CapturingEmbeddingProvider([[1, 0, 0]], fail_multi=True)
+    planner = FakePlanner(
+        QueryPlan(
+            original_query="query",
+            rewritten_queries=["semantic bridge"],
+            status="ok",
+        )
+    )
+    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
+
+    bundle = query_repository(repo, "query", config, planner=planner)
+
+    assert provider.calls == [["query", "semantic bridge"], ["query"]]
+    assert bundle.variant_retrieval_status == "embedding_fallback"
+    assert bundle.query_variants == [QueryVariant("original", "query", "original")]
+
+
+def test_duplicate_rewrites_do_not_change_score_or_search_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, config, _ids = _controlled_semantic_repo(tmp_path)
+    provider = CapturingEmbeddingProvider([[1, 0, 0], [0, 1, 0]])
+    vector_store = retrieval.NumpyVectorStore(index_dir_for(repo))
+    search_calls: list[tuple[tuple[float, ...], int]] = []
+    real_search = vector_store.search
+
+    def recording_search(
+        query_vector: np.ndarray,
+        top_k: int,
+        deleted_ids: set[str],
+    ) -> list[VectorSearchResult]:
+        search_calls.append(
+            (tuple(float(value) for value in query_vector), top_k)
+        )
+        return real_search(query_vector, top_k, deleted_ids)
+
+    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(retrieval, "NumpyVectorStore", lambda _index_dir: vector_store)
+    monkeypatch.setattr(vector_store, "search", recording_search)
+    planner = FakePlanner(
+        QueryPlan(
+            original_query="query",
+            rewritten_queries=[
+                "semantic bridge",
+                "  SEMANTIC   BRIDGE ",
+                "query",
+            ],
+            status="ok",
+        )
+    )
+
+    bundle = query_repository(repo, "query", config, planner=planner)
+
+    assert provider.calls == [["query", "semantic bridge"]]
+    assert bundle.query_variants == [
+        QueryVariant("original", "query", "original"),
+        QueryVariant("planner:0", "semantic bridge", "planner"),
+    ]
+    assert bundle.variant_retrieval_status == "hybrid"
+    assert bundle.results[0].score_parts["planner_semantic"] == pytest.approx(1.0)
+    assert bundle.results[0].semantic_matches == [SemanticMatch("planner:0", 1.0)]
+    assert search_calls == [
+        ((1.0, 0.0, 0.0), config.retrieval.semantic_top_k),
+        ((0.0, 1.0, 0.0), config.retrieval.semantic_top_k),
+    ]
 
 
 def _write_go_imagebed_fixture(repo: Path) -> None:
@@ -815,6 +1028,8 @@ def test_query_repository_exposes_explicit_file_hint_reason(tmp_path: Path) -> N
 
     assert "explicit file hint match" in matching_result.reasons
     assert "exact file path hint boost" not in matching_result.reasons
+    assert bundle.query_variants[0].variant_id == "original"
+    assert bundle.variant_retrieval_status == "original_only"
 
 
 def test_generic_retrieval_finds_rust_source_without_language_plugin(
@@ -852,6 +1067,8 @@ impl ImageStore {
 
     paths = [result.file_path.as_posix() for result in bundle.results[:5]]
     assert "src/lib.rs" in paths
+    assert bundle.query_variants[0].variant_id == "original"
+    assert bundle.variant_retrieval_status == "original_only"
 
 
 def test_query_without_index_does_not_call_planner(tmp_path: Path) -> None:
@@ -4294,6 +4511,8 @@ def test_full_file_respects_size_limit(tmp_path: Path) -> None:
     bundle = query_repository(repo, "targetToken", DEFAULT_CONFIG, full_file=True)
 
     assert bundle.results[0].content.startswith("class Small")
+    assert bundle.query_variants[0].variant_id == "original"
+    assert bundle.variant_retrieval_status == "original_only"
 
 
 def test_full_file_fallback_still_respects_size_limit(tmp_path: Path) -> None:
@@ -4411,6 +4630,8 @@ class ApplyAuditController {
     assert bundle.results[0].file_path == Path("ApplyAuditController.java")
     assert "lexical" in bundle.results[0].score_parts
     assert any("lexical" in reason.lower() for reason in bundle.results[0].reasons)
+    assert bundle.query_variants[0].variant_id == "original"
+    assert bundle.variant_retrieval_status == "original_only"
 
 
 def test_route_reason_only_applies_to_chunks_with_route_tokens(tmp_path: Path) -> None:
@@ -4563,6 +4784,8 @@ def test_query_planner_fallback_returns_original_query_results(tmp_path: Path) -
     assert bundle.planner.status == "fallback"
     assert bundle.expanded_tokens == ["target", "token"]
     assert bundle.results[0].file_path == Path("OriginalMatch.java")
+    assert bundle.query_variants[0].variant_id == "original"
+    assert bundle.variant_retrieval_status == "original_only"
 
 
 def test_query_planner_mixed_original_and_hint_match_keeps_planner_reason(
