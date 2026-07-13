@@ -44,9 +44,21 @@ def _expected(path: str, top_k: int = 5) -> TopKMatcher:
 
 def test_normalize_results_deduplicates_paths_and_compacts_ranks() -> None:
     results = [
-        _result("src\\Controller.java", 0.9, {"vector": 0.7}, ["first"]),
+        _result(
+            "src\\Controller.java",
+            0.9,
+            {"vector": 0.7},
+            ["first"],
+            semantic_matches=[SemanticMatch("planner:0", 0.9)],
+        ),
         _result("src/Service.java", 0.8),
-        _result("src/Controller.java", 0.7, {"vector": 0.5}, ["duplicate"]),
+        _result(
+            "src/Controller.java",
+            0.7,
+            {"vector": 0.5},
+            ["duplicate"],
+            semantic_matches=[SemanticMatch("planner:1", 0.7)],
+        ),
         _result("src/Repository.java", 0.6),
     ]
 
@@ -60,19 +72,28 @@ def test_normalize_results_deduplicates_paths_and_compacts_ranks() -> None:
     assert normalized[0].score == 0.9
     assert normalized[0].score_parts == {"vector": 0.7}
     assert normalized[0].reasons == ["first"]
+    assert normalized[0].semantic_matches == [SemanticMatch("planner:0", 0.9)]
 
 
-def test_normalize_results_copies_score_parts_and_reasons() -> None:
+def test_normalize_results_copies_mutable_provenance() -> None:
     score_parts = {"vector": 0.7}
     reasons = ["first"]
-    result = _result("src/Controller.java", 0.9, score_parts, reasons)
+    result = _result(
+        "src/Controller.java",
+        0.9,
+        score_parts,
+        reasons,
+        semantic_matches=[SemanticMatch("planner:0", 0.9)],
+    )
 
     normalized = normalize_results([result])
     score_parts["vector"] = 0.1
     reasons.append("mutated")
+    result.semantic_matches.append(SemanticMatch("planner:1", 0.8))
 
     assert normalized[0].score_parts == {"vector": 0.7}
     assert normalized[0].reasons == ["first"]
+    assert normalized[0].semantic_matches == [SemanticMatch("planner:0", 0.9)]
 
 
 def test_evaluate_case_calculates_core_metrics_for_expected_top_k() -> None:

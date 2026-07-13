@@ -159,6 +159,51 @@ def _passing_evaluation() -> CaseEvaluation:
     )
 
 
+def _runtime_result(
+    path: str,
+    semantic_matches: list[SemanticMatch] | None = None,
+) -> RetrievalResult:
+    return RetrievalResult(
+        file_path=Path(path),
+        start_line=1,
+        end_line=1,
+        content="class App {}",
+        score=1.0,
+        score_parts={},
+        reasons=[],
+        followup_keywords=[],
+        semantic_matches=list(semantic_matches or []),
+    )
+
+
+def _profile_case(
+    expectation: ProfileExpectation,
+    gate: Gate = Gate.REQUIRED,
+) -> QualityCase:
+    return QualityCase(
+        case_id="case",
+        query="query",
+        gate=gate,
+        profile_expectations={"selected": expectation},
+    )
+
+
+def _runtime_bundle(
+    results: list[RetrievalResult] | None = None,
+    *,
+    planner_status: str = "disabled",
+    variant_retrieval_status: str = "original_only",
+) -> QueryBundle:
+    return QueryBundle(
+        query="query",
+        expanded_tokens=[],
+        results=list(results or []),
+        followup_keywords=[],
+        planner=QueryPlan("query", status=planner_status),
+        variant_retrieval_status=variant_retrieval_status,
+    )
+
+
 def test_profile_expectations_fail_case_when_hybrid_did_not_execute() -> None:
     case = QualityCase(
         case_id="case",
@@ -246,6 +291,196 @@ def test_profile_expectations_pass_with_actual_planner_semantic_top_result() -> 
     assert evaluation.failures == []
 
 
+@pytest.mark.parametrize(
+    ("semantic_matches", "expected_status", "expected_failures"),
+    [
+        (
+            [SemanticMatch("planner:0", 0.9)],
+            "fail",
+            [
+                "top_result_planner_semantic_match expected false, got true"
+            ],
+        ),
+        ([], "pass", []),
+    ],
+    ids=["actual-true-fails", "actual-false-passes"],
+)
+def test_profile_expectations_treat_false_top_match_as_meaningful(
+    semantic_matches: list[SemanticMatch],
+    expected_status: str,
+    expected_failures: list[str],
+) -> None:
+    case = _profile_case(
+        ProfileExpectation(top_result_planner_semantic_match=False)
+    )
+    bundle = _runtime_bundle(
+        [_runtime_result("App.java", semantic_matches)]
+    )
+
+    evaluation = quality_runner._apply_profile_expectations(
+        case,
+        "selected",
+        bundle,
+        _passing_evaluation(),
+    )
+
+    assert evaluation.status == expected_status
+    assert evaluation.failures == expected_failures
+
+
+def test_profile_expectations_require_planner_match_in_top_result() -> None:
+    case = _profile_case(
+        ProfileExpectation(top_result_planner_semantic_match=True)
+    )
+    bundle = _runtime_bundle(
+        [
+            _runtime_result(
+                "First.java",
+                [SemanticMatch("original", 0.9)],
+            ),
+            _runtime_result(
+                "Second.java",
+                [SemanticMatch("planner:0", 0.8)],
+            ),
+        ]
+    )
+
+    evaluation = quality_runner._apply_profile_expectations(
+        case,
+        "selected",
+        bundle,
+        _passing_evaluation(),
+    )
+
+    assert evaluation.status == "fail"
+    assert evaluation.failures == [
+        "top_result_planner_semantic_match expected true, got false"
+    ]
+
+
+def test_profile_expectations_preserve_existing_required_failures() -> None:
+    case = _profile_case(
+        ProfileExpectation(
+            planner_status="ok",
+            variant_retrieval_status="hybrid",
+            top_result_planner_semantic_match=True,
+        )
+    )
+    bundle = _runtime_bundle(
+        [
+            _runtime_result(
+                "App.java",
+                [SemanticMatch("planner:0", 0.9)],
+            )
+        ],
+        planner_status="ok",
+        variant_retrieval_status="hybrid",
+    )
+    existing = CaseEvaluation(
+        case_id="case",
+        status="fail",
+        metrics={},
+        failures=["existing relevance failure"],
+        top_results=[],
+    )
+
+    evaluation = quality_runner._apply_profile_expectations(
+        case,
+        "selected",
+        bundle,
+        existing,
+    )
+
+    assert evaluation.status == "fail"
+    assert evaluation.failures == ["existing relevance failure"]
+
+
+@pytest.mark.parametrize(
+    "profile_expectations",
+    [
+        {},
+        {"other": ProfileExpectation(planner_status="ok")},
+    ],
+    ids=["absent", "wrong-profile"],
+)
+def test_profile_expectations_without_selected_profile_are_noop(
+    profile_expectations: dict[str, ProfileExpectation],
+) -> None:
+    case = QualityCase(
+        case_id="case",
+        query="query",
+        profile_expectations=profile_expectations,
+    )
+    evaluation = _passing_evaluation()
+
+    actual = quality_runner._apply_profile_expectations(
+        case,
+        "selected",
+        QueryBundle("query", [], [], []),
+        evaluation,
+    )
+
+    assert actual is evaluation
+
+
+@pytest.mark.parametrize(
+    ("gate", "status"),
+    [
+        (Gate.KNOWN_GAP, "known_gap"),
+        (Gate.INFORMATIONAL, "informational"),
+    ],
+)
+def test_profile_expectations_preserve_non_required_status(
+    gate: Gate,
+    status: str,
+) -> None:
+    case = _profile_case(
+        ProfileExpectation(planner_status="ok"),
+        gate,
+    )
+    evaluation = CaseEvaluation(
+        case_id="case",
+        status=status,
+        metrics={},
+        failures=[],
+        top_results=[],
+    )
+
+    actual = quality_runner._apply_profile_expectations(
+        case,
+        "selected",
+        _runtime_bundle(planner_status="fallback"),
+        evaluation,
+    )
+
+    assert actual.status == status
+    assert actual.failures == ["planner_status expected ok, got fallback"]
+
+
+def test_profile_expectations_ignore_unspecified_fields() -> None:
+    case = _profile_case(ProfileExpectation())
+    bundle = _runtime_bundle(
+        [
+            _runtime_result(
+                "App.java",
+                [SemanticMatch("planner:0", 0.9)],
+            )
+        ],
+        planner_status="fallback",
+        variant_retrieval_status="original_only",
+    )
+
+    evaluation = quality_runner._apply_profile_expectations(
+        case,
+        "selected",
+        bundle,
+        _passing_evaluation(),
+    )
+
+    assert evaluation.status == "pass"
+    assert evaluation.failures == []
+
+
 def test_case_record_serializes_executed_variant_provenance() -> None:
     record = quality_runner._case_record(
         "repo",
@@ -269,6 +504,89 @@ def test_case_record_serializes_executed_variant_provenance() -> None:
         {"variant_id": "planner:0", "text": "app", "source": "planner"},
     ]
     assert record["variant_retrieval_status"] == "hybrid"
+
+
+def test_nonexecuted_case_records_omit_executed_variant_provenance() -> None:
+    case = QualityCase(case_id="case", query="query")
+    records = [
+        quality_runner._empty_case_record(
+            "repo",
+            case,
+            "skipped",
+            "repo not found",
+        ),
+        quality_runner._error_case_record("repo", case, "query failed"),
+    ]
+
+    assert [record["status"] for record in records] == ["skipped", "error"]
+    for record in records:
+        assert "query_variants" not in record
+        assert "variant_retrieval_status" not in record
+
+
+def test_run_quality_fixture_applies_parsed_profile_expectations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_source_repo(tmp_path / "fixture-source")
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {"smoke": {}},
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "snapshot_path": str(source),
+                    "profiles": ["smoke"],
+                    "queries": [
+                        {
+                            "id": "runtime-gate",
+                            "query": "query",
+                            "profile_expectations": {
+                                "smoke": {
+                                    "planner_status": "ok",
+                                    "variant_retrieval_status": "hybrid",
+                                    "top_result_planner_semantic_match": True,
+                                }
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    captured: list[tuple[Path, ToolConfig]] = []
+    _patch_runner_dependencies(monkeypatch, captured)
+    monkeypatch.setattr(
+        quality_runner,
+        "query_repository",
+        lambda repo, query, config: QueryBundle(
+            query=query,
+            expanded_tokens=[],
+            results=[
+                _runtime_result(
+                    "src/App.java",
+                    [SemanticMatch("original", 0.9)],
+                )
+            ],
+            followup_keywords=[],
+            planner=QueryPlan(query, status="fallback"),
+            query_variants=[QueryVariant("original", query, "original")],
+            variant_retrieval_status="original_only",
+        ),
+    )
+
+    report = run_quality_fixture(fixture, "smoke", None, None)
+
+    record = report["cases"][0]
+    assert record["gate"] == "required"
+    assert record["status"] == "fail"
+    assert record["failures"] == [
+        "planner_status expected ok, got fallback",
+        "variant_retrieval_status expected hybrid, got original_only",
+        "top_result_planner_semantic_match expected true, got false",
+    ]
 
 
 def test_quality_runner_copies_repo_without_mutating_source(tmp_path: Path) -> None:
