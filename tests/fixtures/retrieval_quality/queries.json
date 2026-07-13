@@ -1,31 +1,1369 @@
 {
   "schema_version": 1,
+  "profile_configs": {
+    "ci": {
+      "embedding": {
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384
+      },
+      "query_planner": {
+        "enabled": false
+      }
+    },
+    "smoke": {
+      "embedding": {
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384
+      },
+      "query_planner": {
+        "enabled": false
+      }
+    },
+    "planner": {
+      "embedding": {
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384
+      },
+      "query_planner": {
+        "enabled": true,
+        "provider": "ollama",
+        "model": "qwen3.5:4b-mlx",
+        "timeout_seconds": 30
+      }
+    },
+    "calibration_bge": {
+      "embedding": {
+        "provider": "bge",
+        "model": "bge-m3",
+        "dimensions": 1024
+      },
+      "query_planner": {
+        "enabled": false
+      }
+    },
+    "ab_hash": {
+      "embedding": {
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384
+      },
+      "query_planner": {
+        "enabled": false
+      }
+    },
+    "ab_bge": {
+      "embedding": {
+        "provider": "bge",
+        "model": "bge-m3",
+        "dimensions": 1024
+      },
+      "query_planner": {
+        "enabled": false
+      }
+    }
+  },
   "repos": [
     {
-      "repo_key": "program_tool_snapshot",
-      "snapshot_path": "tests/fixtures/real_projects/program_tool",
-      "profiles": ["ci", "smoke"],
+      "repo_key": "imagebed",
+      "path_env": "CST_SMOKE_IMAGEBED_REPO",
+      "repo_dir_name": "imagebed",
+      "profiles": [
+        "smoke"
+      ],
       "queries": [
         {
-          "id": "qrcode-entrypoint",
-          "query": "QRCode generate scan camera decode paste image qrcode-reader",
-          "tags": ["frontend", "entrypoint"],
+          "id": "go-upload-handler",
+          "query": "UploadHandler MultiUpload multipart file storage Save",
+          "tags": [
+            "generic",
+            "go"
+          ],
           "gate": "required",
           "expected_top_k": [
-            {"path": "src/views/qrcode/QRCodeTool.vue", "top_k": 5}
+            {
+              "path": "handler/upload.go",
+              "top_k": 5
+            },
+            {
+              "glob": "storage/*.go",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "handler/upload.go",
+              "top_k": 5,
+              "max_rank": 1
+            }
+          ],
+          "absent_top_k": [
+            {
+              "glob": "templates/*",
+              "top_k": 5
+            },
+            {
+              "path": "cmd/typora/main.go",
+              "top_k": 5
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "imagebed/go-upload-handler"
+          }
+        },
+        {
+          "id": "go-auth-middleware",
+          "query": "AuthMiddleware Authorization Bearer token AdminMiddleware",
+          "tags": [
+            "generic",
+            "go"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "middleware/auth.go",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "middleware/auth.go",
+              "top_k": 5,
+              "max_rank": 1
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "imagebed/go-auth-middleware"
+          }
+        },
+        {
+          "id": "go-storage-implementations",
+          "query": "NewS3Storage NewOSSStorage NewLocalStorage initStorage",
+          "tags": [
+            "generic",
+            "go"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "glob": "storage/*.go",
+              "top_k": 8
+            }
+          ],
+          "absent_top_k": [
+            {
+              "path": "templates/index.html",
+              "top_k": 5
+            }
+          ],
+          "outranks": [
+            {
+              "source": "storage/*.go",
+              "noise": "templates/index.html",
+              "top_k": 8
+            }
+          ],
+          "known_gap_reason": "main.go is useful for initStorage queries, but first-round hard assertions focus on storage implementation files and template demotion.",
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "imagebed/go-storage-implementations"
+          }
+        },
+        {
+          "id": "go-delete-handler",
+          "query": "DeleteHandler delete object storage remove image",
+          "tags": [
+            "generic",
+            "go"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "handler/delete.go",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "handler/delete.go",
+              "top_k": 5,
+              "max_rank": 1
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "imagebed/go-delete-handler"
+          }
+        },
+        {
+          "id": "go-route-registration",
+          "query": "router upload delete middleware route group main",
+          "tags": [
+            "generic",
+            "go"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "main.go",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "main.go",
+              "top_k": 5,
+              "max_rank": 1
+            }
+          ],
+          "absent_top_k": [
+            {
+              "glob": "*.md",
+              "top_k": 5
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "imagebed/go-route-registration"
+          }
+        }
+      ]
+    },
+    {
+      "repo_key": "env_change",
+      "path_env": "CST_SMOKE_ENV_CHANGE_REPO",
+      "repo_dir_name": "env-change",
+      "profiles": [
+        "smoke"
+      ],
+      "queries": [
+        {
+          "id": "tauri-commands",
+          "query": "tauri command apply_dev restore_clean command handler",
+          "tags": [
+            "generic",
+            "rust",
+            "typescript"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src-tauri/src/commands.rs",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "src-tauri/src/commands.rs",
+              "top_k": 5,
+              "max_rank": 1
+            }
+          ],
+          "absent_top_k": [
+            {
+              "glob": "src-tauri/gen/schemas/*.json",
+              "top_k": 8
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "env_change/tauri-commands"
+          }
+        },
+        {
+          "id": "engine-apply-restore",
+          "query": "apply_dev restore_clean file_swap session conflict engine",
+          "tags": [
+            "generic",
+            "rust",
+            "typescript"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src-tauri/src/engine.rs",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "src-tauri/src/engine.rs",
+              "top_k": 5,
+              "max_rank": 1
+            }
+          ],
+          "absent_top_k": [
+            {
+              "glob": "src-tauri/gen/schemas/*.json",
+              "top_k": 8
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "env_change/engine-apply-restore"
+          }
+        },
+        {
+          "id": "frontend-invoke",
+          "query": "invoke apply_dev restore_clean frontend ProjectSwitcher",
+          "tags": [
+            "generic",
+            "rust",
+            "typescript"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/main.ts",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "src/main.ts",
+              "top_k": 5,
+              "max_rank": 1
+            }
+          ],
+          "absent_top_k": [
+            {
+              "path": "vite.config.ts",
+              "top_k": 3
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "env_change/frontend-invoke"
+          }
+        },
+        {
+          "id": "settings-persistence",
+          "query": "settings persistence save load project config app settings",
+          "tags": [
+            "generic",
+            "rust",
+            "typescript"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src-tauri/src/settings.rs",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "src-tauri/src/settings.rs",
+              "top_k": 5,
+              "max_rank": 1
+            }
+          ],
+          "outranks": [
+            {
+              "source": "src-tauri/src/settings.rs",
+              "noise": "vite.config.ts",
+              "top_k": 8
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "env_change/settings-persistence"
+          }
+        }
+      ]
+    },
+    {
+      "repo_key": "investment_assistant",
+      "path_env": "CST_SMOKE_INVESTMENT_ASSISTANT_REPO",
+      "repo_dir_name": "Investment-Assistant",
+      "profiles": [
+        "smoke"
+      ],
+      "queries": [
+        {
+          "id": "frontend-auth-store",
+          "query": "frontend useAuthStore login register fetchCurrentUser Pinia",
+          "tags": [
+            "monorepo",
+            "frontend"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "frontend/src/stores/modules/auth.store.ts",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "frontend/src/stores/modules/auth.store.ts",
+              "top_k": 5,
+              "max_rank": 3
+            }
+          ],
+          "absent_top_k": [
+            {
+              "glob": "investment-assistant-backend/src/main/java/com/investment/application/auth/*.java",
+              "top_k": 3
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "investment_assistant/frontend-auth-store"
+          }
+        },
+        {
+          "id": "collector-handler",
+          "query": "collector CollectHandler collect_handler.go CollectNav BatchCollectNav gin",
+          "tags": [
+            "monorepo",
+            "go"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "collector/internal/api/handler/collect_handler.go",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "collector/internal/api/handler/collect_handler.go",
+              "top_k": 5,
+              "max_rank": 1
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "investment_assistant/collector-handler"
+          }
+        },
+        {
+          "id": "frontend-sse-composable",
+          "query": "frontend useSseConnection EventSource chat composable",
+          "tags": [
+            "monorepo",
+            "frontend"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "frontend/src/views/chat/composables/useSseConnection.ts",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "frontend/src/views/chat/composables/useSseConnection.ts",
+              "top_k": 5,
+              "max_rank": 3
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "investment_assistant/frontend-sse-composable"
+          }
+        },
+        {
+          "id": "collector-fund-service",
+          "query": "collector FundService CollectNav BatchCollectNav fund service",
+          "tags": [
+            "monorepo",
+            "go"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "collector/internal/service/fund_service.go",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "collector/internal/service/fund_service.go",
+              "top_k": 5,
+              "max_rank": 2
+            }
+          ],
+          "absent_top_k": [
+            {
+              "glob": "investment-assistant-backend/**/*.java",
+              "top_k": 2
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "investment_assistant/collector-fund-service"
+          }
+        },
+        {
+          "id": "collector-nav-fetcher",
+          "query": "collector eastmoney nav.go fetch fund nav",
+          "tags": [
+            "monorepo",
+            "go"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "collector/internal/source/eastmoney/nav.go",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "collector/internal/source/eastmoney/nav.go",
+              "top_k": 5,
+              "max_rank": 1
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "investment_assistant/collector-nav-fetcher"
+          }
+        },
+        {
+          "id": "collector-scheduler",
+          "query": "collector scheduler.go Scheduler AddTask cron heartbeat",
+          "tags": [
+            "monorepo",
+            "go"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "collector/internal/scheduler/scheduler.go",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "collector/internal/scheduler/scheduler.go",
+              "top_k": 5,
+              "max_rank": 1
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "investment_assistant/collector-scheduler"
+          }
+        },
+        {
+          "id": "java-ai-sse-controller",
+          "query": "java AIController chatWithSse SseServer SseChatRequest userId message",
+          "tags": [
+            "monorepo",
+            "java_spring"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "investment-assistant-backend/src/main/java/com/investment/interfaces/rest/AIController.java",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "investment-assistant-backend/src/main/java/com/investment/interfaces/rest/AIController.java",
+              "top_k": 5,
+              "max_rank": 1
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "investment_assistant/java-ai-sse-controller"
+          }
+        }
+      ]
+    },
+    {
+      "repo_key": "program_tool",
+      "path_env": "CST_SMOKE_PROGRAM_TOOL_REPO",
+      "repo_dir_name": "program-tool",
+      "snapshot_path": "tests/fixtures/real_projects/program_tool",
+      "profiles": [
+        "ci",
+        "smoke"
+      ],
+      "queries": [
+        {
+          "id": "watermark-remover",
+          "query": "watermark remover remove image watermark detection mask canvas inpaint",
+          "tags": [
+            "frontend",
+            "vue",
+            "entrypoint"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/views/image/WatermarkRemover.vue",
+              "top_k": 5
+            },
+            {
+              "path": "src/services/watermarkDetection.ts",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "src/views/image/WatermarkRemover.vue",
+              "top_k": 5,
+              "max_rank": 1
+            }
+          ],
+          "absent_top_k": [
+            {
+              "path": "src/utils/imageUtils.ts",
+              "top_k": 1
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "program_tool/watermark-remover"
+          }
+        },
+        {
+          "id": "mqtt-tool",
+          "query": "MQTT connect subscribe publish topic qos websocket logs",
+          "tags": [
+            "frontend",
+            "vue"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/views/communication/MqttTool.vue",
+              "top_k": 3
+            },
+            {
+              "path": "src/utils/mqttUtils.ts",
+              "top_k": 3
+            },
+            {
+              "path": "src/types/index.ts",
+              "top_k": 5
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "program_tool/mqtt-tool"
+          }
+        },
+        {
+          "id": "qrcode-tool",
+          "query": "QRCode generate scan camera decode paste image qrcode-reader",
+          "tags": [
+            "frontend",
+            "vue",
+            "entrypoint"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/views/qrcode/QRCodeTool.vue",
+              "top_k": 3
+            },
+            {
+              "path": "src/utils/qrcodeUtils.ts",
+              "top_k": 3
+            },
+            {
+              "path": "src/types/qrcode-reader.d.ts",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "src/views/qrcode/QRCodeTool.vue",
+              "top_k": 5,
+              "max_rank": 1,
+              "role": "entrypoint"
+            }
+          ],
+          "absent_top_k": [
+            {
+              "path": "package-lock.json",
+              "top_k": 5
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "program_tool/qrcode-tool"
+          }
+        },
+        {
+          "id": "json-to-entity",
+          "query": "JSON to entity generate Java TypeScript CSharp Python class interface",
+          "tags": [
+            "frontend",
+            "vue"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/utils/jsonToEntity.ts",
+              "top_k": 3
+            },
+            {
+              "path": "src/views/json/JsonToEntity.vue",
+              "top_k": 3
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "src/utils/jsonToEntity.ts",
+              "top_k": 5,
+              "max_rank": 1
+            }
+          ],
+          "absent_top_k": [
+            {
+              "glob": "temp/*",
+              "top_k": 5
+            },
+            {
+              "path": "package-lock.json",
+              "top_k": 5
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "program_tool/json-to-entity"
+          }
+        },
+        {
+          "id": "app-layout-theme",
+          "query": "AppLayout theme sidebar tool categories dark light Pinia",
+          "tags": [
+            "frontend",
+            "vue"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/components/AppLayout.vue",
+              "top_k": 3
+            },
+            {
+              "path": "src/stores/app.ts",
+              "top_k": 3
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "src/components/AppLayout.vue",
+              "top_k": 5,
+              "max_rank": 1
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "program_tool/app-layout-theme"
+          }
+        },
+        {
+          "id": "ai-chat",
+          "query": "AI chat markdown history export highlight code conversation",
+          "tags": [
+            "frontend",
+            "vue",
+            "entrypoint"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/views/ai/AiChat.vue",
+              "top_k": 3
+            },
+            {
+              "path": "src/utils/markdownUtils.ts",
+              "top_k": 5
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "src/views/ai/AiChat.vue",
+              "top_k": 5,
+              "max_rank": 1
+            }
+          ],
+          "legacy": {
+            "fixture": "generic_baseline_quality",
+            "key": "program_tool/ai-chat"
+          }
+        }
+      ]
+    },
+    {
+      "repo_key": "java_spring_mini",
+      "snapshot_path": "tests/fixtures/java-spring-mini",
+      "profiles": [
+        "ci"
+      ],
+      "queries": [
+        {
+          "id": "apply-audit-endpoint",
+          "query": "/apply/audit/pageEs INVOLVED_BY_ME",
+          "tags": [
+            "java_spring",
+            "exact_identifier",
+            "entrypoint"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/main/java/com/example/audit/ResourceApplyAuditController.java",
+              "top_k": 3
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "src/main/java/com/example/audit/ResourceApplyAuditController.java",
+              "top_k": 3,
+              "max_rank": 3,
+              "role": "entrypoint"
+            }
+          ]
+        },
+        {
+          "id": "workbench-audit-localized-cjk",
+          "query": "工作台统计 待我审核",
+          "tags": [
+            "java_spring",
+            "localized_cjk",
+            "entrypoint"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/main/java/com/example/audit/ApplyAuditController.java",
+              "top_k": 3
+            }
+          ],
+          "preferred_rank": [
+            {
+              "path": "src/main/java/com/example/audit/ApplyAuditController.java",
+              "top_k": 3,
+              "max_rank": 3,
+              "role": "entrypoint"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "repo_key": "operation_client",
+      "path_env": "CST_CALIBRATION_OPERATION_CLIENT_REPO",
+      "repo_dir_name": "operation-client-api",
+      "profiles": [
+        "calibration_bge"
+      ],
+      "queries": [
+        {
+          "id": "operation-client-auth-login-register",
+          "query": "账号密码登录注册",
+          "tags": [
+            "java_spring",
+            "chinese_query"
+          ],
+          "gate": "required",
+          "expected_at_least_top_k": [
+            {
+              "matchers": [
+                "src/main/java/com/njbandou/controller/AuthController.java",
+                "src/main/java/com/njbandou/service/impl/AuthServiceImpl.java",
+                "src/main/java/com/njbandou/service/AuthService.java",
+                "src/main/java/com/njbandou/dto/AccountLoginDto.java",
+                "src/main/java/com/njbandou/entity/User.java"
+              ],
+              "top_k": 5,
+              "min_matches": 2
+            }
+          ],
+          "known_gap_reason": "No hardcoded CJK aliases: entity/dto/service-interface files currently fall outside Top5.",
+          "legacy": {
+            "fixture": "retrieval_calibration",
+            "key": "operation_client/operation-client-auth-login-register"
+          }
+        },
+        {
+          "id": "operation-client-station-device-list",
+          "query": "驿站设备列表",
+          "tags": [
+            "java_spring",
+            "chinese_query"
+          ],
+          "gate": "required",
+          "expected_at_least_top_k": [
+            {
+              "matchers": [
+                "src/main/java/com/njbandou/controller/StationController.java",
+                "src/main/java/com/njbandou/service/StationService.java",
+                "src/main/java/com/njbandou/service/impl/StationServiceImpl.java",
+                "src/main/java/com/njbandou/service/StationEquipmentService.java",
+                "src/main/java/com/njbandou/service/impl/StationEquipmentServiceImpl.java"
+              ],
+              "top_k": 5,
+              "min_matches": 1
+            }
+          ],
+          "known_gap_reason": "No hardcoded CJK aliases: station service-chain recall currently falls below the alias-assisted baseline.",
+          "legacy": {
+            "fixture": "retrieval_calibration",
+            "key": "operation_client/operation-client-station-device-list"
+          }
+        },
+        {
+          "id": "operation-client-feedback-sms",
+          "query": "发布意见反馈 发送短信",
+          "tags": [
+            "java_spring",
+            "chinese_query"
+          ],
+          "gate": "required",
+          "expected_at_least_top_k": [
+            {
+              "matchers": [
+                "src/main/java/com/njbandou/controller/FeedbackController.java",
+                "src/main/java/com/njbandou/service/FeedbackService.java",
+                "src/main/java/com/njbandou/service/impl/FeedbackServiceImpl.java",
+                "src/main/java/com/njbandou/dto/FeedbackDto.java",
+                "src/main/java/com/njbandou/utils/SmsUtils.java"
+              ],
+              "top_k": 5,
+              "min_matches": 4
+            }
+          ],
+          "absent_top_k": [
+            {
+              "path": "src/main/java/com/njbandou/utils/client/WxMiniLoginClient.java",
+              "top_k": 3
+            },
+            {
+              "path": "src/main/java/com/njbandou/service/impl/AuthServiceImpl.java",
+              "top_k": 3
+            },
+            {
+              "path": "src/main/java/com/njbandou/common/cache/RedisCache.java",
+              "top_k": 3
+            }
+          ],
+          "legacy": {
+            "fixture": "retrieval_calibration",
+            "key": "operation_client/operation-client-feedback-sms"
+          }
+        }
+      ]
+    },
+    {
+      "repo_key": "console_iot",
+      "path_env": "CST_CALIBRATION_CONSOLE_IOT_REPO",
+      "repo_dir_name": "console-iot-api",
+      "profiles": [
+        "calibration_bge"
+      ],
+      "queries": [
+        {
+          "id": "console-iot-equipment-list",
+          "query": "设备列表",
+          "tags": [
+            "java_spring",
+            "chinese_query"
+          ],
+          "gate": "required",
+          "expected_at_least_top_k": [
+            {
+              "matchers": [
+                "src/main/java/com/njbandou/controller/EquipmentController.java",
+                "src/main/java/com/njbandou/service/EquipmentService.java",
+                "src/main/java/com/njbandou/service/impl/EquipmentServiceImpl.java",
+                "src/main/java/com/njbandou/entity/Equipment.java",
+                "src/main/java/com/njbandou/controller/open/OpenApiController.java"
+              ],
+              "top_k": 5,
+              "min_matches": 3
+            }
+          ],
+          "legacy": {
+            "fixture": "retrieval_calibration",
+            "key": "console_iot/console-iot-equipment-list"
+          }
+        },
+        {
+          "id": "console-iot-access-control",
+          "query": "开门控制",
+          "tags": [
+            "java_spring",
+            "chinese_query"
+          ],
+          "gate": "required",
+          "expected_at_least_top_k": [
+            {
+              "matchers": [
+                "src/main/java/com/njbandou/service/AccessControlService.java",
+                "src/main/java/com/njbandou/service/impl/AccessControlServiceImpl.java",
+                "src/main/java/com/njbandou/controller/EquipmentController.java",
+                "src/main/java/com/njbandou/controller/open/OpenApiController.java"
+              ],
+              "top_k": 5,
+              "min_matches": 3
+            }
+          ],
+          "absent_top_k": [
+            {
+              "path": "src/main/java/com/njbandou/iot/code/beehive/BeehiveCodeHandler.java",
+              "top_k": 3
+            },
+            {
+              "path": "src/main/java/com/njbandou/iot/frs/weiguang/WeiGuangFrsHandler.java",
+              "top_k": 3
+            }
+          ],
+          "legacy": {
+            "fixture": "retrieval_calibration",
+            "key": "console_iot/console-iot-access-control"
+          }
+        },
+        {
+          "id": "console-iot-device-status",
+          "query": "IOT设备状态",
+          "tags": [
+            "java_spring",
+            "chinese_query"
+          ],
+          "gate": "required",
+          "expected_at_least_top_k": [
+            {
+              "matchers": [
+                "src/main/java/com/njbandou/service/DeviceControlService.java",
+                "src/main/java/com/njbandou/service/impl/DeviceControlServiceImpl.java",
+                "src/main/java/com/njbandou/iot/DeviceControlFactoryManager.java",
+                "src/main/java/com/njbandou/service/IndexService.java",
+                "src/main/java/com/njbandou/service/impl/IndexServiceImpl.java",
+                "src/main/java/com/njbandou/iot/DeviceControlHandler.java"
+              ],
+              "top_k": 5,
+              "min_matches": 2
+            }
+          ],
+          "known_gap_reason": "No hardcoded CJK aliases: status query keeps core control files visible but misses the full service chain.",
+          "legacy": {
+            "fixture": "retrieval_calibration",
+            "key": "console_iot/console-iot-device-status"
+          }
+        },
+        {
+          "id": "console-iot-alarm",
+          "query": "设备告警",
+          "tags": [
+            "java_spring",
+            "chinese_query"
+          ],
+          "gate": "required",
+          "expected_at_least_top_k": [
+            {
+              "matchers": [
+                "src/main/java/com/njbandou/service/AlarmService.java",
+                "src/main/java/com/njbandou/service/impl/AlarmServiceImpl.java",
+                "src/main/java/com/njbandou/service/AlarmPushService.java",
+                "src/main/java/com/njbandou/service/impl/AlarmPushServiceImpl.java",
+                "src/main/java/com/njbandou/dto/AlarmDto.java"
+              ],
+              "top_k": 5,
+              "min_matches": 0
+            }
+          ],
+          "known_gap_reason": "No hardcoded CJK aliases: alarm query currently ranks MQTT/callback/detail files above alarm services.",
+          "legacy": {
+            "fixture": "retrieval_calibration",
+            "key": "console_iot/console-iot-alarm"
+          }
+        },
+        {
+          "id": "console-iot-user-auth",
+          "query": "用户登录认证",
+          "tags": [
+            "java_spring",
+            "chinese_query"
+          ],
+          "gate": "required",
+          "expected_at_least_top_k": [
+            {
+              "matchers": [
+                "src/main/java/com/njbandou/controller/AuthController.java",
+                "src/main/java/com/njbandou/service/AuthService.java",
+                "src/main/java/com/njbandou/service/impl/AuthServiceImpl.java",
+                "src/main/java/com/njbandou/service/impl/SysManagerDetailsServiceImpl.java",
+                "src/main/java/com/njbandou/security/service/UserDetailsServiceImpl.java",
+                "src/main/java/com/njbandou/service/impl/SysManagerServiceImpl.java",
+                "src/main/java/com/njbandou/security/utils/TokenUtils.java",
+                "src/main/java/com/njbandou/security/filter/AuthenticationTokenFilter.java"
+              ],
+              "top_k": 5,
+              "min_matches": 3
+            }
+          ],
+          "legacy": {
+            "fixture": "retrieval_calibration",
+            "key": "console_iot/console-iot-user-auth"
+          }
+        }
+      ]
+    },
+    {
+      "repo_key": "psf_requests",
+      "path_env": "CST_PLANNER_REQUESTS_REPO",
+      "repo_dir_name": "requests",
+      "profiles": [
+        "planner"
+      ],
+      "queries": [
+        {
+          "id": "cookies-between-calls",
+          "query": "where does requests keep cookies between multiple calls in a client session",
+          "profiles": [
+            "planner"
+          ],
+          "tags": [
+            "python",
+            "planner",
+            "natural_language"
+          ],
+          "gate": "required",
+          "expected_any_top_k": [
+            {
+              "matchers": [
+                {
+                  "path": "src/requests/sessions.py"
+                },
+                {
+                  "path": "src/requests/cookies.py"
+                }
+              ],
+              "top_k": 5
+            }
+          ]
+        },
+        {
+          "id": "retry-proxy-pooling-natural",
+          "query": "where are retries proxy connections and connection pools configured for sending requests",
+          "profiles": [
+            "planner"
+          ],
+          "tags": [
+            "python",
+            "planner",
+            "natural_language"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/requests/adapters.py",
+              "top_k": 5
+            }
+          ]
+        },
+        {
+          "id": "stream-response-body-natural",
+          "query": "where can response body be streamed in chunks without loading everything",
+          "profiles": [
+            "planner"
+          ],
+          "tags": [
+            "python",
+            "planner",
+            "natural_language"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/requests/models.py",
+              "top_k": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "repo_key": "cross_language_dashboard",
+      "snapshot_path": "tests/fixtures/real_projects/cross_language_dashboard",
+      "profiles": [
+        "planner"
+      ],
+      "queries": [
+        {
+          "id": "dashboard-cross-language",
+          "query": "数据看板统计图表功能",
+          "profiles": [
+            "planner"
+          ],
+          "tags": [
+            "java_spring",
+            "cross_language",
+            "entrypoint"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/main/java/com/example/dashboard/DashboardController.java",
+              "top_k": 5
+            }
           ],
           "expected_any_top_k": [
             {
               "matchers": [
-                {"path": "src/utils/qrcodeUtils.ts"},
-                {"path": "src/types/qrcode-reader.d.ts"}
+                {
+                  "path": "src/main/java/com/example/dashboard/StatisticsService.java"
+                },
+                {
+                  "path": "src/main/java/com/example/dashboard/ChartService.java"
+                }
               ],
               "top_k": 5
             }
           ],
-          "absent_top_k": [
-            {"path": "package-lock.json", "top_k": 5}
+          "preferred_rank": [
+            {
+              "path": "src/main/java/com/example/dashboard/DashboardController.java",
+              "top_k": 5,
+              "max_rank": 3,
+              "role": "entrypoint"
+            }
           ]
+        }
+      ]
+    },
+    {
+      "repo_key": "embedding_ab",
+      "path_env": "CST_QUALITY_AB_REPO",
+      "repo_dir_name": "embedding-ab",
+      "snapshot_path": "tests/fixtures/real_projects/embedding_ab",
+      "profiles": [
+        "ab_hash",
+        "ab_bge"
+      ],
+      "queries": [
+        {
+          "id": "embedding-ab-access-validation",
+          "query": "开门校验场景",
+          "profiles": [
+            "ab_hash",
+            "ab_bge"
+          ],
+          "gate": "informational",
+          "metric_k": 12,
+          "relevance_matchers": [
+            {
+              "contains": "whitelist"
+            },
+            {
+              "contains": "blacklist"
+            },
+            {
+              "contains": "access"
+            },
+            {
+              "contains": "validation"
+            }
+          ],
+          "noise_matchers": [
+            {
+              "contains": "region"
+            },
+            {
+              "contains": "role"
+            },
+            {
+              "contains": "announcement"
+            }
+          ],
+          "legacy": {
+            "fixture": "ab_comparison",
+            "key": "embedding_ab/embedding-ab-access-validation"
+          }
+        },
+        {
+          "id": "embedding-ab-whitelist-management",
+          "query": "黑白名单管理",
+          "profiles": [
+            "ab_hash",
+            "ab_bge"
+          ],
+          "gate": "informational",
+          "metric_k": 12,
+          "relevance_matchers": [
+            {
+              "contains": "whitelist"
+            },
+            {
+              "contains": "blacklist"
+            },
+            {
+              "contains": "manage"
+            },
+            {
+              "contains": "add"
+            },
+            {
+              "contains": "remove"
+            }
+          ],
+          "noise_matchers": [
+            {
+              "contains": "region"
+            },
+            {
+              "contains": "user"
+            },
+            {
+              "contains": "notification"
+            }
+          ],
+          "legacy": {
+            "fixture": "ab_comparison",
+            "key": "embedding_ab/embedding-ab-whitelist-management"
+          }
+        },
+        {
+          "id": "embedding-ab-order-cancel",
+          "query": "OrderService cancel method",
+          "profiles": [
+            "ab_hash",
+            "ab_bge"
+          ],
+          "gate": "informational",
+          "metric_k": 12,
+          "relevance_matchers": [
+            {
+              "contains": "OrderService"
+            },
+            {
+              "contains": "cancel"
+            },
+            {
+              "contains": "order"
+            }
+          ],
+          "noise_matchers": [
+            {
+              "contains": "payment"
+            },
+            {
+              "contains": "user"
+            },
+            {
+              "contains": "notification"
+            }
+          ],
+          "legacy": {
+            "fixture": "ab_comparison",
+            "key": "embedding_ab/embedding-ab-order-cancel"
+          }
         }
       ]
     }
