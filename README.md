@@ -510,10 +510,20 @@ python -m pip install -e ".[dev]"
 pytest -v
 ```
 
-真实项目通用基线 smoke（需要 `CST_SMOKE_REPOS_DIR` 指向已准备好的真实项目目录）：
+检索质量的标准 CI、真实仓库 smoke、planner、BGE A/B、报告比较和 MCP
+反馈流程见 [Retrieval Quality Workflow](docs/retrieval-quality.md)。快速本地门禁：
 
 ```bash
-CST_SMOKE_REPOS_DIR=/Users/flobby/vibe_coding /opt/homebrew/Caskroom/miniforge/base/bin/python -m pytest tests/test_generic_baseline_quality.py -m "slow and integration" -q
+cst quality run tests/fixtures/retrieval_quality/queries.json \
+  --profile ci --output .quality/ci.json --markdown .quality/ci.md
+```
+
+真实项目 smoke：
+
+```bash
+CST_SMOKE_REPOS_DIR=/absolute/path/to/repos \
+cst quality run tests/fixtures/retrieval_quality/queries.json \
+  --profile smoke --output .quality/smoke.json --markdown .quality/smoke.md
 ```
 
 项目模块：
