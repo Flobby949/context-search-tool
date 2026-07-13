@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -393,12 +394,21 @@ def test_mcp_feedback_hashes_variants_without_storing_rewrite_text(
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".context-search").mkdir()
+    private_rewrite = "private planner rewrite"
+    rewritten_query_sentinel = "private rewritten query sentinel"
+    grep_keyword_sentinel = "private grep keyword sentinel"
+    symbol_hint_sentinel = "PrivatePlannerSymbolHintSentinel"
     payload = {
         "ok": True,
         "results": [],
         "summary": {},
         "followup_keywords": [],
-        "planner": {"status": "ok"},
+        "planner": {
+            "status": "ok",
+            "rewritten_queries": [rewritten_query_sentinel],
+            "grep_keywords": [grep_keyword_sentinel],
+            "symbol_hints": [symbol_hint_sentinel],
+        },
         "variant_retrieval_status": "hybrid",
         "query_variants": [
             {
@@ -409,7 +419,7 @@ def test_mcp_feedback_hashes_variants_without_storing_rewrite_text(
             {
                 "variant_id": "planner:0",
                 "source": "planner",
-                "text": "private planner rewrite",
+                "text": private_rewrite,
             },
         ],
     }
@@ -428,6 +438,7 @@ def test_mcp_feedback_hashes_variants_without_storing_rewrite_text(
         )
     )
     serialized = json.dumps(event)
+    expected_hash = hashlib.sha256(private_rewrite.encode("utf-8")).hexdigest()[:12]
 
     assert event["query"] == "original secret query"
     assert event["variant_retrieval"]["status"] == "hybrid"
@@ -436,9 +447,105 @@ def test_mcp_feedback_hashes_variants_without_storing_rewrite_text(
         "variant_id": "planner:0",
         "source": "planner",
         "position": 1,
-        "text_hash": mcp_tools._short_hash("private planner rewrite"),
+        "text_hash": expected_hash,
     }
-    assert "private planner rewrite" not in serialized
+    for field in ("rewritten_queries", "grep_keywords", "symbol_hints"):
+        assert field not in event["planner"]
+    for sensitive_text in (
+        private_rewrite,
+        rewritten_query_sentinel,
+        grep_keyword_sentinel,
+        symbol_hint_sentinel,
+    ):
+        assert sensitive_text not in serialized
+
+
+def test_feedback_variant_payload_defaults_for_error_payload() -> None:
+    payload = {
+        "ok": False,
+        "error": {"code": "query_failed"},
+    }
+
+    assert mcp_tools._feedback_variant_payload(payload) == {
+        "status": "original_only",
+        "count": 0,
+        "variants": [],
+    }
+
+
+def test_feedback_variant_payload_preserves_allowed_statuses() -> None:
+    for status in ("original_only", "hybrid", "embedding_fallback"):
+        payload = {"variant_retrieval_status": status}
+
+        assert mcp_tools._feedback_variant_payload(payload)["status"] == status
+
+
+def test_mcp_feedback_fails_closed_on_malformed_variant_metadata(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".context-search").mkdir()
+    status_sentinel = "private status sentinel"
+    variant_id_sentinel = "private variant id sentinel"
+    source_sentinel = "private source sentinel"
+    payload = {
+        "ok": True,
+        "results": [],
+        "summary": {},
+        "followup_keywords": [],
+        "planner": {"status": "ok"},
+        "variant_retrieval_status": f"hybrid:{status_sentinel}",
+        "query_variants": [
+            {
+                "variant_id": {"rewrite": variant_id_sentinel},
+                "source": "planner",
+                "text": "ignored",
+            },
+            {
+                "variant_id": "planner:0",
+                "source": {"rewrite": source_sentinel},
+                "text": "ignored",
+            },
+            {
+                "variant_id": "planner:01",
+                "source": "planner",
+                "text": "ignored",
+            },
+            {
+                "variant_id": "original",
+                "source": "planner",
+                "text": "ignored",
+            },
+        ],
+    }
+
+    mcp_tools._append_query_feedback(
+        repo,
+        query="safe original query",
+        payload=payload,
+        context_lines=None,
+        full_file=False,
+        final_top_k=None,
+    )
+    event = json.loads(
+        (repo / ".context-search" / "mcp_calls.jsonl").read_text(
+            encoding="utf-8"
+        )
+    )
+    serialized = json.dumps(event)
+
+    assert event["variant_retrieval"] == {
+        "status": "original_only",
+        "count": 0,
+        "variants": [],
+    }
+    for sensitive_text in (
+        status_sentinel,
+        variant_id_sentinel,
+        source_sentinel,
+    ):
+        assert sensitive_text not in serialized
 
 
 def test_mcp_query_feedback_includes_embedding_config_hash(tmp_path: Path) -> None:

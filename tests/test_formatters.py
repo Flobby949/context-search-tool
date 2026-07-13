@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from context_search_tool.models import (
@@ -144,22 +145,40 @@ def test_markdown_formatter_omits_evidence_anchors_section_when_empty() -> None:
 
 
 def test_markdown_does_not_add_per_result_semantic_provenance_table() -> None:
-    bundle = sample_bundle()
-    bundle = QueryBundle(
-        query=bundle.query,
-        expanded_tokens=bundle.expanded_tokens,
-        results=bundle.results,
-        followup_keywords=bundle.followup_keywords,
-        query_variants=[
-            QueryVariant("original", bundle.query, "original"),
+    base_bundle = sample_bundle()
+    anchor = EvidenceAnchor(
+        file_path=Path("README.md"),
+        start_line=1,
+        end_line=2,
+        content="Audit documentation",
+        score=0.4,
+        score_parts={"lexical": 0.4},
+        reasons=["documentation match"],
+        anchor_kind="document",
+    )
+    base_bundle = replace(base_bundle, evidence_anchors=[anchor])
+    provenance_bundle = replace(
+        base_bundle,
+        results=[
+            replace(
+                base_bundle.results[0],
+                semantic_matches=[SemanticMatch("planner:0", 0.75)],
+            )
         ],
-        variant_retrieval_status="original_only",
+        evidence_anchors=[
+            replace(
+                anchor,
+                semantic_matches=[SemanticMatch("planner:0", 0.4)],
+            )
+        ],
+        query_variants=[
+            QueryVariant("original", base_bundle.query, "original"),
+            QueryVariant("planner:0", "apply audit workflow", "planner"),
+        ],
+        variant_retrieval_status="hybrid",
     )
 
-    output = format_markdown(bundle)
-
-    assert "Semantic matches:" not in output
-    assert "Query variants:" not in output
+    assert format_markdown(provenance_bundle) == format_markdown(base_bundle)
 
 
 def test_json_formatter_is_structured() -> None:

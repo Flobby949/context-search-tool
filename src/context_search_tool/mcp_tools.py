@@ -422,6 +422,9 @@ def _feedback_planner_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _feedback_variant_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    status = payload.get("variant_retrieval_status", "original_only")
+    if status not in ("original_only", "hybrid", "embedding_fallback"):
+        status = "original_only"
     variants = payload.get("query_variants", [])
     if not isinstance(variants, list):
         variants = []
@@ -429,20 +432,32 @@ def _feedback_variant_payload(payload: dict[str, Any]) -> dict[str, Any]:
     for position, item in enumerate(variants):
         if not isinstance(item, dict):
             continue
+        variant_id = item.get("variant_id")
+        source = item.get("source")
+        is_original = source == "original" and variant_id == "original"
+        is_planner = False
+        if source == "planner" and isinstance(variant_id, str):
+            prefix, separator, raw_index = variant_id.partition(":")
+            is_planner = (
+                prefix == "planner"
+                and separator == ":"
+                and raw_index.isascii()
+                and raw_index.isdecimal()
+                and (raw_index == "0" or not raw_index.startswith("0"))
+            )
+        if not (is_original or is_planner):
+            continue
         text = item.get("text", "")
         bounded.append(
             {
-                "variant_id": item.get("variant_id"),
-                "source": item.get("source"),
+                "variant_id": variant_id,
+                "source": source,
                 "position": position,
                 "text_hash": _short_hash(text if isinstance(text, str) else ""),
             }
         )
     return {
-        "status": payload.get(
-            "variant_retrieval_status",
-            "original_only",
-        ),
+        "status": status,
         "count": len(bounded),
         "variants": bounded,
     }
