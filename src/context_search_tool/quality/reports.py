@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -21,13 +23,14 @@ _COMPARISON_SUMMARY_KEYS = (
     "observed_declines",
     "removed_required",
 )
+_MARKDOWN_CONTROL_CHARACTERS = frozenset("\\`*[]<>#|~")
 
 
 def render_markdown_report(report: dict[str, Any]) -> str:
     lines = [
         "# Retrieval Quality Report",
         "",
-        f"Profile: `{report.get('profile', '')}`",
+        f"Profile: {_markdown_code_span(report.get('profile', ''))}",
         "",
         "## Summary",
         "",
@@ -112,7 +115,9 @@ def render_markdown_comparison(comparison: dict[str, Any]) -> str:
     lines.extend(["", "## Metadata Warnings", ""])
     metadata_warnings = comparison.get("metadata_warnings", [])
     if metadata_warnings:
-        lines.extend(f"- {warning}" for warning in metadata_warnings)
+        lines.extend(
+            f"- {_escape_markdown_text(warning)}" for warning in metadata_warnings
+        )
     else:
         lines.append("No metadata warnings.")
 
@@ -124,7 +129,10 @@ def _summary_table(aggregate: dict[str, Any], keys: tuple[str, ...]) -> list[str
         "| metric | value |",
         "| --- | ---: |",
     ]
-    lines.extend(f"| {key} | {aggregate.get(key, 0)} |" for key in keys)
+    lines.extend(
+        f"| {key} | {_escape_markdown_text(aggregate.get(key, 0))} |"
+        for key in keys
+    )
     return lines
 
 
@@ -132,7 +140,11 @@ def _value_table(rows: list[tuple[str, Any]]) -> list[str]:
     return [
         "| metric | value |",
         "| --- | ---: |",
-        *(f"| {name} | {value} |" for name, value in rows),
+        *(
+            f"| {_escape_markdown_text(name)} | "
+            f"{_escape_markdown_text(value)} |"
+            for name, value in rows
+        ),
     ]
 
 
@@ -152,30 +164,33 @@ def _flatten_metric_values(
 
 
 def _flatten_deltas(
-    node: dict[str, Any],
+    node: Mapping[str, Any],
     prefix: str = "",
-) -> list[tuple[str, dict[str, Any]]]:
-    rows: list[tuple[str, dict[str, Any]]] = []
-    if set(node) >= {"baseline", "candidate", "delta"}:
+) -> list[tuple[str, Mapping[str, Any]]]:
+    rows: list[tuple[str, Mapping[str, Any]]] = []
+    delta_fields = ("baseline", "candidate", "delta")
+    if all(field in node for field in delta_fields) and all(
+        not isinstance(node[field], Mapping) for field in delta_fields
+    ):
         return [(prefix, node)]
     for key in sorted(node):
         value = node[key]
-        if isinstance(value, dict):
+        if isinstance(value, Mapping):
             name = f"{prefix}.{key}" if prefix else key
             rows.extend(_flatten_deltas(value, name))
     return rows
 
 
-def _delta_table(rows: list[tuple[str, dict[str, Any]]]) -> list[str]:
+def _delta_table(rows: list[tuple[str, Mapping[str, Any]]]) -> list[str]:
     return [
         "| name | baseline | candidate | delta |",
         "| --- | ---: | ---: | ---: |",
         *(
             "| {name} | {baseline} | {candidate} | {delta} |".format(
-                name=name,
-                baseline=values["baseline"],
-                candidate=values["candidate"],
-                delta=_signed(values["delta"]),
+                name=_escape_markdown_text(name),
+                baseline=_escape_markdown_text(values["baseline"]),
+                candidate=_escape_markdown_text(values["candidate"]),
+                delta=_escape_markdown_text(_signed(values["delta"])),
             )
             for name, values in rows
         ),
@@ -198,10 +213,10 @@ def _report_case_sort_key(case: dict[str, Any]) -> tuple[int, str]:
 
 
 def _case_failure_lines(case: dict[str, Any]) -> list[str]:
-    lines = [f"### {_case_key(case)}"]
+    lines = [f"### {_escape_markdown_text(_case_key(case))}"]
     failures = case.get("failures", [])
     if failures:
-        lines.extend(f"- {failure}" for failure in failures)
+        lines.extend(f"- {_escape_markdown_text(failure)}" for failure in failures)
     else:
         lines.append("- No failure messages.")
     lines.append("")
@@ -209,11 +224,14 @@ def _case_failure_lines(case: dict[str, Any]) -> list[str]:
 
 
 def _known_gap_lines(case: dict[str, Any]) -> list[str]:
-    lines = [f"### {_case_key(case)}"]
+    lines = [f"### {_escape_markdown_text(_case_key(case))}"]
     reason = case.get("known_gap_reason", "")
     if reason:
-        lines.append(f"- {reason}")
-    lines.extend(f"- {failure}" for failure in case.get("failures", []))
+        lines.append(f"- {_escape_markdown_text(reason)}")
+    lines.extend(
+        f"- {_escape_markdown_text(failure)}"
+        for failure in case.get("failures", [])
+    )
     if len(lines) == 1:
         lines.append("- No known-gap reason supplied.")
     lines.append("")
@@ -221,10 +239,10 @@ def _known_gap_lines(case: dict[str, Any]) -> list[str]:
 
 
 def _comparison_case_lines(case: dict[str, Any]) -> list[str]:
-    lines = [f"### {case.get('case_key', '')}"]
+    lines = [f"### {_escape_markdown_text(case.get('case_key', ''))}"]
     warnings = case.get("warnings", [])
     if warnings:
-        lines.extend(f"- {warning}" for warning in warnings)
+        lines.extend(f"- {_escape_markdown_text(warning)}" for warning in warnings)
     else:
         lines.append("- No case warnings.")
     deltas = _flatten_deltas(case.get("metric_deltas", {}))
@@ -232,3 +250,28 @@ def _comparison_case_lines(case: dict[str, Any]) -> list[str]:
         lines.extend(["", *_delta_table(deltas)])
     lines.append("")
     return lines
+
+
+def _one_line(value: Any) -> str:
+    return re.sub(r"[\r\n]+", " ", str(value))
+
+
+def _escape_markdown_text(value: Any) -> str:
+    text = _one_line(value)
+    escaped: list[str] = []
+    for index, character in enumerate(text):
+        if character == "_":
+            previous = text[index - 1] if index else ""
+            following = text[index + 1] if index + 1 < len(text) else ""
+            should_escape = not (previous.isalnum() and following.isalnum())
+        else:
+            should_escape = character in _MARKDOWN_CONTROL_CHARACTERS
+        escaped.append(f"\\{character}" if should_escape else character)
+    return "".join(escaped)
+
+
+def _markdown_code_span(value: Any) -> str:
+    text = _one_line(value)
+    longest_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    delimiter = "`" * (longest_run + 1)
+    return f"{delimiter}{text}{delimiter}"

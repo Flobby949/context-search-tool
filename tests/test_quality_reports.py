@@ -286,3 +286,145 @@ def test_markdown_comparison_orders_gates_declines_deltas_and_warnings() -> None
     assert "| overall.mrr | 0.5 | 0.4 | -0.1 |" in markdown
     assert "| overall.latency_ms.p95 | 10 | 13 | +3 |" in markdown
     assert markdown.endswith("\n")
+
+
+def test_markdown_comparison_flattens_reserved_delta_group_names() -> None:
+    comparison = {
+        "schema_version": 1,
+        "aggregate": {},
+        "cases": [],
+        "metric_deltas": {
+            "by_repository": {
+                "baseline": {
+                    "mrr": {"baseline": 0.1, "candidate": 0.2, "delta": 0.1}
+                },
+                "candidate": {
+                    "mrr": {"baseline": 0.3, "candidate": 0.4, "delta": 0.1}
+                },
+                "delta": {
+                    "mrr": {"baseline": 0.5, "candidate": 0.6, "delta": 0.1}
+                },
+            }
+        },
+        "metadata_warnings": [],
+    }
+
+    markdown = render_markdown_comparison(comparison)
+
+    assert "| by_repository.baseline.mrr | 0.1 | 0.2 | +0.1 |" in markdown
+    assert "| by_repository.candidate.mrr | 0.3 | 0.4 | +0.1 |" in markdown
+    assert "| by_repository.delta.mrr | 0.5 | 0.6 | +0.1 |" in markdown
+    assert "{'mrr':" not in markdown
+
+
+def test_markdown_report_escapes_dynamic_content_by_context() -> None:
+    injected = "safe\r\n\r\n## Forged Section|`#*_[]<>"
+    report = {
+        "profile": f"ci`{injected}",
+        "aggregate": {
+            "metrics": {
+                "overall": {
+                    f"metric {injected}": {"mean": f"value {injected}"}
+                }
+            }
+        },
+        "cases": [
+            {
+                "repo_key": f"repo {injected}",
+                "case_id": f"case {injected}",
+                "status": "fail",
+                "failures": [f"failure {injected}"],
+            },
+            {
+                "repo_key": "repo",
+                "case_id": "known-gap",
+                "status": "known_gap",
+                "known_gap_reason": f"reason {injected}",
+                "failures": [],
+            },
+        ],
+    }
+
+    markdown = render_markdown_report(report)
+    lines = markdown.splitlines()
+
+    assert [line for line in lines if line.startswith("## ")] == [
+        "## Summary",
+        "## Metrics",
+        "## Failures",
+        "## Known Gaps",
+    ]
+    assert lines.count("| metric | value |") == 2
+    assert "\n## Forged Section" not in markdown
+    assert "Profile: ``ci`safe ## Forged Section|`#*_[]<>``" in markdown
+    escaped = r"safe \#\# Forged Section\|\`\#\*\_\[\]\<\>"
+    assert f"### repo {escaped}/case {escaped}" in markdown
+    assert f"- failure {escaped}" in markdown
+    assert f"- reason {escaped}" in markdown
+    assert f"| metric {escaped}.mean | value {escaped} |" in markdown
+    assert markdown.endswith("\n")
+
+
+def test_markdown_comparison_escapes_dynamic_content_by_context() -> None:
+    injected = "safe\n\n## Forged Section|`#*_[]<>"
+    comparison = {
+        "aggregate": {},
+        "cases": [
+            {
+                "case_key": f"gating {injected}",
+                "classification": "regressed",
+                "gating": True,
+                "metric_deltas": {},
+                "warnings": [f"warning {injected}"],
+            },
+            {
+                "case_key": f"observed {injected}",
+                "classification": "metric_decline",
+                "gating": False,
+                "metric_deltas": {
+                    f"case metric {injected}": {
+                        "baseline": f"base {injected}",
+                        "candidate": f"candidate {injected}",
+                        "delta": f"change {injected}",
+                    }
+                },
+                "warnings": [],
+            },
+        ],
+        "metric_deltas": {
+            f"aggregate metric {injected}": {
+                "baseline": f"base {injected}",
+                "candidate": f"candidate {injected}",
+                "delta": f"change {injected}",
+            }
+        },
+        "metadata_warnings": [f"metadata {injected}"],
+    }
+
+    markdown = render_markdown_comparison(comparison)
+    lines = markdown.splitlines()
+
+    assert [line for line in lines if line.startswith("## ")] == [
+        "## Summary",
+        "## Gating Regressions",
+        "## Observed Declines",
+        "## Metric Deltas",
+        "## Metadata Warnings",
+    ]
+    assert lines.count("| metric | value |") == 1
+    assert lines.count("| name | baseline | candidate | delta |") == 2
+    assert "\n## Forged Section" not in markdown
+    escaped = r"safe \#\# Forged Section\|\`\#\*\_\[\]\<\>"
+    assert f"### gating {escaped}" in markdown
+    assert f"### observed {escaped}" in markdown
+    assert f"- warning {escaped}" in markdown
+    assert f"- metadata {escaped}" in markdown
+    assert (
+        f"| case metric {escaped} | base {escaped} | "
+        f"candidate {escaped} | change {escaped} |"
+    ) in markdown
+    assert (
+        f"| aggregate metric {escaped} | base {escaped} | "
+        f"candidate {escaped} | change {escaped} |"
+    ) in markdown
+    assert markdown.endswith("\n")

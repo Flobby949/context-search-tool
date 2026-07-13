@@ -9,7 +9,7 @@ import typer
 from context_search_tool.quality.compare import compare_reports
 from context_search_tool.quality.feedback import summarize_feedback_log
 from context_search_tool.quality.reports import render_markdown_comparison
-from context_search_tool.quality.runner import run_quality_fixture
+from context_search_tool.quality.runner import _publish_artifacts, run_quality_fixture
 
 quality_app = typer.Typer(
     help="Retrieval quality evaluation tools",
@@ -65,15 +65,12 @@ def compare(
     comparison = compare_reports(baseline_report, candidate_report)
     _ensure_parent(output)
     _ensure_parent(markdown)
-    output.write_text(
-        json.dumps(comparison, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    artifacts = [
+        (output, json.dumps(comparison, indent=2, ensure_ascii=False) + "\n")
+    ]
     if markdown is not None:
-        markdown.write_text(
-            render_markdown_comparison(comparison),
-            encoding="utf-8",
-        )
+        artifacts.append((markdown, render_markdown_comparison(comparison)))
+    _publish_artifacts(artifacts)
     aggregate = comparison.get("aggregate", {})
     typer.echo(
         "gating_regressions={gating} improvements={improvements} "
@@ -100,9 +97,8 @@ def feedback(
         include_query_examples=include_query_examples,
     )
     _ensure_parent(output)
-    output.write_text(
-        json.dumps(summary, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
+    _publish_artifacts(
+        [(output, json.dumps(summary, indent=2, ensure_ascii=False) + "\n")]
     )
     typer.echo(f"Feedback summary complete: total={summary['total_calls']}")
 
