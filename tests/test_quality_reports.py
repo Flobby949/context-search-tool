@@ -125,6 +125,39 @@ def test_markdown_report_pads_profile_code_spans_with_boundary_backticks(
     assert "<h2>Forged HTML</h2>" not in lines
 
 
+@pytest.mark.parametrize(
+    ("profile", "expected_profile_line"),
+    [
+        pytest.param(" ci ", "Profile: `  ci  `", id="boundary-spaces"),
+        pytest.param(
+            " `ci` ",
+            "Profile: ``  `ci`  ``",
+            id="boundary-spaces-with-backticks",
+        ),
+        pytest.param(
+            "`ci ",
+            "Profile: `` `ci  ``",
+            id="leading-backtick-trailing-space",
+        ),
+        pytest.param(
+            " ci`",
+            "Profile: ``  ci` ``",
+            id="leading-space-trailing-backtick",
+        ),
+        pytest.param(" ci", "Profile: ` ci`", id="leading-space-only"),
+        pytest.param("ci ", "Profile: `ci `", id="trailing-space-only"),
+        pytest.param("   ", "Profile: `   `", id="all-spaces"),
+    ],
+)
+def test_markdown_report_preserves_profile_code_span_spaces(
+    profile: str,
+    expected_profile_line: str,
+) -> None:
+    markdown = render_markdown_report({"profile": profile})
+
+    assert expected_profile_line in markdown.splitlines()
+
+
 def test_markdown_report_renders_metrics_and_reason_only_known_gaps() -> None:
     report = {
         "profile": "ci",
