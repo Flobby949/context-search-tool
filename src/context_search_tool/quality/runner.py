@@ -31,6 +31,7 @@ from context_search_tool.manifest import load_manifest
 from context_search_tool.models import QueryPlan
 from context_search_tool.quality.aggregate import aggregate_cases
 from context_search_tool.quality.cases import (
+    Gate,
     QualityCase,
     QualityFixture,
     QualityRepo,
@@ -249,6 +250,12 @@ def run_quality_fixture(
                             anchor.file_path.as_posix()
                             for anchor in bundle.evidence_anchors
                         ],
+                    )
+                    evaluation = _apply_profile_expectations(
+                        case,
+                        profile,
+                        bundle,
+                        evaluation,
                     )
                     cases.append(
                         _case_record(repo.repo_key, case, evaluation, bundle)
@@ -660,6 +667,15 @@ def _case_record(
         "known_gap_reason": case.known_gap_reason,
         "expanded_tokens": list(bundle.expanded_tokens),
         "planner": _planner_payload(bundle.planner),
+        "query_variants": [
+            {
+                "variant_id": variant.variant_id,
+                "text": variant.text,
+                "source": variant.source,
+            }
+            for variant in bundle.query_variants
+        ],
+        "variant_retrieval_status": bundle.variant_retrieval_status,
         **(
             {
                 "legacy": {
@@ -675,6 +691,64 @@ def _case_record(
         "top_results": evaluation.top_results,
         "failures": evaluation.failures,
     }
+
+
+def _apply_profile_expectations(
+    case: QualityCase,
+    profile: str,
+    bundle: QueryBundle,
+    evaluation: CaseEvaluation,
+) -> CaseEvaluation:
+    expectation = case.profile_expectations.get(profile)
+    if expectation is None:
+        return evaluation
+
+    failures = list(evaluation.failures)
+    if (
+        expectation.planner_status is not None
+        and bundle.planner.status != expectation.planner_status
+    ):
+        failures.append(
+            "planner_status expected "
+            f"{expectation.planner_status}, got {bundle.planner.status}"
+        )
+    if (
+        expectation.variant_retrieval_status is not None
+        and bundle.variant_retrieval_status
+        != expectation.variant_retrieval_status
+    ):
+        failures.append(
+            "variant_retrieval_status expected "
+            f"{expectation.variant_retrieval_status}, got "
+            f"{bundle.variant_retrieval_status}"
+        )
+
+    actual_planner_match = bool(
+        bundle.results
+        and any(
+            match.variant_id.startswith("planner:")
+            for match in bundle.results[0].semantic_matches
+        )
+    )
+    expected_planner_match = expectation.top_result_planner_semantic_match
+    if (
+        expected_planner_match is not None
+        and actual_planner_match != expected_planner_match
+    ):
+        failures.append(
+            "top_result_planner_semantic_match expected "
+            f"{str(expected_planner_match).lower()}, got "
+            f"{str(actual_planner_match).lower()}"
+        )
+
+    status = evaluation.status
+    if case.gate is Gate.REQUIRED:
+        status = "fail" if failures else "pass"
+    return replace(
+        evaluation,
+        status=status,
+        failures=failures,
+    )
 
 
 def _case_records_for_cases(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from context_search_tool.models import RetrievalResult
+from context_search_tool.models import RetrievalResult, SemanticMatch
 from context_search_tool.quality.cases import (
     Gate,
     Matcher,
@@ -19,6 +19,7 @@ class NormalizedResult:
     score: float
     score_parts: dict[str, float]
     reasons: list[str]
+    semantic_matches: list[SemanticMatch]
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,7 @@ def normalize_results(results: list[RetrievalResult]) -> list[NormalizedResult]:
                 score=result.score,
                 score_parts=dict(result.score_parts),
                 reasons=list(result.reasons),
+                semantic_matches=list(result.semantic_matches),
             )
         )
 
@@ -350,6 +352,13 @@ def _result_payload(result: NormalizedResult) -> dict[str, Any]:
         "score": result.score,
         "score_parts": result.score_parts,
         "reasons": result.reasons,
+        "semantic_matches": [
+            {
+                "variant_id": match.variant_id,
+                "score": match.score,
+            }
+            for match in result.semantic_matches
+        ],
     }
 
 

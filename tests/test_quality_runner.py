@@ -23,8 +23,19 @@ from context_search_tool.config import (
 )
 from context_search_tool.indexer import IndexSummary
 from context_search_tool.manifest import Manifest
-from context_search_tool.models import QueryPlan
-from context_search_tool.quality.cases import QualityRepo
+from context_search_tool.models import (
+    QueryPlan,
+    QueryVariant,
+    RetrievalResult,
+    SemanticMatch,
+)
+from context_search_tool.quality.cases import (
+    Gate,
+    ProfileExpectation,
+    QualityCase,
+    QualityRepo,
+)
+from context_search_tool.quality.metrics import CaseEvaluation
 from context_search_tool.quality.runner import (
     ResolvedSource,
     _content_identity,
@@ -136,6 +147,128 @@ def _write_successful_ci_fixture(
     captured: list[tuple[Path, ToolConfig]] = []
     _patch_runner_dependencies(monkeypatch, captured)
     return fixture
+
+
+def _passing_evaluation() -> CaseEvaluation:
+    return CaseEvaluation(
+        case_id="case",
+        status="pass",
+        metrics={},
+        failures=[],
+        top_results=[],
+    )
+
+
+def test_profile_expectations_fail_case_when_hybrid_did_not_execute() -> None:
+    case = QualityCase(
+        case_id="case",
+        query="query",
+        gate=Gate.REQUIRED,
+        profile_expectations={
+            "p1_hybrid_bge": ProfileExpectation(
+                planner_status="ok",
+                variant_retrieval_status="hybrid",
+                top_result_planner_semantic_match=True,
+            )
+        },
+    )
+    bundle = QueryBundle(
+        query="query",
+        expanded_tokens=[],
+        results=[],
+        followup_keywords=[],
+        planner=QueryPlan("query", status="fallback"),
+        query_variants=[QueryVariant("original", "query", "original")],
+        variant_retrieval_status="original_only",
+    )
+
+    evaluation = quality_runner._apply_profile_expectations(
+        case,
+        "p1_hybrid_bge",
+        bundle,
+        _passing_evaluation(),
+    )
+
+    assert evaluation.status == "fail"
+    assert evaluation.failures == [
+        "planner_status expected ok, got fallback",
+        "variant_retrieval_status expected hybrid, got original_only",
+        "top_result_planner_semantic_match expected true, got false",
+    ]
+
+
+def test_profile_expectations_pass_with_actual_planner_semantic_top_result() -> None:
+    case = QualityCase(
+        case_id="case",
+        query="query",
+        gate=Gate.REQUIRED,
+        profile_expectations={
+            "p1_hybrid_bge": ProfileExpectation(
+                planner_status="ok",
+                variant_retrieval_status="hybrid",
+                top_result_planner_semantic_match=True,
+            )
+        },
+    )
+    bundle = QueryBundle(
+        query="query",
+        expanded_tokens=[],
+        results=[
+            RetrievalResult(
+                file_path=Path("App.java"),
+                start_line=1,
+                end_line=1,
+                content="class App {}",
+                score=1.0,
+                score_parts={},
+                reasons=[],
+                followup_keywords=[],
+                semantic_matches=[SemanticMatch("planner:0", 0.9)],
+            )
+        ],
+        followup_keywords=[],
+        planner=QueryPlan("query", status="ok"),
+        query_variants=[
+            QueryVariant("original", "query", "original"),
+            QueryVariant("planner:0", "app", "planner"),
+        ],
+        variant_retrieval_status="hybrid",
+    )
+
+    evaluation = quality_runner._apply_profile_expectations(
+        case,
+        "p1_hybrid_bge",
+        bundle,
+        _passing_evaluation(),
+    )
+
+    assert evaluation.status == "pass"
+    assert evaluation.failures == []
+
+
+def test_case_record_serializes_executed_variant_provenance() -> None:
+    record = quality_runner._case_record(
+        "repo",
+        QualityCase(case_id="case", query="query"),
+        _passing_evaluation(),
+        QueryBundle(
+            query="query",
+            expanded_tokens=[],
+            results=[],
+            followup_keywords=[],
+            query_variants=[
+                QueryVariant("original", "query", "original"),
+                QueryVariant("planner:0", "app", "planner"),
+            ],
+            variant_retrieval_status="hybrid",
+        ),
+    )
+
+    assert record["query_variants"] == [
+        {"variant_id": "original", "text": "query", "source": "original"},
+        {"variant_id": "planner:0", "text": "app", "source": "planner"},
+    ]
+    assert record["variant_retrieval_status"] == "hybrid"
 
 
 def test_quality_runner_copies_repo_without_mutating_source(tmp_path: Path) -> None:

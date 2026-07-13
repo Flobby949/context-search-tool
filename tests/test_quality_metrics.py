@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from context_search_tool.models import RetrievalResult
+from context_search_tool.models import RetrievalResult, SemanticMatch
 from context_search_tool.quality.cases import (
     AtLeastTopKGroup,
     ExpectedAnyGroup,
@@ -22,6 +22,8 @@ def _result(
     score: float = 1.0,
     score_parts: dict[str, float] | None = None,
     reasons: list[str] | None = None,
+    *,
+    semantic_matches: list[SemanticMatch] | None = None,
 ) -> RetrievalResult:
     return RetrievalResult(
         file_path=Path(path),
@@ -32,6 +34,7 @@ def _result(
         score_parts=score_parts or {},
         reasons=reasons or [],
         followup_keywords=[],
+        semantic_matches=list(semantic_matches or []),
     )
 
 
@@ -488,5 +491,27 @@ def test_top_results_payload_respects_limit() -> None:
             "score": 0.9,
             "score_parts": {"semantic": 0.8},
             "reasons": ["best"],
+            "semantic_matches": [],
         }
+    ]
+
+
+def test_normalized_top_results_preserve_semantic_matches() -> None:
+    evaluation = evaluate_case(
+        QualityCase(
+            case_id="semantic",
+            query="query",
+            expected_top_k=(_expected("src/App.java", 1),),
+        ),
+        [
+            _result(
+                "src/App.java",
+                semantic_matches=[SemanticMatch("planner:0", 0.84)],
+            )
+        ],
+        latency_ms=10,
+    )
+
+    assert evaluation.top_results[0]["semantic_matches"] == [
+        {"variant_id": "planner:0", "score": 0.84}
     ]
