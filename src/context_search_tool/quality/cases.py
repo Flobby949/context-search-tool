@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from context_search_tool.config import DEFAULT_CONFIG, ToolConfig
+from context_search_tool.context_pack import CONTEXT_GROUPS
 
 
 class Gate(str, Enum):
@@ -24,6 +25,14 @@ _VARIANT_RETRIEVAL_STATUSES = {
     "original_only",
     "hybrid",
     "embedding_fallback",
+}
+_QUALITY_MODES = {"results", "context_pack"}
+_PACK_STATUSES = {"empty", "partial", "ready"}
+_CONFIDENCE_LEVELS = {"none", "low", "medium", "high"}
+_CONTEXT_ONLY_FIELDS = {
+    "expected_context_groups",
+    "expected_pack_status",
+    "minimum_context_confidence",
 }
 
 
@@ -156,6 +165,11 @@ class QualityCase:
     notes: str = ""
     legacy: LegacyProvenance | None = None
     profile_expectations: dict[str, ProfileExpectation] = field(default_factory=dict)
+    expected_context_groups: dict[str, tuple[Matcher, ...]] = field(
+        default_factory=dict
+    )
+    expected_pack_status: str | None = None
+    minimum_context_confidence: str | None = None
 
 
 @dataclass(frozen=True)
@@ -335,6 +349,28 @@ def validate_profile_compatible(
         if config.query_planner.model != "qwen3.5:4b-mlx":
             raise ValueError("p1_hybrid_bge profile requires qwen3.5:4b-mlx")
         return
+    if profile == "p2_context_pack":
+        if (
+            config.embedding.provider != "hash"
+            or config.embedding.model != "hash-v1"
+            or config.embedding.dimensions != 384
+        ):
+            raise ValueError(
+                "p2_context_pack profile requires hash-v1 embeddings "
+                "at 384 dimensions"
+            )
+        if config.query_planner.enabled:
+            raise ValueError(
+                "p2_context_pack profile requires the query planner disabled"
+            )
+        if (
+            config.embedding.api_key_env is not None
+            or config.embedding.base_url is not None
+        ):
+            raise ValueError(
+                "p2_context_pack profile does not allow remote embedding settings"
+            )
+        return
     if profile in {"calibration_bge", "ab_bge"}:
         if (
             config.embedding.provider != "bge"
@@ -470,6 +506,31 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
     raw = _require_dict(raw, "query")
     case_id = _require_non_empty_str(raw.get("id", ""), "id")
     query = _require_non_empty_str(raw.get("query", ""), "query")
+    mode = _require_str(raw.get("mode", "results"), "mode")
+    if mode not in _QUALITY_MODES:
+        raise ValueError("mode must be results or context_pack")
+    if mode == "results":
+        context_fields = _CONTEXT_ONLY_FIELDS.intersection(raw)
+        if context_fields:
+            field_name = sorted(context_fields)[0]
+            raise ValueError(f"{field_name} is only valid for context_pack mode")
+        expected_context_groups: dict[str, tuple[Matcher, ...]] = {}
+        expected_pack_status = None
+        minimum_context_confidence = None
+    else:
+        expected_context_groups = _parse_context_groups(
+            raw.get("expected_context_groups", {})
+        )
+        expected_pack_status = _parse_optional_context_level(
+            raw,
+            "expected_pack_status",
+            _PACK_STATUSES,
+        )
+        minimum_context_confidence = _parse_optional_context_level(
+            raw,
+            "minimum_context_confidence",
+            _CONFIDENCE_LEVELS,
+        )
     gate = _require_str(raw.get("gate", Gate.REQUIRED.value), "gate")
     raw_legacy = raw.get("legacy")
     legacy = None
@@ -551,7 +612,7 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         query=query,
         profiles=profiles,
         tags=_require_str_tuple(raw.get("tags", ()), "tags"),
-        mode=_require_str(raw.get("mode", "results"), "mode"),
+        mode=mode,
         gate=Gate(gate),
         metric_k=metric_k,
         relevance_matchers=relevance_matchers,
@@ -575,7 +636,42 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         profile_expectations=_parse_profile_expectations(
             raw.get("profile_expectations", {})
         ),
+        expected_context_groups=expected_context_groups,
+        expected_pack_status=expected_pack_status,
+        minimum_context_confidence=minimum_context_confidence,
     )
+
+
+def _parse_context_groups(raw: Any) -> dict[str, tuple[Matcher, ...]]:
+    values = _require_dict(raw, "expected_context_groups")
+    unknown = set(values) - set(CONTEXT_GROUPS)
+    if unknown:
+        raise ValueError(f"invalid context group: {sorted(unknown)[0]}")
+
+    parsed: dict[str, tuple[Matcher, ...]] = {}
+    for group in CONTEXT_GROUPS:
+        if group not in values:
+            continue
+        label = f"expected_context_groups.{group}"
+        items = _require_sequence(values[group], label)
+        try:
+            parsed[group] = tuple(Matcher.from_raw(item) for item in items)
+        except ValueError as exc:
+            raise ValueError(f"{label}: {exc}") from None
+    return parsed
+
+
+def _parse_optional_context_level(
+    raw: dict[str, Any],
+    field_name: str,
+    allowed: set[str],
+) -> str | None:
+    if field_name not in raw:
+        return None
+    value = _require_str(raw[field_name], field_name)
+    if value not in allowed:
+        raise ValueError(f"invalid {field_name}")
+    return value
 
 
 def _parse_measurement_matchers(

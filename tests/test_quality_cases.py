@@ -51,6 +51,31 @@ def _minimal_fixture(
     return {"schema_version": 1, "repos": [repo]}
 
 
+def _load_canonical_case(tmp_path: Path, case_overrides: dict | None = None):
+    return load_quality_fixture(
+        _write_fixture(
+            tmp_path,
+            {
+                "schema_version": 1,
+                "profile_configs": {"ci": {}},
+                "repos": [
+                    {
+                        "repo_key": "sample",
+                        "profiles": ["ci"],
+                        "queries": [
+                            {
+                                "id": "case-1",
+                                "query": "login",
+                                **(case_overrides or {}),
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+    ).repos[0].queries[0]
+
+
 def test_matcher_rejects_absolute_and_parent_paths() -> None:
     invalid_paths = [
         "/tmp/App.java",
@@ -158,6 +183,137 @@ def test_load_quality_fixture_parses_v1_schema(tmp_path: Path) -> None:
         "class App",
         "renderLogin",
     )
+
+
+def test_context_pack_case_parses_typed_expectations(tmp_path: Path) -> None:
+    case = _load_canonical_case(
+        tmp_path,
+        {
+            "mode": "context_pack",
+            "expected_context_groups": {
+                "entrypoints": [{"path": "src/AppController.java"}],
+                "implementations": [
+                    {"glob": "src/**/*ServiceImpl.java"},
+                    {"contains": "Repository"},
+                ],
+            },
+            "expected_pack_status": "ready",
+            "minimum_context_confidence": "medium",
+        },
+    )
+
+    assert case.mode == "context_pack"
+    assert case.expected_context_groups == {
+        "entrypoints": (Matcher(path="src/AppController.java"),),
+        "implementations": (
+            Matcher(glob="src/**/*ServiceImpl.java"),
+            Matcher(contains="Repository"),
+        ),
+    }
+    assert case.expected_pack_status == "ready"
+    assert case.minimum_context_confidence == "medium"
+
+
+def test_case_without_mode_keeps_results_defaults(tmp_path: Path) -> None:
+    case = _load_canonical_case(tmp_path)
+
+    assert case.mode == "results"
+    assert case.expected_context_groups == {}
+    assert case.expected_pack_status is None
+    assert case.minimum_context_confidence is None
+
+
+@pytest.mark.parametrize("mode", ["raw", "", None, 1])
+def test_case_rejects_unknown_quality_mode(tmp_path: Path, mode: object) -> None:
+    with pytest.raises(ValueError, match="mode"):
+        _load_canonical_case(tmp_path, {"mode": mode})
+
+
+@pytest.mark.parametrize(
+    "context_field",
+    [
+        {"expected_context_groups": {}},
+        {"expected_pack_status": ""},
+        {"minimum_context_confidence": ""},
+    ],
+)
+def test_results_case_rejects_context_only_fields_even_when_empty(
+    tmp_path: Path,
+    context_field: dict,
+) -> None:
+    with pytest.raises(ValueError, match="context_pack"):
+        _load_canonical_case(
+            tmp_path,
+            {"mode": "results", **context_field},
+        )
+
+
+@pytest.mark.parametrize("groups", [None, [], (), "entrypoints", 1])
+def test_context_groups_require_an_object(
+    tmp_path: Path,
+    groups: object,
+) -> None:
+    with pytest.raises(ValueError, match="expected_context_groups"):
+        _load_canonical_case(
+            tmp_path,
+            {"mode": "context_pack", "expected_context_groups": groups},
+        )
+
+
+def test_context_groups_reject_unknown_group_name(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="context group"):
+        _load_canonical_case(
+            tmp_path,
+            {
+                "mode": "context_pack",
+                "expected_context_groups": {"controllers": []},
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "matchers",
+    [None, {}, "src/App.java", 1, [1], [{"path": "src/App.java", "glob": "src/*"}]],
+)
+def test_context_group_values_require_valid_matcher_sequences(
+    tmp_path: Path,
+    matchers: object,
+) -> None:
+    with pytest.raises(ValueError, match="entrypoints"):
+        _load_canonical_case(
+            tmp_path,
+            {
+                "mode": "context_pack",
+                "expected_context_groups": {"entrypoints": matchers},
+            },
+        )
+
+
+@pytest.mark.parametrize("status", [None, "", "complete", 1])
+def test_context_pack_status_rejects_invalid_and_explicit_null_values(
+    tmp_path: Path,
+    status: object,
+) -> None:
+    with pytest.raises(ValueError, match="expected_pack_status"):
+        _load_canonical_case(
+            tmp_path,
+            {"mode": "context_pack", "expected_pack_status": status},
+        )
+
+
+@pytest.mark.parametrize("confidence", [None, "", "very_high", 1])
+def test_minimum_context_confidence_rejects_invalid_and_explicit_null_values(
+    tmp_path: Path,
+    confidence: object,
+) -> None:
+    with pytest.raises(ValueError, match="minimum_context_confidence"):
+        _load_canonical_case(
+            tmp_path,
+            {
+                "mode": "context_pack",
+                "minimum_context_confidence": confidence,
+            },
+        )
 
 
 def test_informational_measurement_fields_parse(tmp_path: Path) -> None:
@@ -1370,3 +1526,79 @@ def test_canonical_profile_invariants_reject_each_invalid_property(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         validate_profile_compatible(profile, bad_config, canonical=True)
+
+
+def test_p2_context_pack_profile_accepts_offline_deterministic_config() -> None:
+    validate_profile_compatible(
+        "p2_context_pack",
+        ToolConfig(
+            embedding=EmbeddingConfig(
+                provider="hash",
+                model="hash-v1",
+                dimensions=384,
+            ),
+            query_planner=QueryPlannerConfig(enabled=False),
+        ),
+        canonical=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("bad_config", "message"),
+    [
+        (
+            ToolConfig(embedding=_VALID_BGE_EMBEDDING),
+            "p2_context_pack profile requires hash-v1 embeddings at 384 dimensions",
+        ),
+        (
+            ToolConfig(
+                embedding=EmbeddingConfig(
+                    provider="openai-compatible",
+                    model="remote",
+                    dimensions=384,
+                )
+            ),
+            "p2_context_pack profile requires hash-v1 embeddings at 384 dimensions",
+        ),
+        (
+            ToolConfig(embedding=EmbeddingConfig(model="other")),
+            "p2_context_pack profile requires hash-v1 embeddings at 384 dimensions",
+        ),
+        (
+            ToolConfig(embedding=EmbeddingConfig(dimensions=768)),
+            "p2_context_pack profile requires hash-v1 embeddings at 384 dimensions",
+        ),
+        (
+            ToolConfig(query_planner=QueryPlannerConfig(enabled=True)),
+            "p2_context_pack profile requires the query planner disabled",
+        ),
+        (
+            ToolConfig(
+                embedding=EmbeddingConfig(base_url="https://example.test/v1")
+            ),
+            "p2_context_pack profile does not allow remote embedding settings",
+        ),
+        (
+            ToolConfig(embedding=EmbeddingConfig(api_key_env="EMBEDDING_API_KEY")),
+            "p2_context_pack profile does not allow remote embedding settings",
+        ),
+    ],
+)
+def test_p2_context_pack_profile_rejects_non_deterministic_config(
+    bad_config: ToolConfig,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_profile_compatible(
+            "p2_context_pack",
+            bad_config,
+            canonical=True,
+        )
+
+
+def test_unknown_canonical_profile_is_not_treated_as_p2_context_pack() -> None:
+    validate_profile_compatible(
+        "custom",
+        ToolConfig(embedding=_VALID_BGE_EMBEDDING),
+        canonical=True,
+    )

@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 import pytest
 
+import context_search_tool.quality.metrics as quality_metrics
 import context_search_tool.quality.runner as quality_runner
 from context_search_tool.config import (
     DEFAULT_CONFIG,
@@ -21,9 +22,19 @@ from context_search_tool.config import (
     RetrievalConfig,
     ToolConfig,
 )
+from context_search_tool.context_pack import (
+    CONTEXT_GROUPS,
+    CONTEXT_PACK_SCHEMA_VERSION,
+    ContextBudget,
+    ContextPack,
+    ContextPackItem,
+    ContextPackOptions,
+    ReadinessConfidence,
+)
 from context_search_tool.indexer import IndexSummary
 from context_search_tool.manifest import Manifest
 from context_search_tool.models import (
+    EvidenceAnchor,
     QueryPlan,
     QueryVariant,
     RetrievalResult,
@@ -45,7 +56,7 @@ from context_search_tool.quality.runner import (
     _resolve_repo_source,
     run_quality_fixture,
 )
-from context_search_tool.retrieval import QueryBundle
+from context_search_tool.retrieval import QueryBundle, evidence_anchor_top_k
 
 
 def _write_fixture(tmp_path: Path, data: dict) -> Path:
@@ -156,6 +167,44 @@ def _passing_evaluation() -> CaseEvaluation:
         metrics={},
         failures=[],
         top_results=[],
+    )
+
+
+def _runner_context_pack(
+    items: tuple[ContextPackItem, ...] = (),
+    *,
+    status: str = "ready",
+    confidence: str = "medium",
+) -> ContextPack:
+    return ContextPack(
+        schema_version=CONTEXT_PACK_SCHEMA_VERSION,
+        status=status,
+        items=items,
+        groups={
+            group: tuple(item.id for item in items if item.group == group)
+            for group in CONTEXT_GROUPS
+        },
+        reading_order=tuple(item.id for item in items),
+        missing_evidence=(),
+        next_queries=(),
+        confidence=ReadinessConfidence(level=confidence, reasons=()),
+        budget=ContextBudget(
+            max_results=DEFAULT_CONFIG.retrieval.final_top_k,
+            max_evidence_anchors=evidence_anchor_top_k(
+                DEFAULT_CONFIG.retrieval.final_top_k
+            ),
+            max_items=(
+                DEFAULT_CONFIG.retrieval.final_top_k
+                + evidence_anchor_top_k(DEFAULT_CONFIG.retrieval.final_top_k)
+            ),
+            included_results=len(items),
+            included_evidence_anchors=0,
+            content_bytes=0,
+            context_before_lines=DEFAULT_CONFIG.retrieval.context_before_lines,
+            context_after_lines=DEFAULT_CONFIG.retrieval.context_after_lines,
+            full_file=False,
+            max_full_file_bytes=DEFAULT_CONFIG.index.max_full_file_bytes,
+        ),
     )
 
 
@@ -522,6 +571,310 @@ def test_nonexecuted_case_records_omit_executed_variant_provenance() -> None:
     for record in records:
         assert "query_variants" not in record
         assert "variant_retrieval_status" not in record
+        assert "context_pack" not in record
+
+
+def test_runner_builds_and_evaluates_pack_only_for_context_cases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_source_repo(tmp_path / "fixture-source")
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {"smoke": {}},
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "snapshot_path": str(source),
+                    "profiles": ["smoke"],
+                    "queries": [
+                        {"id": "result-case", "query": "result query"},
+                        {
+                            "id": "context-case",
+                            "query": "context query",
+                            "mode": "context_pack",
+                        },
+                    ],
+                }
+            ],
+        },
+    )
+    captured: list[tuple[Path, ToolConfig]] = []
+    _patch_runner_dependencies(monkeypatch, captured)
+    queried: list[str] = []
+    built: list[ContextPackOptions] = []
+    evaluated: list[str] = []
+    pack = _runner_context_pack()
+
+    def fake_query(repo: Path, query: str, config: ToolConfig) -> QueryBundle:
+        queried.append(query)
+        return QueryBundle(query, [], [], [])
+
+    def fake_build(
+        bundle: QueryBundle,
+        options: ContextPackOptions,
+    ) -> ContextPack:
+        built.append(options)
+        return pack
+
+    def fake_context_evaluation(
+        case: QualityCase,
+        actual_pack: ContextPack,
+        evaluation: CaseEvaluation,
+    ) -> CaseEvaluation:
+        assert actual_pack is pack
+        evaluated.append(case.case_id)
+        return evaluation
+
+    monkeypatch.setattr(quality_runner, "query_repository", fake_query)
+    monkeypatch.setattr(
+        quality_runner,
+        "build_context_pack",
+        fake_build,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        quality_runner,
+        "evaluate_context_pack",
+        fake_context_evaluation,
+        raising=False,
+    )
+
+    report = run_quality_fixture(fixture, "smoke", None, None)
+
+    assert queried == ["result query", "context query"]
+    assert built == [
+        ContextPackOptions(
+            max_results=DEFAULT_CONFIG.retrieval.final_top_k,
+            max_evidence_anchors=evidence_anchor_top_k(
+                DEFAULT_CONFIG.retrieval.final_top_k
+            ),
+            context_before_lines=DEFAULT_CONFIG.retrieval.context_before_lines,
+            context_after_lines=DEFAULT_CONFIG.retrieval.context_after_lines,
+            full_file=False,
+            max_full_file_bytes=DEFAULT_CONFIG.index.max_full_file_bytes,
+        )
+    ]
+    assert evaluated == ["context-case"]
+    records = {record["case_id"]: record for record in report["cases"]}
+    assert records["context-case"]["context_pack"] == {
+        "status": "ready",
+        "confidence": "medium",
+    }
+    assert "context_pack" not in records["result-case"]
+    assert set(records["result-case"]) == {
+        "repo_key",
+        "case_id",
+        "query",
+        "tags",
+        "gate",
+        "attempted",
+        "known_gap_reason",
+        "expanded_tokens",
+        "planner",
+        "query_variants",
+        "variant_retrieval_status",
+        "status",
+        "metrics",
+        "top_results",
+        "failures",
+    }
+
+
+def test_context_pack_build_exception_becomes_quality_error_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_source_repo(tmp_path / "fixture-source")
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {"smoke": {}},
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "snapshot_path": str(source),
+                    "profiles": ["smoke"],
+                    "queries": [
+                        {
+                            "id": "context-error",
+                            "query": "context query",
+                            "mode": "context_pack",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    captured: list[tuple[Path, ToolConfig]] = []
+    _patch_runner_dependencies(monkeypatch, captured)
+
+    def fail_build(bundle: QueryBundle, options: ContextPackOptions) -> ContextPack:
+        raise RuntimeError("pack exploded")
+
+    monkeypatch.setattr(
+        quality_runner,
+        "build_context_pack",
+        fail_build,
+        raising=False,
+    )
+
+    report = run_quality_fixture(
+        fixture,
+        "smoke",
+        None,
+        None,
+        allow_empty=True,
+    )
+
+    record = report["cases"][0]
+    assert record["status"] == "error"
+    assert record["attempted"] is True
+    assert record["failures"] == ["pack exploded"]
+    assert record["metrics"] == {}
+    assert record["top_results"] == []
+    assert "context_pack" not in record
+
+
+def test_runner_retains_raw_profile_and_context_failure_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_source_repo(tmp_path / "fixture-source")
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {"smoke": {}},
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "snapshot_path": str(source),
+                    "profiles": ["smoke"],
+                    "queries": [
+                        {
+                            "id": "combined",
+                            "query": "controller",
+                            "mode": "context_pack",
+                            "expected_top_k": [
+                                {"path": "src/RawExpected.java", "top_k": 5}
+                            ],
+                            "profile_expectations": {
+                                "smoke": {"planner_status": "ok"}
+                            },
+                            "expected_context_groups": {
+                                "entrypoints": [
+                                    {"path": "src/ContextExpected.java"}
+                                ]
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    captured: list[tuple[Path, ToolConfig]] = []
+    _patch_runner_dependencies(monkeypatch, captured)
+    monkeypatch.setattr(
+        quality_runner,
+        "build_context_pack",
+        lambda bundle, options: _runner_context_pack(),
+        raising=False,
+    )
+
+    report = run_quality_fixture(fixture, "smoke", None, None)
+
+    assert report["cases"][0]["failures"] == [
+        "expected_top_k missing within top 5: src/RawExpected.java",
+        "planner_status expected ok, got disabled",
+        "expected_context_groups missing in entrypoints: src/ContextExpected.java",
+    ]
+
+
+def test_runner_real_builder_classifies_anchor_only_readme(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_source_repo(tmp_path / "fixture-source")
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {"smoke": {}},
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "snapshot_path": str(source),
+                    "profiles": ["smoke"],
+                    "queries": [
+                        {
+                            "id": "readme",
+                            "query": "Program Tool Developer Setup",
+                            "mode": "context_pack",
+                            "expected_context_groups": {
+                                "configs_docs": [{"path": "README.md"}]
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    captured: list[tuple[Path, ToolConfig]] = []
+    _patch_runner_dependencies(monkeypatch, captured)
+    monkeypatch.setattr(
+        quality_runner,
+        "query_repository",
+        lambda repo, query, config: QueryBundle(
+            query=query,
+            expanded_tokens=[],
+            results=[],
+            followup_keywords=[],
+            evidence_anchors=[
+                EvidenceAnchor(
+                    file_path=Path("README.md"),
+                    start_line=1,
+                    end_line=2,
+                    content="# Program Tool\nDeveloper setup",
+                    score=1.0,
+                    score_parts={},
+                    reasons=[],
+                    anchor_kind="readme",
+                )
+            ],
+        ),
+    )
+    packs: list[ContextPack] = []
+
+    def capture_pack(
+        case: QualityCase,
+        pack: ContextPack,
+        evaluation: CaseEvaluation,
+    ) -> CaseEvaluation:
+        packs.append(pack)
+        return quality_metrics.evaluate_context_pack(case, pack, evaluation)
+
+    monkeypatch.setattr(
+        quality_runner,
+        "evaluate_context_pack",
+        capture_pack,
+        raising=False,
+    )
+
+    report = run_quality_fixture(fixture, "smoke", None, None)
+
+    assert report["cases"][0]["status"] == "pass"
+    assert len(packs) == 1
+    assert len(packs[0].items) == 1
+    item = packs[0].items[0]
+    assert (item.role, item.classification_basis, item.group) == (
+        "readme",
+        "anchor_kind",
+        "configs_docs",
+    )
 
 
 def test_run_quality_fixture_applies_parsed_profile_expectations(
@@ -1573,8 +1926,11 @@ def test_non_ci_source_prefers_existing_env_then_smoke_root_then_snapshot(
     )
 
 
-@pytest.mark.parametrize("profile", ["p1_vector_bge", "p1_hybrid_bge"])
-def test_phase_one_source_uses_committed_snapshot_despite_external_sources(
+@pytest.mark.parametrize(
+    "profile",
+    ["p1_vector_bge", "p1_hybrid_bge", "p2_context_pack"],
+)
+def test_snapshot_only_source_uses_committed_snapshot_despite_external_sources(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     profile: str,
@@ -1646,7 +2002,7 @@ def test_non_snapshot_profiles_keep_path_env_precedence_with_committed_snapshot(
 
 @pytest.mark.parametrize(
     "profile",
-    ["ci", "p1_vector_bge", "p1_hybrid_bge"],
+    ["ci", "p1_vector_bge", "p1_hybrid_bge", "p2_context_pack"],
 )
 def test_snapshot_only_profile_requires_snapshot_path_with_profile_name(
     tmp_path: Path,
@@ -1664,7 +2020,7 @@ def test_snapshot_only_profile_requires_snapshot_path_with_profile_name(
 
 @pytest.mark.parametrize(
     "profile",
-    ["ci", "p1_vector_bge", "p1_hybrid_bge"],
+    ["ci", "p1_vector_bge", "p1_hybrid_bge", "p2_context_pack"],
 )
 def test_snapshot_only_profile_reports_missing_snapshot_with_profile_name(
     tmp_path: Path,

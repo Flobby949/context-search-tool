@@ -2,6 +2,17 @@ from pathlib import Path
 
 import pytest
 
+import context_search_tool.quality.metrics as quality_metrics
+from context_search_tool.context_pack import (
+    CONTEXT_GROUPS,
+    CONTEXT_PACK_SCHEMA_VERSION,
+    ContextBudget,
+    ContextPack,
+    ContextPackItem,
+    MissingEvidence,
+    NextQuery,
+    ReadinessConfidence,
+)
 from context_search_tool.models import RetrievalResult, SemanticMatch
 from context_search_tool.quality.cases import (
     AtLeastTopKGroup,
@@ -14,7 +25,11 @@ from context_search_tool.quality.cases import (
     TopKMatcher,
     adapt_legacy_query_case,
 )
-from context_search_tool.quality.metrics import evaluate_case, normalize_results
+from context_search_tool.quality.metrics import (
+    CaseEvaluation,
+    evaluate_case,
+    normalize_results,
+)
 
 
 def _result(
@@ -40,6 +55,326 @@ def _result(
 
 def _expected(path: str, top_k: int = 5) -> TopKMatcher:
     return TopKMatcher(Matcher(path=path), top_k)
+
+
+def _context_item(item_id: str, path: str, group: str) -> ContextPackItem:
+    return ContextPackItem(
+        id=item_id,
+        source="result",
+        source_index=int(item_id.rsplit(":", 1)[1]),
+        file_path=path,
+        start_line=1,
+        end_line=1,
+        group=group,
+        role="source",
+        classification_basis="fallback",
+    )
+
+
+def _context_pack(
+    items: tuple[ContextPackItem, ...] = (),
+    *,
+    status: str = "ready",
+    confidence: str = "medium",
+    missing_evidence: tuple[MissingEvidence, ...] = (),
+    next_queries: tuple[NextQuery, ...] = (),
+    content_bytes: int = 0,
+) -> ContextPack:
+    groups = {
+        group: tuple(item.id for item in items if item.group == group)
+        for group in CONTEXT_GROUPS
+    }
+    return ContextPack(
+        schema_version=CONTEXT_PACK_SCHEMA_VERSION,
+        status=status,
+        items=items,
+        groups=groups,
+        reading_order=tuple(item.id for item in items),
+        missing_evidence=missing_evidence,
+        next_queries=next_queries,
+        confidence=ReadinessConfidence(level=confidence, reasons=()),
+        budget=ContextBudget(
+            max_results=12,
+            max_evidence_anchors=4,
+            max_items=16,
+            included_results=len(items),
+            included_evidence_anchors=0,
+            content_bytes=content_bytes,
+            context_before_lines=8,
+            context_after_lines=12,
+            full_file=False,
+            max_full_file_bytes=200_000,
+        ),
+    )
+
+
+def _raw_evaluation(
+    *,
+    status: str = "pass",
+    failures: list[str] | None = None,
+) -> CaseEvaluation:
+    return CaseEvaluation(
+        case_id="context",
+        status=status,
+        metrics={"latency_ms": 11, "result_count": 1},
+        failures=list(failures or []),
+        top_results=[{"rank": 1, "path": "src/Raw.java"}],
+    )
+
+
+def test_evaluate_context_pack_adds_metrics_and_deterministic_failures() -> None:
+    case = QualityCase(
+        case_id="context",
+        query="controller implementation",
+        mode="context_pack",
+        expected_context_groups={
+            "entrypoints": (
+                Matcher(path="src/MissingController.java"),
+                Matcher(glob="src/**/*Controller.java"),
+            ),
+            "implementations": (Matcher(contains="Repository"),),
+        },
+        expected_pack_status="partial",
+        minimum_context_confidence="high",
+    )
+    pack = _context_pack(
+        (
+            _context_item("result:0", "src/web/AppController.java", "entrypoints"),
+            _context_item(
+                "result:1",
+                "src/data/UserRepository.java",
+                "implementations",
+            ),
+            _context_item("result:2", "docs/README.md", "configs_docs"),
+        ),
+        status="ready",
+        confidence="medium",
+        missing_evidence=(
+            MissingEvidence("entrypoints", True, "required"),
+            MissingEvidence("tests", False, "recommended"),
+            MissingEvidence("related_types", False, "recommended"),
+        ),
+        next_queries=(
+            NextQuery("find controller", "find_entrypoints", "missing"),
+            NextQuery("find tests", "find_tests", "missing"),
+        ),
+        content_bytes=321,
+    )
+    raw = _raw_evaluation()
+
+    evaluation = quality_metrics.evaluate_context_pack(case, pack, raw)
+
+    assert evaluation.metrics["context_expected_count"] == 3
+    assert evaluation.metrics["context_matched_count"] == 2
+    assert evaluation.metrics["context_completeness"] == pytest.approx(2 / 3)
+    assert evaluation.metrics["context_group_count"] == 3
+    assert evaluation.metrics["required_missing_count"] == 1
+    assert evaluation.metrics["recommended_missing_count"] == 2
+    assert evaluation.metrics["next_query_count"] == 2
+    assert evaluation.metrics["context_content_bytes"] == 321
+    assert evaluation.metrics["latency_ms"] == 11
+    assert evaluation.metrics["result_count"] == 1
+    assert evaluation.top_results == raw.top_results
+    assert evaluation.failures == [
+        "expected_context_groups missing in entrypoints: src/MissingController.java",
+        "expected_pack_status expected partial, got ready",
+        "minimum_context_confidence expected high, got medium",
+    ]
+    assert evaluation.status == "fail"
+
+
+def test_context_matchers_use_path_glob_and_contains_in_declared_group() -> None:
+    case = QualityCase(
+        case_id="matcher-semantics",
+        query="service",
+        mode="context_pack",
+        expected_context_groups={
+            "implementations": (
+                Matcher(path="src/Exact.py"),
+                Matcher(glob="src/**/Service*.py"),
+                Matcher(contains="Repository"),
+            )
+        },
+    )
+    pack = _context_pack(
+        (
+            _context_item("result:0", "./src\\Exact.py", "implementations"),
+            _context_item("result:1", "src/pkg/ServiceImpl.py", "implementations"),
+            _context_item("result:2", "src/data/Repository.py", "implementations"),
+        )
+    )
+
+    evaluation = quality_metrics.evaluate_context_pack(
+        case,
+        pack,
+        _raw_evaluation(),
+    )
+
+    assert evaluation.metrics["context_expected_count"] == 3
+    assert evaluation.metrics["context_matched_count"] == 3
+    assert evaluation.metrics["context_completeness"] == 1.0
+    assert evaluation.failures == []
+
+
+def test_context_item_in_wrong_group_does_not_satisfy_expected_pair() -> None:
+    case = QualityCase(
+        case_id="wrong-group",
+        query="controller",
+        mode="context_pack",
+        expected_context_groups={
+            "entrypoints": (Matcher(path="src/AppController.java"),)
+        },
+    )
+    pack = _context_pack(
+        (
+            _context_item(
+                "result:0",
+                "src/AppController.java",
+                "implementations",
+            ),
+        )
+    )
+
+    evaluation = quality_metrics.evaluate_context_pack(
+        case,
+        pack,
+        _raw_evaluation(),
+    )
+
+    assert evaluation.metrics["context_matched_count"] == 0
+    assert evaluation.failures == [
+        "expected_context_groups missing in entrypoints: src/AppController.java"
+    ]
+
+
+def test_duplicate_pack_paths_do_not_overcount_expected_pair() -> None:
+    case = QualityCase(
+        case_id="duplicates",
+        query="controller",
+        mode="context_pack",
+        expected_context_groups={
+            "entrypoints": (Matcher(path="src/AppController.java"),)
+        },
+    )
+    pack = _context_pack(
+        (
+            _context_item("result:0", "src/AppController.java", "entrypoints"),
+            _context_item("result:1", "./src/AppController.java", "entrypoints"),
+        )
+    )
+
+    evaluation = quality_metrics.evaluate_context_pack(
+        case,
+        pack,
+        _raw_evaluation(),
+    )
+
+    assert evaluation.metrics["context_expected_count"] == 1
+    assert evaluation.metrics["context_matched_count"] == 1
+    assert evaluation.metrics["context_completeness"] == 1.0
+
+
+def test_no_expected_context_pairs_records_null_completeness() -> None:
+    case = QualityCase(
+        case_id="no-pairs",
+        query="context",
+        mode="context_pack",
+    )
+
+    evaluation = quality_metrics.evaluate_context_pack(
+        case,
+        _context_pack(),
+        _raw_evaluation(),
+    )
+
+    assert evaluation.metrics["context_expected_count"] == 0
+    assert evaluation.metrics["context_matched_count"] == 0
+    assert evaluation.metrics["context_completeness"] is None
+
+
+@pytest.mark.parametrize(
+    ("gate", "expected_status"),
+    [
+        (Gate.REQUIRED, "fail"),
+        (Gate.KNOWN_GAP, "known_gap"),
+        (Gate.INFORMATIONAL, "informational"),
+    ],
+)
+def test_context_failures_retain_gate_status_semantics(
+    gate: Gate,
+    expected_status: str,
+) -> None:
+    case = QualityCase(
+        case_id="gated-context",
+        query="controller",
+        mode="context_pack",
+        gate=gate,
+        expected_context_groups={
+            "entrypoints": (Matcher(path="src/AppController.java"),)
+        },
+    )
+    raw = evaluate_case(case, [], latency_ms=1)
+
+    evaluation = quality_metrics.evaluate_context_pack(
+        case,
+        _context_pack(),
+        raw,
+    )
+
+    assert evaluation.status == expected_status
+    assert evaluation.failures == [
+        "expected_context_groups missing in entrypoints: src/AppController.java"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("actual", "fails"),
+    [("none", True), ("low", True), ("medium", False), ("high", False)],
+)
+def test_minimum_context_confidence_uses_declared_rank(
+    actual: str,
+    fails: bool,
+) -> None:
+    case = QualityCase(
+        case_id="confidence",
+        query="confidence",
+        mode="context_pack",
+        minimum_context_confidence="medium",
+    )
+
+    evaluation = quality_metrics.evaluate_context_pack(
+        case,
+        _context_pack(confidence=actual),
+        _raw_evaluation(),
+    )
+
+    assert bool(evaluation.failures) is fails
+
+
+def test_context_evaluation_appends_after_raw_failures() -> None:
+    case = QualityCase(
+        case_id="raw-and-context",
+        query="controller",
+        mode="context_pack",
+        expected_top_k=(_expected("src/RawExpected.java", 5),),
+        expected_context_groups={
+            "entrypoints": (Matcher(path="src/ContextExpected.java"),)
+        },
+    )
+    raw = evaluate_case(case, [], latency_ms=5)
+
+    evaluation = quality_metrics.evaluate_context_pack(
+        case,
+        _context_pack(),
+        raw,
+    )
+
+    assert evaluation.failures == [
+        "expected_top_k missing within top 5: src/RawExpected.java",
+        "expected_context_groups missing in entrypoints: src/ContextExpected.java",
+    ]
+    assert evaluation.metrics["latency_ms"] == raw.metrics["latency_ms"]
+    assert evaluation.top_results == raw.top_results
 
 
 def test_normalize_results_deduplicates_paths_and_compacts_ranks() -> None:

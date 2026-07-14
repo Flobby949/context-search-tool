@@ -129,6 +129,34 @@ def test_typed_metric_summary_rates_means_and_latency_percentiles() -> None:
     }
 
 
+def test_context_completeness_aggregation_excludes_null_cases() -> None:
+    aggregate = aggregate_cases(
+        [
+            _case(
+                "a",
+                "measured",
+                "pass",
+                attempted=True,
+                metrics={"context_completeness": 0.5},
+            ),
+            _case(
+                "a",
+                "no-expectations",
+                "pass",
+                attempted=True,
+                metrics={"context_completeness": None},
+            ),
+        ],
+        [_repo("a")],
+        "p2_context_pack",
+    )
+
+    assert aggregate["metrics"]["overall"]["context_completeness"] == {
+        "count": 1,
+        "mean": 0.5,
+    }
+
+
 def test_aggregate_groups_by_repo_tag_profile_and_embedding() -> None:
     cases = [
         _case(

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
+from context_search_tool.context_pack import CONTEXT_GROUPS, ContextPack
 from context_search_tool.models import RetrievalResult, SemanticMatch
 from context_search_tool.quality.cases import (
     Gate,
@@ -34,6 +35,9 @@ class CaseEvaluation:
 @dataclass(frozen=True)
 class _RelevanceTarget:
     matchers: tuple[Matcher, ...]
+
+
+_CONFIDENCE_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3}
 
 
 def normalize_results(results: list[RetrievalResult]) -> list[NormalizedResult]:
@@ -158,6 +162,84 @@ def evaluate_case(
         top_results=[
             _result_payload(result) for result in normalized[:top_result_limit]
         ],
+    )
+
+
+def evaluate_context_pack(
+    case: QualityCase,
+    pack: ContextPack,
+    evaluation: CaseEvaluation,
+) -> CaseEvaluation:
+    """Apply context-only expectations and metrics to raw evaluation."""
+    failures = list(evaluation.failures)
+    matched_count = 0
+    expected_count = 0
+
+    paths_by_group = {
+        group: tuple(
+            item.file_path
+            for item in pack.items
+            if item.group == group
+        )
+        for group in CONTEXT_GROUPS
+    }
+    for group in CONTEXT_GROUPS:
+        for matcher in case.expected_context_groups.get(group, ()):
+            expected_count += 1
+            if any(matcher.matches(path) for path in paths_by_group[group]):
+                matched_count += 1
+            else:
+                failures.append(
+                    "expected_context_groups missing in "
+                    f"{group}: {_matcher_label(matcher)}"
+                )
+
+    if (
+        case.expected_pack_status is not None
+        and pack.status != case.expected_pack_status
+    ):
+        failures.append(
+            f"expected_pack_status expected {case.expected_pack_status}, "
+            f"got {pack.status}"
+        )
+
+    minimum_confidence = case.minimum_context_confidence
+    if (
+        minimum_confidence is not None
+        and _CONFIDENCE_RANK[pack.confidence.level]
+        < _CONFIDENCE_RANK[minimum_confidence]
+    ):
+        failures.append(
+            "minimum_context_confidence expected "
+            f"{minimum_confidence}, got {pack.confidence.level}"
+        )
+
+    metrics = dict(evaluation.metrics)
+    metrics.update(
+        {
+            "context_expected_count": expected_count,
+            "context_matched_count": matched_count,
+            "context_completeness": (
+                matched_count / expected_count if expected_count else None
+            ),
+            "context_group_count": sum(
+                bool(items) for items in pack.groups.values()
+            ),
+            "required_missing_count": sum(
+                missing.required for missing in pack.missing_evidence
+            ),
+            "recommended_missing_count": sum(
+                not missing.required for missing in pack.missing_evidence
+            ),
+            "next_query_count": len(pack.next_queries),
+            "context_content_bytes": pack.budget.content_bytes,
+        }
+    )
+    return replace(
+        evaluation,
+        status=_status(case.gate, failures),
+        metrics=metrics,
+        failures=failures,
     )
 
 

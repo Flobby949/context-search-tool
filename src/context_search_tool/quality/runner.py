@@ -26,6 +26,11 @@ except ImportError:  # pragma: no cover - POSIX quality runs use fcntl.
     fcntl = None  # type: ignore[assignment]
 
 from context_search_tool.config import DEFAULT_CONFIG, ToolConfig
+from context_search_tool.context_pack import (
+    ContextPack,
+    build_context_pack,
+    resolve_context_pack_options,
+)
 from context_search_tool.indexer import index_repository
 from context_search_tool.manifest import load_manifest
 from context_search_tool.models import QueryPlan
@@ -38,8 +43,16 @@ from context_search_tool.quality.cases import (
     load_quality_fixture,
     validate_profile_compatible,
 )
-from context_search_tool.quality.metrics import CaseEvaluation, evaluate_case
-from context_search_tool.retrieval import QueryBundle, query_repository
+from context_search_tool.quality.metrics import (
+    CaseEvaluation,
+    evaluate_case,
+    evaluate_context_pack,
+)
+from context_search_tool.retrieval import (
+    QueryBundle,
+    evidence_anchor_top_k,
+    query_repository,
+)
 
 
 _COPY_EXCLUDES = {
@@ -66,7 +79,9 @@ _WINDOWS_RESERVED_NAMES = {
 
 _WINDOWS_INVALID_COMPONENT_CHARS = frozenset('<>:"/\\|?*')
 
-_SNAPSHOT_ONLY_PROFILES = frozenset({"ci", "p1_vector_bge", "p1_hybrid_bge"})
+_SNAPSHOT_ONLY_PROFILES = frozenset(
+    {"ci", "p1_vector_bge", "p1_hybrid_bge", "p2_context_pack"}
+)
 
 _DESCRIPTOR_COPY_SUPPORTED = (
     os.name == "posix"
@@ -259,8 +274,26 @@ def run_quality_fixture(
                         bundle,
                         evaluation,
                     )
+                    pack: ContextPack | None = None
+                    if case.mode == "context_pack":
+                        pack_options = resolve_context_pack_options(
+                            repo_config,
+                            context_lines=None,
+                            full_file=False,
+                            max_evidence_anchors=evidence_anchor_top_k(
+                                repo_config.retrieval.final_top_k
+                            ),
+                        )
+                        pack = build_context_pack(bundle, pack_options)
+                        evaluation = evaluate_context_pack(case, pack, evaluation)
                     cases.append(
-                        _case_record(repo.repo_key, case, evaluation, bundle)
+                        _case_record(
+                            repo.repo_key,
+                            case,
+                            evaluation,
+                            bundle,
+                            pack=pack,
+                        )
                     )
                 except Exception as exc:
                     cases.append(
@@ -658,6 +691,8 @@ def _case_record(
     case: QualityCase,
     evaluation: CaseEvaluation,
     bundle: QueryBundle,
+    *,
+    pack: ContextPack | None = None,
 ) -> dict[str, Any]:
     return {
         "repo_key": repo_key,
@@ -678,6 +713,16 @@ def _case_record(
             for variant in bundle.query_variants
         ],
         "variant_retrieval_status": bundle.variant_retrieval_status,
+        **(
+            {
+                "context_pack": {
+                    "status": pack.status,
+                    "confidence": pack.confidence.level,
+                }
+            }
+            if pack is not None
+            else {}
+        ),
         **(
             {
                 "legacy": {
