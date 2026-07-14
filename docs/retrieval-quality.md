@@ -13,6 +13,30 @@
 | `p1_vector_bge` | local `bge-m3` | Phase 1 vector-only acceptance baseline |
 | `p1_hybrid_bge` | local `bge-m3` and `qwen3.5:4b-mlx` | Phase 1 hybrid acceptance candidate |
 
+All commands below assume that `cst` imports `context_search_tool` from the
+current checkout. Editable installs and multiple worktrees can point elsewhere,
+so pin and verify the import path before producing a report:
+
+```bash
+PYTHONPATH="$PWD/src" python - <<'PY'
+from pathlib import Path
+import context_search_tool
+
+expected = (Path.cwd() / "src/context_search_tool/__init__.py").resolve()
+actual = Path(context_search_tool.__file__).resolve()
+if actual != expected:
+    raise SystemExit(f"expected {expected}, imported {actual}")
+print(actual)
+PY
+```
+
+Use the same Python environment as the quality command. In editable or
+multi-worktree development, prefix quality commands with `PYTHONPATH="$PWD/src"`
+when needed. For example, use `PYTHONPATH="$PWD/src" cst quality run ...` or
+`PYTHONPATH="$PWD/src" conda run -n base cst quality run ...`. The report's
+`tool.git_commit` records metadata; it does not by itself prove which checkout
+Python imported.
+
 ## Fast CI Run
 
 ```bash
