@@ -2,6 +2,15 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
+from context_search_tool import context_pack, formatters
+from context_search_tool.context_pack import (
+    CONTEXT_GROUPS,
+    INVALID_REFERENCE_ERROR,
+    ContextPackError,
+    ContextPackOptions,
+)
 from context_search_tool.models import (
     EvidenceAnchor,
     QueryPlan,
@@ -32,6 +41,424 @@ def sample_bundle() -> QueryBundle:
             )
         ],
     )
+
+
+def compatibility_bundle() -> QueryBundle:
+    return QueryBundle(
+        query="数据看板 audit",
+        expanded_tokens=["数据看板", "audit"],
+        results=[
+            RetrievalResult(
+                file_path=Path("src/PageController.py"),
+                start_line=7,
+                end_line=9,
+                content="def page():\n    return 'ok'",
+                score=0.91,
+                score_parts={"semantic": 0.75, "lexical": 0.6},
+                reasons=["exact route", "planner semantic match"],
+                followup_keywords=["PageService"],
+                semantic_matches=[
+                    SemanticMatch("original", 0.7),
+                    SemanticMatch("planner:0", 0.75),
+                ],
+            ),
+            RetrievalResult(
+                file_path=Path("src/PageService.py"),
+                start_line=20,
+                end_line=24,
+                content="class PageService:\n    pass",
+                score=0.82,
+                score_parts={"rerank": 0.82, "lexical": 0.4},
+                reasons=["implementation match"],
+                followup_keywords=[],
+                semantic_matches=[SemanticMatch("planner:0", 0.68)],
+            ),
+        ],
+        followup_keywords=["PageService", "PageDTO"],
+        summary=RetrievalSummary(
+            entry_points=["PageController.page"],
+            implementation=["PageService"],
+            related_types=["PageDTO"],
+            possibly_legacy=["OldPage"],
+        ),
+        planner=QueryPlan(
+            original_query="数据看板 audit",
+            rewritten_queries=["dashboard audit"],
+            grep_keywords=["PageController", "audit"],
+            symbol_hints=["PageService"],
+            intent="feature_lookup",
+            status="ok",
+            provider="ollama",
+            model="qwen-test",
+            prompt_version="planner-v1",
+            prompt_hash="sha256:prompt",
+            latency_ms=17,
+            repo_profile_hash="sha256:repo",
+            repo_profile_truncated=True,
+            discarded_hints=[f"discarded-{index}" for index in range(9)],
+        ),
+        evidence_anchors=[
+            EvidenceAnchor(
+                file_path=Path("README.md"),
+                start_line=1,
+                end_line=3,
+                content="看板 audit guide",
+                score=0.5,
+                score_parts={"anchor": 0.5, "lexical": 0.25},
+                reasons=["README anchor"],
+                anchor_kind="readme",
+                semantic_matches=[SemanticMatch("planner:0", 0.44)],
+            )
+        ],
+        query_variants=[
+            QueryVariant("original", "数据看板 audit", "original"),
+            QueryVariant("planner:0", "dashboard audit", "planner"),
+        ],
+        variant_retrieval_status="hybrid",
+    )
+
+
+def context_options() -> ContextPackOptions:
+    return ContextPackOptions(
+        max_results=12,
+        max_evidence_anchors=4,
+        context_before_lines=8,
+        context_after_lines=12,
+        full_file=False,
+        max_full_file_bytes=200_000,
+    )
+
+
+def test_format_json_preserves_complete_pre_refactor_output() -> None:
+    expected = """{
+  "evidence_anchors": [
+    {
+      "anchor_kind": "readme",
+      "content": "\\u770b\\u677f audit guide",
+      "end_line": 3,
+      "file_path": "README.md",
+      "reasons": [
+        "README anchor"
+      ],
+      "score": 0.5,
+      "score_parts": {
+        "anchor": 0.5,
+        "lexical": 0.25
+      },
+      "semantic_matches": [
+        {
+          "score": 0.44,
+          "variant_id": "planner:0"
+        }
+      ],
+      "start_line": 1
+    }
+  ],
+  "expanded_tokens": [
+    "\\u6570\\u636e\\u770b\\u677f",
+    "audit"
+  ],
+  "followup_keywords": [
+    "PageService",
+    "PageDTO"
+  ],
+  "planner": {
+    "discarded_hint_count": 9,
+    "discarded_hints": [
+      "discarded-0",
+      "discarded-1",
+      "discarded-2",
+      "discarded-3",
+      "discarded-4",
+      "discarded-5",
+      "discarded-6",
+      "discarded-7"
+    ],
+    "enabled": true,
+    "grep_keywords": [
+      "PageController",
+      "audit"
+    ],
+    "intent": "feature_lookup",
+    "latency_ms": 17,
+    "model": "qwen-test",
+    "prompt_hash": "sha256:prompt",
+    "prompt_version": "planner-v1",
+    "provider": "ollama",
+    "repo_profile_hash": "sha256:repo",
+    "repo_profile_truncated": true,
+    "rewritten_queries": [
+      "dashboard audit"
+    ],
+    "status": "ok",
+    "symbol_hints": [
+      "PageService"
+    ]
+  },
+  "query": "\\u6570\\u636e\\u770b\\u677f audit",
+  "query_variants": [
+    {
+      "source": "original",
+      "text": "\\u6570\\u636e\\u770b\\u677f audit",
+      "variant_id": "original"
+    },
+    {
+      "source": "planner",
+      "text": "dashboard audit",
+      "variant_id": "planner:0"
+    }
+  ],
+  "results": [
+    {
+      "content": "def page():\\n    return 'ok'",
+      "end_line": 9,
+      "file_path": "src/PageController.py",
+      "followup_keywords": [
+        "PageService"
+      ],
+      "reasons": [
+        "exact route",
+        "planner semantic match"
+      ],
+      "score": 0.91,
+      "score_parts": {
+        "lexical": 0.6,
+        "semantic": 0.75
+      },
+      "semantic_matches": [
+        {
+          "score": 0.7,
+          "variant_id": "original"
+        },
+        {
+          "score": 0.75,
+          "variant_id": "planner:0"
+        }
+      ],
+      "start_line": 7
+    },
+    {
+      "content": "class PageService:\\n    pass",
+      "end_line": 24,
+      "file_path": "src/PageService.py",
+      "followup_keywords": [],
+      "reasons": [
+        "implementation match"
+      ],
+      "score": 0.82,
+      "score_parts": {
+        "lexical": 0.4,
+        "rerank": 0.82
+      },
+      "semantic_matches": [
+        {
+          "score": 0.68,
+          "variant_id": "planner:0"
+        }
+      ],
+      "start_line": 20
+    }
+  ],
+  "summary": {
+    "entry_points": [
+      "PageController.page"
+    ],
+    "implementation": [
+      "PageService"
+    ],
+    "possibly_legacy": [
+      "OldPage"
+    ],
+    "related_types": [
+      "PageDTO"
+    ]
+  },
+  "variant_retrieval_status": "hybrid"
+}"""
+
+    assert format_json(compatibility_bundle()) == expected
+
+
+def test_query_payload_matches_the_complete_raw_query_payload() -> None:
+    bundle = compatibility_bundle()
+
+    assert formatters.query_payload(bundle) == json.loads(format_json(bundle))
+
+
+def test_context_json_appends_pack_without_changing_raw_query_payload() -> None:
+    bundle = compatibility_bundle()
+    pack = context_pack.build_context_pack(bundle, context_options())
+    raw_payload = formatters.query_payload(bundle)
+    raw_snapshot = dict(raw_payload)
+
+    output = formatters.format_context_json(raw_payload, bundle, pack)
+    parsed = json.loads(output)
+    parsed_pack = parsed.pop("context_pack")
+
+    assert raw_payload == raw_snapshot
+    assert parsed == json.loads(format_json(bundle))
+    assert parsed_pack == context_pack.context_pack_payload(bundle, pack)
+    assert list(parsed_pack["groups"]) == list(CONTEXT_GROUPS)
+    assert list(json.loads(output))[-1] == "context_pack"
+
+
+def test_context_json_rejects_non_finite_values() -> None:
+    bundle = compatibility_bundle()
+    pack = context_pack.build_context_pack(bundle, context_options())
+
+    with pytest.raises(ValueError):
+        formatters.format_context_json({"score": float("nan")}, bundle, pack)
+
+
+def test_context_markdown_renders_sections_items_and_budget_in_reading_order() -> None:
+    bundle = compatibility_bundle()
+    pack = context_pack.build_context_pack(bundle, context_options())
+
+    output = formatters.format_context_markdown(bundle, pack)
+
+    ordered_tokens = [
+        "# Context Pack",
+        "Query:",
+        "Status:",
+        "Confidence:",
+        "## Read First",
+        "## Missing Evidence",
+        "## Next Queries",
+        "## Budget",
+    ]
+    positions = [output.index(token) for token in ordered_tokens]
+    assert positions == sorted(positions)
+    assert "Planner: ok" in output
+    assert "Query expanded by qwen-test: PageService, PageController, audit" in output
+
+    for item_id in pack.reading_order:
+        item = next(item for item in pack.items if item.id == item_id)
+        source = context_pack.resolve_context_item(bundle, item)
+        heading = (
+            f"### {item.id} - {item.file_path}:"
+            f"{item.start_line}-{item.end_line}"
+        )
+        assert output.count(heading) == 1
+        assert f"Group: {item.group}" in output
+        assert f"Role: {item.role}" in output
+        assert output.count(source.content) == 1
+        for reason in source.reasons:
+            assert f"- {reason}" in output
+
+    assert "- Recommended: related_types" in output
+    assert "- Recommended: tests" in output
+    for suggestion in pack.next_queries:
+        assert f"- Purpose: {suggestion.purpose}" in output
+        assert f"  Query: {suggestion.query}" in output
+        assert f"  Reason: {suggestion.reason}" in output
+
+    for field_name in (
+        "max_results",
+        "max_evidence_anchors",
+        "max_items",
+        "included_results",
+        "included_evidence_anchors",
+        "content_bytes",
+        "context_before_lines",
+        "context_after_lines",
+        "full_file",
+        "max_full_file_bytes",
+    ):
+        assert f"- {field_name}: {getattr(pack.budget, field_name)}" in output
+
+
+def test_context_markdown_labels_required_missing_evidence() -> None:
+    bundle = replace(
+        sample_bundle(),
+        query="controller route",
+        results=[
+            replace(
+                sample_bundle().results[0],
+                file_path=Path("src/services/audit.py"),
+            )
+        ],
+    )
+    pack = context_pack.build_context_pack(bundle, context_options())
+
+    output = formatters.format_context_markdown(bundle, pack)
+
+    assert "- Required: entrypoints" in output
+    assert "- Purpose: find_entrypoints" in output
+    assert "  Query:" in output
+    assert "  Reason: required evidence for entrypoints is missing" in output
+
+
+@pytest.mark.parametrize(
+    ("planner", "expected_status", "has_hint"),
+    [
+        (QueryPlan.disabled_default(), "disabled", False),
+        (
+            QueryPlan(
+                original_query="数据看板 audit",
+                status="fallback",
+                provider="ollama",
+                model="qwen-test",
+                error="secret planner error",
+            ),
+            "fallback",
+            False,
+        ),
+        (compatibility_bundle().planner, "ok", True),
+    ],
+)
+def test_context_markdown_always_emits_planner_status_and_only_existing_hint(
+    planner: QueryPlan,
+    expected_status: str,
+    has_hint: bool,
+) -> None:
+    bundle = replace(compatibility_bundle(), planner=planner)
+    pack = context_pack.build_context_pack(bundle, context_options())
+
+    output = formatters.format_context_markdown(bundle, pack)
+
+    assert f"Planner: {expected_status}" in output
+    assert ("Query expanded by" in output) is has_hint
+
+
+def test_context_markdown_renders_an_empty_pack() -> None:
+    bundle = QueryBundle(
+        query="missing",
+        expanded_tokens=[],
+        results=[],
+        followup_keywords=[],
+    )
+    pack = context_pack.build_context_pack(bundle, context_options())
+
+    output = formatters.format_context_markdown(bundle, pack)
+
+    assert "Status: empty" in output
+    assert "Confidence: none" in output
+    assert "## Read First\n- (none)" in output
+    assert "- Required: results" in output
+    assert "## Next Queries\n- (none)" in output
+
+
+def test_context_markdown_rejects_nonexistent_reading_order_id() -> None:
+    bundle = compatibility_bundle()
+    pack = context_pack.build_context_pack(bundle, context_options())
+    invalid_pack = replace(pack, reading_order=(*pack.reading_order, "result:999"))
+
+    with pytest.raises(ContextPackError) as exc_info:
+        formatters.format_context_markdown(bundle, invalid_pack)
+
+    assert str(exc_info.value) == INVALID_REFERENCE_ERROR
+
+
+def test_context_markdown_rejects_invalid_source_index() -> None:
+    bundle = compatibility_bundle()
+    pack = context_pack.build_context_pack(bundle, context_options())
+    invalid_item = replace(pack.items[0], source_index=999)
+    invalid_pack = replace(pack, items=(invalid_item, *pack.items[1:]))
+
+    with pytest.raises(ContextPackError) as exc_info:
+        formatters.format_context_markdown(bundle, invalid_pack)
+
+    assert str(exc_info.value) == INVALID_REFERENCE_ERROR
 
 
 def test_markdown_formatter_contains_paths_reasons_and_snippets() -> None:

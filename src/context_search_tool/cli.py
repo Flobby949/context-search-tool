@@ -8,8 +8,20 @@ from typing import Optional, Sequence
 import requests
 import typer
 
-from context_search_tool.config import load_config
-from context_search_tool.formatters import format_json, format_markdown
+from context_search_tool.config import ToolConfig, load_config
+from context_search_tool.context_pack import (
+    UNEXPECTED_CONTEXT_ERROR,
+    ContextPackError,
+    build_context_pack,
+    resolve_context_pack_options,
+)
+from context_search_tool.formatters import (
+    format_context_json,
+    format_context_markdown,
+    format_json,
+    format_markdown,
+    query_payload,
+)
 from context_search_tool.indexer import (
     IncompatibleIndexError,
     index_repository,
@@ -22,7 +34,7 @@ from context_search_tool.paths import (
     find_repo_root,
     index_dir_for,
 )
-from context_search_tool.retrieval import query_repository
+from context_search_tool.retrieval import evidence_anchor_top_k, query_repository
 from context_search_tool.sqlite_store import SQLiteStore
 
 app = typer.Typer(
@@ -80,24 +92,12 @@ def query(
         help="Force query planner off.",
     ),
 ) -> None:
-    if question is None:
-        repo = _resolve_repo(None)
-        query_text = repo_or_question
-    else:
-        repo = _resolve_repo(Path(repo_or_question))
-        query_text = question
-
-    _require_index(repo)
-    config = load_config(repo)
-    if planner and no_planner:
-        typer.echo("Error: --planner and --no-planner cannot be used together", err=True)
-        raise typer.Exit(code=1)
-    if planner or no_planner:
-        config = replace(
-            config,
-            query_planner=replace(config.query_planner, enabled=planner),
-        )
-    _warn_if_signal_schema_stale(repo)
+    repo, query_text, config = _prepare_query_command(
+        repo_or_question,
+        question,
+        planner=planner,
+        no_planner=no_planner,
+    )
     try:
         bundle = query_repository(
             repo,
@@ -113,6 +113,67 @@ def query(
         typer.echo(format_json(bundle))
         return
     typer.echo(format_markdown(bundle))
+
+
+@app.command()
+def context(
+    repo_or_question: str,
+    question: Optional[str] = typer.Argument(None),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+    context_lines: Optional[int] = typer.Option(
+        None,
+        "--context-lines",
+        help="Override context lines around each result.",
+    ),
+    full_file: bool = typer.Option(
+        False,
+        "--full-file",
+        help="Return full files when they are below the configured size limit.",
+    ),
+    planner: bool = typer.Option(False, "--planner", help="Force query planner on."),
+    no_planner: bool = typer.Option(
+        False,
+        "--no-planner",
+        help="Force query planner off.",
+    ),
+) -> None:
+    repo, query_text, config = _prepare_query_command(
+        repo_or_question,
+        question,
+        planner=planner,
+        no_planner=no_planner,
+    )
+    try:
+        bundle = query_repository(
+            repo,
+            query_text,
+            config,
+            context_lines=context_lines,
+            full_file=full_file,
+        )
+        raw_payload = query_payload(bundle)
+    except (ValueError, requests.HTTPError) as exc:
+        _exit_with_error(exc)
+
+    try:
+        anchor_limit = evidence_anchor_top_k(config.retrieval.final_top_k)
+        pack_options = resolve_context_pack_options(
+            config,
+            context_lines=context_lines,
+            full_file=full_file,
+            max_evidence_anchors=anchor_limit,
+        )
+        pack = build_context_pack(bundle, pack_options)
+        output = (
+            format_context_json(raw_payload, bundle, pack)
+            if json_output
+            else format_context_markdown(bundle, pack)
+        )
+    except ContextPackError as exc:
+        _exit_context_error(str(exc))
+    except Exception:
+        _exit_context_error(UNEXPECTED_CONTEXT_ERROR)
+    typer.echo(output)
 
 
 @app.command()
@@ -212,6 +273,36 @@ def clean(repo: Optional[Path] = typer.Argument(None)) -> None:
     typer.echo(f"Cleaned {index_dir}")
 
 
+def _prepare_query_command(
+    repo_or_question: str,
+    question: str | None,
+    *,
+    planner: bool,
+    no_planner: bool,
+) -> tuple[Path, str, ToolConfig]:
+    if question is None:
+        repo = _resolve_repo(None)
+        query_text = repo_or_question
+    else:
+        repo = _resolve_repo(Path(repo_or_question))
+        query_text = question
+    _require_index(repo)
+    config = load_config(repo)
+    if planner and no_planner:
+        typer.echo(
+            "Error: --planner and --no-planner cannot be used together",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    if planner or no_planner:
+        config = replace(
+            config,
+            query_planner=replace(config.query_planner, enabled=planner),
+        )
+    _warn_if_signal_schema_stale(repo)
+    return repo, query_text, config
+
+
 def _resolve_repo(repo: Optional[Path]) -> Path:
     try:
         return find_repo_root(repo)
@@ -246,6 +337,11 @@ def _warn_if_signal_schema_stale(repo: Path) -> None:
 def _exit_with_error(exc: Exception) -> None:
     typer.echo(f"Error: {exc}", err=True)
     raise typer.Exit(code=1) from exc
+
+
+def _exit_context_error(message: str) -> None:
+    typer.echo(f"Error: context_failed: {message}", err=True)
+    raise typer.Exit(code=1) from None
 
 
 def _parse_location(location: str, repo: Path) -> tuple[Path, int]:
