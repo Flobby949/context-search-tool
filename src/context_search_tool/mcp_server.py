@@ -7,6 +7,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from context_search_tool.mcp_tools import (
+    context_search_context_tool,
     context_search_explain_tool,
     context_search_index_tool,
     context_search_query_tool,
@@ -33,8 +34,26 @@ def context_search_query(
     full_file: bool = False,
     final_top_k: int | None = None,
 ) -> dict[str, Any]:
-    """Search indexed code context in a local repository."""
+    """Return raw ranked search results from a local repository index."""
     return context_search_query_tool(
+        repo=repo,
+        query=query,
+        context_lines=context_lines,
+        full_file=full_file,
+        final_top_k=final_top_k,
+    )
+
+
+@mcp.tool()
+def context_search_context(
+    repo: str,
+    query: str,
+    context_lines: int | None = None,
+    full_file: bool = False,
+    final_top_k: int | None = None,
+) -> dict[str, Any]:
+    """Return an agent-oriented ContextPack from one bounded retrieval pass."""
+    return context_search_context_tool(
         repo=repo,
         query=query,
         context_lines=context_lines,

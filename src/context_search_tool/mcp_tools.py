@@ -10,6 +10,14 @@ from typing import Any
 import requests
 
 from context_search_tool.config import ToolConfig, load_config
+from context_search_tool.context_pack import (
+    CONTEXT_GROUPS,
+    UNEXPECTED_CONTEXT_ERROR,
+    ContextPackError,
+    build_context_pack,
+    context_pack_payload,
+    resolve_context_pack_options,
+)
 from context_search_tool.indexer import (
     IncompatibleIndexError,
     index_repository,
@@ -29,7 +37,11 @@ from context_search_tool.paths import (
     find_repo_root,
     index_dir_for,
 )
-from context_search_tool.retrieval import QueryBundle, query_repository
+from context_search_tool.retrieval import (
+    QueryBundle,
+    evidence_anchor_top_k,
+    query_repository,
+)
 from context_search_tool.sqlite_store import SQLiteStore
 
 _FEEDBACK_LOG_MAX_BYTES = 10 * 1024 * 1024
@@ -113,6 +125,78 @@ def context_search_query_tool(
             final_top_k=final_top_k,
         )
         return error_payload
+
+
+def context_search_context_tool(
+    repo: str,
+    query: str,
+    context_lines: int | None = None,
+    full_file: bool = False,
+    final_top_k: int | None = None,
+) -> dict[str, Any]:
+    try:
+        resolved_repo = find_repo_root(Path(repo))
+    except RepositoryNotFoundError as exc:
+        return _error("repo_not_found", str(exc))
+
+    index_dir = index_dir_for(resolved_repo)
+    if not (index_dir / "index.sqlite").exists():
+        return _error(
+            "missing_index",
+            f"Missing index for {resolved_repo}. Run context_search_index first.",
+        )
+
+    try:
+        config = _load_query_config(resolved_repo, final_top_k)
+        bundle = query_repository(
+            resolved_repo,
+            query,
+            config,
+            context_lines=context_lines,
+            full_file=full_file,
+        )
+        payload = _query_payload(bundle)
+        payload["ok"] = True
+        payload["repo"] = str(resolved_repo)
+        payload["index"] = _index_state(resolved_repo, config)
+    except (ValueError, requests.HTTPError) as exc:
+        payload = _error("query_failed", str(exc))
+        _try_append_query_feedback(
+            resolved_repo,
+            query=query,
+            payload=payload,
+            context_lines=context_lines,
+            full_file=full_file,
+            final_top_k=final_top_k,
+            tool="context_search_context",
+        )
+        return payload
+
+    try:
+        anchor_limit = evidence_anchor_top_k(config.retrieval.final_top_k)
+        options = resolve_context_pack_options(
+            config,
+            context_lines=context_lines,
+            full_file=full_file,
+            max_evidence_anchors=anchor_limit,
+        )
+        pack = build_context_pack(bundle, options)
+        payload["context_pack"] = context_pack_payload(bundle, pack)
+    except ContextPackError as exc:
+        payload = _error("context_failed", str(exc))
+    except Exception:
+        payload = _error("context_failed", UNEXPECTED_CONTEXT_ERROR)
+
+    _try_append_query_feedback(
+        resolved_repo,
+        query=query,
+        payload=payload,
+        context_lines=context_lines,
+        full_file=full_file,
+        final_top_k=final_top_k,
+        tool="context_search_context",
+    )
+    return payload
 
 
 def context_search_stats_tool(repo: str) -> dict[str, Any]:
@@ -349,6 +433,7 @@ def _try_append_query_feedback(
     context_lines: int | None,
     full_file: bool,
     final_top_k: int | None,
+    tool: str = "context_search_query",
 ) -> None:
     try:
         _append_query_feedback(
@@ -358,6 +443,7 @@ def _try_append_query_feedback(
             context_lines=context_lines,
             full_file=full_file,
             final_top_k=final_top_k,
+            tool=tool,
         )
     except OSError:
         pass
@@ -370,13 +456,14 @@ def _append_query_feedback(
     context_lines: int | None,
     full_file: bool,
     final_top_k: int | None,
+    tool: str = "context_search_query",
 ) -> None:
     index_dir = index_dir_for(repo)
     if not index_dir.exists():
         return
     event = {
         "timestamp": int(time.time()),
-        "tool": "context_search_query",
+        "tool": tool,
         "ok": bool(payload.get("ok")),
         "repo_hash": _short_hash(str(repo)),
         "query": query,
@@ -393,10 +480,99 @@ def _append_query_feedback(
         "variant_retrieval": _feedback_variant_payload(payload),
         "error_code": payload.get("error", {}).get("code"),
     }
+    if tool == "context_search_context":
+        context_pack_feedback = _feedback_context_pack_payload(payload)
+        if context_pack_feedback is not None:
+            event["context_pack"] = context_pack_feedback
     log_path = index_dir / "mcp_calls.jsonl"
     _rotate_feedback_log(log_path)
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, ensure_ascii=True, sort_keys=True) + "\n")
+
+
+def _feedback_context_pack_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    pack = payload.get("context_pack")
+    if type(pack) is not dict:
+        return None
+
+    status = pack.get("status")
+    if type(status) is not str or status not in {"empty", "partial", "ready"}:
+        return None
+    confidence_payload = pack.get("confidence")
+    if type(confidence_payload) is not dict:
+        return None
+    confidence = confidence_payload.get("level")
+    if type(confidence) is not str or confidence not in {
+        "none",
+        "low",
+        "medium",
+        "high",
+    }:
+        return None
+
+    items = pack.get("items")
+    groups = pack.get("groups")
+    if type(groups) is not dict:
+        groups = {}
+    group_counts: dict[str, int] = {}
+    for group in CONTEXT_GROUPS:
+        group_items = groups.get(group)
+        group_counts[group] = len(group_items) if type(group_items) is list else 0
+
+    required_categories: set[str] = set()
+    recommended_categories: set[str] = set()
+    missing_evidence = pack.get("missing_evidence")
+    if type(missing_evidence) is list:
+        for evidence in missing_evidence:
+            if type(evidence) is not dict:
+                continue
+            category = evidence.get("category")
+            required = evidence.get("required")
+            if type(category) is not str or type(required) is not bool:
+                continue
+            if required and category in ("results", *CONTEXT_GROUPS):
+                required_categories.add(category)
+            elif not required and category in CONTEXT_GROUPS:
+                recommended_categories.add(category)
+    recommended_categories.difference_update(required_categories)
+
+    next_queries = pack.get("next_queries")
+    raw_budget = pack.get("budget")
+    if type(raw_budget) is not dict:
+        raw_budget = {}
+    budget_keys = (
+        "max_results",
+        "max_evidence_anchors",
+        "max_items",
+        "included_results",
+        "included_evidence_anchors",
+        "content_bytes",
+    )
+    budget: dict[str, int] = {}
+    for key in budget_keys:
+        value = raw_budget.get(key)
+        if type(value) is int and value >= 0:
+            budget[key] = value
+    return {
+        "status": status,
+        "confidence": confidence,
+        "item_count": len(items) if type(items) is list else 0,
+        "group_counts": group_counts,
+        "required_missing_categories": [
+            category
+            for category in ("results", *CONTEXT_GROUPS)
+            if category in required_categories
+        ],
+        "recommended_missing_categories": [
+            category
+            for category in CONTEXT_GROUPS
+            if category in recommended_categories
+        ],
+        "next_query_count": len(next_queries) if type(next_queries) is list else 0,
+        "budget": budget,
+    }
 
 
 def _feedback_planner_payload(payload: dict[str, Any]) -> dict[str, Any]:

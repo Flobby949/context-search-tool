@@ -2,8 +2,18 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 import context_search_tool.mcp_tools as mcp_tools
+from context_search_tool.context_pack import (
+    CONTEXT_GROUPS,
+    ContextPackError,
+    build_context_pack,
+    context_pack_payload,
+    resolve_context_pack_options,
+)
 from context_search_tool.mcp_tools import (
+    context_search_context_tool,
     context_search_explain_tool,
     context_search_index_tool,
     context_search_query_tool,
@@ -14,9 +24,10 @@ from context_search_tool.models import (
     QueryPlan,
     QueryVariant,
     RetrievalResult,
+    RetrievalSummary,
     SemanticMatch,
 )
-from context_search_tool.retrieval import QueryBundle
+from context_search_tool.retrieval import QueryBundle, evidence_anchor_top_k
 
 
 def _write_java_repo(repo: Path) -> None:
@@ -42,6 +53,52 @@ class ApplyAuditServiceImpl {
     )
 
 
+def _write_index_marker(repo: Path) -> None:
+    repo.mkdir()
+    index_dir = repo / ".context-search"
+    index_dir.mkdir()
+    (index_dir / "index.sqlite").touch()
+
+
+def _deterministic_bundle(
+    *,
+    query: str = "audit endpoint",
+    result_path: str = "src/AuditController.java",
+    result_content: str = "class AuditController {}",
+) -> QueryBundle:
+    return QueryBundle(
+        query=query,
+        expanded_tokens=["audit", "endpoint"],
+        followup_keywords=["AuditService"],
+        results=[
+            RetrievalResult(
+                file_path=Path(result_path),
+                start_line=10,
+                end_line=20,
+                content=result_content,
+                score=0.87,
+                score_parts={"lexical": 0.8, "evidence_priority": 0.0},
+                reasons=["lexical match: audit endpoint"],
+                followup_keywords=["AuditService"],
+            )
+        ],
+        evidence_anchors=[
+            EvidenceAnchor(
+                file_path=Path("README.md"),
+                start_line=1,
+                end_line=4,
+                content="Audit endpoint documentation",
+                score=0.42,
+                score_parts={"lexical": 0.2},
+                reasons=["documentation signal"],
+                anchor_kind="readme",
+            )
+        ],
+        summary=RetrievalSummary(entry_points=["AuditController"]),
+        query_variants=[QueryVariant("original", query, "original")],
+    )
+
+
 def test_mcp_tools_index_query_stats_and_explain(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _write_java_repo(repo)
@@ -64,6 +121,25 @@ def test_mcp_tools_index_query_stats_and_explain(tmp_path: Path) -> None:
     assert queried["results"][0]["file_path"] == "ApplyAuditController.java"
     assert "content" in queried["results"][0]
     assert queried["summary"]["entry_points"]
+
+    context = context_search_context_tool(
+        repo=str(repo),
+        query="/apply/audit/pageEs",
+        context_lines=0,
+        full_file=False,
+        final_top_k=1,
+    )
+    assert context["ok"] is True
+    assert context["repo"] == str(repo)
+    assert context["index"] == queried["index"]
+    assert context["context_pack"]["schema_version"] == 1
+    assert context["results"] == queried["results"]
+    assert context["evidence_anchors"] == queried["evidence_anchors"]
+    assert context["context_pack"]["budget"]["max_results"] == 1
+    assert context["context_pack"]["budget"]["max_evidence_anchors"] == 1
+    assert context["context_pack"]["budget"]["max_items"] == 2
+    assert context["context_pack"]["budget"]["context_before_lines"] == 0
+    assert context["context_pack"]["budget"]["context_after_lines"] == 0
 
     stats = context_search_stats_tool(str(repo))
     assert stats["ok"] is True
@@ -620,3 +696,500 @@ def test_mcp_query_payload_keeps_direct_text_diagnostics_numeric(tmp_path: Path)
         assert isinstance(result["diagnostics"]["direct_text_hits"], (int, float))
     if "anchored_relation" in result.get("diagnostics", {}):
         assert isinstance(result["diagnostics"]["anchored_relation"], (int, float))
+
+
+def test_mcp_context_preserves_raw_payload_and_matches_shared_pack(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+    bundle = _deterministic_bundle()
+    monkeypatch.setattr(mcp_tools, "query_repository", lambda *args, **kwargs: bundle)
+
+    payload = context_search_context_tool(
+        str(repo),
+        "audit endpoint",
+        context_lines=3,
+        final_top_k=1,
+    )
+
+    raw_payload = mcp_tools._query_payload(bundle)
+    for key, value in raw_payload.items():
+        assert payload[key] == value
+    config = mcp_tools._load_query_config(repo, 1)
+    options = resolve_context_pack_options(
+        config,
+        context_lines=3,
+        full_file=False,
+        max_evidence_anchors=evidence_anchor_top_k(config.retrieval.final_top_k),
+    )
+    expected_pack = context_pack_payload(
+        bundle,
+        build_context_pack(bundle, options),
+    )
+    assert payload["context_pack"] == expected_pack
+    assert payload["ok"] is True
+    assert payload["repo"] == str(repo)
+    json.dumps(payload, allow_nan=False)
+
+
+def test_mcp_context_queries_builds_and_materializes_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+    bundle = _deterministic_bundle()
+    calls = {"query": 0, "build": 0, "materialize": 0}
+
+    def query_once(*args: object, **kwargs: object) -> QueryBundle:
+        calls["query"] += 1
+        return bundle
+
+    def build_once(*args: object, **kwargs: object):
+        calls["build"] += 1
+        return build_context_pack(*args, **kwargs)
+
+    def materialize_once(*args: object, **kwargs: object) -> dict[str, object]:
+        calls["materialize"] += 1
+        return context_pack_payload(*args, **kwargs)
+
+    monkeypatch.setattr(mcp_tools, "query_repository", query_once)
+    monkeypatch.setattr(mcp_tools, "build_context_pack", build_once)
+    monkeypatch.setattr(mcp_tools, "context_pack_payload", materialize_once)
+
+    payload = context_search_context_tool(
+        str(repo),
+        "audit endpoint",
+        final_top_k=1,
+    )
+
+    assert payload["ok"] is True
+    assert calls == {"query": 1, "build": 1, "materialize": 1}
+
+
+def test_mcp_context_empty_bundle_is_success_and_feedback_is_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+    bundle_query = "EMPTY_BUNDLE_QUERY_SENTINEL"
+    bundle = QueryBundle(
+        query=bundle_query,
+        expanded_tokens=[],
+        results=[],
+        followup_keywords=[],
+    )
+    monkeypatch.setattr(mcp_tools, "query_repository", lambda *args, **kwargs: bundle)
+
+    payload = context_search_context_tool(str(repo), "public empty query")
+
+    assert payload["ok"] is True
+    assert "error" not in payload
+    pack = payload["context_pack"]
+    assert pack["status"] == "empty"
+    assert pack["missing_evidence"] == [
+        {
+            "category": "results",
+            "required": True,
+            "reason": "no result or evidence anchor is present in the bounded result set",
+        }
+    ]
+    assert pack["next_queries"] == []
+
+    log_path = repo / ".context-search" / "mcp_calls.jsonl"
+    event = json.loads(log_path.read_text(encoding="utf-8"))
+    assert event["tool"] == "context_search_context"
+    assert event["query"] == "public empty query"
+    assert event["context_pack"] == {
+        "status": "empty",
+        "confidence": "none",
+        "item_count": 0,
+        "group_counts": {group: 0 for group in CONTEXT_GROUPS},
+        "required_missing_categories": ["results"],
+        "recommended_missing_categories": [],
+        "next_query_count": 0,
+        "budget": {
+            key: pack["budget"][key]
+            for key in (
+                "max_results",
+                "max_evidence_anchors",
+                "max_items",
+                "included_results",
+                "included_evidence_anchors",
+                "content_bytes",
+            )
+        },
+    }
+    serialized_metadata = json.dumps(event["context_pack"])
+    assert bundle_query not in serialized_metadata
+    assert "file_path" not in serialized_metadata
+    assert "result:0" not in serialized_metadata
+
+
+def test_mcp_context_rejects_invalid_final_top_k(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+
+    payload = context_search_context_tool(
+        str(repo),
+        "query",
+        final_top_k=0,
+    )
+
+    assert payload == {
+        "ok": False,
+        "error": {
+            "code": "query_failed",
+            "message": "final_top_k must be greater than zero",
+        },
+    }
+
+
+def test_mcp_context_matches_query_repo_and_index_errors(tmp_path: Path) -> None:
+    missing_repo = tmp_path / "missing"
+    assert context_search_context_tool(
+        str(missing_repo), "query"
+    ) == context_search_query_tool(str(missing_repo), "query")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert context_search_context_tool(
+        str(repo), "query"
+    ) == context_search_query_tool(str(repo), "query")
+
+
+@pytest.mark.parametrize(
+    ("exception", "message"),
+    [
+        (
+            ContextPackError("ContextPack budget exceeded"),
+            "ContextPack budget exceeded",
+        ),
+        (ValueError("private detail"), "Context pack construction failed"),
+        (RuntimeError("private detail"), "Context pack construction failed"),
+    ],
+)
+def test_mcp_context_contains_pack_phase_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exception: Exception,
+    message: str,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+    bundle = _deterministic_bundle(result_content="PRIVATE_RAW_CONTENT_SENTINEL")
+
+    def fail_pack(*args: object, **kwargs: object):
+        raise exception
+
+    monkeypatch.setattr(mcp_tools, "query_repository", lambda *args, **kwargs: bundle)
+    monkeypatch.setattr(mcp_tools, "build_context_pack", fail_pack)
+
+    payload = context_search_context_tool(str(repo), "audit")
+
+    assert payload == {
+        "ok": False,
+        "error": {"code": "context_failed", "message": message},
+    }
+    assert set(payload) == {"ok", "error"}
+    assert set(mcp_tools._query_payload(bundle)).isdisjoint(payload)
+    serialized = json.dumps(payload)
+    assert "PRIVATE_RAW_CONTENT_SENTINEL" not in serialized
+    assert "private detail" not in serialized
+
+
+def test_mcp_context_does_not_catch_keyboard_interrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+    bundle = _deterministic_bundle()
+
+    def interrupt(*args: object, **kwargs: object):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(mcp_tools, "query_repository", lambda *args, **kwargs: bundle)
+    monkeypatch.setattr(mcp_tools, "build_context_pack", interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        context_search_context_tool(str(repo), "audit")
+
+
+def test_mcp_context_feedback_failure_is_non_fatal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+    bundle = _deterministic_bundle()
+    monkeypatch.setattr(mcp_tools, "query_repository", lambda *args, **kwargs: bundle)
+
+    def fail_feedback(*args: object, **kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(mcp_tools, "_append_query_feedback", fail_feedback)
+
+    payload = context_search_context_tool(
+        str(repo),
+        "audit",
+        final_top_k=1,
+    )
+
+    assert payload["ok"] is True
+    assert payload["context_pack"]["schema_version"] == 1
+
+
+def test_mcp_context_feedback_keeps_only_bounded_pack_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+    content_sentinel = "PRIVATE_CONTEXT_CONTENT_SENTINEL"
+    path_sentinel = "PRIVATE_CONTEXT_PATH_SENTINEL"
+    item_id_sentinel = "PRIVATE_CONTEXT_ITEM_ID_SENTINEL"
+    next_query_sentinel = "PRIVATE_CONTEXT_NEXT_QUERY_SENTINEL"
+    planner_rewrite_sentinel = "PRIVATE_PLANNER_REWRITE_SENTINEL"
+    semantic_variant_sentinel = "PRIVATE_SEMANTIC_VARIANT_SENTINEL"
+    discarded_hint_sentinel = "PRIVATE_DISCARDED_HINT_SENTINEL"
+    public_query = "public privacy query"
+    base = _deterministic_bundle(
+        query=public_query,
+        result_path=f"src/{path_sentinel}/AuditController.java",
+        result_content=content_sentinel,
+    )
+    bundle = QueryBundle(
+        query=base.query,
+        expanded_tokens=base.expanded_tokens,
+        results=base.results,
+        followup_keywords=base.followup_keywords,
+        summary=RetrievalSummary(entry_points=[next_query_sentinel]),
+        planner=QueryPlan(
+            original_query=public_query,
+            rewritten_queries=[planner_rewrite_sentinel],
+            intent="endpoint_lookup",
+            status="ok",
+            provider="test",
+            model="test",
+            discarded_hints=[discarded_hint_sentinel],
+        ),
+        evidence_anchors=base.evidence_anchors,
+        query_variants=[
+            QueryVariant("original", public_query, "original"),
+            QueryVariant("planner:0", semantic_variant_sentinel, "planner"),
+        ],
+        variant_retrieval_status="hybrid",
+    )
+    original_materialize = context_pack_payload
+
+    def materialize_with_private_item_id(*args: object, **kwargs: object):
+        pack_payload = original_materialize(*args, **kwargs)
+        pack_payload["items"][0]["id"] = item_id_sentinel
+        return pack_payload
+
+    monkeypatch.setattr(mcp_tools, "query_repository", lambda *args, **kwargs: bundle)
+    monkeypatch.setattr(
+        mcp_tools,
+        "context_pack_payload",
+        materialize_with_private_item_id,
+    )
+
+    payload = context_search_context_tool(
+        str(repo),
+        public_query,
+        final_top_k=1,
+    )
+
+    assert payload["ok"] is True
+    pack = payload["context_pack"]
+    assert any(
+        next_query_sentinel in next_query["query"]
+        for next_query in pack["next_queries"]
+    )
+    log_path = repo / ".context-search" / "mcp_calls.jsonl"
+    event = json.loads(log_path.read_text(encoding="utf-8"))
+    assert set(event) == {
+        "timestamp",
+        "tool",
+        "ok",
+        "repo_hash",
+        "query",
+        "context_lines",
+        "full_file",
+        "final_top_k",
+        "result_count",
+        "top_score",
+        "top_score_parts",
+        "summary_counts",
+        "followup_keyword_count",
+        "embedding",
+        "planner",
+        "variant_retrieval",
+        "error_code",
+        "context_pack",
+    }
+    assert event["tool"] == "context_search_context"
+    assert event["query"] == public_query
+    assert event["context_pack"] == {
+        "status": pack["status"],
+        "confidence": pack["confidence"]["level"],
+        "item_count": len(pack["items"]),
+        "group_counts": {
+            group: len(pack["groups"][group]) for group in CONTEXT_GROUPS
+        },
+        "required_missing_categories": [
+            evidence["category"]
+            for evidence in pack["missing_evidence"]
+            if evidence["required"]
+        ],
+        "recommended_missing_categories": [
+            evidence["category"]
+            for evidence in pack["missing_evidence"]
+            if not evidence["required"]
+        ],
+        "next_query_count": len(pack["next_queries"]),
+        "budget": {
+            key: pack["budget"][key]
+            for key in (
+                "max_results",
+                "max_evidence_anchors",
+                "max_items",
+                "included_results",
+                "included_evidence_anchors",
+                "content_bytes",
+            )
+        },
+    }
+    serialized = json.dumps(event)
+    for sentinel in (
+        content_sentinel,
+        path_sentinel,
+        item_id_sentinel,
+        next_query_sentinel,
+        planner_rewrite_sentinel,
+        semantic_variant_sentinel,
+        discarded_hint_sentinel,
+    ):
+        assert sentinel not in serialized
+
+
+def test_mcp_context_unexpected_failure_feedback_has_no_partial_pack(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+    raw_sentinel = "PRIVATE_PARTIAL_RAW_SENTINEL"
+    private_exception = "PRIVATE_PACK_EXCEPTION_SENTINEL"
+    bundle = _deterministic_bundle(result_content=raw_sentinel)
+
+    def fail_pack(*args: object, **kwargs: object):
+        raise RuntimeError(private_exception)
+
+    monkeypatch.setattr(mcp_tools, "query_repository", lambda *args, **kwargs: bundle)
+    monkeypatch.setattr(mcp_tools, "build_context_pack", fail_pack)
+
+    payload = context_search_context_tool(str(repo), "public query")
+
+    assert payload == {
+        "ok": False,
+        "error": {
+            "code": "context_failed",
+            "message": "Context pack construction failed",
+        },
+    }
+    log_path = repo / ".context-search" / "mcp_calls.jsonl"
+    event = json.loads(log_path.read_text(encoding="utf-8"))
+    assert event["tool"] == "context_search_context"
+    assert event["error_code"] == "context_failed"
+    assert event["result_count"] == 0
+    assert "context_pack" not in event
+    serialized = json.dumps(event)
+    assert private_exception not in serialized
+    assert raw_sentinel not in serialized
+
+
+def test_mcp_context_feedback_fails_closed_on_malformed_pack_metadata(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+    private_sentinel = "PRIVATE_MALFORMED_CONTEXT_SENTINEL"
+    payload = {
+        "ok": True,
+        "results": [],
+        "summary": {},
+        "followup_keywords": [],
+        "context_pack": {
+            "status": "partial",
+            "confidence": {"level": "low", "detail": private_sentinel},
+            "items": [{"id": private_sentinel}, {"path": private_sentinel}],
+            "groups": {
+                "entrypoints": [private_sentinel],
+                "implementations": True,
+                "related_types": {"private": private_sentinel},
+                "tests": [private_sentinel, private_sentinel],
+                "configs_docs": "private",
+                "supporting": [],
+                private_sentinel: [private_sentinel],
+            },
+            "missing_evidence": [
+                {"category": "entrypoints", "required": True},
+                {"category": "results", "required": True},
+                {"category": "entrypoints", "required": True},
+                {"category": "supporting", "required": False},
+                {"category": "results", "required": False},
+                {"category": "tests", "required": 1},
+                {"category": private_sentinel, "required": True},
+            ],
+            "next_queries": [{"query": private_sentinel}],
+            "budget": {
+                "max_results": 2,
+                "max_evidence_anchors": True,
+                "max_items": -1,
+                "included_results": 1,
+                "included_evidence_anchors": 1.5,
+                "content_bytes": 4,
+                private_sentinel: {"private": private_sentinel},
+            },
+        },
+    }
+
+    mcp_tools._append_query_feedback(
+        repo,
+        query="safe original query",
+        payload=payload,
+        context_lines=None,
+        full_file=False,
+        final_top_k=None,
+        tool="context_search_context",
+    )
+
+    log_path = repo / ".context-search" / "mcp_calls.jsonl"
+    event = json.loads(log_path.read_text(encoding="utf-8"))
+    assert event["context_pack"] == {
+        "status": "partial",
+        "confidence": "low",
+        "item_count": 2,
+        "group_counts": {
+            "entrypoints": 1,
+            "implementations": 0,
+            "related_types": 0,
+            "tests": 2,
+            "configs_docs": 0,
+            "supporting": 0,
+        },
+        "required_missing_categories": ["results", "entrypoints"],
+        "recommended_missing_categories": ["supporting"],
+        "next_query_count": 1,
+        "budget": {
+            "max_results": 2,
+            "included_results": 1,
+            "content_bytes": 4,
+        },
+    }
+    assert private_sentinel not in json.dumps(event)
