@@ -485,11 +485,19 @@ def test_query_repository_evidence_anchor_preserves_retrieval_semantic_matches(
             status="ok",
         )
     )
+    anchor_top_k_calls: list[int] = []
+
+    def evidence_anchor_top_k(max_results: int) -> int:
+        anchor_top_k_calls.append(max_results)
+        return 1
+
     monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
     monkeypatch.setattr(retrieval, "NumpyVectorStore", lambda _index_dir: vector_store)
+    monkeypatch.setattr(retrieval, "evidence_anchor_top_k", evidence_anchor_top_k)
 
     bundle = query_repository(repo, "opaque query", config, planner=planner)
 
+    assert anchor_top_k_calls == [1]
     assert provider.calls == [["opaque query", "semantic docs"]]
     assert vector_store.calls == [
         ((1.0, 0.0), 1, set()),
@@ -8823,12 +8831,15 @@ def test_only_evidence_anchors_leave_code_results_empty() -> None:
     assert [anchor.anchor_kind for anchor in anchors] == ["readme", "risks"]
 
 
-def test_evidence_anchor_top_k_returns_zero_for_non_positive_final_top_k() -> None:
-    assert retrieval._evidence_anchor_top_k(0) == 0
-    assert retrieval._evidence_anchor_top_k(-1) == 0
-    assert retrieval._evidence_anchor_top_k(1) == 1
-    assert retrieval._evidence_anchor_top_k(2) == 1
-    assert retrieval._evidence_anchor_top_k(10) == 3
+@pytest.mark.parametrize(
+    ("max_results", "expected"),
+    [(-1, 0), (0, 0), (1, 1), (2, 1), (3, 1), (10, 3), (12, 4), (18, 5)],
+)
+def test_evidence_anchor_top_k_preserves_existing_formula(
+    max_results: int,
+    expected: int,
+) -> None:
+    assert retrieval.evidence_anchor_top_k(max_results) == expected
 
 
 def test_evidence_anchors_dedupe_by_kind_and_file_path() -> None:

@@ -348,7 +348,7 @@ def query_repository(
     visible_results, evidence_anchors = _split_code_results_and_evidence_anchors(
         expanded,
         final_top_k=config.retrieval.final_top_k,
-        anchor_top_k=_evidence_anchor_top_k(config.retrieval.final_top_k),
+        anchor_top_k=evidence_anchor_top_k(config.retrieval.final_top_k),
     )
     summary, result_reasons = _summarize_results(store, visible_results)
     results = [
@@ -432,10 +432,10 @@ def _evidence_anchor_from_expanded(
     )
 
 
-def _evidence_anchor_top_k(final_top_k: int) -> int:
-    if final_top_k <= 0:
+def evidence_anchor_top_k(max_results: int) -> int:
+    if max_results <= 0:
         return 0
-    return max(1, min(5, final_top_k // 3))
+    return max(1, min(5, max_results // 3))
 
 
 def _summarize_results(
