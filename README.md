@@ -128,6 +128,20 @@ Markdown 输出会包含：
 
 JSON 输出会包含同样的信息，字段包括 `results`、`score_parts`、`reasons`、`followup_keywords`。
 
+`query` 是原始排名证据接口，现有的 CLI 和 MCP 请求、响应及错误合约保持不变。
+
+### `context`
+
+`context` 只执行一次原始检索，再将同一批返回证据确定性地打包为面向 agent 的阅读集；它不会增加检索或模型调用。默认输出 Markdown，`--json` 输出包含原始查询字段和 `context_pack` 的 JSON：
+
+```bash
+cst context /path/to/repo "workspace page flow"
+cst context /path/to/repo "workspace page flow" --json
+cst context "WorkspaceServiceImpl" --context-lines 20
+```
+
+ContextPack schema version 1 固定包含 `entrypoints`、`implementations`、`related_types`、`tests`、`configs_docs` 和 `supporting` 六个分组，以及阅读顺序、缺失证据、下一步查询、结构就绪信心和预算信息。`empty` 表示有效的空结果，仍是成功响应。`context_failed` 仅表示打包合约或构建阶段的内部失败；repo、index 和 query 阶段继续使用现有错误代码。
+
 ### `status`
 
 查看索引文件是否存在。
@@ -172,6 +186,7 @@ Available tools:
 
 - `context_search_index(repo)` creates or updates `.context-search/`.
 - `context_search_query(repo, query, context_lines, full_file, final_top_k)` returns summary, ranked results, score parts, reasons, and follow-up keywords.
+- `context_search_context(repo, query, context_lines, full_file, final_top_k)` returns ContextPack schema version 1 from one raw retrieval pass while preserving the raw query fields.
 - `context_search_stats(repo)` returns index counts and embedding configuration.
 - `context_search_explain(repo, location)` explains the chunk covering a `file:line` location.
 
@@ -219,6 +234,8 @@ For stdio MCP transport, server logs must not be written to stdout. The server r
 ```
 
 The log records query text, result count, top score, score parts, summary counts, follow-up keyword count, embedding fingerprint (provider, model, dimensions, and config hash), and error code. It does not record returned source snippets or full file content. When `mcp_calls.jsonl` exceeds 10 MiB, the server rotates it to `mcp_calls.<time_ns>.jsonl` before appending the next event.
+
+`context_search_context` 在现有查询事件基础上只记录有界的结构元数据，例如状态、信心级别、分组/缺失类别计数和预算计数。它不存储源文件路径、返回内容或组合出的下一步查询文本。
 
 Use this log to decide embedding work:
 
