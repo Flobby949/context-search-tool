@@ -5,7 +5,10 @@ from typing import TYPE_CHECKING, Any
 
 from context_search_tool.config import ToolConfig
 from context_search_tool.frontend_roles import classify_frontend_role
+from context_search_tool.identifier_intent import infer_identifier_intent
 from context_search_tool.path_roles import classify_path_role
+from context_search_tool.query_intent import infer_query_intent
+from context_search_tool.tokenizer import tokenize_query
 
 if TYPE_CHECKING:
     from context_search_tool.retrieval import QueryBundle
@@ -96,6 +99,13 @@ class ContextPack:
     budget: ContextBudget
 
 
+@dataclass(frozen=True)
+class _ExpectedGroups:
+    explicit_required: tuple[str, ...]
+    required: tuple[str, ...]
+    recommended: tuple[str, ...]
+
+
 DUPLICATE_ITEM_ERROR = "duplicate ContextPack item id"
 INVALID_REFERENCE_ERROR = "invalid ContextPack item reference"
 INVALID_CLASSIFICATION_ERROR = "invalid ContextPack classification"
@@ -152,6 +162,22 @@ _GENERIC_PATH_ROLES = {
     "config",
     "doc",
 }
+_ENTRYPOINT_IDENTIFIER_ROLES = frozenset({"entrypoint", "router", "command", "view"})
+_IMPLEMENTATION_IDENTIFIER_ROLES = frozenset(
+    {
+        "state_store",
+        "composable",
+        "service",
+        "handler",
+        "middleware",
+        "repository",
+        "source_adapter",
+        "storage",
+        "component",
+        "engine",
+    }
+)
+_PLANNER_FLOW_INTENTS = frozenset({"feature_lookup", "data_flow", "bug_trace"})
 _SUMMARY_CLASSIFICATIONS = (
     ("entry_points", "entrypoints", "summary_entrypoint"),
     ("implementation", "implementations", "summary_implementation"),
@@ -258,18 +284,22 @@ def build_context_pack(bundle: QueryBundle, options: ContextPackOptions) -> Cont
         group: tuple(item.id for item in item_tuple if item.group == group)
         for group in CONTEXT_GROUPS
     }
-    reading_order = tuple(
-        item_id
-        for group in CONTEXT_GROUPS
-        for item_id in groups[group]
-    )
+    expected = _derive_expected_groups(bundle, groups)
+    reading_order = _build_reading_order(groups, expected.explicit_required)
+    missing_evidence = _build_missing_evidence(expected, groups) if items else ()
     pack = ContextPack(
         schema_version=CONTEXT_PACK_SCHEMA_VERSION,
-        status="empty" if not items else "ready",
+        status=(
+            "empty"
+            if not items
+            else "partial"
+            if any(evidence.required for evidence in missing_evidence)
+            else "ready"
+        ),
         items=item_tuple,
         groups=groups,
         reading_order=reading_order,
-        missing_evidence=(),
+        missing_evidence=missing_evidence,
         next_queries=(),
         confidence=ReadinessConfidence(
             level="none" if not items else "medium",
@@ -291,8 +321,123 @@ def build_context_pack(bundle: QueryBundle, options: ContextPackOptions) -> Cont
             max_full_file_bytes=options.max_full_file_bytes,
         ),
     )
-    _validate_context_pack(bundle, pack)
+    _validate_context_pack(bundle, pack, expected)
     return pack
+
+
+def _derive_expected_groups(
+    bundle: QueryBundle,
+    groups: dict[str, tuple[str, ...]],
+) -> _ExpectedGroups:
+    query_intent = infer_query_intent(bundle.query, bundle.query.split())
+    identifier_intent = infer_identifier_intent(
+        bundle.query,
+        tokenize_query(bundle.query),
+    )
+
+    target_roles = query_intent.target_roles
+    role_hints = set(identifier_intent.role_hints)
+    explicit: set[str] = set()
+    if "entrypoint" in target_roles:
+        explicit.add("entrypoints")
+    if "implementation" in target_roles:
+        explicit.add("implementations")
+    if role_hints.intersection(_ENTRYPOINT_IDENTIFIER_ROLES):
+        explicit.add("entrypoints")
+    if role_hints.intersection(_IMPLEMENTATION_IDENTIFIER_ROLES):
+        explicit.add("implementations")
+    if "data_type" in role_hints:
+        explicit.add("related_types")
+    if "test" in target_roles and query_intent.wants_artifact:
+        explicit.add("tests")
+    if (
+        target_roles.intersection({"config", "deploy", "doc"})
+        and query_intent.wants_artifact
+    ):
+        explicit.add("configs_docs")
+
+    explicit_required = _ordered_context_groups(explicit)
+    required = set(explicit_required)
+    planner_ok = bundle.planner.status == "ok"
+    planner_intent = bundle.planner.intent
+    if not explicit_required and planner_ok:
+        if planner_intent in _PLANNER_FLOW_INTENTS:
+            required.update({"entrypoints", "implementations"})
+        elif planner_intent == "endpoint_lookup":
+            required.add("entrypoints")
+
+    recommended: set[str] = set()
+    if planner_ok:
+        if planner_intent in _PLANNER_FLOW_INTENTS:
+            recommended.update({"related_types", "tests"})
+        elif planner_intent == "endpoint_lookup":
+            recommended.update({"implementations", "tests"})
+    if "entrypoint" in target_roles:
+        recommended.update({"implementations", "tests"})
+
+    successful_non_unknown_planner = planner_ok and planner_intent != "unknown"
+    if not successful_non_unknown_planner and not explicit_required:
+        if groups["entrypoints"] and not groups["implementations"]:
+            recommended.add("implementations")
+        if groups["implementations"] and not groups["entrypoints"]:
+            recommended.add("entrypoints")
+
+    recommended.difference_update(required)
+    return _ExpectedGroups(
+        explicit_required=explicit_required,
+        required=_ordered_context_groups(required),
+        recommended=_ordered_context_groups(recommended),
+    )
+
+
+def _ordered_context_groups(selected: set[str]) -> tuple[str, ...]:
+    return tuple(group for group in CONTEXT_GROUPS if group in selected)
+
+
+def _build_reading_order(
+    groups: dict[str, tuple[str, ...]],
+    promoted: tuple[str, ...],
+) -> tuple[str, ...]:
+    ordered_groups = (
+        *promoted,
+        *(group for group in CONTEXT_GROUPS if group not in promoted),
+    )
+    return tuple(
+        item_id
+        for group in ordered_groups
+        for item_id in groups[group]
+    )
+
+
+def _build_missing_evidence(
+    expected: _ExpectedGroups,
+    groups: dict[str, tuple[str, ...]],
+) -> tuple[MissingEvidence, ...]:
+    missing_required = tuple(
+        group for group in expected.required if not groups[group]
+    )
+    missing_recommended = tuple(
+        group for group in expected.recommended if not groups[group]
+    )
+    return tuple(
+        MissingEvidence(
+            category=group,
+            required=True,
+            reason=(
+                f"required evidence for {group} is missing from the bounded result set"
+            ),
+        )
+        for group in missing_required
+    ) + tuple(
+        MissingEvidence(
+            category=group,
+            required=False,
+            reason=(
+                f"recommended evidence for {group} is missing from the bounded result set"
+            ),
+        )
+        for group in missing_recommended
+    )
 
 
 def _classify_result(
@@ -355,14 +500,94 @@ def _classify_result(
     return "supporting", path_role_name, "fallback"
 
 
-def _validate_context_pack(bundle: QueryBundle, pack: ContextPack) -> None:
+def _validate_completion_state(
+    pack: ContextPack,
+    expected: _ExpectedGroups,
+) -> None:
+    for evidence in pack.missing_evidence:
+        if (
+            type(evidence.category) is not str
+            or type(evidence.required) is not bool
+            or type(evidence.reason) is not str
+            or evidence.category not in CONTEXT_GROUPS[:-1]
+        ):
+            raise ContextPackError(INVALID_REFERENCE_ERROR)
+
+    categories = tuple(evidence.category for evidence in pack.missing_evidence)
+    if len(categories) != len(set(categories)):
+        raise ContextPackError(INVALID_REFERENCE_ERROR)
+
+    required_categories = tuple(
+        evidence.category
+        for evidence in pack.missing_evidence
+        if evidence.required
+    )
+    recommended_categories = tuple(
+        evidence.category
+        for evidence in pack.missing_evidence
+        if not evidence.required
+    )
+    if (
+        tuple(evidence.required for evidence in pack.missing_evidence)
+        != (True,) * len(required_categories)
+        + (False,) * len(recommended_categories)
+        or required_categories
+        != tuple(
+            group for group in CONTEXT_GROUPS if group in required_categories
+        )
+        or recommended_categories
+        != tuple(
+            group for group in CONTEXT_GROUPS if group in recommended_categories
+        )
+    ):
+        raise ContextPackError(INVALID_REFERENCE_ERROR)
+
+    for evidence in pack.missing_evidence:
+        prefix = "required" if evidence.required else "recommended"
+        if (
+            pack.groups[evidence.category]
+            or evidence.reason
+            != (
+                f"{prefix} evidence for {evidence.category} is missing from "
+                "the bounded result set"
+            )
+        ):
+            raise ContextPackError(INVALID_REFERENCE_ERROR)
+
+    if pack.items:
+        expected_status = "partial" if required_categories else "ready"
+    else:
+        expected_status = "empty"
+        if pack.missing_evidence:
+            raise ContextPackError(INVALID_REFERENCE_ERROR)
+    if pack.status != expected_status:
+        raise ContextPackError(INVALID_REFERENCE_ERROR)
+
+    expected_missing_evidence = (
+        _build_missing_evidence(expected, pack.groups) if pack.items else ()
+    )
+    if pack.missing_evidence != expected_missing_evidence:
+        raise ContextPackError(INVALID_REFERENCE_ERROR)
+
+
+def _validate_context_pack(
+    bundle: QueryBundle,
+    pack: ContextPack,
+    expected: _ExpectedGroups | None = None,
+) -> None:
     if (
         type(pack.schema_version) is not int
         or pack.schema_version != CONTEXT_PACK_SCHEMA_VERSION
+        or type(pack.status) is not str
         or type(pack.items) is not tuple
         or any(type(item) is not ContextPackItem for item in pack.items)
         or type(pack.groups) is not dict
         or type(pack.reading_order) is not tuple
+        or type(pack.missing_evidence) is not tuple
+        or any(
+            type(evidence) is not MissingEvidence
+            for evidence in pack.missing_evidence
+        )
     ):
         raise ContextPackError(INVALID_REFERENCE_ERROR)
 
@@ -443,13 +668,16 @@ def _validate_context_pack(bundle: QueryBundle, pack: ContextPack) -> None:
     if pack.groups != expected_groups:
         raise ContextPackError(INVALID_REFERENCE_ERROR)
 
-    expected_reading_order = tuple(
-        item_id
-        for group in CONTEXT_GROUPS
-        for item_id in expected_groups[group]
+    if expected is None:
+        expected = _derive_expected_groups(bundle, expected_groups)
+    expected_reading_order = _build_reading_order(
+        expected_groups,
+        expected.explicit_required,
     )
     if pack.reading_order != expected_reading_order:
         raise ContextPackError(INVALID_REFERENCE_ERROR)
+
+    _validate_completion_state(pack, expected)
 
     budget = pack.budget
     if type(budget) is not ContextBudget:

@@ -22,10 +22,19 @@ from context_search_tool.context_pack import (
     ContextPack,
     ContextPackError,
     ContextPackOptions,
+    MissingEvidence,
     resolve_context_pack_options,
 )
-from context_search_tool.models import EvidenceAnchor, RetrievalResult, RetrievalSummary
+from context_search_tool.models import (
+    EvidenceAnchor,
+    QueryPlan,
+    RetrievalResult,
+    RetrievalSummary,
+)
+from context_search_tool.identifier_intent import infer_identifier_intent
+from context_search_tool.query_intent import infer_query_intent
 from context_search_tool.retrieval import QueryBundle
+from context_search_tool.tokenizer import tokenize_query
 
 
 class _RaisingEquality:
@@ -101,17 +110,40 @@ def options(max_results: int = 12, max_anchors: int = 4) -> ContextPackOptions:
 def query_bundle(
     results: list[RetrievalResult] | None = None,
     *,
+    query: str = "fixture query",
+    expanded_tokens: list[str] | None = None,
     evidence_anchors: list[EvidenceAnchor] | None = None,
     summary: RetrievalSummary | None = None,
+    planner: QueryPlan | None = None,
 ) -> QueryBundle:
     return QueryBundle(
-        query="fixture query",
-        expanded_tokens=[],
+        query=query,
+        expanded_tokens=list(expanded_tokens or ()),
         results=list(results or ()),
         followup_keywords=[],
         summary=summary if summary is not None else RetrievalSummary(),
+        planner=planner if planner is not None else QueryPlan.disabled_default(),
         evidence_anchors=list(evidence_anchors or ()),
     )
+
+
+def missing_categories(pack: ContextPack, *, required: bool) -> tuple[str, ...]:
+    return tuple(
+        evidence.category
+        for evidence in pack.missing_evidence
+        if evidence.required is required
+    )
+
+
+def one_result_per_context_group() -> list[RetrievalResult]:
+    return [
+        result("src/main/controller/AppController.java"),
+        result("src/services/app.py"),
+        result("src/main/dto/AppDto.java"),
+        result("tests/test_app.py"),
+        result("README.md"),
+        result("src/plain.py"),
+    ]
 
 
 def test_resolve_context_pack_options_uses_effective_config_window() -> None:
@@ -597,7 +629,7 @@ def test_groups_filter_source_order_with_results_before_anchors() -> None:
     )
 
 
-def test_empty_and_nonempty_packs_use_temporary_task_two_scaffold() -> None:
+def test_empty_and_nonempty_packs_without_expected_groups_keep_scaffold_values() -> None:
     empty_pack = context_pack.build_context_pack(query_bundle(), options())
     ready_pack = context_pack.build_context_pack(
         query_bundle([result("src/plain.py")]),
@@ -612,6 +644,525 @@ def test_empty_and_nonempty_packs_use_temporary_task_two_scaffold() -> None:
     assert ready_pack.missing_evidence == ()
     assert ready_pack.next_queries == ()
     assert (ready_pack.confidence.level, ready_pack.confidence.reasons) == ("medium", ())
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_required"),
+    [
+        ("controller route", ("entrypoints",)),
+        ("service repository", ("implementations",)),
+        ("Pinia store component", ("implementations",)),
+        ("WorkspaceDto", ("related_types",)),
+        ("workspace test file", ("tests",)),
+        ("Docker deployment config file", ("configs_docs",)),
+        (
+            "configuration page save logic",
+            ("entrypoints", "implementations"),
+        ),
+        ("form save", ()),
+    ],
+)
+def test_build_context_pack_derives_explicit_required_groups_from_raw_query(
+    query: str,
+    expected_required: tuple[str, ...],
+) -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle([result("src/plain.py")], query=query),
+        options(),
+    )
+
+    assert missing_categories(pack, required=True) == expected_required
+
+
+@pytest.mark.parametrize(
+    ("role_hint", "expected_group"),
+    [
+        ("controller", "entrypoints"),
+        ("router", "entrypoints"),
+        ("command", "entrypoints"),
+        ("view", "entrypoints"),
+        ("page", "entrypoints"),
+        ("store", "implementations"),
+        ("composable", "implementations"),
+        ("hook", "implementations"),
+        ("service", "implementations"),
+        ("handler", "implementations"),
+        ("middleware", "implementations"),
+        ("repository", "implementations"),
+        ("source", "implementations"),
+        ("adapter", "implementations"),
+        ("client", "implementations"),
+        ("storage", "implementations"),
+        ("component", "implementations"),
+        ("engine", "implementations"),
+        ("dto", "related_types"),
+        ("entity", "related_types"),
+        ("model", "related_types"),
+        ("type", "related_types"),
+    ],
+)
+def test_build_context_pack_admits_each_identifier_role_hint(
+    role_hint: str,
+    expected_group: str,
+) -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle([result("src/plain.py")], query=f"find {role_hint}"),
+        options(),
+    )
+
+    assert missing_categories(pack, required=True) == (expected_group,)
+
+
+def test_build_context_pack_deduplicates_surface_and_identifier_requirements() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle([result("src/plain.py")], query="controller router"),
+        options(),
+    )
+
+    assert missing_categories(pack, required=True) == ("entrypoints",)
+    assert sum(
+        evidence.category == "entrypoints" and evidence.required
+        for evidence in pack.missing_evidence
+    ) == 1
+
+
+def test_build_context_pack_infers_each_raw_query_intent_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query_calls: list[tuple[str, list[str]]] = []
+    identifier_calls: list[tuple[str, list[str]]] = []
+
+    def capture_query_intent(query: str, tokens: list[str]):
+        query_calls.append((query, tokens))
+        return infer_query_intent(query, tokens)
+
+    def capture_identifier_intent(query: str, tokens: list[str]):
+        identifier_calls.append((query, tokens))
+        return infer_identifier_intent(query, tokens)
+
+    monkeypatch.setattr(
+        context_pack,
+        "infer_query_intent",
+        capture_query_intent,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        context_pack,
+        "infer_identifier_intent",
+        capture_identifier_intent,
+        raising=False,
+    )
+    bundle = query_bundle(
+        [result("src/main/controller/AppController.java")],
+        query="WorkspaceController",
+        expanded_tokens=["controller", "service", "dto"],
+    )
+
+    context_pack.build_context_pack(bundle, options())
+
+    assert query_calls == [(bundle.query, bundle.query.split())]
+    assert identifier_calls == [(bundle.query, tokenize_query(bundle.query))]
+
+
+def test_generated_tokens_do_not_create_required_or_recommended_groups() -> None:
+    planner = QueryPlan(
+        original_query="WorkspaceController",
+        rewritten_queries=["controller service dto"],
+        grep_keywords=["service", "dto"],
+        symbol_hints=["ControllerServiceDto"],
+        discarded_hints=["service repository dto"],
+        intent="symbol_lookup",
+        status="ok",
+    )
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result("src/main/controller/WorkspaceController.java")],
+            query="WorkspaceController",
+            expanded_tokens=["controller", "service", "dto"],
+            planner=planner,
+        ),
+        options(),
+    )
+
+    assert pack.status == "ready"
+    assert pack.missing_evidence == ()
+
+
+def test_identifier_and_file_hints_without_roles_do_not_promote_groups() -> None:
+    planner = QueryPlan(
+        original_query="OpaqueWidget src/opaque.py",
+        intent="symbol_lookup",
+        status="ok",
+    )
+    supporting_pack = context_pack.build_context_pack(
+        query_bundle(
+            [result("src/plain.py")],
+            query="OpaqueWidget src/opaque.py",
+            planner=planner,
+        ),
+        options(),
+    )
+    all_groups_pack = context_pack.build_context_pack(
+        query_bundle(
+            one_result_per_context_group(),
+            query="OpaqueWidget src/opaque.py",
+            planner=planner,
+        ),
+        options(),
+    )
+
+    assert missing_categories(supporting_pack, required=True) == ()
+    assert all_groups_pack.missing_evidence == ()
+    assert all_groups_pack.reading_order == tuple(
+        f"result:{index}" for index in range(6)
+    )
+
+
+def test_configuration_page_logic_does_not_require_or_promote_configs_docs() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            one_result_per_context_group(),
+            query="configuration page save logic",
+        ),
+        options(),
+    )
+
+    assert missing_categories(pack, required=True) == ()
+    assert pack.reading_order == tuple(f"result:{index}" for index in range(6))
+
+
+@pytest.mark.parametrize(
+    ("planner_intent", "expected_required", "expected_recommended"),
+    [
+        (
+            "feature_lookup",
+            ("entrypoints", "implementations"),
+            ("related_types", "tests"),
+        ),
+        (
+            "data_flow",
+            ("entrypoints", "implementations"),
+            ("related_types", "tests"),
+        ),
+        (
+            "bug_trace",
+            ("entrypoints", "implementations"),
+            ("related_types", "tests"),
+        ),
+        (
+            "endpoint_lookup",
+            ("entrypoints",),
+            ("implementations", "tests"),
+        ),
+        ("symbol_lookup", (), ()),
+        ("unknown", (), ()),
+    ],
+)
+def test_successful_planner_intent_derives_required_and_recommended_groups(
+    planner_intent: str,
+    expected_required: tuple[str, ...],
+    expected_recommended: tuple[str, ...],
+) -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result("src/plain.py")],
+            query="opaque",
+            planner=QueryPlan(
+                original_query="opaque",
+                intent=planner_intent,
+                status="ok",
+            ),
+        ),
+        options(),
+    )
+
+    assert missing_categories(pack, required=True) == expected_required
+    assert missing_categories(pack, required=False) == expected_recommended
+
+
+@pytest.mark.parametrize("status", ["disabled", "fallback"])
+def test_unsuccessful_planner_status_contributes_no_groups(status: str) -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result("src/plain.py")],
+            query="opaque",
+            planner=QueryPlan(
+                original_query="opaque",
+                intent="feature_lookup",
+                status=status,
+            ),
+        ),
+        options(),
+    )
+
+    assert pack.missing_evidence == ()
+
+
+def test_explicit_required_suppresses_only_planner_required_fallback() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result("src/plain.py")],
+            query="controller",
+            planner=QueryPlan(
+                original_query="controller",
+                intent="feature_lookup",
+                status="ok",
+            ),
+        ),
+        options(),
+    )
+
+    assert missing_categories(pack, required=True) == ("entrypoints",)
+    assert missing_categories(pack, required=False) == (
+        "implementations",
+        "related_types",
+        "tests",
+    )
+
+
+def test_planner_only_required_groups_do_not_promote_reading_order() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            one_result_per_context_group(),
+            query="opaque",
+            planner=QueryPlan(
+                original_query="opaque",
+                intent="bug_trace",
+                status="ok",
+            ),
+        ),
+        options(),
+    )
+
+    assert pack.reading_order == tuple(f"result:{index}" for index in range(6))
+
+
+@pytest.mark.parametrize(
+    "source_path",
+    [
+        "src/main/controller/AppController.java",
+        "src/services/app.py",
+    ],
+)
+def test_successful_non_unknown_planner_prevents_present_group_fallback(
+    source_path: str,
+) -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result(source_path)],
+            query="opaque",
+            planner=QueryPlan(
+                original_query="opaque",
+                intent="symbol_lookup",
+                status="ok",
+            ),
+        ),
+        options(),
+    )
+
+    assert pack.missing_evidence == ()
+
+
+@pytest.mark.parametrize(
+    ("status", "intent"),
+    [
+        ("disabled", "feature_lookup"),
+        ("fallback", "feature_lookup"),
+        ("ok", "unknown"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("source_path", "expected_recommended"),
+    [
+        ("src/main/controller/AppController.java", "implementations"),
+        ("src/services/app.py", "entrypoints"),
+    ],
+)
+def test_no_successful_non_unknown_planner_allows_present_group_fallback(
+    status: str,
+    intent: str,
+    source_path: str,
+    expected_recommended: str,
+) -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result(source_path)],
+            query="opaque",
+            planner=QueryPlan(
+                original_query="opaque",
+                intent=intent,
+                status=status,
+            ),
+        ),
+        options(),
+    )
+
+    assert missing_categories(pack, required=True) == ()
+    assert missing_categories(pack, required=False) == (expected_recommended,)
+
+
+def test_recommendations_remove_required_groups_and_exclude_supporting() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result("src/plain.py")],
+            query="service",
+            planner=QueryPlan(
+                original_query="service",
+                intent="endpoint_lookup",
+                status="ok",
+            ),
+        ),
+        options(),
+    )
+
+    assert missing_categories(pack, required=True) == ("implementations",)
+    assert missing_categories(pack, required=False) == ("tests",)
+    assert all(
+        evidence.category != "supporting" for evidence in pack.missing_evidence
+    )
+
+
+def test_missing_required_evidence_makes_nonempty_pack_partial() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle([result("src/plain.py")], query="service"),
+        options(),
+    )
+
+    assert pack.status == "partial"
+    assert pack.missing_evidence == (
+        MissingEvidence(
+            category="implementations",
+            required=True,
+            reason=(
+                "required evidence for implementations is missing from the "
+                "bounded result set"
+            ),
+        ),
+    )
+
+
+def test_missing_recommended_evidence_keeps_nonempty_pack_ready() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result("src/main/controller/AppController.java")],
+            query="controller",
+        ),
+        options(),
+    )
+
+    assert pack.status == "ready"
+    assert pack.missing_evidence == (
+        MissingEvidence(
+            category="implementations",
+            required=False,
+            reason=(
+                "recommended evidence for implementations is missing from the "
+                "bounded result set"
+            ),
+        ),
+        MissingEvidence(
+            category="tests",
+            required=False,
+            reason=(
+                "recommended evidence for tests is missing from the bounded "
+                "result set"
+            ),
+        ),
+    )
+
+
+def test_missing_evidence_orders_required_before_recommended_by_fixed_group() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result("src/plain.py")],
+            query="service controller",
+            planner=QueryPlan(
+                original_query="service controller",
+                intent="feature_lookup",
+                status="ok",
+            ),
+        ),
+        options(),
+    )
+
+    assert tuple(
+        (evidence.category, evidence.required)
+        for evidence in pack.missing_evidence
+    ) == (
+        ("entrypoints", True),
+        ("implementations", True),
+        ("related_types", False),
+        ("tests", False),
+    )
+
+
+def test_empty_pack_does_not_apply_structural_evidence_gaps() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            query="controller",
+            planner=QueryPlan(
+                original_query="controller",
+                intent="feature_lookup",
+                status="ok",
+            ),
+        ),
+        options(),
+    )
+
+    assert pack.status == "empty"
+    assert pack.missing_evidence == ()
+    assert pack.reading_order == ()
+    assert pack.next_queries == ()
+    assert (pack.confidence.level, pack.confidence.reasons) == ("none", ())
+
+
+def test_explicit_tests_requirement_promotes_tests_before_fixed_remaining_groups() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            one_result_per_context_group(),
+            query="workspace test file",
+        ),
+        options(),
+    )
+
+    assert pack.reading_order == (
+        "result:3",
+        "result:0",
+        "result:1",
+        "result:2",
+        "result:4",
+        "result:5",
+    )
+    assert tuple(item.id for item in pack.items) == tuple(
+        f"result:{index}" for index in range(6)
+    )
+    assert pack.groups == {
+        "entrypoints": ("result:0",),
+        "implementations": ("result:1",),
+        "related_types": ("result:2",),
+        "tests": ("result:3",),
+        "configs_docs": ("result:4",),
+        "supporting": ("result:5",),
+    }
+
+
+def test_multiple_explicit_promotions_preserve_fixed_v1_relative_order() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            one_result_per_context_group(),
+            query="workspace test file controller",
+        ),
+        options(),
+    )
+
+    assert pack.reading_order == (
+        "result:0",
+        "result:3",
+        "result:1",
+        "result:2",
+        "result:4",
+        "result:5",
+    )
 
 
 def test_budget_uses_actual_counts_options_and_utf8_content_bytes() -> None:
@@ -761,6 +1312,80 @@ def test_validator_maps_missing_group_reference_to_bounded_error() -> None:
 def test_validator_maps_inconsistent_reading_order_to_bounded_error() -> None:
     bundle, pack = single_result_pack()
     malformed = replace(pack, reading_order=())
+
+    with pytest.raises(ContextPackError) as exc_info:
+        context_pack._validate_context_pack(bundle, malformed)
+
+    assert str(exc_info.value) == INVALID_REFERENCE_ERROR
+
+
+def test_validator_rejects_fabricated_tests_first_reading_order() -> None:
+    bundle = query_bundle(one_result_per_context_group(), query="opaque")
+    pack = context_pack.build_context_pack(bundle, options())
+    malformed = replace(
+        pack,
+        reading_order=(
+            "result:3",
+            "result:0",
+            "result:1",
+            "result:2",
+            "result:4",
+            "result:5",
+        ),
+    )
+
+    with pytest.raises(ContextPackError) as exc_info:
+        context_pack._validate_context_pack(bundle, malformed)
+
+    assert str(exc_info.value) == INVALID_REFERENCE_ERROR
+
+
+def test_validator_rejects_fabricated_canonical_required_gap() -> None:
+    bundle = query_bundle([result("src/plain.py")], query="opaque")
+    pack = context_pack.build_context_pack(bundle, options())
+    malformed = replace(
+        pack,
+        status="partial",
+        missing_evidence=(
+            MissingEvidence(
+                category="entrypoints",
+                required=True,
+                reason=(
+                    "required evidence for entrypoints is missing from the "
+                    "bounded result set"
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(ContextPackError) as exc_info:
+        context_pack._validate_context_pack(bundle, malformed)
+
+    assert str(exc_info.value) == INVALID_REFERENCE_ERROR
+
+
+def test_validator_rejects_partial_status_without_missing_required_evidence() -> None:
+    bundle, pack = single_result_pack()
+    malformed = replace(pack, status="partial")
+
+    with pytest.raises(ContextPackError) as exc_info:
+        context_pack._validate_context_pack(bundle, malformed)
+
+    assert str(exc_info.value) == INVALID_REFERENCE_ERROR
+
+
+def test_validator_rejects_noncanonical_missing_evidence_reason() -> None:
+    bundle, pack = single_result_pack()
+    malformed = replace(
+        pack,
+        missing_evidence=(
+            MissingEvidence(
+                category="tests",
+                required=False,
+                reason="tests are absent from the repository",
+            ),
+        ),
+    )
 
     with pytest.raises(ContextPackError) as exc_info:
         context_pack._validate_context_pack(bundle, malformed)
