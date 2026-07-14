@@ -38,6 +38,14 @@ TASK9_SNAPSHOT_SHA256 = {
     "real_projects/embedding_ab/src/order/OrderService.java": "a21d91f5723d97b5d3d106db91c9e44b8744fe694f95821cd3b09cb8c70cdcdd",
 }
 
+P2_SNAPSHOT_SHA256 = {
+    "context-pack-java/src/main/java/com/example/workspace/controller/WorkspaceController.java": "8eae09e3be12a8a7fd2d3fae0f0f78f6f976ea7d83c7d35a55c43f2f1a217836",
+    "context-pack-java/src/main/java/com/example/workspace/dto/WorkspaceDto.java": "4fc2a6227363216628f45820feb35c61c35d9fe644eddeb98853803562bef08a",
+    "context-pack-java/src/main/java/com/example/workspace/service/impl/WorkspaceServiceImpl.java": "a91c95dc085f344436a68f2d4e7e9faf60b0b5ad374c1fdd7542d974febff73d",
+    "context-pack-java/src/test/java/com/example/workspace/controller/WorkspaceControllerTest.java": "6f92b729f375d82c7b9fb0a3f20a18d955814e21673797569be81433d35f84e3",
+    "context-pack-docs/README.md": "13be45c211302d2cec0ff73310ab374f32ef73302189fc00998e53a3173347fc",
+}
+
 EXPECTED_PROFILE_CONFIGS = {
     "ci": {
         "embedding": {
@@ -113,6 +121,14 @@ EXPECTED_PROFILE_CONFIGS = {
             "timeout_seconds": 30,
         },
     },
+    "p2_context_pack": {
+        "embedding": {
+            "provider": "hash",
+            "model": "hash-v1",
+            "dimensions": 384,
+        },
+        "query_planner": {"enabled": False},
+    },
 }
 
 EXPECTED_REPO_WIRING = (
@@ -147,6 +163,30 @@ EXPECTED_REPO_WIRING = (
         "",
         "",
         "tests/fixtures/java-spring-mini",
+        {},
+    ),
+    (
+        "context_pack_java",
+        ("p2_context_pack",),
+        "",
+        "",
+        "tests/fixtures/context-pack-java",
+        {},
+    ),
+    (
+        "context_pack_frontend",
+        ("p2_context_pack",),
+        "",
+        "",
+        "tests/fixtures/real_projects/program_tool",
+        {},
+    ),
+    (
+        "context_pack_docs",
+        ("p2_context_pack",),
+        "",
+        "",
+        "tests/fixtures/context-pack-docs",
         {},
     ),
     (
@@ -214,6 +254,9 @@ EXPECTED_AB_CASE_DEFAULTS = {
     "known_gap_reason": "",
     "notes": "",
     "profile_expectations": {},
+    "expected_context_groups": {},
+    "expected_pack_status": None,
+    "minimum_context_confidence": None,
 }
 
 EXPECTED_AB_CASES = {
@@ -292,6 +335,9 @@ EXPECTED_NEW_CASE_DEFAULTS = {
     "known_gap_reason": "",
     "notes": "",
     "profile_expectations": {},
+    "expected_context_groups": {},
+    "expected_pack_status": None,
+    "minimum_context_confidence": None,
     "legacy": None,
 }
 
@@ -374,6 +420,155 @@ EXPECTED_NEW_CASES = {
             },
             "p1_hybrid_bge": {"planner_status": "ok"},
         },
+    },
+    "context_pack_java/workspace-page-flow": {
+        **EXPECTED_NEW_CASE_DEFAULTS,
+        "repo_key": "context_pack_java",
+        "case_id": "workspace-page-flow",
+        "query": "workspace page flow controller service dto",
+        "profiles": ("p2_context_pack",),
+        "tags": ("p2", "java_spring", "context_pack"),
+        "mode": "context_pack",
+        "gate": Gate.REQUIRED,
+        "expected_top_k": (
+            {
+                "path": "src/main/java/com/example/workspace/controller/WorkspaceController.java",
+                "top_k": 5,
+            },
+            {
+                "path": "src/main/java/com/example/workspace/service/impl/WorkspaceServiceImpl.java",
+                "top_k": 5,
+            },
+            {
+                "path": "src/main/java/com/example/workspace/dto/WorkspaceDto.java",
+                "top_k": 5,
+            },
+        ),
+        "expected_any_top_k": (),
+        "preferred_rank": (),
+        "expected_context_groups": {
+            "entrypoints": (
+                {
+                    "path": "src/main/java/com/example/workspace/controller/WorkspaceController.java"
+                },
+            ),
+            "implementations": (
+                {
+                    "path": "src/main/java/com/example/workspace/service/impl/WorkspaceServiceImpl.java"
+                },
+            ),
+            "related_types": (
+                {
+                    "path": "src/main/java/com/example/workspace/dto/WorkspaceDto.java"
+                },
+            ),
+        },
+        "expected_pack_status": "ready",
+        "minimum_context_confidence": "high",
+    },
+    "context_pack_java/workspace-test-file": {
+        **EXPECTED_NEW_CASE_DEFAULTS,
+        "repo_key": "context_pack_java",
+        "case_id": "workspace-test-file",
+        "query": "workspace test file",
+        "profiles": ("p2_context_pack",),
+        "tags": ("p2", "java", "test", "context_pack"),
+        "mode": "context_pack",
+        "gate": Gate.REQUIRED,
+        "expected_top_k": (
+            {
+                "path": "src/test/java/com/example/workspace/controller/WorkspaceControllerTest.java",
+                "top_k": 5,
+            },
+        ),
+        "expected_any_top_k": (),
+        "preferred_rank": (),
+        "expected_context_groups": {
+            "tests": (
+                {
+                    "path": "src/test/java/com/example/workspace/controller/WorkspaceControllerTest.java"
+                },
+            ),
+        },
+        "expected_pack_status": "ready",
+        "minimum_context_confidence": "high",
+    },
+    "context_pack_java/workspace-service-symbol": {
+        **EXPECTED_NEW_CASE_DEFAULTS,
+        "repo_key": "context_pack_java",
+        "case_id": "workspace-service-symbol",
+        "query": "WorkspaceServiceImpl",
+        "profiles": ("p2_context_pack",),
+        "tags": ("p2", "java", "exact_symbol", "context_pack"),
+        "mode": "context_pack",
+        "gate": Gate.REQUIRED,
+        "expected_top_k": (
+            {
+                "path": "src/main/java/com/example/workspace/service/impl/WorkspaceServiceImpl.java",
+                "top_k": 3,
+            },
+        ),
+        "expected_any_top_k": (),
+        "preferred_rank": (),
+        "expected_context_groups": {
+            "implementations": (
+                {
+                    "path": "src/main/java/com/example/workspace/service/impl/WorkspaceServiceImpl.java"
+                },
+            ),
+        },
+        "expected_pack_status": "ready",
+        "minimum_context_confidence": "high",
+    },
+    "context_pack_frontend/qrcode-feature-context": {
+        **EXPECTED_NEW_CASE_DEFAULTS,
+        "repo_key": "context_pack_frontend",
+        "case_id": "qrcode-feature-context",
+        "query": "QRCode page route service type",
+        "profiles": ("p2_context_pack",),
+        "tags": ("p2", "frontend", "vue", "context_pack"),
+        "mode": "context_pack",
+        "gate": Gate.REQUIRED,
+        "expected_top_k": (
+            {"path": "src/views/qrcode/QRCodeTool.vue", "top_k": 5},
+            {"path": "src/router/index.ts", "top_k": 5},
+            {"path": "src/types/qrcode-reader.d.ts", "top_k": 5},
+            {"path": "src/utils/qrcodeUtils.ts", "top_k": 5},
+        ),
+        "expected_any_top_k": (),
+        "preferred_rank": (),
+        "expected_context_groups": {
+            "entrypoints": (
+                {"path": "src/views/qrcode/QRCodeTool.vue"},
+                {"path": "src/router/index.ts"},
+            ),
+            "implementations": (
+                {"path": "src/utils/qrcodeUtils.ts"},
+            ),
+            "related_types": (
+                {"path": "src/types/qrcode-reader.d.ts"},
+            ),
+        },
+        "expected_pack_status": "ready",
+        "minimum_context_confidence": "medium",
+    },
+    "context_pack_docs/program-tool-developer-docs": {
+        **EXPECTED_NEW_CASE_DEFAULTS,
+        "repo_key": "context_pack_docs",
+        "case_id": "program-tool-developer-docs",
+        "query": "Program Tool Developer Setup documentation",
+        "profiles": ("p2_context_pack",),
+        "tags": ("p2", "documentation", "context_pack"),
+        "mode": "context_pack",
+        "gate": Gate.REQUIRED,
+        "expected_top_k": (),
+        "expected_any_top_k": (),
+        "preferred_rank": (),
+        "expected_context_groups": {
+            "configs_docs": ({"path": "README.md"},),
+        },
+        "expected_pack_status": "ready",
+        "minimum_context_confidence": "medium",
     },
     "psf_requests/cookies-between-calls": {
         **EXPECTED_NEW_CASE_DEFAULTS,
@@ -580,6 +775,25 @@ EXPECTED_P1_CASE_KEYS = {
     "embedding_ab/access-validation-cross-language",
     "embedding_ab/blacklist-management-cross-language",
     "embedding_ab/order-service-symbol",
+}
+
+EXPECTED_P2_CASE_KEYS = {
+    "context_pack_java/workspace-page-flow",
+    "context_pack_java/workspace-test-file",
+    "context_pack_java/workspace-service-symbol",
+    "context_pack_frontend/qrcode-feature-context",
+    "context_pack_docs/program-tool-developer-docs",
+}
+
+EXPECTED_CI_CASE_KEYS = {
+    "program_tool/watermark-remover",
+    "program_tool/mqtt-tool",
+    "program_tool/qrcode-tool",
+    "program_tool/json-to-entity",
+    "program_tool/app-layout-theme",
+    "program_tool/ai-chat",
+    "java_spring_mini/apply-audit-endpoint",
+    "java_spring_mini/workbench-audit-localized-cjk",
 }
 
 EXPECTED_LEGACY_PAIRS = {
@@ -826,6 +1040,12 @@ def _quality_case_manifest(case: QualityCase) -> dict[str, object]:
             }
             for profile, expectation in case.profile_expectations.items()
         },
+        "expected_context_groups": {
+            group: tuple(_matcher_manifest(matcher) for matcher in matchers)
+            for group, matchers in case.expected_context_groups.items()
+        },
+        "expected_pack_status": case.expected_pack_status,
+        "minimum_context_confidence": case.minimum_context_confidence,
         "legacy": (
             {
                 "fixture": case.legacy.fixture,
@@ -874,12 +1094,34 @@ def test_task9_snapshots_match_approved_regular_files() -> None:
     )
 
 
+def test_p2_snapshots_match_approved_regular_files() -> None:
+    fixture_root = ROOT / "fixtures"
+    snapshot_roots = (
+        fixture_root / "context-pack-java",
+        fixture_root / "context-pack-docs",
+    )
+    files = sorted(
+        path
+        for root in snapshot_roots
+        for path in root.rglob("*")
+        if path.is_file()
+    )
+    actual = {
+        path.relative_to(fixture_root).as_posix(): hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+        for path in files
+    }
+
+    assert actual == P2_SNAPSHOT_SHA256
+
+
 def test_catalog_profile_registry_and_inventory() -> None:
     fixture = load_quality_fixture(CATALOG_PATH)
     cases = _catalog_cases()
 
     assert fixture.profile_configs == EXPECTED_PROFILE_CONFIGS
-    assert len(cases) == 44
+    assert len(cases) == 49
     assert "program_tool/qrcode-tool" in cases
     assert "program_tool_snapshot/qrcode-entrypoint" not in cases
     assert cases["cross_language_dashboard/dashboard-cross-language"].tags == (
@@ -952,6 +1194,46 @@ def test_phase_one_profiles_select_identical_required_committed_cases() -> None:
     ) == 3
 
 
+def test_phase_two_profile_selects_exact_required_context_pack_cases() -> None:
+    fixture = load_quality_fixture(CATALOG_PATH)
+
+    def selected(profile: str) -> set[str]:
+        return {
+            f"{repo.repo_key}/{case.case_id}"
+            for repo in fixture.repos
+            for case in repo.queries
+            if profile in repo.profiles
+            and (not case.profiles or profile in case.profiles)
+        }
+
+    assert selected("p2_context_pack") == EXPECTED_P2_CASE_KEYS
+    for profile in (
+        "ci",
+        "smoke",
+        "planner",
+        "p1_vector_bge",
+        "p1_hybrid_bge",
+    ):
+        assert selected(profile).isdisjoint(EXPECTED_P2_CASE_KEYS)
+
+    cases = _catalog_cases()
+    assert all(cases[key].gate is Gate.REQUIRED for key in EXPECTED_P2_CASE_KEYS)
+    assert all(cases[key].mode == "context_pack" for key in EXPECTED_P2_CASE_KEYS)
+
+
+def test_ci_profile_selection_remains_exactly_eight_cases() -> None:
+    fixture = load_quality_fixture(CATALOG_PATH)
+    selected = {
+        f"{repo.repo_key}/{case.case_id}"
+        for repo in fixture.repos
+        for case in repo.queries
+        if "ci" in repo.profiles
+        and (not case.profiles or "ci" in case.profiles)
+    }
+
+    assert selected == EXPECTED_CI_CASE_KEYS
+
+
 def test_catalog_case_profiles_match_approved_selection() -> None:
     cases = _catalog_cases()
     expected = {
@@ -989,6 +1271,10 @@ def test_catalog_case_profiles_match_approved_selection() -> None:
             "p1_vector_bge",
             "p1_hybrid_bge",
         ),
+        **{
+            key: ("p2_context_pack",)
+            for key in EXPECTED_P2_CASE_KEYS
+        },
         **{
             f"embedding_ab/{case_id}": ("ab_hash", "ab_bge")
             for case_id in AB_IDS

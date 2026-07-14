@@ -86,6 +86,16 @@
         "model": "qwen3.5:4b-mlx",
         "timeout_seconds": 30
       }
+    },
+    "p2_context_pack": {
+      "embedding": {
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384
+      },
+      "query_planner": {
+        "enabled": false
+      }
     }
   },
   "repos": [
@@ -925,6 +935,218 @@
               "planner_status": "ok"
             }
           }
+        }
+      ]
+    },
+    {
+      "repo_key": "context_pack_java",
+      "snapshot_path": "tests/fixtures/context-pack-java",
+      "profiles": [
+        "p2_context_pack"
+      ],
+      "queries": [
+        {
+          "id": "workspace-page-flow",
+          "query": "workspace page flow controller service dto",
+          "profiles": [
+            "p2_context_pack"
+          ],
+          "mode": "context_pack",
+          "tags": [
+            "p2",
+            "java_spring",
+            "context_pack"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/main/java/com/example/workspace/controller/WorkspaceController.java",
+              "top_k": 5
+            },
+            {
+              "path": "src/main/java/com/example/workspace/service/impl/WorkspaceServiceImpl.java",
+              "top_k": 5
+            },
+            {
+              "path": "src/main/java/com/example/workspace/dto/WorkspaceDto.java",
+              "top_k": 5
+            }
+          ],
+          "expected_context_groups": {
+            "entrypoints": [
+              {
+                "path": "src/main/java/com/example/workspace/controller/WorkspaceController.java"
+              }
+            ],
+            "implementations": [
+              {
+                "path": "src/main/java/com/example/workspace/service/impl/WorkspaceServiceImpl.java"
+              }
+            ],
+            "related_types": [
+              {
+                "path": "src/main/java/com/example/workspace/dto/WorkspaceDto.java"
+              }
+            ]
+          },
+          "expected_pack_status": "ready",
+          "minimum_context_confidence": "high"
+        },
+        {
+          "id": "workspace-test-file",
+          "query": "workspace test file",
+          "profiles": [
+            "p2_context_pack"
+          ],
+          "mode": "context_pack",
+          "tags": [
+            "p2",
+            "java",
+            "test",
+            "context_pack"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/test/java/com/example/workspace/controller/WorkspaceControllerTest.java",
+              "top_k": 5
+            }
+          ],
+          "expected_context_groups": {
+            "tests": [
+              {
+                "path": "src/test/java/com/example/workspace/controller/WorkspaceControllerTest.java"
+              }
+            ]
+          },
+          "expected_pack_status": "ready",
+          "minimum_context_confidence": "high"
+        },
+        {
+          "id": "workspace-service-symbol",
+          "query": "WorkspaceServiceImpl",
+          "profiles": [
+            "p2_context_pack"
+          ],
+          "mode": "context_pack",
+          "tags": [
+            "p2",
+            "java",
+            "exact_symbol",
+            "context_pack"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/main/java/com/example/workspace/service/impl/WorkspaceServiceImpl.java",
+              "top_k": 3
+            }
+          ],
+          "expected_context_groups": {
+            "implementations": [
+              {
+                "path": "src/main/java/com/example/workspace/service/impl/WorkspaceServiceImpl.java"
+              }
+            ]
+          },
+          "expected_pack_status": "ready",
+          "minimum_context_confidence": "high"
+        }
+      ]
+    },
+    {
+      "repo_key": "context_pack_frontend",
+      "snapshot_path": "tests/fixtures/real_projects/program_tool",
+      "profiles": [
+        "p2_context_pack"
+      ],
+      "queries": [
+        {
+          "id": "qrcode-feature-context",
+          "query": "QRCode page route service type",
+          "profiles": [
+            "p2_context_pack"
+          ],
+          "mode": "context_pack",
+          "tags": [
+            "p2",
+            "frontend",
+            "vue",
+            "context_pack"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/views/qrcode/QRCodeTool.vue",
+              "top_k": 5
+            },
+            {
+              "path": "src/router/index.ts",
+              "top_k": 5
+            },
+            {
+              "path": "src/types/qrcode-reader.d.ts",
+              "top_k": 5
+            },
+            {
+              "path": "src/utils/qrcodeUtils.ts",
+              "top_k": 5
+            }
+          ],
+          "expected_context_groups": {
+            "entrypoints": [
+              {
+                "path": "src/views/qrcode/QRCodeTool.vue"
+              },
+              {
+                "path": "src/router/index.ts"
+              }
+            ],
+            "implementations": [
+              {
+                "path": "src/utils/qrcodeUtils.ts"
+              }
+            ],
+            "related_types": [
+              {
+                "path": "src/types/qrcode-reader.d.ts"
+              }
+            ]
+          },
+          "expected_pack_status": "ready",
+          "minimum_context_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "repo_key": "context_pack_docs",
+      "snapshot_path": "tests/fixtures/context-pack-docs",
+      "profiles": [
+        "p2_context_pack"
+      ],
+      "queries": [
+        {
+          "id": "program-tool-developer-docs",
+          "query": "Program Tool Developer Setup documentation",
+          "profiles": [
+            "p2_context_pack"
+          ],
+          "mode": "context_pack",
+          "tags": [
+            "p2",
+            "documentation",
+            "context_pack"
+          ],
+          "gate": "required",
+          "expected_context_groups": {
+            "configs_docs": [
+              {
+                "path": "README.md"
+              }
+            ]
+          },
+          "expected_pack_status": "ready",
+          "minimum_context_confidence": "medium"
         }
       ]
     },
