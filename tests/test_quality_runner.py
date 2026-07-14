@@ -1607,8 +1607,11 @@ def test_phase_one_source_uses_committed_snapshot_despite_external_sources(
     )
 
 
-@pytest.mark.parametrize("profile", ["ab_hash", "ab_bge"])
-def test_ab_source_keeps_path_env_precedence_with_committed_snapshot(
+@pytest.mark.parametrize(
+    "profile",
+    ["smoke", "planner", "calibration_bge", "ab_hash", "ab_bge"],
+)
+def test_non_snapshot_profiles_keep_path_env_precedence_with_committed_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     profile: str,
