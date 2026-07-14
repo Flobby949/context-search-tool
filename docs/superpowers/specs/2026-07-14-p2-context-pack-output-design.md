@@ -1,10 +1,11 @@
 # P2 Context Pack Output Design
 
 Date: 2026-07-14
-Status: Approved direction; written review pending
+Status: Approved; written review complete
 Repository: `/Users/flobby/Documents/context-seatch-tool`
 Roadmap: `roadmap/2026-07-08-fast-context-like-retrieval-roadmap.md`
 Predecessor: `docs/superpowers/specs/2026-07-13-p1-query-understanding-closure-design.md`
+Implementation plan: `docs/superpowers/plans/2026-07-14-p2-context-pack-output.md`
 
 ## Summary
 
@@ -270,7 +271,7 @@ An illustrative response is:
     "enabled": true,
     "provider": "ollama",
     "model": "qwen3.5:4b-mlx",
-    "prompt_version": "qwen-query-planner-v1",
+    "prompt_version": "qwen-query-planner-v2",
     "prompt_hash": "sha256:example",
     "status": "ok",
     "latency_ms": 42,
@@ -349,7 +350,7 @@ An illustrative response is:
         "start_line": 1,
         "end_line": 8,
         "group": "related_types",
-        "role": "related_type",
+        "role": "summary_related_type",
         "classification_basis": "retrieval_summary"
       }
     ],
@@ -366,25 +367,28 @@ An illustrative response is:
       {
         "category": "tests",
         "required": false,
-        "reason": "feature context has no test in the bounded result set"
+        "reason": "recommended evidence for tests is missing from the bounded result set"
       }
     ],
     "next_queries": [
       {
         "query": "WorkspaceServiceImpl test",
         "purpose": "find_tests",
-        "reason": "tests are recommended but missing"
+        "reason": "recommended evidence for tests is missing from the bounded result set"
       }
     ],
     "confidence": {
       "level": "medium",
       "reasons": [
         "all required evidence groups are present",
-        "recommended test evidence is missing"
+        "recommended evidence is missing: tests",
+        "protected original direct evidence is present"
       ]
     },
     "budget": {
       "max_results": 12,
+      "max_evidence_anchors": 4,
+      "max_items": 16,
       "included_results": 3,
       "included_evidence_anchors": 0,
       "content_bytes": 93,
@@ -449,8 +453,8 @@ Item rules:
 - Content, score parts, semantic matches, and ranking reasons remain only in the
   raw source object and are not duplicated in the pack.
 - `group` is one of the six fixed v1 group names.
-- `role` is the detailed classifier result, such as `entrypoint`,
-  `service_impl`, `test`, `runtime_config`, or `view_page`.
+- `role` is the exact value selected by the closed classification table below;
+  it is not an implementation-defined label.
 - `classification_basis` is `anchor_kind`, `frontend_role`, `path_role`,
   `retrieval_summary`, or `fallback`.
 - Every item ID appears in exactly one group and exactly once in
@@ -472,39 +476,52 @@ Groups are always present in this order:
 5. `configs_docs`
 6. `supporting`
 
-Classification uses existing role helpers. It does not infer a new graph.
+Classification uses existing role helpers. It does not infer a new graph. The
+selected row fixes all three public classification fields:
 
-| classifier role | ContextPack group |
-| --- | --- |
-| frontend `route_config`, `view_page`, `layout_component` | `entrypoints` |
-| frontend `service`, `utility`, `store`, `shared_component` | `implementations` |
-| frontend `type_decl` | `related_types` |
-| path `entrypoint`, `router`, `command`, `handler`, `view` | `entrypoints` |
-| path `service_impl`, `executor`, `engine`, `middleware`, `storage`, `service`, `repository`, `source_adapter`, `state_store`, `composable`, `scheduler` | `implementations` |
-| path `data_type`, `service_interface` | `related_types` |
-| path `test` | `tests` |
-| path `deployment_config`, `config_example`, `runtime_config`, `config`, `doc` | `configs_docs` |
-| evidence anchor kind `readme`, `risks`, `pom`, `config`, or `document` | `configs_docs` |
-| a remaining result whose file stem matches `RetrievalSummary.entry_points` | `entrypoints` |
-| a remaining result whose file stem owns a `RetrievalSummary.implementation` name | `implementations` |
-| a remaining result whose file stem matches `RetrievalSummary.related_types` | `related_types` |
-| every remaining role, including generic source, component, generated output, lockfile, and unknown anchor kinds | `supporting` |
+| selected condition | `group` | emitted `role` | `classification_basis` |
+| --- | --- | --- | --- |
+| evidence anchor kind `readme` | `configs_docs` | `readme` | `anchor_kind` |
+| evidence anchor kind `risks` | `configs_docs` | `risks` | `anchor_kind` |
+| evidence anchor kind `pom` | `configs_docs` | `pom` | `anchor_kind` |
+| path role `test` | `tests` | `test` | `path_role` |
+| path role `deployment_config`, `config_example`, `runtime_config`, `config`, or `doc` | `configs_docs` | the exact path-role value | `path_role` |
+| frontend role `route_config`, `view_page`, or `layout_component` | `entrypoints` | the exact frontend-role value | `frontend_role` |
+| frontend role `service`, `utility`, `store`, or `shared_component` | `implementations` | the exact frontend-role value | `frontend_role` |
+| frontend role `type_decl` | `related_types` | `type_decl` | `frontend_role` |
+| frontend role `lockfile` or `scratch_temp` | `supporting` | the exact frontend-role value | `frontend_role` |
+| path role `entrypoint`, `router`, `command`, `handler`, or `view` | `entrypoints` | the exact path-role value | `path_role` |
+| path role `service_impl`, `executor`, `engine`, `middleware`, `storage`, `service`, `repository`, `source_adapter`, `state_store`, `composable`, or `scheduler` | `implementations` | the exact path-role value | `path_role` |
+| path role `data_type` or `service_interface` | `related_types` | the exact path-role value | `path_role` |
+| path role `generated_output` or `lockfile` | `supporting` | the exact path-role value | `path_role` |
+| eligible result matched by `RetrievalSummary.entry_points` | `entrypoints` | `summary_entrypoint` | `retrieval_summary` |
+| eligible result matched by `RetrievalSummary.implementation` | `implementations` | `summary_implementation` | `retrieval_summary` |
+| eligible result matched by `RetrievalSummary.related_types` | `related_types` | `summary_related_type` | `retrieval_summary` |
+| remaining result with path role `source` or `component` | `supporting` | the exact path-role value | `fallback` |
+| anchor with any other or empty kind | `supporting` | `evidence_anchor` | `fallback` |
 
 Classification precedence is:
 
-1. known evidence-anchor kind for anchors;
+1. one of the three known evidence-anchor kinds for anchors; every other anchor
+   takes the anchor fallback row immediately;
 2. generic `test`, config, and documentation path roles, so a frontend test or
    config cannot be mistaken for a page or service;
 3. frontend-specific role when it is not `other`;
-4. remaining non-generic path roles;
-5. case-insensitive file-stem ownership in the existing retrieval summary;
-6. fallback.
+4. remaining path roles except `source` and `component`;
+5. case-insensitive file-stem ownership in the existing retrieval summary, only
+   for results whose path role is `source` or `component`;
+6. result fallback.
 
 Summary ownership is deliberately narrow. A stem matches an entrypoint or
 related-type name exactly. It owns an implementation name when the name equals
 the stem or starts with `<stem>.`. This handles root-level files such as
 `WorkspaceDto.java` without copying private filename heuristics from the ranking
-module.
+module. If a stem matches more than one summary list, evaluate
+`entry_points`, `implementation`, then `related_types`; the first match wins.
+The role values `related_type`, `implementation`, and arbitrary anchor-kind
+strings are therefore not valid v1 outputs. A result classifier value not
+covered by the table raises `ContextPackError`; adding a classifier role requires
+an explicit ContextPack contract update rather than silently assigning a group.
 
 Tests and config/docs remain visible even if current ranking treats them as
 secondary artifacts. Phase 2 reorganizes returned evidence; it does not promote
@@ -515,13 +532,13 @@ new candidates into the result set.
 Within a group, raw result order is preserved. Evidence anchors follow ranked
 results in their group.
 
-The default group order is the fixed order above. An explicit query target may
-move its corresponding group to the front:
-
-- test intent promotes `tests`;
-- config, deployment, or documentation intent promotes `configs_docs`;
-- endpoint or entrypoint intent promotes `entrypoints`;
-- implementation intent promotes `implementations`.
+The default group order is the fixed order above. Promotion reuses the explicit
+required-group union defined below; every group in that union moves to the front.
+Planner-only requirements do not promote groups. This makes page/view hints
+promote `entrypoints`, component/store hints promote `implementations`, type
+hints promote `related_types`, and artifact-requesting test/config/doc intents
+promote their artifact group. A config logic query with `wants_artifact = false`
+does not promote `configs_docs`.
 
 When several groups are promoted, their relative order remains the fixed v1
 group order. This avoids depending on unordered intent sets.
@@ -536,15 +553,38 @@ groups from **recommended** groups.
 
 ### Required Groups
 
-Explicit deterministic query intent takes precedence:
+The builder derives two existing intent views from `QueryBundle.query`:
 
-| explicit target intent | required group |
-| --- | --- |
-| entrypoint | `entrypoints` |
-| implementation | `implementations` |
-| UI/page/view | `entrypoints` |
-| test | `tests` |
-| config, deployment, or documentation | `configs_docs` |
+- call `infer_query_intent()` with the raw query and
+  `QueryBundle.query.split()` surface tokens, without camel-case or snake-case
+  expansion;
+- call `infer_identifier_intent()` with the raw query and the existing
+  `tokenize_query()` output.
+
+This keeps `WorkspaceController` available as an identifier with an entrypoint
+role hint without treating its internal `Controller` segment as an explicit
+endpoint word. Neither call may use `QueryBundle.expanded_tokens`, rewritten
+queries, or planner hints: those values may contain generated role terms such as
+`controller`, `service`, or `dto`. No new intent classifier is introduced.
+Explicit required groups are the union of these rules:
+
+| existing intent evidence | condition | required group added |
+| --- | --- | --- |
+| `QueryIntent.target_roles` | contains `entrypoint` | `entrypoints` |
+| `QueryIntent.target_roles` | contains `implementation` | `implementations` |
+| `IdentifierIntent.role_hints` | contains `entrypoint`, `router`, `command`, or `view` | `entrypoints` |
+| `IdentifierIntent.role_hints` | contains `state_store`, `composable`, `service`, `handler`, `middleware`, `repository`, `source_adapter`, `storage`, `component`, or `engine` | `implementations` |
+| `IdentifierIntent.role_hints` | contains `data_type` | `related_types` |
+| `QueryIntent.target_roles` | contains `test` and `wants_artifact` is true | `tests` |
+| `QueryIntent.target_roles` | intersects `config`, `deploy`, or `doc` and `wants_artifact` is true | `configs_docs` |
+
+`QueryIntent`'s coarse `ui` role never adds a group by itself. Existing
+identifier role hints distinguish page/view/route terms from component/store
+terms; an ambiguous term such as `form` adds no required group. Likewise,
+configuration words used in a logic query do not require `configs_docs` unless
+`wants_artifact` is true. Thus `Pinia store component` requires
+`implementations`, while `configuration page save logic` requires
+`entrypoints` and `implementations` but not `configs_docs`.
 
 When explicit intent provides no required group, a successful planner intent may
 provide one:
@@ -555,19 +595,30 @@ provide one:
 | `endpoint_lookup` | `entrypoints` |
 | `symbol_lookup`, `unknown` | none |
 
-Planner intent is a hint for completeness, not proof that a file has a role.
+Planner intent is a hint for completeness, not proof that a file has a role. If
+the explicit union is non-empty, planner intent does not add further required
+groups. Multiple groups are deduplicated and retained in the fixed v1 group
+order. Here and below, a successful planner means `QueryPlan.status == "ok"`;
+disabled and failed plans contribute no planner intent. Identifiers and file
+hints do not create required groups merely by being present; only their listed
+`role_hints` do.
 
 ### Recommended Groups
 
-- Feature, data-flow, and bug-trace packs recommend `related_types` and `tests`.
-- Endpoint packs recommend `implementations` and `tests`.
-- If an unknown-intent pack contains an entrypoint but no implementation, the
-  implementation group is recommended.
-- If an unknown-intent pack contains an implementation but no entrypoint, the
-  entrypoint group is recommended.
+- A successful planner intent of `feature_lookup`, `data_flow`, or `bug_trace`
+  recommends `related_types` and `tests`.
+- A successful `endpoint_lookup`, or surface `QueryIntent.target_roles`
+  containing `entrypoint`, recommends `implementations` and `tests`.
+- When there is no successful non-unknown planner intent and the explicit
+  required set is empty, a pack with an entrypoint but no implementation
+  recommends `implementations`; the inverse recommends `entrypoints`.
+- Remove every required group from the recommended set, deduplicate, and retain
+  the fixed v1 group order.
 
 No query receives a blanket config/doc requirement, and exact symbol queries do
-not automatically report missing controllers, tests, or DTOs.
+not automatically report missing controllers, tests, or DTOs. `supporting` is
+never required or recommended, so it never appears as a structural missing
+category or next-query purpose.
 
 Each absent expected category produces one object:
 
@@ -575,14 +626,24 @@ Each absent expected category produces one object:
 {
   "category": "implementations",
   "required": true,
-  "reason": "feature lookup requires an implementation, but none is present in the bounded result set"
+  "reason": "required evidence for implementations is missing from the bounded result set"
 }
 ```
 
 Structural categories use the six group names. The special category `results`
 appears only for an empty pack and means that no raw result or evidence anchor
-was returned. The reason always says `bounded result set`. It must not claim
-that the repository lacks the evidence.
+was returned. It is the sole missing-evidence object for an empty pack and uses
+the exact reason `no result or evidence anchor is present in the bounded result
+set`.
+
+For a non-empty pack, emit absent required groups first, then absent recommended
+groups. Each partition follows the fixed v1 group order. A group can appear at
+most once. Reasons use exactly one of these templates:
+
+- `required evidence for <category> is missing from the bounded result set`;
+- `recommended evidence for <category> is missing from the bounded result set`.
+
+These templates must not claim that the repository lacks the evidence.
 
 ## Next Queries
 
@@ -590,22 +651,36 @@ that the repository lacks the evidence.
 
 Rules:
 
-- Generate at most three queries.
-- Generate required-gap queries before recommended-gap queries.
-- Seed a query from trusted returned evidence or user input in this order:
-  1. the most relevant complementary `RetrievalSummary` name;
-  2. the highest-ranked result file stem;
-  3. the original query.
-- Append only fixed role terms:
-  - entrypoint: `controller route entrypoint`;
-  - implementation: `service implementation`;
-  - related types: `dto model type`;
-  - tests: `test`;
-  - configs/docs: `config documentation`.
-- Normalize whitespace, deduplicate case-insensitively, and cap each query at 160
-  Unicode code points.
-- Every suggestion includes a `purpose` and a reason tied to one missing
-  category.
+- Iterate non-`results` `missing_evidence` records in their already-defined
+  order and generate at most one suggestion per record, stopping after three
+  unique suggestions.
+- For each category, inspect summary lists in the table's left-to-right order.
+  Take the first non-empty string from the first non-empty list. Do not score or
+  compare summary names.
+
+| missing category | summary-list priority | `purpose` | fixed role terms |
+| --- | --- | --- | --- |
+| `entrypoints` | `implementation`, `related_types`, `entry_points` | `find_entrypoints` | `controller route entrypoint` |
+| `implementations` | `entry_points`, `related_types`, `implementation` | `find_implementations` | `service implementation` |
+| `related_types` | `implementation`, `entry_points`, `related_types` | `find_related_types` | `dto model type` |
+| `tests` | `implementation`, `entry_points`, `related_types` | `find_tests` | `test` |
+| `configs_docs` | `entry_points`, `implementation`, `related_types` | `find_configs_docs` | `config documentation` |
+
+- If all listed summary lists are empty, use the file stem of `results[0]`. If
+  there is no ranked result, use the original query. Evidence anchors are not
+  seeds because their kinds do not provide a subject name.
+- Normalize the selected seed by trimming it and collapsing every Unicode
+  whitespace run to one ASCII space. A seed that is then empty is unsafe, so
+  omit that suggestion.
+- Compose `<seed> <fixed role terms>`. If this exceeds 160 Unicode code points,
+  truncate only the seed to leave room for one separating space and the complete
+  fixed role terms, then trim the shortened seed before composition. The role
+  terms are never truncated.
+- Deduplicate composed queries with Unicode `casefold()` after whitespace
+  normalization. If a query duplicates an earlier suggestion, omit it and move
+  to the next missing category; do not try a second seed for the same category.
+- `purpose` is the exact table value. `reason` is copied byte-for-byte from the
+  corresponding `missing_evidence.reason`.
 - Do not use a model, invent a symbol, or expose discarded planner hints.
 - The special empty-pack `results` category does not generate an automatic
   query: appending a structural role to a zero-evidence query would guess the
@@ -625,27 +700,45 @@ Levels are:
 
 - `none`: the pack is empty;
 - `low`: at least one required evidence group is missing;
-- `medium`: every required group is present, but recommended evidence is missing
-  or the pack has no protected original-query evidence;
+- `medium`: every required group is present and either recommended evidence is
+  missing or the pack has no protected original direct evidence;
 - `high`: every required and recommended group is present and at least one
-  result has protected original direct evidence; an exact symbol or endpoint
-  lookup may also be high with one protected direct result.
+  result has protected original direct evidence.
 
 Protected original direct evidence is read from the existing public numeric
 diagnostic `score_parts.evidence_priority == 0`. Phase 2 does not copy ranking
-thresholds or reclassify evidence independently. The exact-lookup exception is
-deterministic: `infer_identifier_intent()` must find an identifier or file hint,
-or explicit/planner intent must identify an endpoint lookup.
+thresholds or reclassify evidence independently. A missing or nonzero diagnostic
+does not count as protected evidence.
 
-The response includes short deterministic reasons. It does not include a
-floating-point confidence score.
+There is no exact-lookup exception. An exact symbol query naturally reaches
+`high` when it has protected direct evidence and no expected group is missing.
+An endpoint lookup with a missing recommended implementation or test remains
+`medium`, even when its direct endpoint result is protected.
+
+Confidence reasons are also deterministic. An empty pack has the single reason
+`no result or evidence anchor is present`. A non-empty pack emits reasons in this
+order:
+
+1. `required evidence is missing: <categories>` or
+   `all required evidence groups are present`;
+2. when the recommended set is non-empty, either
+   `recommended evidence is missing: <categories>` or
+   `all recommended evidence groups are present`;
+3. `protected original direct evidence is present` or
+   `protected original direct evidence is absent`.
+
+Category lists are joined with `, ` in fixed v1 group order. The response does
+not include a floating-point confidence score.
 
 ## Budget Contract
 
 The budget reports effective inputs and actual returned content:
 
 - `max_results`: effective `retrieval.final_top_k`, including an MCP per-call
-  override;
+  override; this limits ranked results only;
+- `max_evidence_anchors`: the effective independent evidence-anchor limit;
+- `max_items`: `max_results + max_evidence_anchors`, the maximum number of pack
+  items for this request;
 - `included_results`: length of `results`;
 - `included_evidence_anchors`: length of `evidence_anchors`;
 - `content_bytes`: sum of UTF-8 bytes in all returned result and anchor content;
@@ -653,13 +746,25 @@ The budget reports effective inputs and actual returned content:
 - `full_file`: whether full-file mode was requested;
 - `max_full_file_bytes`: configured per-file full-content cap.
 
+The retrieval path and context invocation use one shared public pure helper,
+`evidence_anchor_top_k(max_results)`, for `max_evidence_anchors`. The invocation
+passes the resulting value to `build_context_pack()` with the other effective
+options; the builder does not copy the formula or import the retrieval pipeline.
+The helper's Phase 2 behavior is the existing formula
+`max(1, min(5, max_results // 3))` for the already-validated positive
+`max_results`. Exposing it changes no ranking or limit behavior.
+
 The pack does not emit a `truncated` boolean in v1. `QueryBundle` does not retain
 the pre-limit result count, so such a field would pretend to know whether the
 limit excluded relevant evidence. Phase 3 trace data can add honest pre/post
 stage counts later.
 
-Pack construction adds no separate item budget. Every returned result and anchor
-is represented exactly once.
+Pack construction adds no third item budget. The separate result and anchor caps
+define `max_items`, and every returned result and anchor is represented exactly
+once. The builder validates `included_results <= max_results` and
+`included_evidence_anchors <= max_evidence_anchors`; a bundle that violates an
+effective limit is a contract failure rather than a budget object whose reported
+maximum is already exceeded.
 
 ## Markdown Output
 
@@ -680,8 +785,6 @@ need raw rank order can continue using `cst query` or inspect the context JSON.
 ## Error And Empty-State Behavior
 
 - Repository and index errors match the existing query surfaces.
-- A pack-building programming or contract error is returned by MCP as
-  `context_failed`; it is not rewritten as a successful partial pack.
 - Planner or embedding failures keep their existing query fallback behavior.
   The packer receives the resulting bundle and does not create a second fallback
   path.
@@ -690,6 +793,38 @@ need raw rank order can continue using `cst query` or inspect the context JSON.
 - An empty pack has no items, no reading order, `confidence.level = none`, and a
   required missing-evidence record with `category = results`.
 - `next_queries` may be empty when there is no evidence-derived safe seed.
+
+`context_pack.py` defines `ContextPackError` for known pack-contract failures,
+including duplicate or unresolved item references, an invalid classification
+value, and failure to materialize the typed pack as JSON-native values. The
+public exception message is respectively one of these fixed strings: `duplicate
+ContextPack item id`, `invalid ContextPack item reference`, `invalid ContextPack
+classification`, `ContextPack budget exceeded`, or `ContextPack contains a
+non-JSON value`. It contains no file path, source content, or raw exception text.
+The context operation has two explicit exception phases:
+
+1. repository resolution, config loading, argument validation,
+   `query_repository()`, and construction of the unchanged raw query payload use
+   the existing query error behavior;
+2. `build_context_pack()`, item-reference validation, context payload
+   materialization, and CLI ContextPack formatting/encoding form the pack phase.
+
+For MCP, a `ContextPackError` in phase 2 returns the normal error envelope with
+`code = context_failed` and the bounded contract message. Any other `Exception`
+from phase 2 also returns `context_failed`, but with the fixed message `Context
+pack construction failed`; internal exception text is not exposed. Neither case
+is returned as `query_failed`, converted into a successful partial pack, or
+allowed to escape the tool function. `BaseException` subclasses such as process
+interrupts are not caught.
+
+For the CLI, either phase-2 failure writes `Error: context_failed: <message>` to
+stderr and exits with status 1. This remains true under `--json`, matching the
+existing query command's stderr-and-exit behavior rather than inventing a CLI
+JSON error envelope. Invalid Markdown dereferences and JSON encoding failures are
+inside this boundary. MCP framework transport failures after the tool has
+returned are outside it; contract tests must prove that the returned payload can
+be encoded with `json.dumps()` so normal transport cannot encounter a pack value
+type error.
 
 ## MCP Feedback And Privacy
 
@@ -777,6 +912,34 @@ planner-disabled, and deterministic. Required cases cover at least:
 - a config or documentation query that places evidence in `configs_docs`;
 - an exact symbol query that does not invent flow-oriented required gaps.
 
+The config/documentation case has a fixed committed source. Add
+`tests/fixtures/context-pack-docs/README.md` with this minimal realistic
+content:
+
+```markdown
+# Program Tool Developer Setup
+
+Install dependencies and run the developer utilities locally.
+```
+
+Add a repository entry with `repo_key = context_pack_docs`, this snapshot path,
+and only the `p2_context_pack` profile. Its required case uses query `Program
+Tool Developer Setup documentation`. It must match `README.md` in
+`configs_docs` and have no required `configs_docs` gap. A focused builder or
+runner integration test also locks the resulting item role to `readme`; the
+quality schema does not gain a role-specific matcher. Do not reuse the existing
+`program_tool/package.json`: it is classified as generic `source` and modifying
+that shared snapshot could change existing raw query anchors. The isolated
+README is already recognized as evidence-anchor kind `readme`, so no classifier
+or anchor-kind expansion is required.
+
+The committed README is 94 UTF-8 bytes on disk because it has a final newline.
+The default non-full-file retrieval path passes `splitlines()` output through
+the existing context-window join, so the returned anchor content has no final
+newline and is 93 UTF-8 bytes. `context_content_bytes` and the pack budget count
+returned content, not source-file size; the deterministic docs case therefore
+locks 93 bytes without changing retrieval behavior.
+
 Unit tests, rather than the profile, cover synthetic empty and partial packs.
 Phase 2 does not add a new model-backed acceptance dependency. If implementation
 changes retrieval behavior despite this design, that is a design checkpoint and
@@ -789,15 +952,31 @@ requires rerunning the applicable Phase 1 gates.
 - Every result and anchor produces one item and one valid reference.
 - IDs, item order, group order, and reading order are deterministic.
 - Frontend, generic path, retrieval-summary, anchor, and fallback role mappings
-  follow the table.
+  emit the table's exact group, role, and basis values, including
+  `summary_related_type` rather than `related_type`.
 - Explicit test/config/entrypoint/implementation intents promote only group
   order, not raw result order.
-- Required and recommended gaps are inferred conservatively.
-- Exact symbol queries do not receive unrelated required gaps.
-- Next queries are evidence-derived, deduplicated, bounded to three, and capped
-  at 160 code points.
-- Confidence levels and reasons follow the structural rules.
-- Budget counts and UTF-8 byte totals are exact.
+- A component/store query requires `implementations` rather than `entrypoints`;
+  configuration save logic with `wants_artifact = false` does not require
+  `configs_docs`; page/view and explicit config-file cases exercise the opposite
+  branches.
+- Planner-added expanded tokens such as `controller`, `service`, and `dto` do
+  not become explicit required groups.
+- Required and recommended gaps are inferred conservatively, deduplicated in
+  fixed order, and use the exact reason templates.
+- Exact symbols such as `WorkspaceController` may require their own hinted group
+  but do not receive implementation/test recommendations merely because the
+  identifier contains `Controller`; a standalone `controller` term exercises
+  the explicit-target branch.
+- Next queries exercise every category's summary-list priority, result-stem and
+  original-query fallback, duplicate omission, purpose value, fixed reason, and
+  suffix-preserving 160-code-point cap.
+- Confidence levels and ordered reasons follow the structural rules; in
+  particular, an endpoint with protected direct evidence and a recommended gap
+  remains `medium`.
+- Budget counts, `max_evidence_anchors`, `max_items`, and UTF-8 byte totals are
+  exact for multiple `final_top_k` values, and a synthetic over-limit bundle
+  raises `ContextPackError`.
 - Empty bundles produce a valid empty pack.
 
 ### Contract Tests
@@ -808,8 +987,10 @@ requires rerunning the applicable Phase 1 gates.
   diagnostics as query output.
 - Item references resolve to those raw arrays.
 - CLI JSON and MCP serialize identical `context_pack` objects.
+- The MCP payload is accepted by `json.dumps()` without a custom encoder.
 - Markdown renders every reading-order item exactly once.
-- Schema version and enum values are locked by tests.
+- Schema version, role, basis, purpose, status, confidence, and group values are
+  locked by tests.
 
 ### Invocation Tests
 
@@ -818,11 +999,16 @@ requires rerunning the applicable Phase 1 gates.
 - Pack construction performs no store, vector, filesystem, network, embedding,
   or planner invocation.
 - Missing index and invalid `final_top_k` errors match the declared envelopes.
+- A builder `ValueError`, explicit `ContextPackError`, unexpected `Exception`,
+  invalid Markdown reference, and CLI JSON encoding failure stay inside the pack
+  boundary and produce the declared MCP/CLI behavior.
 - MCP registration exposes both query and context operations.
 
 ### Quality And Privacy Tests
 
 - `p2_context_pack` executes and passes every required case.
+- The isolated committed `context-pack-docs/README.md` case lands in
+  `configs_docs` without changing a snapshot used by existing raw-result cases.
 - Existing `ci` raw-result cases still pass.
 - Context completeness aggregates are stable and correctly exclude null cases.
 - Feedback contains counts and category names but no source content, paths, item
@@ -851,6 +1037,9 @@ Phase 2 is complete only when all of the following are true:
 10. README, retrieval-quality documentation, and the roadmap describe the two
     public operations consistently. The roadmap marks Phase 2 complete only
     after these gates pass.
+11. Known and unexpected pack-phase failures follow the declared
+    `context_failed` and CLI exit contracts without leaking internal exception
+    text or returning a fabricated partial pack.
 
 ## Likely Change Surface
 
@@ -858,8 +1047,14 @@ Expected changes are intentionally bounded:
 
 - Create `src/context_search_tool/context_pack.py`
   - define the typed ContextPack models;
+  - define `ContextPackError` and validate references and JSON-native values;
   - implement pure classification, gap, query, confidence, budget, and payload
     helpers.
+- Modify `src/context_search_tool/retrieval.py`
+  - expose the existing `_evidence_anchor_top_k` calculation as the public pure
+    `evidence_anchor_top_k` helper and use it from retrieval and the context
+    invocation before passing the limit to the builder;
+  - do not change its formula, candidate selection, ranking, or result limits.
 - Modify `src/context_search_tool/cli.py`
   - extract only the small shared query/config path needed by both commands;
   - add `cst context`.
@@ -876,15 +1071,18 @@ Expected changes are intentionally bounded:
   - emit context case metrics.
 - Modify `tests/fixtures/retrieval_quality/queries.json`
   - add the deterministic P2 profile and required cases.
+- Add `tests/fixtures/context-pack-docs/README.md`
+  - provide the exact committed documentation anchor for the declared
+    config/documentation case in a P2-only snapshot.
 - Add focused tests for the builder, formatters, CLI, MCP, quality schema,
   runner, aggregation, and feedback.
 - Modify `README.md`, `docs/retrieval-quality.md`, and the roadmap after verified
   acceptance.
 
-`retrieval.py`, ranking functions, embedding providers, vector storage, index
-schema, and framework plugins are not expected to change. If implementation
-requires one of those changes, stop for a design review instead of expanding
-scope silently.
+Apart from exposing the unchanged evidence-anchor limit helper, retrieval
+behavior, ranking functions, embedding providers, vector storage, index schema,
+and framework plugins are not expected to change. Any other change in those
+areas requires a design review instead of silent scope expansion.
 
 ## Risks And Mitigations
 
