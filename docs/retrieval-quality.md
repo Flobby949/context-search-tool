@@ -82,9 +82,9 @@ Context metrics have these meanings:
 | `next_query_count` | Deterministically composed next-query records in the pack. |
 | `context_content_bytes` | UTF-8 bytes of returned result and evidence-anchor content recorded by the pack budget. |
 
-Pack status and confidence are structural case metadata for the bounded
-response. They are not relevance probabilities and do not claim repository-wide
-completeness.
+`context_pack` status and confidence are structural metadata on the bounded
+returned pack, and the quality report records them as case metadata; they are
+not relevance probabilities and do not claim repository-wide completeness.
 
 The offline profile contains five required cases over three committed snapshot
 repositories:
@@ -245,7 +245,7 @@ under `aggregate.metrics.overall.latency_ms`.
 - Checked implementation commit: `d321f5680774b871c87dbd699129eed219b1eb81`
 - Evidence: No fresh Phase 1 pair was accepted. `p1-vector-bge-reconciled.json` and `p1-hybrid-bge-reconciled.json` each selected and executed 7/7 cases but passed 6/7, and the persisted pair gate failed. The last Phase 1 closure commit is `b8527e75e602023aa7e31d360ada4595ffb444f2`; reports from `911add4d20bfcbb3190bc9045478686a87226587` are stale and explicitly rejected as acceptance evidence.
 - Roadmap closure: pending
-- Reason: `PYTHONPATH="$PWD/src" conda run -n base cst quality run tests/fixtures/retrieval_quality/queries.json --profile p1_vector_bge --output .quality/real-projects/p1-vector-bge-reconciled.json --markdown .quality/real-projects/p1-vector-bge-reconciled.md` and `PYTHONPATH="$PWD/src" conda run -n base cst quality run tests/fixtures/retrieval_quality/queries.json --profile p1_hybrid_bge --output .quality/real-projects/p1-hybrid-bge-reconciled.json --markdown .quality/real-projects/p1-hybrid-bge-reconciled.md` each returned 6/7 because `audit-status-literal` missed its Top-3 `AuditStatus.java` expectation; the persisted pair gate then failed.
+- Reason: `cst quality run ... --profile p1_vector_bge` and `cst quality run ... --profile p1_hybrid_bge` each returned 6/7 because `audit-status-literal` missed its Top-3 `AuditStatus.java` expectation; the persisted pair gate then failed.
 
 ## MCP Feedback Privacy
 
