@@ -194,6 +194,38 @@ def test_semantic_candidates_embeds_once_searches_each_variant_and_merges_proven
     ]
 
 
+def test_semantic_candidates_retries_original_after_variant_batch_count_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    variants = [
+        QueryVariant("original", "query", "original"),
+        QueryVariant("planner:0", "rewrite", "planner"),
+    ]
+    provider = CapturingEmbeddingProvider([[1, 0]])
+    vector_store = CapturingVectorStore(
+        {(1.0, 0.0): [VectorSearchResult("original-hit", 0.75)]}
+    )
+    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(retrieval, "NumpyVectorStore", lambda _index_dir: vector_store)
+
+    candidates, executed, status = retrieval._semantic_candidates(
+        tmp_path,
+        variants,
+        DEFAULT_CONFIG,
+        set(),
+    )
+
+    assert provider.calls == [["query", "rewrite"], ["query"]]
+    assert vector_store.calls == [
+        ((1.0, 0.0), DEFAULT_CONFIG.retrieval.semantic_top_k, set())
+    ]
+    assert executed == variants[:1]
+    assert status == "embedding_fallback"
+    assert [candidate.chunk_id for candidate in candidates] == ["original-hit"]
+    assert candidates[0].semantic_matches == [SemanticMatch("original", 0.75)]
+
+
 def test_semantic_candidates_retries_original_once_after_variant_batch_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -221,6 +253,34 @@ def test_semantic_candidates_retries_original_once_after_variant_batch_failure(
     assert status == "embedding_fallback"
     assert [candidate.chunk_id for candidate in candidates] == ["original-hit"]
     assert candidates[0].semantic_matches == [SemanticMatch("original", 0.75)]
+
+
+def test_semantic_candidates_propagates_original_retry_count_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    variants = [
+        QueryVariant("original", "query", "original"),
+        QueryVariant("planner:0", "rewrite", "planner"),
+    ]
+    provider = CapturingEmbeddingProvider([])
+    vector_store = CapturingVectorStore({})
+    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(retrieval, "NumpyVectorStore", lambda _index_dir: vector_store)
+
+    with pytest.raises(
+        ValueError,
+        match="embedding response count does not match original query",
+    ):
+        retrieval._semantic_candidates(
+            tmp_path,
+            variants,
+            DEFAULT_CONFIG,
+            set(),
+        )
+
+    assert provider.calls == [["query", "rewrite"], ["query"]]
+    assert vector_store.calls == []
 
 
 def test_semantic_candidates_propagates_original_retry_failure(
@@ -382,6 +442,72 @@ def test_planner_rewrite_recalls_target_by_vector_and_outranks_weak_original(
     assert "semantic" not in bundle.results[0].score_parts
     assert "planner_lexical" not in bundle.results[0].score_parts
     assert bundle.results[1].score_parts["semantic"] == pytest.approx(0.40)
+
+
+def test_query_repository_evidence_anchor_preserves_retrieval_semantic_matches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text(
+        "Repository overview without query terms.\n",
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        embedding=EmbeddingConfig(
+            provider="hash",
+            model="hash-v1",
+            dimensions=2,
+        ),
+        retrieval=RetrievalConfig(
+            semantic_top_k=1,
+            lexical_top_k=0,
+            final_top_k=1,
+            context_before_lines=0,
+            context_after_lines=0,
+        ),
+    )
+    index_repository(repo, config)
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+    readme_id = store.chunk_for_line(Path("README.md"), 1).chunk_id
+    provider = CapturingEmbeddingProvider([[1, 0], [0, 1]])
+    vector_store = CapturingVectorStore(
+        {
+            (1.0, 0.0): [VectorSearchResult(readme_id, 0.25)],
+            (0.0, 1.0): [VectorSearchResult(readme_id, 0.90)],
+        }
+    )
+    planner = FakePlanner(
+        QueryPlan(
+            original_query="opaque query",
+            rewritten_queries=["semantic docs"],
+            status="ok",
+        )
+    )
+    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(retrieval, "NumpyVectorStore", lambda _index_dir: vector_store)
+
+    bundle = query_repository(repo, "opaque query", config, planner=planner)
+
+    assert provider.calls == [["opaque query", "semantic docs"]]
+    assert vector_store.calls == [
+        ((1.0, 0.0), 1, set()),
+        ((0.0, 1.0), 1, set()),
+    ]
+    assert bundle.variant_retrieval_status == "hybrid"
+    assert bundle.query_variants == [
+        QueryVariant("original", "opaque query", "original"),
+        QueryVariant("planner:0", "semantic docs", "planner"),
+    ]
+    assert bundle.results == []
+    assert len(bundle.evidence_anchors) == 1
+    anchor = bundle.evidence_anchors[0]
+    assert anchor.file_path == Path("README.md")
+    assert anchor.semantic_matches == [
+        SemanticMatch("original", 0.25),
+        SemanticMatch("planner:0", 0.90),
+    ]
 
 
 def test_disabled_failure_and_empty_plans_use_identical_original_vector_results(
