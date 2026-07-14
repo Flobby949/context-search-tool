@@ -1,3 +1,4 @@
+import json
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
@@ -18,11 +19,14 @@ from context_search_tool.context_pack import (
     DUPLICATE_ITEM_ERROR,
     INVALID_CLASSIFICATION_ERROR,
     INVALID_REFERENCE_ERROR,
+    NON_JSON_ERROR,
     ContextBudget,
     ContextPack,
     ContextPackError,
     ContextPackOptions,
     MissingEvidence,
+    NextQuery,
+    ReadinessConfidence,
     resolve_context_pack_options,
 )
 from context_search_tool.models import (
@@ -629,7 +633,7 @@ def test_groups_filter_source_order_with_results_before_anchors() -> None:
     )
 
 
-def test_empty_and_nonempty_packs_without_expected_groups_keep_scaffold_values() -> None:
+def test_empty_and_nonempty_packs_without_expected_groups_use_final_state() -> None:
     empty_pack = context_pack.build_context_pack(query_bundle(), options())
     ready_pack = context_pack.build_context_pack(
         query_bundle([result("src/plain.py")]),
@@ -637,13 +641,28 @@ def test_empty_and_nonempty_packs_without_expected_groups_keep_scaffold_values()
     )
 
     assert empty_pack.status == "empty"
-    assert empty_pack.missing_evidence == ()
+    assert empty_pack.missing_evidence == (
+        MissingEvidence(
+            category="results",
+            required=True,
+            reason="no result or evidence anchor is present in the bounded result set",
+        ),
+    )
     assert empty_pack.next_queries == ()
-    assert (empty_pack.confidence.level, empty_pack.confidence.reasons) == ("none", ())
+    assert empty_pack.confidence == ReadinessConfidence(
+        level="none",
+        reasons=("no result or evidence anchor is present",),
+    )
     assert ready_pack.status == "ready"
     assert ready_pack.missing_evidence == ()
     assert ready_pack.next_queries == ()
-    assert (ready_pack.confidence.level, ready_pack.confidence.reasons) == ("medium", ())
+    assert ready_pack.confidence == ReadinessConfidence(
+        level="high",
+        reasons=(
+            "all required evidence groups are present",
+            "protected original direct evidence is present",
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -1110,10 +1129,510 @@ def test_empty_pack_does_not_apply_structural_evidence_gaps() -> None:
     )
 
     assert pack.status == "empty"
-    assert pack.missing_evidence == ()
+    assert pack.items == ()
+    assert pack.groups == {group: () for group in CONTEXT_GROUPS}
+    assert pack.missing_evidence == (
+        MissingEvidence(
+            category="results",
+            required=True,
+            reason="no result or evidence anchor is present in the bounded result set",
+        ),
+    )
     assert pack.reading_order == ()
     assert pack.next_queries == ()
-    assert (pack.confidence.level, pack.confidence.reasons) == ("none", ())
+    assert pack.confidence == ReadinessConfidence(
+        level="none",
+        reasons=("no result or evidence anchor is present",),
+    )
+    assert pack.budget.included_results == 0
+    assert pack.budget.included_evidence_anchors == 0
+    assert pack.budget.content_bytes == 0
+
+
+_NEXT_QUERY_CATEGORY_CASES = [
+    pytest.param(
+        "controller",
+        ("implementation", "related_types", "entry_points"),
+        "find_entrypoints",
+        "controller route entrypoint",
+        id="entrypoints",
+    ),
+    pytest.param(
+        "service",
+        ("entry_points", "related_types", "implementation"),
+        "find_implementations",
+        "service implementation",
+        id="implementations",
+    ),
+    pytest.param(
+        "WorkspaceDto",
+        ("implementation", "entry_points", "related_types"),
+        "find_related_types",
+        "dto model type",
+        id="related-types",
+    ),
+    pytest.param(
+        "workspace test file",
+        ("implementation", "entry_points", "related_types"),
+        "find_tests",
+        "test",
+        id="tests",
+    ),
+    pytest.param(
+        "Docker deployment config file",
+        ("entry_points", "implementation", "related_types"),
+        "find_configs_docs",
+        "config documentation",
+        id="configs-docs",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("query", "priorities", "purpose", "suffix"),
+    _NEXT_QUERY_CATEGORY_CASES,
+)
+def test_next_query_prefers_priority_two_when_one_is_empty_and_three_has_seed(
+    query: str,
+    priorities: tuple[str, str, str],
+    purpose: str,
+    suffix: str,
+) -> None:
+    first_priority, second_priority, third_priority = priorities
+    summary = RetrievalSummary()
+    setattr(summary, first_priority, [])
+    setattr(summary, second_priority, ["\t", "  Priority2\u2003Seed  ", "Ignored"])
+    setattr(summary, third_priority, ["Priority3Seed"])
+
+    pack = context_pack.build_context_pack(
+        query_bundle([result("src/plain.py")], query=query, summary=summary),
+        options(),
+    )
+
+    suggestion = next(item for item in pack.next_queries if item.purpose == purpose)
+    assert suggestion.query == f"Priority2 Seed {suffix}"
+    assert suggestion.reason == next(
+        item.reason
+        for item in pack.missing_evidence
+        if item.category
+        == {
+            "find_entrypoints": "entrypoints",
+            "find_implementations": "implementations",
+            "find_related_types": "related_types",
+            "find_tests": "tests",
+            "find_configs_docs": "configs_docs",
+        }[purpose]
+    )
+
+
+@pytest.mark.parametrize(
+    ("query", "priorities", "purpose", "suffix"),
+    _NEXT_QUERY_CATEGORY_CASES,
+)
+def test_next_query_prefers_priority_one_when_all_summary_priorities_have_seeds(
+    query: str,
+    priorities: tuple[str, str, str],
+    purpose: str,
+    suffix: str,
+) -> None:
+    summary = RetrievalSummary()
+    for index, field_name in enumerate(priorities, start=1):
+        setattr(summary, field_name, [f"Priority{index}Seed"])
+
+    pack = context_pack.build_context_pack(
+        query_bundle([result("src/plain.py")], query=query, summary=summary),
+        options(),
+    )
+
+    suggestion = next(item for item in pack.next_queries if item.purpose == purpose)
+    assert suggestion.query == f"Priority1Seed {suffix}"
+
+
+@pytest.mark.parametrize(
+    ("query", "priorities", "purpose", "suffix"),
+    _NEXT_QUERY_CATEGORY_CASES,
+)
+def test_next_query_uses_priority_three_when_first_two_have_no_safe_seed(
+    query: str,
+    priorities: tuple[str, str, str],
+    purpose: str,
+    suffix: str,
+) -> None:
+    first_priority, second_priority, third_priority = priorities
+    summary = RetrievalSummary()
+    setattr(summary, first_priority, [" \t "])
+    setattr(summary, second_priority, ["\n"])
+    setattr(summary, third_priority, ["Priority3Seed"])
+
+    pack = context_pack.build_context_pack(
+        query_bundle([result("src/plain.py")], query=query, summary=summary),
+        options(),
+    )
+
+    suggestion = next(item for item in pack.next_queries if item.purpose == purpose)
+    assert suggestion.query == f"Priority3Seed {suffix}"
+
+
+def test_next_query_falls_back_to_first_ranked_result_stem() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle([result("src/FallbackSeed.py")], query="service"),
+        options(),
+    )
+
+    assert pack.next_queries == (
+        NextQuery(
+            query="FallbackSeed service implementation",
+            purpose="find_implementations",
+            reason=pack.missing_evidence[0].reason,
+        ),
+    )
+
+
+def test_next_query_falls_back_to_original_query_for_anchor_only_bundle() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            query="  controller\u00a0route  ",
+            evidence_anchors=[anchor("notes/other.txt", "other")],
+        ),
+        options(),
+    )
+
+    assert pack.status == "partial"
+    assert pack.next_queries[0].query == (
+        "controller route controller route entrypoint"
+    )
+    assert all("other" not in item.query for item in pack.next_queries)
+
+
+def test_next_query_collapses_all_unicode_whitespace() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result("src/plain.py")],
+            query="service",
+            summary=RetrievalSummary(
+                entry_points=["\u2002Alpha\n\tBeta\u00a0Gamma\u2003"],
+            ),
+        ),
+        options(),
+    )
+
+    assert pack.next_queries[0].query == "Alpha Beta Gamma service implementation"
+
+
+def test_next_query_omits_empty_normalized_fallback_seed() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle([result("   ")], query="service"),
+        options(),
+    )
+
+    assert missing_categories(pack, required=True) == ("implementations",)
+    assert pack.next_queries == ()
+
+
+def test_next_query_deduplicates_without_trying_an_alternate_seed() -> None:
+    bundle = query_bundle(
+        [result("src/plain.py")],
+        summary=RetrievalSummary(entry_points=["  Same\tSeed  ", "Alternate"]),
+    )
+    missing = (
+        MissingEvidence("implementations", True, "first reason"),
+        MissingEvidence("implementations", False, "second reason"),
+    )
+
+    suggestions = context_pack._build_next_queries(bundle, missing)
+
+    assert suggestions == (
+        NextQuery(
+            query="Same Seed service implementation",
+            purpose="find_implementations",
+            reason="first reason",
+        ),
+    )
+    assert all("Alternate" not in item.query for item in suggestions)
+
+
+def test_next_query_dedupe_key_casefolds_and_normalizes_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeds = iter(("Same Seed", "same\tseed"))
+    monkeypatch.setattr(
+        context_pack,
+        "_select_next_query_seed",
+        lambda bundle, fields: next(seeds),
+    )
+    missing = (
+        MissingEvidence("implementations", True, "first reason"),
+        MissingEvidence("implementations", False, "second reason"),
+    )
+
+    suggestions = context_pack._build_next_queries(query_bundle(), missing)
+
+    assert suggestions == (
+        NextQuery(
+            query="Same Seed service implementation",
+            purpose="find_implementations",
+            reason="first reason",
+        ),
+    )
+
+
+def test_next_queries_stop_after_three_unique_suggestions_in_missing_order() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result("src/Seed.py")],
+            query="opaque",
+            planner=QueryPlan(
+                original_query="opaque",
+                intent="feature_lookup",
+                status="ok",
+            ),
+        ),
+        options(),
+    )
+
+    assert tuple(item.purpose for item in pack.next_queries) == (
+        "find_entrypoints",
+        "find_implementations",
+        "find_related_types",
+    )
+    assert tuple(item.reason for item in pack.next_queries) == tuple(
+        item.reason for item in pack.missing_evidence[:3]
+    )
+
+
+def test_next_query_preserves_full_suffix_at_exact_160_code_point_bound() -> None:
+    suffix = "service implementation"
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result("src/plain.py")],
+            query="service",
+            summary=RetrievalSummary(entry_points=["界" * 500]),
+        ),
+        options(),
+    )
+
+    query = pack.next_queries[0].query
+    assert len(query) == 160
+    assert query.endswith(f" {suffix}")
+
+
+def test_results_and_supporting_missing_categories_have_no_query_rule() -> None:
+    bundle = query_bundle([result("src/Seed.py")])
+
+    suggestions = context_pack._build_next_queries(
+        bundle,
+        (
+            MissingEvidence("results", True, "results reason"),
+            MissingEvidence("supporting", True, "supporting reason"),
+        ),
+    )
+
+    assert suggestions == ()
+
+
+def test_next_queries_ignore_generated_and_discarded_retrieval_hints() -> None:
+    secret_values = {
+        "EXPANDED_SECRET",
+        "FOLLOWUP_SECRET",
+        "REWRITE_SECRET",
+        "GREP_SECRET",
+        "SYMBOL_SECRET",
+        "DISCARDED_SECRET",
+    }
+    bundle = query_bundle(
+        [result("src/SafeSeed.py")],
+        query="service",
+        expanded_tokens=["EXPANDED_SECRET"],
+        planner=QueryPlan(
+            original_query="service",
+            rewritten_queries=["REWRITE_SECRET"],
+            grep_keywords=["GREP_SECRET"],
+            symbol_hints=["SYMBOL_SECRET"],
+            discarded_hints=["DISCARDED_SECRET"],
+            intent="symbol_lookup",
+            status="ok",
+        ),
+    )
+    bundle = replace(bundle, followup_keywords=["FOLLOWUP_SECRET"])
+
+    pack = context_pack.build_context_pack(bundle, options())
+
+    assert pack.next_queries[0].query == "SafeSeed service implementation"
+    assert not any(
+        secret in suggestion.query
+        for secret in secret_values
+        for suggestion in pack.next_queries
+    )
+
+
+@pytest.mark.parametrize(
+    ("evidence_priority", "expected_level", "protected_reason"),
+    [
+        (1.0, "medium", "protected original direct evidence is absent"),
+        (None, "medium", "protected original direct evidence is absent"),
+        (False, "medium", "protected original direct evidence is absent"),
+        (0, "high", "protected original direct evidence is present"),
+        (0.0, "high", "protected original direct evidence is present"),
+    ],
+)
+def test_readiness_confidence_uses_only_exact_numeric_zero_direct_diagnostic(
+    evidence_priority: float | bool | None,
+    expected_level: str,
+    protected_reason: str,
+) -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result("src/plain.py", evidence_priority=evidence_priority)],
+            query="opaque",
+        ),
+        options(),
+    )
+
+    assert pack.confidence == ReadinessConfidence(
+        level=expected_level,
+        reasons=(
+            "all required evidence groups are present",
+            protected_reason,
+        ),
+    )
+
+
+def test_protected_direct_evidence_depends_on_value_not_score_parts_dict_type() -> None:
+    raw_result = replace(
+        result("src/plain.py"),
+        score_parts=_DictSubclass({"evidence_priority": 0}),
+    )
+
+    pack = context_pack.build_context_pack(
+        query_bundle([raw_result], query="opaque"),
+        options(),
+    )
+
+    assert pack.confidence.level == "high"
+
+
+def test_anchor_only_zero_diagnostic_does_not_count_as_protected_direct_evidence() -> None:
+    zero_anchor = replace(
+        anchor("notes/other.txt", "other"),
+        score_parts={"evidence_priority": 0},
+    )
+
+    pack = context_pack.build_context_pack(
+        query_bundle(query="opaque", evidence_anchors=[zero_anchor]),
+        options(),
+    )
+
+    assert pack.status == "ready"
+    assert pack.confidence == ReadinessConfidence(
+        level="medium",
+        reasons=(
+            "all required evidence groups are present",
+            "protected original direct evidence is absent",
+        ),
+    )
+
+
+def test_required_gap_forces_low_confidence_with_ordered_reasons() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result("src/plain.py")],
+            query="opaque",
+            planner=QueryPlan(
+                original_query="opaque",
+                intent="feature_lookup",
+                status="ok",
+            ),
+        ),
+        options(),
+    )
+
+    assert pack.confidence == ReadinessConfidence(
+        level="low",
+        reasons=(
+            "required evidence is missing: entrypoints, implementations",
+            "recommended evidence is missing: related_types, tests",
+            "protected original direct evidence is present",
+        ),
+    )
+
+
+def test_present_required_and_recommended_states_have_exact_ordered_reasons() -> None:
+    bundle = query_bundle(
+        one_result_per_context_group()[:4],
+        query="opaque",
+        planner=QueryPlan(
+            original_query="opaque",
+            intent="feature_lookup",
+            status="ok",
+        ),
+    )
+
+    pack = context_pack.build_context_pack(bundle, options())
+
+    assert pack.confidence == ReadinessConfidence(
+        level="high",
+        reasons=(
+            "all required evidence groups are present",
+            "all recommended evidence groups are present",
+            "protected original direct evidence is present",
+        ),
+    )
+
+
+def test_endpoint_query_with_protected_entrypoint_and_recommended_gaps_is_medium() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result("src/main/controller/AppController.java")],
+            query="controller",
+        ),
+        options(),
+    )
+
+    assert missing_categories(pack, required=False) == ("implementations", "tests")
+    assert pack.confidence == ReadinessConfidence(
+        level="medium",
+        reasons=(
+            "all required evidence groups are present",
+            "recommended evidence is missing: implementations, tests",
+            "protected original direct evidence is present",
+        ),
+    )
+
+
+def test_identifier_hinted_entrypoint_without_surface_recommendations_reaches_high() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result("src/main/controller/WorkspaceController.java")],
+            query="WorkspaceController",
+            planner=QueryPlan(
+                original_query="WorkspaceController",
+                intent="symbol_lookup",
+                status="ok",
+            ),
+        ),
+        options(),
+    )
+
+    assert pack.missing_evidence == ()
+    assert pack.confidence.level == "high"
+    assert pack.confidence.reasons == (
+        "all required evidence groups are present",
+        "protected original direct evidence is present",
+    )
+
+
+def test_recommended_gap_is_medium_even_with_no_required_gap() -> None:
+    pack = context_pack.build_context_pack(
+        query_bundle(
+            [result("src/main/controller/AppController.java")],
+            query="opaque",
+        ),
+        options(),
+    )
+
+    assert missing_categories(pack, required=True) == ()
+    assert missing_categories(pack, required=False) == ("implementations",)
+    assert pack.confidence.level == "medium"
 
 
 def test_explicit_tests_requirement_promotes_tests_before_fixed_remaining_groups() -> None:
@@ -1249,6 +1768,429 @@ def test_build_context_pack_does_not_mutate_bundle_source_lists() -> None:
     assert bundle.evidence_anchors == anchor_snapshot
     assert bundle.results[0] is raw_result
     assert bundle.evidence_anchors[0] is raw_anchor
+
+
+def test_resolve_context_item_returns_exact_raw_result_and_anchor() -> None:
+    raw_result = result("src/plain.py")
+    raw_anchor = anchor("README.md", "readme")
+    bundle = query_bundle([raw_result], evidence_anchors=[raw_anchor])
+    pack = context_pack.build_context_pack(bundle, options())
+
+    assert context_pack.resolve_context_item(bundle, pack.items[0]) is raw_result
+    assert context_pack.resolve_context_item(bundle, pack.items[1]) is raw_anchor
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(lambda item: replace(item, source="RESULT"), id="source"),
+        pytest.param(lambda item: replace(item, source_index=True), id="bool-index"),
+        pytest.param(lambda item: replace(item, source_index=-1), id="negative-index"),
+        pytest.param(lambda item: replace(item, source_index=99), id="out-of-range-index"),
+        pytest.param(lambda item: replace(item, id="result:99"), id="nonexistent-id"),
+        pytest.param(
+            lambda item: replace(item, file_path="private/offending-path.py"),
+            id="path-mismatch",
+        ),
+        pytest.param(lambda item: replace(item, start_line=2), id="start-mismatch"),
+        pytest.param(lambda item: replace(item, end_line=3), id="end-mismatch"),
+        pytest.param(
+            lambda item: replace(item, file_path=Path("src/plain.py")),
+            id="path-type",
+        ),
+    ],
+)
+def test_resolve_context_item_maps_every_invalid_reference_to_fixed_error(mutate) -> None:
+    bundle, pack = single_result_pack()
+
+    with pytest.raises(ContextPackError) as exc_info:
+        context_pack.resolve_context_item(bundle, mutate(pack.items[0]))
+
+    assert str(exc_info.value) == INVALID_REFERENCE_ERROR
+    assert "offending-path" not in str(exc_info.value)
+
+
+def test_context_pack_payload_has_exact_json_native_schema_v1() -> None:
+    bundle = query_bundle(
+        [result("src/main/controller/AppController.java")],
+        query="controller",
+        evidence_anchors=[anchor("README.md", "readme")],
+    )
+    pack = context_pack.build_context_pack(bundle, options())
+
+    payload = context_pack.context_pack_payload(bundle, pack)
+
+    assert tuple(payload) == (
+        "schema_version",
+        "status",
+        "items",
+        "groups",
+        "reading_order",
+        "missing_evidence",
+        "next_queries",
+        "confidence",
+        "budget",
+    )
+    assert isinstance(payload["items"], list)
+    assert all(
+        tuple(item) == (
+            "id",
+            "source",
+            "source_index",
+            "file_path",
+            "start_line",
+            "end_line",
+            "group",
+            "role",
+            "classification_basis",
+        )
+        for item in payload["items"]
+    )
+    assert tuple(payload["groups"]) == CONTEXT_GROUPS
+    assert all(type(value) is list for value in payload["groups"].values())
+    assert type(payload["reading_order"]) is list
+    assert type(payload["missing_evidence"]) is list
+    assert all(
+        tuple(item) == ("category", "required", "reason")
+        for item in payload["missing_evidence"]
+    )
+    assert type(payload["next_queries"]) is list
+    assert all(
+        tuple(item) == ("query", "purpose", "reason")
+        for item in payload["next_queries"]
+    )
+    assert tuple(payload["confidence"]) == ("level", "reasons")
+    assert type(payload["confidence"]["reasons"]) is list
+    assert tuple(payload["budget"]) == (
+        "max_results",
+        "max_evidence_anchors",
+        "max_items",
+        "included_results",
+        "included_evidence_anchors",
+        "content_bytes",
+        "context_before_lines",
+        "context_after_lines",
+        "full_file",
+        "max_full_file_bytes",
+    )
+    serialized = json.dumps(payload, allow_nan=False)
+    for forbidden in (
+        "score",
+        "score_parts",
+        "semantic_matches",
+        "followup_keywords",
+        "truncated",
+    ):
+        assert forbidden not in serialized
+
+
+def test_context_pack_payload_dereferences_no_content_or_ranking_metadata() -> None:
+    bundle = query_bundle(
+        [result("src/plain.py", content="PRIVATE CONTENT")],
+        evidence_anchors=[anchor("README.md", "readme", content="ANCHOR CONTENT")],
+    )
+    bundle.results[0].score_parts["secret_score_part"] = 9.0
+    pack = context_pack.build_context_pack(bundle, options())
+
+    serialized = json.dumps(
+        context_pack.context_pack_payload(bundle, pack),
+        allow_nan=False,
+    )
+
+    assert "PRIVATE CONTENT" not in serialized
+    assert "ANCHOR CONTENT" not in serialized
+    assert "secret_score_part" not in serialized
+    assert "fixture anchor" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_error"),
+    [
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(pack.items[0], replace(pack.items[1], id=pack.items[0].id)),
+            ),
+            DUPLICATE_ITEM_ERROR,
+            id="duplicate-id",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(replace(pack.items[0], id="result:99"), *pack.items[1:]),
+            ),
+            INVALID_REFERENCE_ERROR,
+            id="nonexistent-id",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(replace(pack.items[0], source_index=99), *pack.items[1:]),
+            ),
+            INVALID_REFERENCE_ERROR,
+            id="out-of-range-index",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(
+                    replace(pack.items[0], file_path="private/offending-path.py"),
+                    *pack.items[1:],
+                ),
+            ),
+            INVALID_REFERENCE_ERROR,
+            id="repeated-source-mismatch",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(replace(pack.items[0], group="implementations"), *pack.items[1:]),
+            ),
+            INVALID_CLASSIFICATION_ERROR,
+            id="classification-group",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(replace(pack.items[0], role="entrypoint"), *pack.items[1:]),
+            ),
+            INVALID_CLASSIFICATION_ERROR,
+            id="classification-role",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(
+                    replace(pack.items[0], classification_basis="path_role"),
+                    *pack.items[1:],
+                ),
+            ),
+            INVALID_CLASSIFICATION_ERROR,
+            id="classification-basis",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                budget=replace(
+                    pack.budget,
+                    included_results=pack.budget.included_results + 1,
+                ),
+            ),
+            BUDGET_EXCEEDED_ERROR,
+            id="over-budget-count",
+        ),
+    ],
+)
+def test_context_pack_payload_revalidates_structural_contract(
+    mutate,
+    expected_error: str,
+) -> None:
+    bundle = query_bundle([result("src/first.py"), result("src/second.py")])
+    pack = context_pack.build_context_pack(bundle, options())
+
+    with pytest.raises(ContextPackError) as exc_info:
+        context_pack.context_pack_payload(bundle, mutate(pack))
+
+    assert str(exc_info.value) == expected_error
+    assert "offending-path" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda pack: replace(pack, schema_version=(1,)),
+            id="tuple-scalar",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(replace(pack.items[0], file_path=Path("src/plain.py")),),
+            ),
+            id="path",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(replace(pack.items[0], start_line=float("nan")),),
+            ),
+            id="nan",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                budget=replace(pack.budget, max_results=float("inf")),
+            ),
+            id="infinity",
+        ),
+        pytest.param(
+            lambda pack: replace(pack, groups={**pack.groups, 1: ()}),
+            id="non-string-dict-key",
+        ),
+        pytest.param(
+            lambda pack: replace(pack, status=object()),
+            id="arbitrary-object",
+        ),
+    ],
+)
+def test_context_pack_payload_maps_materialized_non_json_values_to_fixed_error(
+    mutate,
+) -> None:
+    bundle, pack = single_result_pack()
+
+    with pytest.raises(ContextPackError) as exc_info:
+        context_pack.context_pack_payload(bundle, mutate(pack))
+
+    assert str(exc_info.value) == NON_JSON_ERROR
+
+
+def test_context_pack_payload_rejects_non_context_pack_before_materialization() -> None:
+    bundle, _ = single_result_pack()
+
+    with pytest.raises(ContextPackError) as exc_info:
+        context_pack.context_pack_payload(bundle, object())
+
+    assert str(exc_info.value) == INVALID_REFERENCE_ERROR
+
+
+@pytest.mark.parametrize("container_type", ["list", "dict"])
+def test_context_pack_payload_maps_cyclic_json_container_to_fixed_error(
+    container_type: str,
+) -> None:
+    bundle, pack = single_result_pack()
+    if container_type == "list":
+        cyclic_list: list[object] = []
+        cyclic_list.append(cyclic_list)
+        cyclic: object = cyclic_list
+    else:
+        cyclic_dict: dict[str, object] = {}
+        cyclic_dict["self"] = cyclic_dict
+        cyclic = cyclic_dict
+
+    with pytest.raises(ContextPackError) as exc_info:
+        context_pack.context_pack_payload(
+            bundle,
+            replace(pack, status=cyclic),
+        )
+
+    assert str(exc_info.value) == NON_JSON_ERROR
+
+
+def test_payload_validation_preserves_specific_error_for_json_native_corruption() -> None:
+    bundle, pack = single_result_pack()
+
+    with pytest.raises(ContextPackError) as exc_info:
+        context_pack.context_pack_payload(
+            bundle,
+            replace(pack, schema_version=True),
+        )
+
+    assert str(exc_info.value) == INVALID_REFERENCE_ERROR
+
+
+def test_validator_rejects_tampered_next_queries_and_confidence() -> None:
+    bundle = query_bundle([result("src/plain.py")], query="service")
+    pack = context_pack.build_context_pack(bundle, options())
+    malformed_packs = (
+        replace(
+            pack,
+            next_queries=(replace(pack.next_queries[0], query="fabricated"),),
+        ),
+        replace(pack, confidence=replace(pack.confidence, level="high")),
+        replace(
+            pack,
+            next_queries=(replace(pack.next_queries[0], purpose="unknown"),),
+        ),
+        replace(pack, confidence=replace(pack.confidence, level="certain")),
+    )
+
+    for malformed in malformed_packs:
+        with pytest.raises(ContextPackError) as exc_info:
+            context_pack._validate_context_pack(bundle, malformed)
+        assert str(exc_info.value) == INVALID_REFERENCE_ERROR
+
+
+@pytest.mark.parametrize("category", ["results", "supporting"])
+def test_validator_rejects_nonempty_results_or_supporting_gap(category: str) -> None:
+    bundle, pack = single_result_pack()
+    malformed = replace(
+        pack,
+        status="partial",
+        missing_evidence=(MissingEvidence(category, True, "fabricated"),),
+    )
+
+    with pytest.raises(ContextPackError) as exc_info:
+        context_pack._validate_context_pack(bundle, malformed)
+
+    assert str(exc_info.value) == INVALID_REFERENCE_ERROR
+
+
+def test_validator_requires_exact_empty_results_record() -> None:
+    bundle = query_bundle()
+    pack = context_pack.build_context_pack(bundle, options())
+
+    with pytest.raises(ContextPackError) as exc_info:
+        context_pack._validate_context_pack(
+            bundle,
+            replace(pack, missing_evidence=()),
+        )
+
+    assert str(exc_info.value) == INVALID_REFERENCE_ERROR
+
+
+def test_direct_payload_validation_derives_intent_only_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = query_bundle([result("src/plain.py")], query="service")
+    pack = context_pack.build_context_pack(bundle, options())
+    query_calls = 0
+    identifier_calls = 0
+
+    def capture_query_intent(query: str, tokens: list[str]):
+        nonlocal query_calls
+        query_calls += 1
+        return infer_query_intent(query, tokens)
+
+    def capture_identifier_intent(query: str, tokens: list[str]):
+        nonlocal identifier_calls
+        identifier_calls += 1
+        return infer_identifier_intent(query, tokens)
+
+    monkeypatch.setattr(context_pack, "infer_query_intent", capture_query_intent)
+    monkeypatch.setattr(context_pack, "infer_identifier_intent", capture_identifier_intent)
+
+    context_pack.context_pack_payload(bundle, pack)
+
+    assert (query_calls, identifier_calls) == (1, 1)
+
+
+def test_build_and_payload_remain_io_free_for_nonexistent_full_file_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = query_bundle(
+        [result("definitely/missing/WorkspaceController.java")],
+        query="WorkspaceController",
+    )
+
+    def fail_io(*args: object, **kwargs: object) -> None:
+        raise AssertionError("ContextPack must not perform filesystem I/O")
+
+    monkeypatch.setattr(Path, "open", fail_io)
+    monkeypatch.setattr(Path, "read_text", fail_io)
+    monkeypatch.setattr(Path, "read_bytes", fail_io)
+
+    pack = context_pack.build_context_pack(
+        bundle,
+        replace(options(), full_file=True),
+    )
+    payload = context_pack.context_pack_payload(bundle, pack)
+
+    assert payload["items"][0]["file_path"] == (
+        "definitely/missing/WorkspaceController.java"
+    )
+    assert "QueryBundle" not in context_pack.__dict__
+    assert "RetrievalResult" not in context_pack.__dict__
+    assert "EvidenceAnchor" not in context_pack.__dict__
 
 
 def single_result_pack() -> tuple[QueryBundle, ContextPack]:

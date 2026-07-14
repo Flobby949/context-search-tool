@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from math import isfinite
 from typing import TYPE_CHECKING, Any
 
 from context_search_tool.config import ToolConfig
@@ -11,6 +13,7 @@ from context_search_tool.query_intent import infer_query_intent
 from context_search_tool.tokenizer import tokenize_query
 
 if TYPE_CHECKING:
+    from context_search_tool.models import EvidenceAnchor, RetrievalResult
     from context_search_tool.retrieval import QueryBundle
 
 
@@ -112,6 +115,50 @@ INVALID_CLASSIFICATION_ERROR = "invalid ContextPack classification"
 BUDGET_EXCEEDED_ERROR = "ContextPack budget exceeded"
 NON_JSON_ERROR = "ContextPack contains a non-JSON value"
 UNEXPECTED_CONTEXT_ERROR = "Context pack construction failed"
+
+
+_EMPTY_MISSING_EVIDENCE = (
+    MissingEvidence(
+        category="results",
+        required=True,
+        reason="no result or evidence anchor is present in the bounded result set",
+    ),
+)
+_EMPTY_CONFIDENCE = ReadinessConfidence(
+    level="none",
+    reasons=("no result or evidence anchor is present",),
+)
+_NEXT_QUERY_RULES = {
+    "entrypoints": (
+        ("implementation", "related_types", "entry_points"),
+        "find_entrypoints",
+        "controller route entrypoint",
+    ),
+    "implementations": (
+        ("entry_points", "related_types", "implementation"),
+        "find_implementations",
+        "service implementation",
+    ),
+    "related_types": (
+        ("implementation", "entry_points", "related_types"),
+        "find_related_types",
+        "dto model type",
+    ),
+    "tests": (
+        ("implementation", "entry_points", "related_types"),
+        "find_tests",
+        "test",
+    ),
+    "configs_docs": (
+        ("entry_points", "implementation", "related_types"),
+        "find_configs_docs",
+        "config documentation",
+    ),
+}
+_NEXT_QUERY_PURPOSES = frozenset(
+    purpose for _, purpose, _ in _NEXT_QUERY_RULES.values()
+)
+_CONFIDENCE_LEVELS = frozenset({"none", "low", "medium", "high"})
 
 
 _PATH_GROUPS = {
@@ -230,6 +277,66 @@ def resolve_context_pack_options(
     )
 
 
+def resolve_context_item(
+    bundle: QueryBundle,
+    item: ContextPackItem,
+) -> RetrievalResult | EvidenceAnchor:
+    """Dereference one response-local item or raise the fixed reference error."""
+    if type(item) is not ContextPackItem:
+        raise ContextPackError(INVALID_REFERENCE_ERROR)
+    if type(item.source) is not str or item.source not in {"result", "anchor"}:
+        raise ContextPackError(INVALID_REFERENCE_ERROR)
+    if type(item.source_index) is not int or item.source_index < 0:
+        raise ContextPackError(INVALID_REFERENCE_ERROR)
+    if (
+        type(item.id) is not str
+        or item.id != f"{item.source}:{item.source_index}"
+        or type(item.file_path) is not str
+        or type(item.start_line) is not int
+        or type(item.end_line) is not int
+    ):
+        raise ContextPackError(INVALID_REFERENCE_ERROR)
+
+    sources = bundle.results if item.source == "result" else bundle.evidence_anchors
+    if item.source_index >= len(sources):
+        raise ContextPackError(INVALID_REFERENCE_ERROR)
+    raw_source = sources[item.source_index]
+    try:
+        raw_file_path = raw_source.file_path.as_posix()
+        valid_repeated_fields = (
+            type(raw_file_path) is str
+            and type(raw_source.start_line) is int
+            and type(raw_source.end_line) is int
+            and item.file_path == raw_file_path
+            and item.start_line == raw_source.start_line
+            and item.end_line == raw_source.end_line
+        )
+    except (AttributeError, TypeError, ValueError):
+        valid_repeated_fields = False
+    if not valid_repeated_fields:
+        raise ContextPackError(INVALID_REFERENCE_ERROR)
+    return raw_source
+
+
+def context_pack_payload(bundle: QueryBundle, pack: ContextPack) -> dict[str, Any]:
+    """Validate references and return JSON-native ContextPack schema v1."""
+    if type(pack) is not ContextPack:
+        raise ContextPackError(INVALID_REFERENCE_ERROR)
+    payload = _materialize_context_pack_payload(pack)
+    try:
+        is_json_native = _is_json_native(payload)
+    except RecursionError:
+        raise ContextPackError(NON_JSON_ERROR) from None
+    if not is_json_native:
+        raise ContextPackError(NON_JSON_ERROR)
+    try:
+        json.dumps(payload, allow_nan=False)
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        raise ContextPackError(NON_JSON_ERROR) from None
+    _validate_context_pack(bundle, pack)
+    return payload
+
+
 def build_context_pack(bundle: QueryBundle, options: ContextPackOptions) -> ContextPack:
     """Build and validate one deterministic, I/O-free ContextPack."""
     if (
@@ -286,7 +393,17 @@ def build_context_pack(bundle: QueryBundle, options: ContextPackOptions) -> Cont
     }
     expected = _derive_expected_groups(bundle, groups)
     reading_order = _build_reading_order(groups, expected.explicit_required)
-    missing_evidence = _build_missing_evidence(expected, groups) if items else ()
+    missing_evidence = (
+        _build_missing_evidence(expected, groups)
+        if items
+        else _EMPTY_MISSING_EVIDENCE
+    )
+    next_queries = _build_next_queries(bundle, missing_evidence)
+    confidence = _build_readiness_confidence(
+        bundle,
+        expected,
+        missing_evidence,
+    )
     pack = ContextPack(
         schema_version=CONTEXT_PACK_SCHEMA_VERSION,
         status=(
@@ -300,11 +417,8 @@ def build_context_pack(bundle: QueryBundle, options: ContextPackOptions) -> Cont
         groups=groups,
         reading_order=reading_order,
         missing_evidence=missing_evidence,
-        next_queries=(),
-        confidence=ReadinessConfidence(
-            level="none" if not items else "medium",
-            reasons=(),
-        ),
+        next_queries=next_queries,
+        confidence=confidence,
         budget=ContextBudget(
             max_results=options.max_results,
             max_evidence_anchors=options.max_evidence_anchors,
@@ -440,6 +554,139 @@ def _build_missing_evidence(
     )
 
 
+def _build_next_queries(
+    bundle: QueryBundle,
+    missing_evidence: tuple[MissingEvidence, ...],
+) -> tuple[NextQuery, ...]:
+    suggestions: list[NextQuery] = []
+    seen: set[str] = set()
+    for evidence in missing_evidence:
+        rule = _NEXT_QUERY_RULES.get(evidence.category)
+        if rule is None:
+            continue
+        summary_fields, purpose, role_terms = rule
+        seed = _select_next_query_seed(bundle, summary_fields)
+        query = _compose_next_query(seed, role_terms)
+        if query is None:
+            continue
+        dedupe_key = _normalize_query_text(query).casefold()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        suggestions.append(
+            NextQuery(
+                query=query,
+                purpose=purpose,
+                reason=evidence.reason,
+            )
+        )
+        if len(suggestions) == 3:
+            break
+    return tuple(suggestions)
+
+
+def _select_next_query_seed(
+    bundle: QueryBundle,
+    summary_fields: tuple[str, ...],
+) -> str:
+    for field_name in summary_fields:
+        values = getattr(bundle.summary, field_name, None)
+        if type(values) is not list:
+            continue
+        for value in values:
+            normalized = _normalize_query_text(value)
+            if normalized:
+                return normalized
+
+    if bundle.results:
+        return _normalize_query_text(bundle.results[0].file_path.stem)
+    return _normalize_query_text(bundle.query)
+
+
+def _normalize_query_text(value: Any) -> str:
+    if type(value) is not str:
+        return ""
+    return " ".join(value.strip().split())
+
+
+def _compose_next_query(seed: str, role_terms: str) -> str | None:
+    if not seed:
+        return None
+    max_seed_length = 160 - len(role_terms) - 1
+    bounded_seed = seed[:max_seed_length].strip()
+    if not bounded_seed:
+        return None
+    return f"{bounded_seed} {role_terms}"
+
+
+def _build_readiness_confidence(
+    bundle: QueryBundle,
+    expected: _ExpectedGroups,
+    missing_evidence: tuple[MissingEvidence, ...],
+) -> ReadinessConfidence:
+    if not bundle.results and not bundle.evidence_anchors:
+        return _EMPTY_CONFIDENCE
+
+    missing_required = tuple(
+        group
+        for group in CONTEXT_GROUPS
+        if any(
+            evidence.required and evidence.category == group
+            for evidence in missing_evidence
+        )
+    )
+    missing_recommended = tuple(
+        group
+        for group in CONTEXT_GROUPS
+        if any(
+            not evidence.required and evidence.category == group
+            for evidence in missing_evidence
+        )
+    )
+    protected_direct_evidence = _has_protected_direct_evidence(bundle)
+
+    reasons = [
+        (
+            "required evidence is missing: " + ", ".join(missing_required)
+            if missing_required
+            else "all required evidence groups are present"
+        )
+    ]
+    if expected.recommended:
+        reasons.append(
+            (
+                "recommended evidence is missing: "
+                + ", ".join(missing_recommended)
+                if missing_recommended
+                else "all recommended evidence groups are present"
+            )
+        )
+    reasons.append(
+        "protected original direct evidence is present"
+        if protected_direct_evidence
+        else "protected original direct evidence is absent"
+    )
+
+    if missing_required:
+        level = "low"
+    elif missing_recommended or not protected_direct_evidence:
+        level = "medium"
+    else:
+        level = "high"
+    return ReadinessConfidence(level=level, reasons=tuple(reasons))
+
+
+def _has_protected_direct_evidence(bundle: QueryBundle) -> bool:
+    for raw_result in bundle.results:
+        try:
+            value = raw_result.score_parts["evidence_priority"]
+        except (AttributeError, KeyError, TypeError):
+            continue
+        if type(value) in (int, float) and value == 0:
+            return True
+    return False
+
+
 def _classify_result(
     raw_result: Any,
     summary: Any,
@@ -509,9 +756,22 @@ def _validate_completion_state(
             type(evidence.category) is not str
             or type(evidence.required) is not bool
             or type(evidence.reason) is not str
-            or evidence.category not in CONTEXT_GROUPS[:-1]
         ):
             raise ContextPackError(INVALID_REFERENCE_ERROR)
+
+    if not pack.items:
+        if (
+            pack.status != "empty"
+            or pack.missing_evidence != _EMPTY_MISSING_EVIDENCE
+        ):
+            raise ContextPackError(INVALID_REFERENCE_ERROR)
+        return
+
+    if any(
+        evidence.category not in CONTEXT_GROUPS[:-1]
+        for evidence in pack.missing_evidence
+    ):
+        raise ContextPackError(INVALID_REFERENCE_ERROR)
 
     categories = tuple(evidence.category for evidence in pack.missing_evidence)
     if len(categories) != len(set(categories)):
@@ -554,18 +814,11 @@ def _validate_completion_state(
         ):
             raise ContextPackError(INVALID_REFERENCE_ERROR)
 
-    if pack.items:
-        expected_status = "partial" if required_categories else "ready"
-    else:
-        expected_status = "empty"
-        if pack.missing_evidence:
-            raise ContextPackError(INVALID_REFERENCE_ERROR)
+    expected_status = "partial" if required_categories else "ready"
     if pack.status != expected_status:
         raise ContextPackError(INVALID_REFERENCE_ERROR)
 
-    expected_missing_evidence = (
-        _build_missing_evidence(expected, pack.groups) if pack.items else ()
-    )
+    expected_missing_evidence = _build_missing_evidence(expected, pack.groups)
     if pack.missing_evidence != expected_missing_evidence:
         raise ContextPackError(INVALID_REFERENCE_ERROR)
 
@@ -575,6 +828,8 @@ def _validate_context_pack(
     pack: ContextPack,
     expected: _ExpectedGroups | None = None,
 ) -> None:
+    if type(pack) is not ContextPack:
+        raise ContextPackError(INVALID_REFERENCE_ERROR)
     if (
         type(pack.schema_version) is not int
         or pack.schema_version != CONTEXT_PACK_SCHEMA_VERSION
@@ -588,6 +843,9 @@ def _validate_context_pack(
             type(evidence) is not MissingEvidence
             for evidence in pack.missing_evidence
         )
+        or type(pack.next_queries) is not tuple
+        or any(type(query) is not NextQuery for query in pack.next_queries)
+        or type(pack.confidence) is not ReadinessConfidence
     ):
         raise ContextPackError(INVALID_REFERENCE_ERROR)
 
@@ -639,20 +897,8 @@ def _validate_context_pack(
     if item_ids != expected_ids:
         raise ContextPackError(INVALID_REFERENCE_ERROR)
 
-    for item, (source, source_index, raw_source) in zip(pack.items, source_rows):
-        try:
-            valid_source_reference = (
-                item.source == source
-                and item.source_index == source_index
-                and item.file_path == raw_source.file_path.as_posix()
-                and item.start_line == raw_source.start_line
-                and item.end_line == raw_source.end_line
-            )
-        except (AttributeError, TypeError, ValueError):
-            valid_source_reference = False
-        if not valid_source_reference:
-            raise ContextPackError(INVALID_REFERENCE_ERROR)
-
+    for item in pack.items:
+        resolve_context_item(bundle, item)
         classification = (
             item.group,
             item.role,
@@ -678,6 +924,28 @@ def _validate_context_pack(
         raise ContextPackError(INVALID_REFERENCE_ERROR)
 
     _validate_completion_state(pack, expected)
+
+    for query in pack.next_queries:
+        if (
+            type(query.query) is not str
+            or type(query.purpose) is not str
+            or query.purpose not in _NEXT_QUERY_PURPOSES
+            or type(query.reason) is not str
+        ):
+            raise ContextPackError(INVALID_REFERENCE_ERROR)
+    if pack.next_queries != _build_next_queries(bundle, pack.missing_evidence):
+        raise ContextPackError(INVALID_REFERENCE_ERROR)
+
+    confidence = pack.confidence
+    if (
+        type(confidence.level) is not str
+        or confidence.level not in _CONFIDENCE_LEVELS
+        or type(confidence.reasons) is not tuple
+        or any(type(reason) is not str for reason in confidence.reasons)
+        or confidence
+        != _build_readiness_confidence(bundle, expected, pack.missing_evidence)
+    ):
+        raise ContextPackError(INVALID_REFERENCE_ERROR)
 
     budget = pack.budget
     if type(budget) is not ContextBudget:
@@ -719,3 +987,128 @@ def _validate_context_pack(
         valid_budget = False
     if not valid_budget:
         raise ContextPackError(BUDGET_EXCEEDED_ERROR)
+
+
+def _materialize_context_pack_payload(pack: ContextPack) -> dict[str, Any]:
+    return {
+        "schema_version": pack.schema_version,
+        "status": pack.status,
+        "items": _materialize_collection(
+            pack.items,
+            ContextPackItem,
+            _materialize_item,
+        ),
+        "groups": _materialize_groups(pack.groups),
+        "reading_order": _materialize_string_collection(pack.reading_order),
+        "missing_evidence": _materialize_collection(
+            pack.missing_evidence,
+            MissingEvidence,
+            _materialize_missing_evidence,
+        ),
+        "next_queries": _materialize_collection(
+            pack.next_queries,
+            NextQuery,
+            _materialize_next_query,
+        ),
+        "confidence": _materialize_confidence(pack.confidence),
+        "budget": _materialize_budget(pack.budget),
+    }
+
+
+def _materialize_collection(
+    value: Any,
+    item_type: type[Any],
+    materialize_item: Any,
+) -> Any:
+    if type(value) not in (tuple, list):
+        return value
+    return [
+        materialize_item(item) if type(item) is item_type else item
+        for item in value
+    ]
+
+
+def _materialize_string_collection(value: Any) -> Any:
+    if type(value) not in (tuple, list):
+        return value
+    return list(value)
+
+
+def _materialize_groups(value: Any) -> Any:
+    if type(value) is not dict:
+        return value
+    return {
+        group: _materialize_string_collection(item_ids)
+        for group, item_ids in value.items()
+    }
+
+
+def _materialize_item(item: ContextPackItem) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "source": item.source,
+        "source_index": item.source_index,
+        "file_path": item.file_path,
+        "start_line": item.start_line,
+        "end_line": item.end_line,
+        "group": item.group,
+        "role": item.role,
+        "classification_basis": item.classification_basis,
+    }
+
+
+def _materialize_missing_evidence(evidence: MissingEvidence) -> dict[str, Any]:
+    return {
+        "category": evidence.category,
+        "required": evidence.required,
+        "reason": evidence.reason,
+    }
+
+
+def _materialize_next_query(query: NextQuery) -> dict[str, Any]:
+    return {
+        "query": query.query,
+        "purpose": query.purpose,
+        "reason": query.reason,
+    }
+
+
+def _materialize_confidence(value: Any) -> Any:
+    if type(value) is not ReadinessConfidence:
+        return value
+    return {
+        "level": value.level,
+        "reasons": _materialize_string_collection(value.reasons),
+    }
+
+
+def _materialize_budget(value: Any) -> Any:
+    if type(value) is not ContextBudget:
+        return value
+    return {
+        "max_results": value.max_results,
+        "max_evidence_anchors": value.max_evidence_anchors,
+        "max_items": value.max_items,
+        "included_results": value.included_results,
+        "included_evidence_anchors": value.included_evidence_anchors,
+        "content_bytes": value.content_bytes,
+        "context_before_lines": value.context_before_lines,
+        "context_after_lines": value.context_after_lines,
+        "full_file": value.full_file,
+        "max_full_file_bytes": value.max_full_file_bytes,
+    }
+
+
+def _is_json_native(value: Any) -> bool:
+    if value is None or type(value) in (bool, int, str):
+        return True
+    if type(value) is float:
+        return isfinite(value)
+    if type(value) is list:
+        return all(_is_json_native(item) for item in value)
+    if type(value) is dict:
+        return all(
+            type(key) is str and _is_json_native(item)
+            for key, item in value.items()
+        )
+    return False
