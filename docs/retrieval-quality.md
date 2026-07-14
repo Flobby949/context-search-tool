@@ -10,6 +10,8 @@
 | `calibration_bge` | BGE and two Java repositories | all eight Java calibration cases |
 | `ab_hash` | committed A/B snapshot | local embedding baseline |
 | `ab_bge` | Ollama BGE-M3 | BGE candidate report |
+| `p1_vector_bge` | local `bge-m3` | Phase 1 vector-only acceptance baseline |
+| `p1_hybrid_bge` | local `bge-m3` and `qwen3.5:4b-mlx` | Phase 1 hybrid acceptance candidate |
 
 ## Fast CI Run
 
@@ -109,6 +111,39 @@ cst quality run tests/fixtures/retrieval_quality/queries.json \
 cst quality run tests/fixtures/retrieval_quality/queries.json \
   --profile ab_bge --output .quality/ab-bge.json
 ```
+
+## Phase 1 Model Acceptance
+
+The `p1_vector_bge` and `p1_hybrid_bge` profiles select the identical seven
+required cases from committed repository snapshots. Run both reports and the
+focused pair gate:
+
+```bash
+conda run -n base cst quality run \
+  tests/fixtures/retrieval_quality/queries.json \
+  --profile p1_vector_bge \
+  --output .quality/p1-vector-bge.json \
+  --markdown .quality/p1-vector-bge.md
+
+conda run -n base cst quality run \
+  tests/fixtures/retrieval_quality/queries.json \
+  --profile p1_hybrid_bge \
+  --output .quality/p1-hybrid-bge.json \
+  --markdown .quality/p1-hybrid-bge.md
+
+CST_RUN_P1_ACCEPTANCE=1 \
+conda run -n base python -m pytest \
+  tests/test_quality_p1.py \
+  -m integration \
+  -q
+```
+
+`p1_vector_bge` requires the local `bge-m3` model. `p1_hybrid_bge` requires
+both local `bge-m3` and `qwen3.5:4b-mlx`. A missing service or model is
+`unverified_dependency`. A skipped, error, fallback, or zero-executed run
+cannot close Phase 1. The focused pair test, not the general comparison command
+alone, enforces the Phase 1 aggregate delta gate. Both reports record latency
+`mean`, `p50`, and `p95` under `aggregate.metrics.overall.latency_ms`.
 
 ## MCP Feedback Privacy
 
