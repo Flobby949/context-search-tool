@@ -1573,6 +1573,112 @@ def test_non_ci_source_prefers_existing_env_then_smoke_root_then_snapshot(
     )
 
 
+@pytest.mark.parametrize("profile", ["p1_vector_bge", "p1_hybrid_bge"])
+def test_phase_one_source_uses_committed_snapshot_despite_external_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    profile: str,
+) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    monkeypatch.chdir(project_root)
+    env_repo = tmp_path / "env-repo"
+    env_repo.mkdir()
+    smoke_root = tmp_path / "smoke"
+    (smoke_root / "embedding-ab").mkdir(parents=True)
+    snapshot_path = "tests/fixtures/real_projects/embedding_ab"
+    repo = QualityRepo(
+        repo_key="embedding_ab",
+        path_env="CST_QUALITY_AB_REPO",
+        repo_dir_name="embedding-ab",
+        snapshot_path=snapshot_path,
+        profiles=(profile,),
+    )
+    monkeypatch.setenv("CST_QUALITY_AB_REPO", str(env_repo))
+    monkeypatch.setenv("CST_SMOKE_REPOS_DIR", str(smoke_root))
+
+    assert _resolve_repo_source(
+        repo,
+        project_root / "tests/fixtures/retrieval_quality/queries.json",
+        profile,
+    ) == ResolvedSource(
+        (project_root / snapshot_path).resolve(),
+        "snapshot_path",
+        snapshot_path,
+    )
+
+
+@pytest.mark.parametrize("profile", ["ab_hash", "ab_bge"])
+def test_ab_source_keeps_path_env_precedence_with_committed_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    profile: str,
+) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    monkeypatch.chdir(project_root)
+    env_repo = tmp_path / "env-repo"
+    env_repo.mkdir()
+    smoke_root = tmp_path / "smoke"
+    (smoke_root / "embedding-ab").mkdir(parents=True)
+    snapshot_path = "tests/fixtures/real_projects/embedding_ab"
+    repo = QualityRepo(
+        repo_key="embedding_ab",
+        path_env="CST_QUALITY_AB_REPO",
+        repo_dir_name="embedding-ab",
+        snapshot_path=snapshot_path,
+        profiles=(profile,),
+    )
+    monkeypatch.setenv("CST_QUALITY_AB_REPO", str(env_repo))
+    monkeypatch.setenv("CST_SMOKE_REPOS_DIR", str(smoke_root))
+
+    assert _resolve_repo_source(
+        repo,
+        project_root / "tests/fixtures/retrieval_quality/queries.json",
+        profile,
+    ) == ResolvedSource(
+        env_repo.resolve(),
+        "path_env",
+        "CST_QUALITY_AB_REPO",
+    )
+
+
+@pytest.mark.parametrize(
+    "profile",
+    ["ci", "p1_vector_bge", "p1_hybrid_bge"],
+)
+def test_snapshot_only_profile_requires_snapshot_path_with_profile_name(
+    tmp_path: Path,
+    profile: str,
+) -> None:
+    repo = QualityRepo(repo_key="sample", profiles=(profile,))
+
+    with pytest.raises(ValueError) as exc_info:
+        _resolve_repo_source(repo, tmp_path / "quality.json", profile)
+
+    assert str(exc_info.value) == (
+        f"{profile} profile requires snapshot_path for repo sample"
+    )
+
+
+@pytest.mark.parametrize(
+    "profile",
+    ["ci", "p1_vector_bge", "p1_hybrid_bge"],
+)
+def test_snapshot_only_profile_reports_missing_snapshot_with_profile_name(
+    tmp_path: Path,
+    profile: str,
+) -> None:
+    repo = QualityRepo(
+        repo_key="sample",
+        snapshot_path=str(tmp_path / "missing"),
+        profiles=(profile,),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        _resolve_repo_source(repo, tmp_path / "quality.json", profile)
+
+    assert str(exc_info.value) == f"{profile} snapshot not found for repo sample"
+
+
 def test_runner_executes_only_cases_selected_by_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

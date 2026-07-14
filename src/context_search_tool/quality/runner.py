@@ -66,6 +66,8 @@ _WINDOWS_RESERVED_NAMES = {
 
 _WINDOWS_INVALID_COMPONENT_CHARS = frozenset('<>:"/\\|?*')
 
+_SNAPSHOT_ONLY_PROFILES = frozenset({"ci", "p1_vector_bge", "p1_hybrid_bge"})
+
 _DESCRIPTOR_COPY_SUPPORTED = (
     os.name == "posix"
     and hasattr(os, "O_DIRECTORY")
@@ -354,16 +356,16 @@ def _resolve_repo_source(
     fixture_path: Path,
     profile: str,
 ) -> ResolvedSource | None:
-    if profile == "ci":
+    if profile in _SNAPSHOT_ONLY_PROFILES:
         if not repo.snapshot_path:
             raise ValueError(
-                f"ci profile requires snapshot_path for repo {repo.repo_key}"
+                f"{profile} profile requires snapshot_path for repo {repo.repo_key}"
             )
         snapshot = _existing_resolved_directory(
             _resolve_snapshot_path(fixture_path, repo.snapshot_path)
         )
         if snapshot is None:
-            raise ValueError(f"ci snapshot not found for repo {repo.repo_key}")
+            raise ValueError(f"{profile} snapshot not found for repo {repo.repo_key}")
         return ResolvedSource(
             path=snapshot,
             source_type="snapshot_path",
