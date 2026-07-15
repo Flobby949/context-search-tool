@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from context_search_tool import config as config_module
 from context_search_tool.config import (
     DEFAULT_CONFIG,
     EmbeddingConfig,
@@ -90,6 +91,50 @@ max_symbol_hints = 5
     assert config.query_planner.max_rewritten_queries == 3
     assert config.query_planner.max_keywords == 9
     assert config.query_planner.max_symbol_hints == 5
+
+
+def test_render_default_config_contains_exact_context_block() -> None:
+    rendered = render_default_config()
+
+    assert rendered.endswith(
+        """[context]
+max_items = 12
+max_excerpts_per_item = 2
+max_excerpt_bytes = 4096
+max_item_content_bytes = 8192
+max_total_content_bytes = 49152
+max_pack_bytes = 65536
+"""
+    )
+
+
+def test_context_config_render_load_round_trip_ignores_unknown_keys(
+    tmp_path: Path,
+) -> None:
+    context_config_type = getattr(config_module, "ContextConfig")
+    expected = context_config_type(
+        max_items=7,
+        max_excerpts_per_item=3,
+        max_excerpt_bytes=1024,
+        max_item_content_bytes=4096,
+        max_total_content_bytes=16_384,
+        max_pack_bytes=32_768,
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    ensure_index_layout(repo)
+    rendered = render_config(ToolConfig(context=expected))
+    (repo / ".context-search" / "config.toml").write_text(
+        rendered.replace(
+            "max_pack_bytes = 32768",
+            "max_pack_bytes = 32768\nfuture_context_option = 99",
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_config(repo)
+
+    assert loaded.context == expected
 
 
 def test_render_config_uses_passed_query_planner_values() -> None:

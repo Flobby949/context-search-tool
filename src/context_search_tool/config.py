@@ -31,6 +31,16 @@ class RetrievalConfig:
 
 
 @dataclass(frozen=True)
+class ContextConfig:
+    max_items: int = 12
+    max_excerpts_per_item: int = 2
+    max_excerpt_bytes: int = 4096
+    max_item_content_bytes: int = 8192
+    max_total_content_bytes: int = 49152
+    max_pack_bytes: int = 65536
+
+
+@dataclass(frozen=True)
 class EmbeddingConfig:
     provider: str = "hash"
     model: str = "hash-v1"
@@ -58,6 +68,7 @@ class ToolConfig:
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     query_planner: QueryPlannerConfig = field(default_factory=QueryPlannerConfig)
+    context: ContextConfig = field(default_factory=ContextConfig)
 
 
 DEFAULT_CONFIG = ToolConfig()
@@ -111,6 +122,14 @@ def render_config(config: ToolConfig) -> str:
             f"max_keywords = {config.query_planner.max_keywords}",
             f"max_symbol_hints = {config.query_planner.max_symbol_hints}",
             "",
+            "[context]",
+            f"max_items = {config.context.max_items}",
+            f"max_excerpts_per_item = {config.context.max_excerpts_per_item}",
+            f"max_excerpt_bytes = {config.context.max_excerpt_bytes}",
+            f"max_item_content_bytes = {config.context.max_item_content_bytes}",
+            f"max_total_content_bytes = {config.context.max_total_content_bytes}",
+            f"max_pack_bytes = {config.context.max_pack_bytes}",
+            "",
         ]
     )
 
@@ -130,6 +149,7 @@ def load_config(repo: Path) -> ToolConfig:
             QueryPlannerConfig,
             data.get("query_planner", {}),
         ),
+        context=_build_section(ContextConfig, data.get("context", {})),
     )
 
 

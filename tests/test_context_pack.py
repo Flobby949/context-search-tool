@@ -1,6 +1,7 @@
+import copy
 import json
 from collections import Counter
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, fields, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,6 +30,9 @@ from context_search_tool.context_pack import (
     ReadinessConfidence,
     resolve_context_pack_options,
 )
+from context_search_tool.context_pack import builder as context_pack_v2_builder
+from context_search_tool.context_pack import models as context_pack_v2_models
+from context_search_tool.context_pack import serialization as context_pack_v2_serialization
 from context_search_tool.models import (
     EvidenceAnchor,
     QueryPlan,
@@ -2617,3 +2621,802 @@ def test_build_context_pack_rejects_non_string_inspected_summary_entries(
         )
 
     assert str(exc_info.value) == INVALID_CLASSIFICATION_ERROR
+
+
+def _v2_modules():
+    return (
+        context_pack_v2_models,
+        context_pack_v2_builder,
+        context_pack_v2_serialization,
+    )
+
+
+def _v2_pack(content: str = "核心实现\n"):
+    models, _, _ = _v2_modules()
+    content_bytes = len(content.encode("utf-8"))
+    excerpt = models.ContextExcerpt(
+        start_line=10,
+        end_line=11,
+        content=content,
+        content_bytes=content_bytes,
+        truncated=False,
+    )
+    item = models.ContextItem(
+        id="item:0",
+        file_path="src/核心.py",
+        group="implementations",
+        role="implementation",
+        classification_basis="content",
+        source_kind="result",
+        retrieval_rank=0,
+        relevance_score=0.75,
+        reasons=("direct Unicode match ✓",),
+        matched_need_ids=("need:implementation",),
+        excerpts=(excerpt,),
+    )
+    evidence_needs = (
+        models.EvidenceNeed(
+            id="need:implementation",
+            category="implementations",
+            subject_terms=("核心",),
+            required=True,
+            provenance="explicit_query",
+            matched_item_ids=("item:0",),
+        ),
+        models.EvidenceNeed(
+            id="need:tests",
+            category="tests",
+            subject_terms=("核心", "test"),
+            required=True,
+            provenance="explicit_query",
+            matched_item_ids=(),
+        ),
+    )
+    groups = {
+        group: (("item:0",) if group == "implementations" else ())
+        for group in models.CONTEXT_GROUPS
+    }
+    return models.ContextPack(
+        schema_version=models.CONTEXT_PACK_SCHEMA_VERSION,
+        status="partial",
+        items=(item,),
+        groups=groups,
+        reading_order=("item:0",),
+        evidence_needs=evidence_needs,
+        missing_evidence=(
+            models.MissingEvidence(
+                need_id="need:tests",
+                category="tests",
+                required=True,
+                reason="required test evidence is missing",
+            ),
+        ),
+        next_queries=(
+            models.NextQuery(
+                need_id="need:tests",
+                query="核心 test",
+                purpose="find required tests",
+            ),
+        ),
+        omissions=(
+            models.Omission(
+                file_path="tests/legacy_test.py",
+                group="tests",
+                reason="lower-ranked duplicate",
+                matched_need_ids=("need:tests",),
+            ),
+        ),
+        confidence=models.ReadinessConfidence(
+            level="low",
+            reasons=("required test evidence is missing",),
+        ),
+        budget=models.ContextBudget(
+            max_items=12,
+            max_excerpts_per_item=2,
+            max_excerpt_bytes=max(4096, content_bytes),
+            max_item_content_bytes=max(8192, content_bytes),
+            max_total_content_bytes=max(49_152, content_bytes),
+            max_pack_bytes=65_536,
+            included_items=1,
+            included_excerpts=1,
+            content_bytes=content_bytes,
+            pack_bytes=0,
+            truncated_item_count=0,
+            omitted_item_count=1,
+            budget_exhausted=True,
+        ),
+    )
+
+
+def test_v2_schema_constants_error_and_frozen_record_fields_are_exact() -> None:
+    models, _, _ = _v2_modules()
+    expected_fields = {
+        "ContextExcerpt": (
+            "start_line",
+            "end_line",
+            "content",
+            "content_bytes",
+            "truncated",
+        ),
+        "ContextItem": (
+            "id",
+            "file_path",
+            "group",
+            "role",
+            "classification_basis",
+            "source_kind",
+            "retrieval_rank",
+            "relevance_score",
+            "reasons",
+            "matched_need_ids",
+            "excerpts",
+        ),
+        "EvidenceNeed": (
+            "id",
+            "category",
+            "subject_terms",
+            "required",
+            "provenance",
+            "matched_item_ids",
+        ),
+        "MissingEvidence": ("need_id", "category", "required", "reason"),
+        "NextQuery": ("need_id", "query", "purpose"),
+        "Omission": ("file_path", "group", "reason", "matched_need_ids"),
+        "ReadinessConfidence": ("level", "reasons"),
+        "ContextBudget": (
+            "max_items",
+            "max_excerpts_per_item",
+            "max_excerpt_bytes",
+            "max_item_content_bytes",
+            "max_total_content_bytes",
+            "max_pack_bytes",
+            "included_items",
+            "included_excerpts",
+            "content_bytes",
+            "pack_bytes",
+            "truncated_item_count",
+            "omitted_item_count",
+            "budget_exhausted",
+        ),
+        "ContextPack": (
+            "schema_version",
+            "status",
+            "items",
+            "groups",
+            "reading_order",
+            "evidence_needs",
+            "missing_evidence",
+            "next_queries",
+            "omissions",
+            "confidence",
+            "budget",
+        ),
+        "ContextCandidate": (
+            "key",
+            "file_path",
+            "start_line",
+            "end_line",
+            "content",
+            "group",
+            "role",
+            "classification_basis",
+            "source_kind",
+            "retrieval_rank",
+            "source_order",
+            "relevance_score",
+            "reasons",
+            "score_parts",
+            "spans",
+            "trusted_provenance_text",
+            "protected_direct",
+        ),
+        "ExcerptWindow": (
+            "start_line",
+            "end_line",
+            "required_need_ids",
+            "recommended_need_ids",
+            "score",
+            "protected_direct",
+        ),
+        "ContextPackOptions": (
+            "max_items",
+            "max_excerpts_per_item",
+            "max_excerpt_bytes",
+            "max_item_content_bytes",
+            "max_total_content_bytes",
+            "max_pack_bytes",
+            "context_before_lines",
+            "context_after_lines",
+        ),
+    }
+
+    assert models.CONTEXT_PACK_SCHEMA_VERSION == 2
+    assert models.CONTEXT_GROUPS == (
+        "entrypoints",
+        "implementations",
+        "related_types",
+        "tests",
+        "configs_docs",
+        "supporting",
+    )
+    for name, expected in expected_fields.items():
+        assert tuple(field.name for field in fields(getattr(models, name))) == expected
+
+    pack = _v2_pack()
+    with pytest.raises(FrozenInstanceError):
+        pack.status = "ready"
+
+    error = models.ContextPackError("invalid_context_options", "fixed message")
+    assert error.code == "invalid_context_options"
+    assert error.message == "fixed message"
+    assert str(error) == "fixed message"
+    assert models.ContextPackError is not ContextPackError
+    assert context_pack.CONTEXT_PACK_SCHEMA_VERSION == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        (field, value)
+        for field in (
+            "max_items",
+            "max_excerpts_per_item",
+            "max_excerpt_bytes",
+            "max_item_content_bytes",
+            "max_total_content_bytes",
+            "max_pack_bytes",
+        )
+        for value in (True, 1.0, 0, -1)
+    ],
+)
+def test_v2_resolver_rejects_invalid_configured_context_values(
+    field: str,
+    value: object,
+) -> None:
+    from context_search_tool import config as config_module
+
+    models, builder, _ = _v2_modules()
+    context = replace(config_module.ContextConfig(), **{field: value})
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        builder.resolve_context_pack_options(
+            ToolConfig(context=context),
+            context_lines=None,
+            max_evidence_anchors=4,
+        )
+
+    assert exc_info.value.code == "invalid_context_options"
+    assert exc_info.value.message == f"context.{field} must be a positive integer"
+    assert str(exc_info.value) == exc_info.value.message
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        (
+            {"max_excerpt_bytes": 8193},
+            "context.max_excerpt_bytes must not exceed max_item_content_bytes",
+        ),
+        (
+            {"max_item_content_bytes": 49_153},
+            "context.max_item_content_bytes must not exceed max_total_content_bytes",
+        ),
+        (
+            {"max_total_content_bytes": 65_536},
+            "context.max_total_content_bytes must be less than max_pack_bytes",
+        ),
+    ],
+)
+def test_v2_resolver_rejects_invalid_configured_context_order(
+    changes: dict[str, int],
+    message: str,
+) -> None:
+    from context_search_tool import config as config_module
+
+    models, builder, _ = _v2_modules()
+    context = replace(config_module.ContextConfig(), **changes)
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        builder.resolve_context_pack_options(
+            ToolConfig(context=context),
+            context_lines=None,
+            max_evidence_anchors=4,
+        )
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "invalid_context_options",
+        message,
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"max_items": True}, "max_items must be a positive integer"),
+        ({"max_items": 1.0}, "max_items must be a positive integer"),
+        ({"max_items": 0}, "max_items must be a positive integer"),
+        ({"max_items": -1}, "max_items must be a positive integer"),
+        (
+            {"max_pack_bytes": True},
+            "max_context_bytes must be an integer of at least 4096 bytes",
+        ),
+        (
+            {"max_pack_bytes": 4096.0},
+            "max_context_bytes must be an integer of at least 4096 bytes",
+        ),
+        (
+            {"max_pack_bytes": 4095},
+            "max_context_bytes must be an integer of at least 4096 bytes",
+        ),
+        (
+            {"max_evidence_anchors": True},
+            "max_evidence_anchors must be a non-negative integer",
+        ),
+        (
+            {"max_evidence_anchors": 1.0},
+            "max_evidence_anchors must be a non-negative integer",
+        ),
+        (
+            {"max_evidence_anchors": -1},
+            "max_evidence_anchors must be a non-negative integer",
+        ),
+    ],
+)
+def test_v2_resolver_rejects_invalid_request_and_internal_values(
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    models, builder, _ = _v2_modules()
+    call_kwargs = {
+        "context_lines": None,
+        "max_evidence_anchors": 4,
+        **kwargs,
+    }
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        builder.resolve_context_pack_options(ToolConfig(), **call_kwargs)
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "invalid_context_options",
+        message,
+    )
+
+
+def test_v2_resolver_applies_request_ceiling_and_cascading_content_caps() -> None:
+    models, builder, _ = _v2_modules()
+
+    resolved = builder.resolve_context_pack_options(
+        ToolConfig(),
+        context_lines=None,
+        max_evidence_anchors=4,
+        max_items=20,
+        max_pack_bytes=4096,
+    )
+
+    assert resolved == models.ContextPackOptions(
+        max_items=12,
+        max_excerpts_per_item=2,
+        max_excerpt_bytes=4095,
+        max_item_content_bytes=4095,
+        max_total_content_bytes=4095,
+        max_pack_bytes=4096,
+        context_before_lines=8,
+        context_after_lines=12,
+    )
+
+
+def test_v2_resolver_caps_items_by_raw_candidate_count_and_clamps_window() -> None:
+    from context_search_tool import config as config_module
+
+    models, builder, _ = _v2_modules()
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            final_top_k=5,
+            context_before_lines=-3,
+            context_after_lines=-7,
+        ),
+        context=replace(config_module.ContextConfig(), max_items=50),
+    )
+
+    configured_window = builder.resolve_context_pack_options(
+        config,
+        context_lines=None,
+        max_evidence_anchors=2,
+        max_items=20,
+    )
+    request_window = builder.resolve_context_pack_options(
+        config,
+        context_lines=-9,
+        max_evidence_anchors=2,
+        max_items=20,
+    )
+
+    assert configured_window.max_items == 7
+    assert (
+        configured_window.context_before_lines,
+        configured_window.context_after_lines,
+    ) == (0, 0)
+    assert (
+        request_window.context_before_lines,
+        request_window.context_after_lines,
+    ) == (0, 0)
+    assert isinstance(configured_window, models.ContextPackOptions)
+
+
+def test_v2_payload_has_exact_top_level_and_nested_keys() -> None:
+    models, _, serialization = _v2_modules()
+
+    payload = serialization.context_pack_payload(_v2_pack())
+
+    assert tuple(payload) == (
+        "schema_version",
+        "status",
+        "items",
+        "groups",
+        "reading_order",
+        "evidence_needs",
+        "missing_evidence",
+        "next_queries",
+        "omissions",
+        "confidence",
+        "budget",
+    )
+    assert tuple(payload["items"][0]) == (
+        "id",
+        "file_path",
+        "group",
+        "role",
+        "classification_basis",
+        "source_kind",
+        "retrieval_rank",
+        "relevance_score",
+        "reasons",
+        "matched_need_ids",
+        "excerpts",
+    )
+    assert tuple(payload["items"][0]["excerpts"][0]) == (
+        "start_line",
+        "end_line",
+        "content",
+        "content_bytes",
+        "truncated",
+    )
+    assert tuple(payload["groups"]) == models.CONTEXT_GROUPS
+    assert tuple(payload["evidence_needs"][0]) == (
+        "id",
+        "category",
+        "subject_terms",
+        "required",
+        "provenance",
+        "matched_item_ids",
+    )
+    assert tuple(payload["missing_evidence"][0]) == (
+        "need_id",
+        "category",
+        "required",
+        "reason",
+    )
+    assert tuple(payload["next_queries"][0]) == ("need_id", "query", "purpose")
+    assert tuple(payload["omissions"][0]) == (
+        "file_path",
+        "group",
+        "reason",
+        "matched_need_ids",
+    )
+    assert tuple(payload["confidence"]) == ("level", "reasons")
+    assert tuple(payload["budget"]) == (
+        "max_items",
+        "max_excerpts_per_item",
+        "max_excerpt_bytes",
+        "max_item_content_bytes",
+        "max_total_content_bytes",
+        "max_pack_bytes",
+        "included_items",
+        "included_excerpts",
+        "content_bytes",
+        "pack_bytes",
+        "truncated_item_count",
+        "omitted_item_count",
+        "budget_exhausted",
+    )
+    assert all(type(item) is dict for item in payload["items"])
+    assert all(type(item_ids) is list for item_ids in payload["groups"].values())
+    assert payload["schema_version"] == 2
+
+
+def test_v2_canonical_serialization_is_unicode_native_deterministic_and_self_sized(
+) -> None:
+    _, _, serialization = _v2_modules()
+    pack = _v2_pack()
+
+    payload = serialization.context_pack_payload(pack)
+    first = serialization.canonical_context_pack_bytes(pack)
+    second = serialization.canonical_context_pack_bytes(pack)
+    canonical_payload = json.dumps(
+        payload,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    assert first == second == canonical_payload
+    assert "核心".encode("utf-8") in first
+    assert payload["budget"]["pack_bytes"] == len(first)
+    assert json.loads(first)["budget"]["pack_bytes"] == len(first)
+    assert pack.budget.pack_bytes == 0
+
+
+def test_v2_canonical_serialization_self_sizes_across_digit_width_boundary() -> None:
+    _, _, serialization = _v2_modules()
+    target_size = 10_000
+    padding = target_size - len(serialization.canonical_context_pack_bytes(_v2_pack()))
+    encoded = b""
+
+    for _ in range(8):
+        encoded = serialization.canonical_context_pack_bytes(_v2_pack("x" * padding))
+        if target_size <= len(encoded) < target_size + 10:
+            break
+        padding += target_size - len(encoded)
+
+    embedded_size = json.loads(encoded)["budget"]["pack_bytes"]
+    assert target_size <= len(encoded) < target_size + 10
+    assert embedded_size == len(encoded)
+    assert len(str(embedded_size)) == 5
+
+
+def test_v2_canonical_serialization_accepts_payload_without_mutating_it() -> None:
+    _, _, serialization = _v2_modules()
+    payload = serialization.context_pack_payload(_v2_pack())
+    payload["budget"]["pack_bytes"] = 0
+    original = copy.deepcopy(payload)
+
+    encoded = serialization.canonical_context_pack_bytes(payload)
+
+    assert payload == original
+    assert json.loads(encoded)["budget"]["pack_bytes"] == len(encoded)
+
+
+def test_v2_serialization_accepts_configured_pack_ceiling_below_request_floor() -> None:
+    from context_search_tool import config as config_module
+
+    _, builder, serialization = _v2_modules()
+    options = builder.resolve_context_pack_options(
+        ToolConfig(
+            context=config_module.ContextConfig(
+                max_excerpt_bytes=512,
+                max_item_content_bytes=1024,
+                max_total_content_bytes=2048,
+                max_pack_bytes=3000,
+            )
+        ),
+        context_lines=None,
+        max_evidence_anchors=4,
+    )
+    pack = _v2_pack()
+    budget = replace(
+        pack.budget,
+        max_items=options.max_items,
+        max_excerpts_per_item=options.max_excerpts_per_item,
+        max_excerpt_bytes=options.max_excerpt_bytes,
+        max_item_content_bytes=options.max_item_content_bytes,
+        max_total_content_bytes=options.max_total_content_bytes,
+        max_pack_bytes=options.max_pack_bytes,
+    )
+
+    payload = serialization.context_pack_payload(replace(pack, budget=budget))
+
+    assert payload["budget"]["pack_bytes"] < 3000
+
+
+def test_v2_serialization_accepts_zero_effective_item_capacity() -> None:
+    models, builder, serialization = _v2_modules()
+    options = builder.resolve_context_pack_options(
+        ToolConfig(retrieval=RetrievalConfig(final_top_k=0)),
+        context_lines=None,
+        max_evidence_anchors=0,
+    )
+    pack = models.ContextPack(
+        schema_version=models.CONTEXT_PACK_SCHEMA_VERSION,
+        status="empty",
+        items=(),
+        groups={group: () for group in models.CONTEXT_GROUPS},
+        reading_order=(),
+        evidence_needs=(),
+        missing_evidence=(),
+        next_queries=(),
+        omissions=(),
+        confidence=models.ReadinessConfidence(level="none", reasons=()),
+        budget=models.ContextBudget(
+            max_items=options.max_items,
+            max_excerpts_per_item=options.max_excerpts_per_item,
+            max_excerpt_bytes=options.max_excerpt_bytes,
+            max_item_content_bytes=options.max_item_content_bytes,
+            max_total_content_bytes=options.max_total_content_bytes,
+            max_pack_bytes=options.max_pack_bytes,
+            included_items=0,
+            included_excerpts=0,
+            content_bytes=0,
+            pack_bytes=0,
+            truncated_item_count=0,
+            omitted_item_count=0,
+            budget_exhausted=False,
+        ),
+    )
+
+    payload = serialization.context_pack_payload(pack)
+
+    assert options.max_items == 0
+    assert payload["budget"]["max_items"] == 0
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda pack: replace(pack, status="ready"),
+            id="status-not-derived-yet",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                status="ready",
+                missing_evidence=(),
+                next_queries=(),
+            ),
+            id="missing-records-not-exhaustive-yet",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(replace(pack.items[0], matched_need_ids=()),),
+            ),
+            id="need-item-links-not-bidirectional-yet",
+        ),
+    ],
+)
+def test_v2_serialization_accepts_incremental_derived_semantic_states(mutate) -> None:
+    _, _, serialization = _v2_modules()
+
+    payload = serialization.context_pack_payload(mutate(_v2_pack()))
+
+    assert payload["budget"]["pack_bytes"] == len(
+        serialization.canonical_context_pack_bytes(payload)
+    )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(lambda pack: replace(pack, status="READY"), id="status"),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(replace(pack.items[0], classification_basis="path_role"),),
+            ),
+            id="classification-basis",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(replace(pack.items[0], source_kind="anchor"),),
+            ),
+            id="source-kind",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                evidence_needs=(
+                    replace(pack.evidence_needs[0], provenance="query"),
+                    pack.evidence_needs[1],
+                ),
+            ),
+            id="provenance",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                confidence=replace(pack.confidence, level="certain"),
+            ),
+            id="confidence-level",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(replace(pack.items[0], relevance_score=float("nan")),),
+            ),
+            id="nan-score",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(replace(pack.items[0], reasons=["not a tuple"]),),
+            ),
+            id="non-json-contract-shape",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(replace(pack.items[0], matched_need_ids=("need:missing",)),),
+            ),
+            id="missing-need-reference",
+        ),
+        pytest.param(
+            lambda pack: replace(pack, reading_order=("item:missing",)),
+            id="missing-item-reference",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(
+                    replace(
+                        pack.items[0],
+                        excerpts=(
+                            replace(
+                                pack.items[0].excerpts[0],
+                                content_bytes=(
+                                    pack.items[0].excerpts[0].content_bytes + 1
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            id="excerpt-byte-count",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                budget=replace(
+                    pack.budget,
+                    content_bytes=pack.budget.content_bytes + 1,
+                ),
+            ),
+            id="budget-byte-count",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                budget=replace(pack.budget, included_items=2),
+            ),
+            id="budget-count",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                budget=replace(pack.budget, pack_bytes=True),
+            ),
+            id="bool-pack-bytes",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                budget=replace(pack.budget, pack_bytes=-1),
+            ),
+            id="negative-pack-bytes",
+        ),
+    ],
+)
+def test_v2_serialization_rejects_malformed_records_with_fixed_error(mutate) -> None:
+    models, _, serialization = _v2_modules()
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        serialization.context_pack_payload(mutate(_v2_pack()))
+
+    assert exc_info.value.code == "context_failed"
+    assert exc_info.value.message == "Context pack construction failed"
+    assert str(exc_info.value) == "Context pack construction failed"
+
+
+def test_v2_canonical_serialization_rejects_malformed_payload_keys() -> None:
+    models, _, serialization = _v2_modules()
+    payload = serialization.context_pack_payload(_v2_pack())
+    payload["items"][0]["unexpected"] = "value"
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        serialization.canonical_context_pack_bytes(payload)
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
