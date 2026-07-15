@@ -3130,6 +3130,31 @@ def _v2_pack(content: str = "核心实现\n"):
     )
 
 
+def _v2_ready_pack():
+    models, _, _ = _v2_modules()
+    pack = _v2_pack()
+    return replace(
+        pack,
+        status="ready",
+        evidence_needs=(pack.evidence_needs[0],),
+        missing_evidence=(),
+        next_queries=(),
+        omissions=(),
+        confidence=models.ReadinessConfidence(
+            level="high",
+            reasons=(
+                "all required evidence is selected",
+                "protected original-direct evidence is present",
+            ),
+        ),
+        budget=replace(
+            pack.budget,
+            omitted_item_count=0,
+            budget_exhausted=False,
+        ),
+    )
+
+
 def test_v2_schema_constants_error_and_frozen_record_fields_are_exact() -> None:
     models, _, _ = _v2_modules()
     expected_fields = {
@@ -3779,6 +3804,155 @@ def test_v2_serialization_rejects_inconsistent_derived_semantic_states(mutate) -
 
 
 @pytest.mark.parametrize(
+    "fault",
+    [
+        "category_mismatch",
+        "linked_item_without_excerpt",
+        "subject_not_visible",
+        "subjects_split_across_excerpts",
+    ],
+)
+def test_v2_serialization_revalidates_every_semantic_need_item_link(
+    fault: str,
+) -> None:
+    models, _, serialization = _v2_modules()
+    pack = _v2_pack()
+    item = pack.items[0]
+    need = pack.evidence_needs[0]
+    budget = pack.budget
+
+    if fault == "category_mismatch":
+        need = replace(need, category="tests")
+    elif fault == "linked_item_without_excerpt":
+        item = replace(item, excerpts=())
+        budget = replace(budget, included_excerpts=0, content_bytes=0)
+    elif fault == "subject_not_visible":
+        need = replace(need, subject_terms=("not-visible",))
+    else:
+        first = replace(
+            item.excerpts[0],
+            start_line=10,
+            end_line=10,
+            content="first-subject\n",
+            content_bytes=len("first-subject\n".encode("utf-8")),
+        )
+        second = replace(
+            item.excerpts[0],
+            start_line=11,
+            end_line=11,
+            content="second-subject\n",
+            content_bytes=len("second-subject\n".encode("utf-8")),
+        )
+        item = replace(item, excerpts=(first, second))
+        need = replace(
+            need,
+            subject_terms=("first-subject", "second-subject"),
+        )
+        budget = replace(
+            budget,
+            included_excerpts=2,
+            content_bytes=first.content_bytes + second.content_bytes,
+        )
+
+    malformed = replace(
+        pack,
+        items=(item,),
+        evidence_needs=(need, pack.evidence_needs[1]),
+        budget=budget,
+    )
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        serialization.context_pack_payload(malformed)
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
+
+
+@pytest.mark.parametrize(
+    ("level", "reasons", "recommended_missing"),
+    [
+        (
+            "high",
+            ["all required evidence is selected"],
+            False,
+        ),
+        (
+            "medium",
+            ["all required evidence is selected"],
+            False,
+        ),
+        (
+            "high",
+            [
+                "all required evidence is selected",
+                "recommended tests are missing",
+            ],
+            True,
+        ),
+        (
+            "medium",
+            [
+                "all required evidence is selected",
+                "protected original-direct evidence is present",
+                "protected original-direct evidence is absent",
+            ],
+            False,
+        ),
+        (
+            "medium",
+            [
+                "all required evidence is selected",
+                "protected original-direct evidence is present",
+                "recommended tests are missing",
+            ],
+            True,
+        ),
+    ],
+)
+def test_v2_serialization_enforces_exact_self_describing_ready_confidence(
+    level: str,
+    reasons: list[str],
+    recommended_missing: bool,
+) -> None:
+    models, _, serialization = _v2_modules()
+    payload = serialization.context_pack_payload(_v2_ready_pack())
+    payload["budget"]["pack_bytes"] = 0
+    if recommended_missing:
+        payload["evidence_needs"].append(
+            {
+                "id": "need:tests",
+                "category": "tests",
+                "subject_terms": ["核心"],
+                "required": False,
+                "provenance": "structural_recommendation",
+                "matched_item_ids": [],
+            }
+        )
+        payload["missing_evidence"].append(
+            {
+                "need_id": "need:tests",
+                "category": "tests",
+                "required": False,
+                "reason": (
+                    "recommended 核心 test evidence is missing "
+                    "from the bounded context"
+                ),
+            }
+        )
+    payload["confidence"] = {"level": level, "reasons": reasons}
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        serialization.canonical_context_pack_bytes(payload)
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
+
+
+@pytest.mark.parametrize(
     "mutate",
     [
         pytest.param(
@@ -4040,6 +4214,71 @@ def test_v2_omitted_count_may_exceed_compacted_public_preview() -> None:
 
     assert payload["omissions"] == []
     assert payload["budget"]["omitted_item_count"] == 7
+
+
+@pytest.mark.parametrize(
+    ("max_items", "omitted_item_count", "preview_count"),
+    [(0, 1, 1), (1, 2, 2)],
+)
+def test_v2_serialization_caps_omission_preview_by_item_and_total_counts(
+    max_items: int,
+    omitted_item_count: int,
+    preview_count: int,
+) -> None:
+    models, _, serialization = _v2_modules()
+    pack = _v2_pack()
+    needs = tuple(
+        replace(need, matched_item_ids=())
+        for need in pack.evidence_needs
+    )
+    malformed = replace(
+        pack,
+        items=(),
+        groups={group: () for group in models.CONTEXT_GROUPS},
+        reading_order=(),
+        evidence_needs=needs,
+        missing_evidence=(
+            models.MissingEvidence(
+                need_id="need:implementation",
+                category="implementations",
+                required=True,
+                reason=(
+                    "required 核心 implementation evidence is missing "
+                    "from the bounded context"
+                ),
+            ),
+            pack.missing_evidence[0],
+        ),
+        next_queries=(),
+        omissions=tuple(
+            models.Omission(
+                file_path=f"src/omitted-{index}.py",
+                group="implementations",
+                reason=(
+                    "lower priority than selected evidence under the context budget"
+                ),
+                matched_need_ids=("need:implementation",),
+            )
+            for index in range(preview_count)
+        ),
+        budget=replace(
+            pack.budget,
+            max_items=max_items,
+            included_items=0,
+            included_excerpts=0,
+            content_bytes=0,
+            truncated_item_count=0,
+            omitted_item_count=omitted_item_count,
+        ),
+    )
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        serialization.context_pack_payload(malformed)
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
 
 
 def test_v2_serialization_rejects_duplicate_source_lines_with_consistent_totals() -> None:

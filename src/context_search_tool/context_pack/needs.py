@@ -170,6 +170,7 @@ _DATABASE_RE = re.compile(r"(?<![A-Za-z0-9])(?:mysql|postgresql)(?![A-Za-z0-9])"
 _MAX_SUBJECT_CODE_POINTS = 64
 _MAX_NEXT_QUERIES = 3
 _MAX_NEXT_QUERY_CODE_POINTS = 160
+_MAX_CONFIDENCE_REASONS = 4
 
 _EVIDENCE_LABELS = {
     "entrypoints": "entrypoint",
@@ -308,6 +309,29 @@ def candidate_matches_need(
     )
 
 
+def retained_item_matches_need(
+    item: ContextItem,
+    need: EvidenceNeed,
+) -> bool:
+    """Match one link against public fields and one retained excerpt at a time."""
+    if item.group != need.category or not item.excerpts:
+        return False
+    if not need.subject_terms:
+        return True
+
+    provenance_text = "\n".join((item.file_path, *item.reasons))
+    return any(
+        all(
+            _subject_matches_fields(
+                subject,
+                (item.file_path, provenance_text, excerpt.content),
+            )
+            for subject in need.subject_terms
+        )
+        for excerpt in item.excerpts
+    )
+
+
 def derive_missing_evidence(
     evidence_needs: tuple[EvidenceNeed, ...] | Iterable[EvidenceNeed],
 ) -> tuple[MissingEvidence, ...]:
@@ -356,6 +380,24 @@ def derive_readiness_confidence(
         )
         return ReadinessConfidence(level="low", reasons=(reason,))
 
+    protected_present = any(
+        candidates_by_path[item.file_path].protected_direct
+        for item in items
+    )
+    return derive_ready_confidence(
+        evidence_needs,
+        items,
+        protected_present=protected_present,
+    )
+
+
+def derive_ready_confidence(
+    evidence_needs: tuple[EvidenceNeed, ...],
+    items: tuple[ContextItem, ...],
+    *,
+    protected_present: bool,
+) -> ReadinessConfidence:
+    """Derive the bounded, self-describing confidence for a ready pack."""
     need_by_id = {need.id: need for need in evidence_needs}
     missing_recommended = next(
         (
@@ -375,26 +417,39 @@ def derive_readiness_confidence(
         for item in items
         for need_id in item.matched_need_ids
     )
-    protected_present = any(
-        candidates_by_path[item.file_path].protected_direct
-        for item in items
-    )
 
-    reasons = [_CONFIDENCE_REASON_READY]
+    medium_reasons: list[str] = []
     if missing_recommended is not None:
-        reasons.append(
+        medium_reasons.append(
             _RECOMMENDED_CONFIDENCE_REASONS[missing_recommended.category]
         )
     if required_truncated:
-        reasons.append(_CONFIDENCE_REASON_TRUNCATED)
+        medium_reasons.append(_CONFIDENCE_REASON_TRUNCATED)
     if planner_material:
-        reasons.append(_CONFIDENCE_REASON_PLANNER)
-    if not protected_present:
-        reasons.append(_CONFIDENCE_REASON_NO_PROTECTED)
-    if len(reasons) == 1:
-        reasons.append(_CONFIDENCE_REASON_PROTECTED)
-        return ReadinessConfidence(level="high", reasons=tuple(reasons))
-    return ReadinessConfidence(level="medium", reasons=tuple(reasons[:4]))
+        medium_reasons.append(_CONFIDENCE_REASON_PLANNER)
+
+    protected_reason = (
+        _CONFIDENCE_REASON_PROTECTED
+        if protected_present
+        else _CONFIDENCE_REASON_NO_PROTECTED
+    )
+    reasons = (
+        _CONFIDENCE_REASON_READY,
+        *medium_reasons[: _MAX_CONFIDENCE_REASONS - 2],
+        protected_reason,
+    )
+    level = "high" if protected_present and not medium_reasons else "medium"
+    return ReadinessConfidence(level=level, reasons=reasons)
+
+
+def protected_confidence_claim(reasons: Iterable[str]) -> bool | None:
+    """Return the single protected-evidence claim, or None if not singular."""
+    normalized = tuple(reasons)
+    protected_present = _CONFIDENCE_REASON_PROTECTED in normalized
+    protected_absent = _CONFIDENCE_REASON_NO_PROTECTED in normalized
+    if protected_present == protected_absent:
+        return None
+    return protected_present
 
 
 def derive_next_queries(
@@ -1389,6 +1444,7 @@ __all__ = (
     "derive_evidence_needs",
     "derive_missing_evidence",
     "derive_next_queries",
+    "derive_ready_confidence",
     "derive_readiness_confidence",
     "missing_evidence_reason",
     "next_query_purpose",
@@ -1396,4 +1452,6 @@ __all__ = (
     "next_query_text",
     "normalized_subject_match_span",
     "normalized_subject_match_spans",
+    "protected_confidence_claim",
+    "retained_item_matches_need",
 )

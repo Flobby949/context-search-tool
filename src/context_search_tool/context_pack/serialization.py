@@ -20,9 +20,12 @@ from context_search_tool.context_pack.models import (
 )
 from context_search_tool.context_pack.needs import (
     confidence_reason_is_closed,
+    derive_ready_confidence,
     missing_evidence_reason,
     next_query_purpose,
     next_query_suffix,
+    protected_confidence_claim,
+    retained_item_matches_need,
 )
 
 
@@ -161,6 +164,14 @@ _BUDGET_KEYS = (
     "omitted_item_count",
     "budget_exhausted",
 )
+
+
+def _role_is_valid(group: object, role: object) -> bool:
+    return (
+        type(group) is str
+        and type(role) is str
+        and role in _ROLES_BY_GROUP.get(group, ())
+    )
 
 
 def context_pack_payload(pack: ContextPack) -> dict[str, Any]:
@@ -648,6 +659,24 @@ def _validate_contract(payload: dict[str, Any]) -> None:
         if item["matched_need_ids"] != expected_need_ids:
             _fail()
 
+    semantic_items = {
+        item["id"]: _semantic_item(item)
+        for item in items
+    }
+    semantic_needs = {
+        need["id"]: _semantic_need(need)
+        for need in needs
+    }
+    if any(
+        not retained_item_matches_need(
+            semantic_items[item["id"]],
+            semantic_needs[need_id],
+        )
+        for item in items
+        for need_id in item["matched_need_ids"]
+    ):
+        _fail()
+
     missing = payload["missing_evidence"]
     unmatched_needs = [need for need in needs if not need["matched_item_ids"]]
     if len(missing) != len(unmatched_needs):
@@ -758,14 +787,20 @@ def _validate_contract(payload: dict[str, Any]) -> None:
             and not (not items and budget["omitted_item_count"] > 0)
         ) or confidence != {"level": "low", "reasons": [expected_reason]}:
             _fail()
-    elif (
-        not items
-        or required_missing
-        or confidence["level"] not in {"medium", "high"}
-        or not confidence["reasons"]
-        or confidence["reasons"][0] != "all required evidence is selected"
-    ):
-        _fail()
+    else:
+        protected_present = protected_confidence_claim(confidence["reasons"])
+        if not items or required_missing or protected_present is None:
+            _fail()
+        expected_confidence = derive_ready_confidence(
+            tuple(semantic_needs[need["id"]] for need in needs),
+            tuple(semantic_items[item["id"]] for item in items),
+            protected_present=protected_present,
+        )
+        if confidence != {
+            "level": expected_confidence.level,
+            "reasons": list(expected_confidence.reasons),
+        }:
+            _fail()
 
     included_excerpts = sum(len(item["excerpts"]) for item in items)
     content_bytes = sum(
@@ -782,7 +817,8 @@ def _validate_contract(payload: dict[str, Any]) -> None:
         or budget["included_excerpts"] != included_excerpts
         or budget["content_bytes"] != content_bytes
         or budget["truncated_item_count"] != truncated_item_count
-        or budget["omitted_item_count"] < len(payload["omissions"])
+        or len(payload["omissions"])
+        > min(budget["max_items"], budget["omitted_item_count"])
         or len(items) > budget["max_items"]
         or included_excerpts
         > len(items) * budget["max_excerpts_per_item"]
@@ -806,6 +842,42 @@ def _validate_contract(payload: dict[str, Any]) -> None:
             for excerpt in item["excerpts"]
         ):
             _fail()
+
+
+def _semantic_item(value: dict[str, Any]) -> ContextItem:
+    return ContextItem(
+        id=value["id"],
+        file_path=value["file_path"],
+        group=value["group"],
+        role=value["role"],
+        classification_basis=value["classification_basis"],
+        source_kind=value["source_kind"],
+        retrieval_rank=value["retrieval_rank"],
+        relevance_score=value["relevance_score"],
+        reasons=tuple(value["reasons"]),
+        matched_need_ids=tuple(value["matched_need_ids"]),
+        excerpts=tuple(
+            ContextExcerpt(
+                start_line=excerpt["start_line"],
+                end_line=excerpt["end_line"],
+                content=excerpt["content"],
+                content_bytes=excerpt["content_bytes"],
+                truncated=excerpt["truncated"],
+            )
+            for excerpt in value["excerpts"]
+        ),
+    )
+
+
+def _semantic_need(value: dict[str, Any]) -> EvidenceNeed:
+    return EvidenceNeed(
+        id=value["id"],
+        category=value["category"],
+        subject_terms=tuple(value["subject_terms"]),
+        required=value["required"],
+        provenance=value["provenance"],
+        matched_item_ids=tuple(value["matched_item_ids"]),
+    )
 
 
 def _self_size_payload(

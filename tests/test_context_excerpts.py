@@ -1650,6 +1650,26 @@ def test_confidence_table_uses_closed_reasons_in_fixed_precedence(
     monkeypatch.setattr(
         builder,
         "derive_evidence_needs",
+        lambda bundle, *, candidates: (
+            required,
+            recommended,
+            planner_supported,
+        ),
+    )
+    all_medium_causes = builder.build_context_pack(
+        _bundle(
+            "fixture",
+            [_result("config/application.properties", "PostgreSQL " + "x" * 80)],
+        ),
+        _options(
+            max_excerpt_bytes=20,
+            max_item_content_bytes=20,
+            max_total_content_bytes=20,
+        ),
+    )
+    monkeypatch.setattr(
+        builder,
+        "derive_evidence_needs",
         lambda bundle, *, candidates: (required,),
     )
     truncated = builder.build_context_pack(
@@ -1678,13 +1698,27 @@ def test_confidence_table_uses_closed_reasons_in_fixed_precedence(
 
     assert recommended_gap.confidence == models.ReadinessConfidence(
         "medium",
-        ("all required evidence is selected", "recommended tests are missing"),
+        (
+            "all required evidence is selected",
+            "recommended tests are missing",
+            "protected original-direct evidence is present",
+        ),
     )
     assert planner_material.confidence == models.ReadinessConfidence(
         "medium",
         (
             "all required evidence is selected",
             "planner-supported evidence is material to readiness",
+            "protected original-direct evidence is present",
+        ),
+    )
+    assert all_medium_causes.confidence == models.ReadinessConfidence(
+        "medium",
+        (
+            "all required evidence is selected",
+            "recommended tests are missing",
+            "selected required evidence is truncated",
+            "protected original-direct evidence is present",
         ),
     )
     assert truncated.confidence == models.ReadinessConfidence(
@@ -1692,6 +1726,7 @@ def test_confidence_table_uses_closed_reasons_in_fixed_precedence(
         (
             "all required evidence is selected",
             "selected required evidence is truncated",
+            "protected original-direct evidence is present",
         ),
     )
     assert no_protected.confidence == models.ReadinessConfidence(
@@ -1715,6 +1750,7 @@ def test_confidence_table_uses_closed_reasons_in_fixed_precedence(
     assert all(len(pack.confidence.reasons) <= 4 for pack in (
         recommended_gap,
         planner_material,
+        all_medium_causes,
         truncated,
         no_protected,
         high,
@@ -1843,6 +1879,81 @@ def test_next_queries_are_required_first_deduplicated_bounded_and_suffix_safe(
     assert pack.next_queries[0].query.endswith("service implementation")
     assert "  " not in pack.next_queries[0].query
     assert pack.next_queries[1].need_id == "need:tests:recommended"
+
+
+@pytest.mark.parametrize("fault", ["nonfinite_score", "reversed_span"])
+@pytest.mark.parametrize("max_items", [0, 1])
+def test_builder_rejects_every_malformed_candidate_before_selection(
+    fault: str,
+    max_items: int,
+) -> None:
+    malformed = _result(
+        "config/malformed.properties",
+        "PostgreSQL\nconfiguration",
+    )
+    if fault == "nonfinite_score":
+        malformed = replace(malformed, score=float("nan"))
+    else:
+        malformed = replace(
+            malformed,
+            spans=(RetrievalSpan(2, 1, 1.0, ("semantic",)),),
+        )
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        builder.build_context_pack(
+            _bundle(
+                "PostgreSQL configuration",
+                [
+                    _result(
+                        "config/valid.properties",
+                        "PostgreSQL\nconfiguration",
+                    ),
+                    malformed,
+                ],
+            ),
+            _options(max_items=max_items),
+        )
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"relevance_score": True},
+        {"end_line": 2},
+        {"role": "invented_role"},
+        {"classification_basis": "invented_basis"},
+        {"source_kind": "invented_source"},
+        {"key": "different/key.py"},
+        {"trusted_provenance_text": "untrusted"},
+    ],
+)
+def test_builder_rejects_normalized_candidate_contract_violations(
+    monkeypatch: pytest.MonkeyPatch,
+    changes: dict[str, object],
+) -> None:
+    bundle = _bundle(
+        "PostgreSQL configuration",
+        [_result("config/application.properties", "PostgreSQL")],
+    )
+    malformed = replace(builder.normalize_candidates(bundle)[0], **changes)
+    monkeypatch.setattr(
+        builder,
+        "normalize_candidates",
+        lambda _bundle: (malformed,),
+    )
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        builder.build_context_pack(bundle, _options(max_items=0))
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
 
 
 @pytest.mark.parametrize(

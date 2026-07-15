@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from math import isfinite
+from numbers import Real
 from typing import TYPE_CHECKING, Iterable, NoReturn
 
 from context_search_tool.config import ToolConfig
@@ -30,6 +32,7 @@ from context_search_tool.context_pack.needs import (
     derive_missing_evidence,
     derive_next_queries,
     derive_readiness_confidence,
+    retained_item_matches_need,
 )
 from context_search_tool.context_pack.roles import normalize_candidates
 
@@ -149,6 +152,7 @@ def build_context_pack(
     try:
         _validate_build_options(options)
         candidates = normalize_candidates(bundle)
+        _validate_candidates(candidates)
         needs = derive_evidence_needs(bundle, candidates=candidates)
         full_matches = _full_candidate_matches(candidates, needs)
         blocked_matches: set[tuple[str, str]] = set()
@@ -177,6 +181,7 @@ def build_context_pack(
                 item.candidate.file_path: item for item in selected
             }
             omission_preview_limit = options.max_items
+            pack = _relink_retained_matches(pack, candidates, needs)
             pack = _derive_final_outputs(
                 pack,
                 bundle,
@@ -1148,18 +1153,9 @@ def _candidate_matches_retained_item(
     item: ContextItem,
     need: EvidenceNeed,
 ) -> bool:
-    if not need.subject_terms:
-        return candidate.group == need.category
-    return all(
-        any(
-            candidate_matches_need(
-                candidate,
-                replace(need, subject_terms=(subject,)),
-                content=excerpt.content,
-            )
-            for excerpt in item.excerpts
-        )
-        for subject in need.subject_terms
+    return (
+        candidate.file_path == item.file_path
+        and retained_item_matches_need(item, need)
     )
 
 
@@ -1292,6 +1288,78 @@ def _validate_build_options(options: ContextPackOptions) -> None:
         )
     ):
         _fail()
+
+
+def _validate_candidates(candidates: tuple[ContextCandidate, ...]) -> None:
+    if type(candidates) is not tuple:
+        _fail()
+    seen_keys: set[str] = set()
+    seen_paths: set[str] = set()
+    for candidate in candidates:
+        if (
+            type(candidate) is not ContextCandidate
+            or type(candidate.key) is not str
+            or not candidate.key
+            or candidate.key != candidate.file_path
+            or candidate.key in seen_keys
+            or candidate.file_path in seen_paths
+            or candidate.group not in CONTEXT_GROUPS
+            or not serialization._role_is_valid(
+                candidate.group,
+                candidate.role,
+            )
+            or candidate.classification_basis
+            not in {"path", "content", "fallback"}
+            or candidate.source_kind not in {"result", "evidence_anchor"}
+            or type(candidate.source_order) is not int
+            or candidate.source_order < 0
+            or type(candidate.reasons) is not tuple
+            or len(candidate.reasons) > 4
+            or len(candidate.reasons) != len(set(candidate.reasons))
+            or any(
+                type(reason) is not str or not reason
+                for reason in candidate.reasons
+            )
+            or type(candidate.score_parts) is not dict
+            or any(
+                type(key) is not str or not key
+                for key in candidate.score_parts
+            )
+            or type(candidate.spans) is not tuple
+            or type(candidate.trusted_provenance_text) is not str
+            or candidate.trusted_provenance_text
+            != "\n".join((candidate.file_path, *candidate.reasons))
+            or type(candidate.protected_direct) is not bool
+        ):
+            _fail()
+
+        evidence_priority = candidate.score_parts.get("evidence_priority")
+        protected_direct = (
+            isinstance(evidence_priority, Real)
+            and not isinstance(evidence_priority, bool)
+            and evidence_priority == 0
+        )
+        if candidate.source_kind == "result":
+            if (
+                type(candidate.retrieval_rank) is not int
+                or candidate.retrieval_rank < 0
+                or candidate.source_order != candidate.retrieval_rank
+                or type(candidate.relevance_score) not in (int, float)
+                or not isfinite(candidate.relevance_score)
+                or candidate.protected_direct is not protected_direct
+            ):
+                _fail()
+        elif (
+            candidate.retrieval_rank is not None
+            or candidate.relevance_score is not None
+            or candidate.spans
+            or candidate.protected_direct
+        ):
+            _fail()
+
+        normalize_candidate_spans(candidate)
+        seen_keys.add(candidate.key)
+        seen_paths.add(candidate.file_path)
 
 
 def _invalid(message: str) -> None:
