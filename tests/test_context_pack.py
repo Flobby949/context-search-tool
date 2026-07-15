@@ -2854,6 +2854,14 @@ def test_v2_schema_constants_error_and_frozen_record_fields_are_exact() -> None:
     assert context_pack.CONTEXT_PACK_SCHEMA_VERSION == 1
 
 
+def test_v2_candidate_key_and_retrieval_rank_annotations_are_exact() -> None:
+    models, _, _ = _v2_modules()
+
+    assert models.ContextItem.__annotations__["retrieval_rank"] == "int | None"
+    assert models.ContextCandidate.__annotations__["key"] == "str"
+    assert models.ContextCandidate.__annotations__["retrieval_rank"] == "int | None"
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -3043,6 +3051,18 @@ def test_v2_resolver_caps_items_by_raw_candidate_count_and_clamps_window() -> No
     assert isinstance(configured_window, models.ContextPackOptions)
 
 
+def test_v2_resolver_clamps_negative_raw_candidate_cap_to_zero() -> None:
+    _, builder, _ = _v2_modules()
+
+    resolved = builder.resolve_context_pack_options(
+        ToolConfig(retrieval=RetrievalConfig(final_top_k=-2)),
+        context_lines=None,
+        max_evidence_anchors=1,
+    )
+
+    assert resolved.max_items == 0
+
+
 def test_v2_payload_has_exact_top_level_and_nested_keys() -> None:
     models, _, serialization = _v2_modules()
 
@@ -3122,6 +3142,23 @@ def test_v2_payload_has_exact_top_level_and_nested_keys() -> None:
     assert all(type(item) is dict for item in payload["items"])
     assert all(type(item_ids) is list for item_ids in payload["groups"].values())
     assert payload["schema_version"] == 2
+
+
+def test_v2_serialization_accepts_evidence_anchor_without_retrieval_rank() -> None:
+    _, _, serialization = _v2_modules()
+    pack = _v2_pack()
+    anchor_item = replace(
+        pack.items[0],
+        source_kind="evidence_anchor",
+        retrieval_rank=None,
+    )
+
+    payload = serialization.context_pack_payload(
+        replace(pack, items=(anchor_item,))
+    )
+
+    assert payload["items"][0]["source_kind"] == "evidence_anchor"
+    assert payload["items"][0]["retrieval_rank"] is None
 
 
 def test_v2_canonical_serialization_is_unicode_native_deterministic_and_self_sized(
@@ -3302,6 +3339,15 @@ def test_v2_serialization_accepts_incremental_derived_semantic_states(mutate) ->
                 items=(replace(pack.items[0], source_kind="anchor"),),
             ),
             id="source-kind",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(
+                    replace(pack.items[0], source_kind="evidence_anchor"),
+                ),
+            ),
+            id="evidence-anchor-with-result-rank",
         ),
         pytest.param(
             lambda pack: replace(

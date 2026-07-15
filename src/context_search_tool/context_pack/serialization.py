@@ -334,6 +334,12 @@ def _normalize_item(value: Any) -> dict[str, Any]:
     if score is not None:
         if type(score) not in (int, float) or not isfinite(score):
             _fail()
+    source_kind = _closed_string(value["source_kind"], _SOURCE_KINDS)
+    retrieval_rank = value["retrieval_rank"]
+    if source_kind == "result":
+        retrieval_rank = _nonnegative_int(retrieval_rank)
+    elif retrieval_rank is not None:
+        _fail()
     return {
         "id": _nonempty_string(value["id"]),
         "file_path": _nonempty_string(value["file_path"]),
@@ -343,8 +349,8 @@ def _normalize_item(value: Any) -> dict[str, Any]:
             value["classification_basis"],
             _CLASSIFICATION_BASES,
         ),
-        "source_kind": _closed_string(value["source_kind"], _SOURCE_KINDS),
-        "retrieval_rank": _nonnegative_int(value["retrieval_rank"]),
+        "source_kind": source_kind,
+        "retrieval_rank": retrieval_rank,
         "relevance_score": score,
         "reasons": _string_list(value["reasons"]),
         "matched_need_ids": _string_list(value["matched_need_ids"]),

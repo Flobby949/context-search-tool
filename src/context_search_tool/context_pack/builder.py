@@ -72,6 +72,10 @@ def resolve_context_pack_options(
         effective_item_bytes,
     )
     requested_max_items = context.max_items if max_items is None else max_items
+    raw_candidate_cap = max(
+        0,
+        config.retrieval.final_top_k + max_evidence_anchors,
+    )
 
     if context_lines is None:
         context_before_lines = max(0, config.retrieval.context_before_lines)
@@ -85,7 +89,7 @@ def resolve_context_pack_options(
         max_items=min(
             context.max_items,
             requested_max_items,
-            config.retrieval.final_top_k + max_evidence_anchors,
+            raw_candidate_cap,
         ),
         max_excerpts_per_item=context.max_excerpts_per_item,
         max_excerpt_bytes=effective_excerpt_bytes,

@@ -93,19 +93,26 @@ max_symbol_hints = 5
     assert config.query_planner.max_symbol_hints == 5
 
 
-def test_render_default_config_contains_exact_context_block() -> None:
+def test_render_default_config_places_exact_context_block_after_retrieval() -> None:
     rendered = render_default_config()
 
-    assert rendered.endswith(
-        """[context]
+    assert """[retrieval]
+semantic_top_k = 80
+lexical_top_k = 80
+final_top_k = 12
+context_before_lines = 8
+context_after_lines = 12
+
+[context]
 max_items = 12
 max_excerpts_per_item = 2
 max_excerpt_bytes = 4096
 max_item_content_bytes = 8192
 max_total_content_bytes = 49152
 max_pack_bytes = 65536
-"""
-    )
+
+[embedding]
+""" in rendered
 
 
 def test_context_config_render_load_round_trip_ignores_unknown_keys(

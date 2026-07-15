@@ -56,7 +56,7 @@ class ContextItem:
     role: str
     classification_basis: str
     source_kind: str
-    retrieval_rank: int
+    retrieval_rank: int | None
     relevance_score: float | None
     reasons: tuple[str, ...]
     matched_need_ids: tuple[str, ...]
@@ -136,7 +136,7 @@ class ContextPack:
 
 @dataclass(frozen=True)
 class ContextCandidate:
-    key: tuple[str, int, int]
+    key: str
     file_path: str
     start_line: int
     end_line: int
@@ -145,7 +145,7 @@ class ContextCandidate:
     role: str
     classification_basis: str
     source_kind: str
-    retrieval_rank: int
+    retrieval_rank: int | None
     source_order: int
     relevance_score: float | None
     reasons: tuple[str, ...]
