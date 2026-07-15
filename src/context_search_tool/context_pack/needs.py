@@ -78,57 +78,57 @@ _IDENTIFIER_SUFFIX_CATEGORIES = (
     (
         "entrypoints",
         (
-            "controller",
-            "router",
-            "route",
-            "endpoint",
-            "entrypoint",
-            "form",
-            "page",
-            "view",
+            ("controller",),
+            ("router",),
+            ("route",),
+            ("endpoint",),
+            ("entrypoint",),
+            ("command",),
+            ("form",),
+            ("page",),
+            ("view",),
         ),
     ),
     (
         "implementations",
         (
-            "implementation",
-            "serviceimpl",
-            "repository",
-            "handler",
-            "storage",
-            "service",
-            "impl",
+            ("implementation",),
+            ("service", "impl"),
+            ("repository",),
+            ("handler",),
+            ("storage",),
+            ("service",),
+            ("impl",),
         ),
     ),
     (
         "related_types",
         (
-            "dto",
-            "vo",
-            "request",
-            "response",
-            "entity",
-            "model",
-            "record",
-            "enum",
-            "type",
+            ("dto",),
+            ("vo",),
+            ("request",),
+            ("response",),
+            ("entity",),
+            ("model",),
+            ("record",),
+            ("enum",),
+            ("type",),
         ),
     ),
-    ("tests", ("integrationtests", "integrationtest", "tests", "test")),
-    ("configs_docs", ("configuration", "properties", "config")),
+    (
+        "tests",
+        (
+            ("integration", "tests"),
+            ("integration", "test"),
+            ("tests",),
+            ("test",),
+        ),
+    ),
+    (
+        "configs_docs",
+        (("configuration",), ("properties",), ("config",)),
+    ),
 )
-
-_IDENTIFIER_ROLE_CATEGORIES = {
-    "entrypoint": "entrypoints",
-    "router": "entrypoints",
-    "view": "entrypoints",
-    "command": "entrypoints",
-    "service": "implementations",
-    "handler": "implementations",
-    "repository": "implementations",
-    "storage": "implementations",
-    "data_type": "related_types",
-}
 
 _SUBJECT_STOP_WORDS = frozenset(
     {
@@ -171,6 +171,33 @@ class _NeedSpec:
     provenance: str
 
 
+@dataclass(frozen=True)
+class _IdentifierSubject:
+    value: str
+    start: int
+    end: int
+    category: str | None
+
+
+@dataclass(frozen=True)
+class _Clause:
+    start: int
+    end: int
+    roles: tuple[tuple[str, int], ...]
+    identifiers: tuple[_IdentifierSubject, ...]
+    subjects: tuple[tuple[int, str], ...]
+    database_subjects: bool
+    chinese_page_subject: bool
+
+
+@dataclass(frozen=True)
+class _OrderedNeedSpec:
+    spec: _NeedSpec
+    category_position: int
+    subject_position: int
+    order: int
+
+
 def derive_evidence_needs(
     bundle: QueryBundle,
     *,
@@ -178,58 +205,14 @@ def derive_evidence_needs(
 ) -> tuple[EvidenceNeed, ...]:
     """Derive ordered needs only from bounded in-memory query evidence."""
     query = bundle.query if isinstance(bundle.query, str) else ""
-    query_intent = infer_query_intent(query, query.split())
+    # Run both shared intent parsers exactly once against original-query data.
+    infer_query_intent(query, query.split())
     identifier_intent = infer_identifier_intent(query, tokenize_query(query))
     normalized_candidates = tuple(candidates)
-
-    category_positions = _explicit_category_positions(query)
-    identifier_categories = _ordered_identifier_categories(
+    explicit_specs = _derive_explicit_specs(
         query,
         identifier_intent.identifiers,
     )
-    for identifier, category, position in identifier_categories:
-        previous = category_positions.get(category)
-        if previous is None or position < previous:
-            category_positions[category] = position
-
-    # The shared inference calls intentionally receive only original-query data.
-    # Their closed role outputs confirm categories already located by the table.
-    _confirm_inferred_categories(
-        category_positions,
-        query,
-        query_intent.target_roles,
-        identifier_intent.role_hints,
-    )
-
-    subjects = _high_signal_subjects(
-        query,
-        role_positions=category_positions.values(),
-        identifiers=identifier_intent.identifiers,
-    )
-    own_identifier_category = {
-        identifier: category
-        for identifier, category, _ in identifier_categories
-    }
-
-    explicit_specs: list[_NeedSpec] = []
-    for category, _ in sorted(
-        category_positions.items(),
-        key=lambda item: (item[1], CONTEXT_GROUPS.index(item[0])),
-    ):
-        if subjects:
-            for subject in subjects:
-                provenance = (
-                    "explicit_identifier"
-                    if own_identifier_category.get(subject) == category
-                    else "explicit_query"
-                )
-                explicit_specs.append(
-                    _NeedSpec(category, (subject,), True, provenance)
-                )
-        else:
-            explicit_specs.append(
-                _NeedSpec(category, (), True, "explicit_query")
-            )
 
     planner_specs = _derive_planner_specs(
         bundle,
@@ -266,33 +249,122 @@ def candidate_matches_need(
     )
 
 
-def _confirm_inferred_categories(
-    positions: dict[str, int],
+def _derive_explicit_specs(
     query: str,
-    target_roles: frozenset[str],
-    identifier_roles: tuple[str, ...],
-) -> None:
-    inferred = {
-        "entrypoint": "entrypoints",
-        "implementation": "implementations",
-        "test": "tests",
-        "config": "configs_docs",
-        "doc": "configs_docs",
+    inferred_identifiers: tuple[str, ...],
+) -> list[_NeedSpec]:
+    identifiers = _ordered_identifiers(query, inferred_identifiers)
+    clauses = _query_clauses(query, identifiers)
+    ordered: list[_OrderedNeedSpec] = []
+    positions: dict[tuple[str, tuple[str, ...]], int] = {}
+
+    def add(
+        spec: _NeedSpec,
+        *,
+        category_position: int,
+        subject_position: int,
+    ) -> None:
+        key = (spec.category, spec.subject_terms)
+        existing_position = positions.get(key)
+        if existing_position is not None:
+            existing = ordered[existing_position]
+            if (
+                existing.spec.provenance != "explicit_identifier"
+                and spec.provenance == "explicit_identifier"
+            ):
+                ordered[existing_position] = _OrderedNeedSpec(
+                    spec,
+                    min(existing.category_position, category_position),
+                    min(existing.subject_position, subject_position),
+                    existing.order,
+                )
+            return
+        positions[key] = len(ordered)
+        ordered.append(
+            _OrderedNeedSpec(
+                spec,
+                category_position,
+                subject_position,
+                len(ordered),
+            )
+        )
+
+    for identifier in identifiers:
+        if identifier.category is None:
+            continue
+        add(
+            _NeedSpec(
+                identifier.category,
+                (_normalize_subject(identifier.value),),
+                True,
+                "explicit_identifier",
+            ),
+            category_position=identifier.start,
+            subject_position=identifier.start,
+        )
+
+    for clause_index, clause in enumerate(clauses):
+        for category, role_position in clause.roles:
+            subjects = _subjects_for_clause_role(
+                clauses,
+                clause_index,
+                category,
+                role_position,
+            )
+            if not subjects:
+                add(
+                    _NeedSpec(category, (), True, "explicit_query"),
+                    category_position=role_position,
+                    subject_position=role_position,
+                )
+                continue
+            for subject_position, subject in subjects:
+                identifier = next(
+                    (
+                        item
+                        for item in identifiers
+                        if item.start == subject_position
+                        and _normalize_subject(item.value) == subject
+                    ),
+                    None,
+                )
+                provenance = (
+                    "explicit_identifier"
+                    if identifier is not None and identifier.category == category
+                    else "explicit_query"
+                )
+                add(
+                    _NeedSpec(category, (subject,), True, provenance),
+                    category_position=role_position,
+                    subject_position=subject_position,
+                )
+
+    category_positions: dict[str, int] = {}
+    for item in ordered:
+        category_positions[item.spec.category] = min(
+            category_positions.get(item.spec.category, len(query)),
+            item.category_position,
+        )
+    category_order = {
+        category: index
+        for index, category in enumerate(
+            sorted(
+                category_positions,
+                key=lambda category: (
+                    category_positions[category],
+                    CONTEXT_GROUPS.index(category),
+                ),
+            )
+        )
     }
-    for role in target_roles:
-        category = inferred.get(role)
-        if category in positions:
-            positions[category] = min(
-                positions[category],
-                _first_category_term_position(query, category),
-            )
-    for role in identifier_roles:
-        category = _IDENTIFIER_ROLE_CATEGORIES.get(role)
-        if category in positions:
-            positions[category] = min(
-                positions[category],
-                _first_category_term_position(query, category),
-            )
+    ordered.sort(
+        key=lambda item: (
+            category_order[item.spec.category],
+            item.subject_position,
+            item.order,
+        )
+    )
+    return [item.spec for item in ordered]
 
 
 def _explicit_category_positions(query: str) -> dict[str, int]:
@@ -304,6 +376,212 @@ def _explicit_category_positions(query: str) -> dict[str, int]:
         if position < len(query):
             positions[category] = position
     return positions
+
+
+def _ordered_identifiers(
+    query: str,
+    identifiers: tuple[str, ...],
+) -> tuple[_IdentifierSubject, ...]:
+    values: list[_IdentifierSubject] = []
+    seen: set[tuple[int, str]] = set()
+    for identifier in identifiers:
+        for match in re.finditer(re.escape(identifier), query):
+            key = (match.start(), identifier)
+            if key in seen:
+                continue
+            seen.add(key)
+            values.append(
+                _IdentifierSubject(
+                    value=identifier,
+                    start=match.start(),
+                    end=match.end(),
+                    category=_identifier_category(identifier),
+                )
+            )
+    values.sort(key=lambda value: (value.start, value.end, value.value))
+    return tuple(values)
+
+
+def _query_clauses(
+    query: str,
+    identifiers: tuple[_IdentifierSubject, ...],
+) -> tuple[_Clause, ...]:
+    clauses: list[_Clause] = []
+    for start, end in _clause_spans(query):
+        text = query[start:end]
+        roles = tuple(
+            sorted(
+                (
+                    (category, start + position)
+                    for category, position in _explicit_category_positions(text).items()
+                ),
+                key=lambda item: (item[1], CONTEXT_GROUPS.index(item[0])),
+            )
+        )
+        clause_identifiers = tuple(
+            identifier
+            for identifier in identifiers
+            if start <= identifier.start < end
+        )
+        database_subjects = tuple(
+            (start + match.start(), _normalize_subject(match.group(0)))
+            for match in _DATABASE_RE.finditer(text)
+        )
+        chinese_match = _CHINESE_PAGE_RE.search(text)
+        chinese_subjects = (
+            (
+                (
+                    start + chinese_match.start(),
+                    _normalize_subject(chinese_match.group(0)),
+                ),
+            )
+            if chinese_match
+            else ()
+        )
+        if database_subjects:
+            subjects = database_subjects
+        elif chinese_subjects:
+            subjects = chinese_subjects
+        elif clause_identifiers:
+            subjects = tuple(
+                (identifier.start, _normalize_subject(identifier.value))
+                for identifier in clause_identifiers
+            )
+        else:
+            subjects = tuple(
+                (start + position, subject)
+                for position, subject in _extract_generic_subjects(text)
+            )
+        clauses.append(
+            _Clause(
+                start=start,
+                end=end,
+                roles=roles,
+                identifiers=clause_identifiers,
+                subjects=_dedupe_subjects(subjects),
+                database_subjects=bool(database_subjects),
+                chinese_page_subject=bool(chinese_subjects),
+            )
+        )
+    return tuple(clauses)
+
+
+def _clause_spans(query: str) -> tuple[tuple[int, int], ...]:
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for separator in _CONJUNCTION_RE.finditer(query):
+        _append_trimmed_span(query, spans, start, separator.start())
+        start = separator.end()
+    _append_trimmed_span(query, spans, start, len(query))
+    return tuple(spans)
+
+
+def _append_trimmed_span(
+    query: str,
+    spans: list[tuple[int, int]],
+    start: int,
+    end: int,
+) -> None:
+    while start < end and query[start].isspace():
+        start += 1
+    while end > start and query[end - 1].isspace():
+        end -= 1
+    if start < end:
+        spans.append((start, end))
+
+
+def _subjects_for_clause_role(
+    clauses: tuple[_Clause, ...],
+    clause_index: int,
+    category: str,
+    role_position: int,
+) -> tuple[tuple[int, str], ...]:
+    clause = clauses[clause_index]
+    direct = _direct_role_subjects(clause, category, role_position)
+
+    preceding: list[tuple[int, str]] = []
+    index = clause_index - 1
+    while index >= 0 and not clauses[index].roles:
+        preceding[0:0] = clauses[index].subjects
+        index -= 1
+
+    following: list[tuple[int, str]] = []
+    index = clause_index + 1
+    while index < len(clauses) and not clauses[index].roles:
+        following.extend(clauses[index].subjects)
+        index += 1
+
+    combined = _dedupe_subjects((*preceding, *direct, *following))
+    if combined:
+        return combined
+
+    for index in range(clause_index - 1, -1, -1):
+        if clauses[index].subjects:
+            return clauses[index].subjects
+    for index in range(clause_index + 1, len(clauses)):
+        if clauses[index].subjects:
+            return clauses[index].subjects
+    return ()
+
+
+def _direct_role_subjects(
+    clause: _Clause,
+    category: str,
+    role_position: int,
+) -> tuple[tuple[int, str], ...]:
+    if (
+        clause.database_subjects
+        or clause.chinese_page_subject
+        or not clause.identifiers
+    ):
+        return clause.subjects
+    matching_identifiers = tuple(
+        identifier
+        for identifier in clause.identifiers
+        if identifier.category == category
+    )
+    if matching_identifiers:
+        selected = matching_identifiers
+    elif len(clause.identifiers) == 1:
+        selected = clause.identifiers
+    else:
+        selected = (
+            min(
+                clause.identifiers,
+                key=lambda identifier: (
+                    _identifier_role_distance(identifier, role_position),
+                    identifier.start,
+                ),
+            ),
+        )
+    return tuple(
+        (identifier.start, _normalize_subject(identifier.value))
+        for identifier in selected
+    )
+
+
+def _identifier_role_distance(
+    identifier: _IdentifierSubject,
+    role_position: int,
+) -> int:
+    if identifier.end <= role_position:
+        return role_position - identifier.end
+    if identifier.start >= role_position:
+        return identifier.start - role_position
+    return 0
+
+
+def _dedupe_subjects(
+    subjects: Iterable[tuple[int, str]],
+) -> tuple[tuple[int, str], ...]:
+    values: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for position, subject in sorted(subjects, key=lambda item: item[0]):
+        if not subject or subject in seen:
+            continue
+        seen.add(subject)
+        values.append((position, subject))
+    return tuple(values)
 
 
 def _first_category_term_position(query: str, category: str) -> int:
@@ -330,25 +608,14 @@ def _term_position(query: str, term: str) -> int:
     return match.start() if match else len(query)
 
 
-def _ordered_identifier_categories(
-    query: str,
-    identifiers: tuple[str, ...],
-) -> tuple[tuple[str, str, int], ...]:
-    values: list[tuple[str, str, int]] = []
-    for identifier in identifiers:
-        category = _identifier_category(identifier)
-        if category is None:
-            continue
-        position = query.find(identifier)
-        values.append((identifier, category, position if position >= 0 else len(query)))
-    values.sort(key=lambda value: (value[2], value[0]))
-    return tuple(values)
-
-
 def _identifier_category(identifier: str) -> str | None:
-    folded = identifier.casefold()
-    for category, suffixes in _IDENTIFIER_SUFFIX_CATEGORIES:
-        if any(folded.endswith(suffix) for suffix in suffixes):
+    tokens = _camel_tokens(identifier)
+    for category, suffix_sequences in _IDENTIFIER_SUFFIX_CATEGORIES:
+        if any(
+            len(tokens) >= len(sequence)
+            and tokens[-len(sequence) :] == sequence
+            for sequence in suffix_sequences
+        ):
             return category
     return None
 

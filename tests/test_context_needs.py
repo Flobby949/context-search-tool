@@ -148,6 +148,50 @@ def test_multiple_database_subjects_have_distinct_ids_and_query_order() -> None:
     assert len({need.id for need in required_needs}) == 4
 
 
+def test_mixed_clauses_bind_each_subject_only_to_its_role_category() -> None:
+    needs = derive_evidence_needs(
+        bundle(query="Owner form and Pet model type"),
+        candidates=(),
+    )
+
+    assert required(needs) == [
+        ("entrypoints", ("Owner",)),
+        ("related_types", ("Pet",)),
+    ]
+
+
+def test_multiple_identifiers_bind_only_to_their_own_exact_roles() -> None:
+    needs = derive_evidence_needs(
+        bundle(query="OwnerController OwnerRepository"),
+        candidates=(),
+    )
+
+    assert required(needs) == [
+        ("entrypoints", ("OwnerController",)),
+        ("implementations", ("OwnerRepository",)),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("CloudPlatform", []),
+        ("OwnerCommand", [("entrypoints", ("OwnerCommand",))]),
+        ("OwnerServiceImpl", [("implementations", ("OwnerServiceImpl",))]),
+        ("OwnerIntegrationTests", [("tests", ("OwnerIntegrationTests",))]),
+        ("OwnerDTO", [("related_types", ("OwnerDTO",))]),
+        ("OwnerVO", [("related_types", ("OwnerVO",))]),
+    ],
+)
+def test_identifier_roles_use_exact_camel_suffix_tokens(
+    query: str,
+    expected: list[tuple[str, tuple[str, ...]]],
+) -> None:
+    needs = derive_evidence_needs(bundle(query=query), candidates=())
+
+    assert required(needs) == expected
+
+
 def test_subjects_normalize_unicode_and_collision_suffixes_in_encounter_order() -> None:
     needs = derive_evidence_needs(
         bundle(query="  Owner, owner! and OWNER\tcontroller"),
