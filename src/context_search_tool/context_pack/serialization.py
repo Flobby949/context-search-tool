@@ -18,6 +18,12 @@ from context_search_tool.context_pack.models import (
     Omission,
     ReadinessConfidence,
 )
+from context_search_tool.context_pack.needs import (
+    confidence_reason_is_closed,
+    missing_evidence_reason,
+    next_query_purpose,
+    next_query_suffix,
+)
 
 
 _FAILURE_CODE = "context_failed"
@@ -35,6 +41,66 @@ _NEED_PROVENANCE = frozenset(
         "structural_recommendation",
     }
 )
+_ROLES_BY_GROUP = {
+    "entrypoints": frozenset(
+        {
+            "entrypoint",
+            "router",
+            "command",
+            "handler",
+            "view",
+            "route_config",
+            "view_page",
+            "layout_component",
+        }
+    ),
+    "implementations": frozenset(
+        {
+            "implementation",
+            "service_impl",
+            "executor",
+            "engine",
+            "middleware",
+            "storage",
+            "service",
+            "repository",
+            "source_adapter",
+            "state_store",
+            "composable",
+            "scheduler",
+            "utility",
+            "store",
+            "shared_component",
+        }
+    ),
+    "related_types": frozenset(
+        {"data_type", "service_interface", "type_decl"}
+    ),
+    "tests": frozenset({"test"}),
+    "configs_docs": frozenset(
+        {
+            "deployment_config",
+            "config_example",
+            "runtime_config",
+            "config",
+            "doc",
+            "readme",
+            "risks",
+            "pom",
+        }
+    ),
+    "supporting": frozenset(
+        {
+            "component",
+            "evidence_anchor",
+            "generated_output",
+            "lockfile",
+            "scratch_temp",
+            "source",
+        }
+    ),
+}
+_OMISSION_REASON = "lower priority than selected evidence under the context budget"
 _TOP_LEVEL_KEYS = (
     "schema_version",
     "status",
@@ -343,6 +409,8 @@ def _normalize_payload(value: Any) -> dict[str, Any]:
 def _normalize_item(value: Any) -> dict[str, Any]:
     _require_exact_keys(value, _ITEM_KEYS)
     source_kind = _closed_string(value["source_kind"], _SOURCE_KINDS)
+    group = _closed_string(value["group"], frozenset(CONTEXT_GROUPS))
+    role = _closed_string(value["role"], _ROLES_BY_GROUP[group])
     score = value["relevance_score"]
     if source_kind == "result":
         if type(score) not in (int, float) or not isfinite(score):
@@ -354,11 +422,24 @@ def _normalize_item(value: Any) -> dict[str, Any]:
         retrieval_rank = _nonnegative_int(retrieval_rank)
     elif retrieval_rank is not None:
         _fail()
+    reasons = _string_list(value["reasons"])
+    matched_need_ids = _string_list(value["matched_need_ids"])
+    excerpts = _normalize_list(value["excerpts"], _normalize_excerpt)
+    if (
+        len(reasons) > 4
+        or len(reasons) != len(set(reasons))
+        or len(matched_need_ids) != len(set(matched_need_ids))
+        or any(
+            excerpts[index - 1]["end_line"] >= excerpts[index]["start_line"]
+            for index in range(1, len(excerpts))
+        )
+    ):
+        _fail()
     return {
         "id": _nonempty_string(value["id"]),
         "file_path": _nonempty_string(value["file_path"]),
-        "group": _closed_string(value["group"], frozenset(CONTEXT_GROUPS)),
-        "role": _nonempty_string(value["role"]),
+        "group": group,
+        "role": role,
         "classification_basis": _closed_string(
             value["classification_basis"],
             _CLASSIFICATION_BASES,
@@ -366,9 +447,9 @@ def _normalize_item(value: Any) -> dict[str, Any]:
         "source_kind": source_kind,
         "retrieval_rank": retrieval_rank,
         "relevance_score": score,
-        "reasons": _string_list(value["reasons"]),
-        "matched_need_ids": _string_list(value["matched_need_ids"]),
-        "excerpts": _normalize_list(value["excerpts"], _normalize_excerpt),
+        "reasons": reasons,
+        "matched_need_ids": matched_need_ids,
+        "excerpts": excerpts,
     }
 
 
@@ -392,16 +473,24 @@ def _normalize_excerpt(value: Any) -> dict[str, Any]:
 
 def _normalize_need(value: Any) -> dict[str, Any]:
     _require_exact_keys(value, _NEED_KEYS)
+    subject_terms = _string_list(value["subject_terms"])
+    matched_item_ids = _string_list(value["matched_item_ids"])
+    if (
+        len(subject_terms) != len(set(subject_terms))
+        or any(len(term) > 64 for term in subject_terms)
+        or len(matched_item_ids) != len(set(matched_item_ids))
+    ):
+        _fail()
     return {
         "id": _nonempty_string(value["id"]),
         "category": _closed_string(
             value["category"],
             frozenset(CONTEXT_GROUPS),
         ),
-        "subject_terms": _string_list(value["subject_terms"]),
+        "subject_terms": subject_terms,
         "required": _strict_bool(value["required"]),
         "provenance": _closed_string(value["provenance"], _NEED_PROVENANCE),
-        "matched_item_ids": _string_list(value["matched_item_ids"]),
+        "matched_item_ids": matched_item_ids,
     }
 
 
@@ -439,9 +528,16 @@ def _normalize_omission(value: Any) -> dict[str, Any]:
 
 def _normalize_confidence(value: Any) -> dict[str, Any]:
     _require_exact_keys(value, _CONFIDENCE_KEYS)
+    reasons = _string_list(value["reasons"])
+    if (
+        len(reasons) > 4
+        or len(reasons) != len(set(reasons))
+        or any(not confidence_reason_is_closed(reason) for reason in reasons)
+    ):
+        _fail()
     return {
         "level": _closed_string(value["level"], _CONFIDENCE_LEVELS),
-        "reasons": _string_list(value["reasons"]),
+        "reasons": reasons,
     }
 
 
@@ -498,7 +594,11 @@ def _validate_contract(payload: dict[str, Any]) -> None:
 
     items = payload["items"]
     item_ids = [item["id"] for item in items]
-    if len(item_ids) != len(set(item_ids)):
+    file_paths = [item["file_path"] for item in items]
+    if (
+        len(item_ids) != len(set(item_ids))
+        or len(file_paths) != len(set(file_paths))
+    ):
         _fail()
     item_id_set = set(item_ids)
     grouped_item_ids = [
@@ -532,17 +632,97 @@ def _validate_contract(payload: dict[str, Any]) -> None:
     for need in needs:
         if not set(need["matched_item_ids"]).issubset(item_id_set):
             _fail()
+        expected_item_ids = [
+            item["id"]
+            for item in items
+            if need["id"] in item["matched_need_ids"]
+        ]
+        if need["matched_item_ids"] != expected_item_ids:
+            _fail()
+    for item in items:
+        expected_need_ids = [
+            need["id"]
+            for need in needs
+            if item["id"] in need["matched_item_ids"]
+        ]
+        if item["matched_need_ids"] != expected_need_ids:
+            _fail()
 
     missing = payload["missing_evidence"]
-    for evidence in missing:
-        if evidence["need_id"] not in need_id_set:
+    unmatched_needs = [need for need in needs if not need["matched_item_ids"]]
+    if len(missing) != len(unmatched_needs):
+        _fail()
+    for evidence, need in zip(missing, unmatched_needs, strict=True):
+        canonical_need = EvidenceNeed(
+            id=need["id"],
+            category=need["category"],
+            subject_terms=tuple(need["subject_terms"]),
+            required=need["required"],
+            provenance=need["provenance"],
+            matched_item_ids=(),
+        )
+        if evidence != {
+            "need_id": need["id"],
+            "category": need["category"],
+            "required": need["required"],
+            "reason": missing_evidence_reason(canonical_need),
+        }:
             _fail()
 
-    for query in payload["next_queries"]:
-        if query["need_id"] not in need_id_set:
+    next_queries = payload["next_queries"]
+    ordered_missing_ids = [
+        need["id"]
+        for required in (True, False)
+        for need in unmatched_needs
+        if need["required"] is required
+    ]
+    missing_positions = {
+        need_id: index for index, need_id in enumerate(ordered_missing_ids)
+    }
+    query_need_ids = [query["need_id"] for query in next_queries]
+    if (
+        len(next_queries) > 3
+        or len(query_need_ids) != len(set(query_need_ids))
+        or any(need_id not in missing_positions for need_id in query_need_ids)
+        or any(
+            missing_positions[query_need_ids[index - 1]]
+            >= missing_positions[query_need_ids[index]]
+            for index in range(1, len(query_need_ids))
+        )
+    ):
+        _fail()
+    query_values: set[str] = set()
+    need_by_id = {need["id"]: need for need in needs}
+    for query in next_queries:
+        need = need_by_id[query["need_id"]]
+        normalized_query = " ".join(query["query"].split())
+        comparison_key = query["query"].casefold()
+        if (
+            normalized_query != query["query"]
+            or len(query["query"]) > 160
+            or comparison_key in query_values
+            or "/oups" in comparison_key
+            or not query["query"].endswith(next_query_suffix(need["category"]))
+            or query["purpose"]
+            != next_query_purpose(need["category"], need["required"])
+        ):
             _fail()
-    for omission in payload["omissions"]:
-        if not set(omission["matched_need_ids"]).issubset(need_id_set):
+        query_values.add(comparison_key)
+
+    omissions = payload["omissions"]
+    omission_paths = [omission["file_path"] for omission in omissions]
+    if (
+        len(omission_paths) != len(set(omission_paths))
+        or any(path in file_paths for path in omission_paths)
+    ):
+        _fail()
+    for omission in omissions:
+        if (
+            len(omission["matched_need_ids"])
+            != len(set(omission["matched_need_ids"]))
+            or not set(omission["matched_need_ids"]).issubset(need_id_set)
+            or omission["reason"] != _OMISSION_REASON
+        ):
             _fail()
 
     budget = payload["budget"]
@@ -551,6 +731,39 @@ def _validate_contract(payload: dict[str, Any]) -> None:
         <= budget["max_item_content_bytes"]
         <= budget["max_total_content_bytes"]
         < budget["max_pack_bytes"]
+    ):
+        _fail()
+
+    required_missing = any(
+        need["required"] and not need["matched_item_ids"] for need in needs
+    )
+    status = payload["status"]
+    confidence = payload["confidence"]
+    if status == "empty":
+        if (
+            items
+            or budget["omitted_item_count"] != 0
+            or confidence
+            != {"level": "none", "reasons": ["no usable retrieval evidence"]}
+        ):
+            _fail()
+    elif status == "partial":
+        expected_reason = (
+            "required evidence is missing"
+            if required_missing
+            else "no evidence item fits the context budget"
+        )
+        if (
+            not required_missing
+            and not (not items and budget["omitted_item_count"] > 0)
+        ) or confidence != {"level": "low", "reasons": [expected_reason]}:
+            _fail()
+    elif (
+        not items
+        or required_missing
+        or confidence["level"] not in {"medium", "high"}
+        or not confidence["reasons"]
+        or confidence["reasons"][0] != "all required evidence is selected"
     ):
         _fail()
 
@@ -574,6 +787,10 @@ def _validate_contract(payload: dict[str, Any]) -> None:
         or included_excerpts
         > len(items) * budget["max_excerpts_per_item"]
         or content_bytes > budget["max_total_content_bytes"]
+        or (
+            (budget["omitted_item_count"] > 0 or truncated_item_count > 0)
+            and not budget["budget_exhausted"]
+        )
     ):
         _fail()
     for item in items:
@@ -596,7 +813,8 @@ def _self_size_payload(
     *,
     enforce_limit: bool = True,
 ) -> tuple[dict[str, Any], bytes]:
-    candidate = payload["budget"]["pack_bytes"]
+    declared_size = payload["budget"]["pack_bytes"]
+    candidate = declared_size
     for _ in range(_MAX_SIZE_ITERATIONS):
         payload["budget"]["pack_bytes"] = candidate
         encoded = json.dumps(
@@ -608,6 +826,8 @@ def _self_size_payload(
         ).encode("utf-8")
         actual_size = len(encoded)
         if actual_size == candidate:
+            if declared_size not in (0, actual_size):
+                _fail()
             if (
                 enforce_limit
                 and actual_size > payload["budget"]["max_pack_bytes"]

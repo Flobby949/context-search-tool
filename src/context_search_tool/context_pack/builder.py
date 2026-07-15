@@ -27,6 +27,9 @@ from context_search_tool.context_pack.models import (
 from context_search_tool.context_pack.needs import (
     candidate_matches_need,
     derive_evidence_needs,
+    derive_missing_evidence,
+    derive_next_queries,
+    derive_readiness_confidence,
 )
 from context_search_tool.context_pack.roles import normalize_candidates
 
@@ -173,10 +176,53 @@ def build_context_pack(
             compaction_state = {
                 item.candidate.file_path: item for item in selected
             }
-            pack = _compact_pack(pack, needs, options, compaction_state)
+            omission_preview_limit = options.max_items
+            pack = _derive_final_outputs(
+                pack,
+                bundle,
+                candidates,
+                needs,
+                full_matches,
+                omission_preview_limit,
+            )
+            pack, omission_preview_limit = _compact_pack(
+                pack,
+                bundle,
+                candidates,
+                needs,
+                full_matches,
+                options,
+                compaction_state,
+                omission_preview_limit,
+            )
             pack = _relink_retained_matches(pack, candidates, needs)
-            pack = _compact_pack(pack, needs, options, compaction_state)
+            pack = _derive_final_outputs(
+                pack,
+                bundle,
+                candidates,
+                needs,
+                full_matches,
+                omission_preview_limit,
+            )
+            pack, omission_preview_limit = _compact_pack(
+                pack,
+                bundle,
+                candidates,
+                needs,
+                full_matches,
+                options,
+                compaction_state,
+                omission_preview_limit,
+            )
             pack = _relink_retained_matches(pack, candidates, needs)
+            pack = _derive_final_outputs(
+                pack,
+                bundle,
+                candidates,
+                needs,
+                full_matches,
+                omission_preview_limit,
+            )
 
             matched_need_ids = {
                 need_id
@@ -213,7 +259,7 @@ def build_context_pack(
             blocked_matches.update(retry_pairs)
         _fail()
     except ContextPackError:
-        raise
+        _fail()
     except Exception:
         _fail()
 
@@ -558,6 +604,113 @@ def _materialize_pack(
     return _refresh_pack(pack)
 
 
+def _derive_final_outputs(
+    pack: ContextPack,
+    bundle: QueryBundle,
+    candidates: tuple[ContextCandidate, ...],
+    needs: tuple[EvidenceNeed, ...],
+    full_matches: dict[str, tuple[str, ...]],
+    omission_preview_limit: int,
+) -> ContextPack:
+    linked_needs = _link_needs(needs, pack.items)
+    if not candidates:
+        status = "empty"
+    elif not pack.items or any(
+        need.required and not need.matched_item_ids for need in linked_needs
+    ):
+        status = "partial"
+    else:
+        status = "ready"
+
+    selected_paths = {item.file_path for item in pack.items}
+    omitted_candidates = tuple(
+        candidate
+        for candidate in candidates
+        if candidate.file_path not in selected_paths
+    )
+    omissions = _omission_preview(
+        omitted_candidates,
+        linked_needs,
+        full_matches,
+        omission_preview_limit,
+    )
+    candidates_by_path = {
+        candidate.file_path: candidate for candidate in candidates
+    }
+    confidence = derive_readiness_confidence(
+        status,
+        linked_needs,
+        pack.items,
+        candidates_by_path,
+    )
+    next_queries = derive_next_queries(
+        bundle,
+        linked_needs,
+        pack.items,
+        candidates_by_path,
+    )
+    derived = replace(
+        pack,
+        status=status,
+        evidence_needs=linked_needs,
+        missing_evidence=derive_missing_evidence(linked_needs),
+        next_queries=next_queries,
+        omissions=omissions,
+        confidence=confidence,
+        budget=replace(
+            pack.budget,
+            omitted_item_count=len(omitted_candidates),
+            budget_exhausted=(
+                pack.budget.budget_exhausted or bool(omitted_candidates)
+            ),
+        ),
+    )
+    return _refresh_pack(derived)
+
+
+def _omission_preview(
+    omitted_candidates: tuple[ContextCandidate, ...],
+    needs: tuple[EvidenceNeed, ...],
+    full_matches: dict[str, tuple[str, ...]],
+    preview_limit: int,
+) -> tuple[Omission, ...]:
+    need_by_id = {need.id: need for need in needs}
+    group_positions = _promoted_group_positions(needs)
+
+    def order(candidate: ContextCandidate) -> tuple[object, ...]:
+        matched = full_matches[candidate.key]
+        required_count = sum(need_by_id[need_id].required for need_id in matched)
+        recommended_count = sum(
+            not need_by_id[need_id].required for need_id in matched
+        )
+        return (
+            required_count == 0,
+            -required_count,
+            recommended_count == 0,
+            -recommended_count,
+            group_positions[candidate.group],
+            0 if candidate.source_kind == "result" else 1,
+            (
+                candidate.retrieval_rank
+                if candidate.source_kind == "result"
+                else candidate.source_order
+            ),
+            candidate.file_path,
+        )
+
+    return tuple(
+        Omission(
+            file_path=candidate.file_path,
+            group=candidate.group,
+            reason=_OMISSION_REASON,
+            matched_need_ids=full_matches[candidate.key],
+        )
+        for candidate in sorted(omitted_candidates, key=order)[
+            : max(0, preview_limit)
+        ]
+    )
+
+
 def _excerpt_count_limited(
     selected: _SelectedCandidate,
     need_by_id: dict[str, EvidenceNeed],
@@ -587,15 +740,34 @@ def _excerpt_count_limited(
 
 def _compact_pack(
     pack: ContextPack,
+    bundle: QueryBundle,
+    candidates: tuple[ContextCandidate, ...],
     needs: tuple[EvidenceNeed, ...],
+    full_matches: dict[str, tuple[str, ...]],
     options: ContextPackOptions,
     compaction_state: dict[str, _SelectedCandidate],
-) -> ContextPack:
+    omission_preview_limit: int,
+) -> tuple[ContextPack, int]:
     need_by_id = {need.id: need for need in needs}
-    compacted = _refresh_pack(pack)
+    compacted = _derive_final_outputs(
+        _refresh_pack(pack),
+        bundle,
+        candidates,
+        needs,
+        full_matches,
+        omission_preview_limit,
+    )
     while serialization._context_pack_size(compacted) > options.max_pack_bytes:
         if compacted.omissions:
-            compacted = replace(compacted, omissions=compacted.omissions[:-1])
+            omission_preview_limit = len(compacted.omissions) - 1
+            compacted = _derive_final_outputs(
+                compacted,
+                bundle,
+                candidates,
+                needs,
+                full_matches,
+                omission_preview_limit,
+            )
             continue
 
         reason_index = next(
@@ -620,12 +792,33 @@ def _compact_pack(
                 compacted,
                 budget=replace(compacted.budget, budget_exhausted=True),
             )
+            compacted = _relink_retained_matches(
+                compacted,
+                candidates,
+                needs,
+            )
+            compacted = _derive_final_outputs(
+                compacted,
+                bundle,
+                candidates,
+                needs,
+                full_matches,
+                omission_preview_limit,
+            )
             continue
 
         compacted = _relink_retained_matches(
             compacted,
             tuple(item.candidate for item in compaction_state.values()),
             needs,
+        )
+        compacted = _derive_final_outputs(
+            compacted,
+            bundle,
+            candidates,
+            needs,
+            full_matches,
+            omission_preview_limit,
         )
         if serialization._context_pack_size(compacted) <= options.max_pack_bytes:
             break
@@ -672,6 +865,19 @@ def _compact_pack(
                 tuple(items),
                 force_budget_exhausted=True,
             )
+            compacted = _relink_retained_matches(
+                compacted,
+                candidates,
+                needs,
+            )
+            compacted = _derive_final_outputs(
+                compacted,
+                bundle,
+                candidates,
+                needs,
+                full_matches,
+                omission_preview_limit,
+            )
             continue
 
         removable_index = _item_compaction_index(
@@ -686,6 +892,14 @@ def _compact_pack(
                 compaction_state,
                 needs,
                 options,
+            )
+            compacted = _derive_final_outputs(
+                compacted,
+                bundle,
+                candidates,
+                needs,
+                full_matches,
+                omission_preview_limit,
             )
             continue
         _fail()
@@ -705,7 +919,7 @@ def _compact_pack(
         None,
     )
     if removable_empty_index is None:
-        return compacted
+        return compacted, omission_preview_limit
     compacted = _omit_item_and_restore(
         compacted,
         removable_empty_index,
@@ -715,9 +929,13 @@ def _compact_pack(
     )
     return _compact_pack(
         compacted,
+        bundle,
+        candidates,
         needs,
+        full_matches,
         options,
         compaction_state,
+        omission_preview_limit,
     )
 
 
@@ -1000,22 +1218,8 @@ def _refresh_pack(pack: ContextPack) -> ContextPack:
         any(excerpt.truncated for excerpt in item.excerpts)
         for item in pack.items
     )
-    required_needs = tuple(
-        need for need in pack.evidence_needs if need.required
-    )
-    if not pack.items and not pack.evidence_needs and pack.budget.omitted_item_count == 0:
-        status = "empty"
-        confidence = ReadinessConfidence(level="none", reasons=())
-    elif not pack.items or any(not need.matched_item_ids for need in required_needs):
-        status = "partial"
-        confidence = ReadinessConfidence(level="low", reasons=())
-    else:
-        status = "ready"
-        confidence = ReadinessConfidence(level="medium", reasons=())
     return replace(
         pack,
-        status=status,
-        confidence=confidence,
         budget=replace(
             pack.budget,
             included_items=len(pack.items),

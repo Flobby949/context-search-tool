@@ -17,6 +17,7 @@ from context_search_tool.context_pack import (
     serialization,
 )
 from context_search_tool.models import (
+    EvidenceAnchor,
     QueryPlan,
     RetrievalResult,
     RetrievalSpan,
@@ -117,6 +118,19 @@ def _bundle(query: str, results: list[RetrievalResult]) -> QueryBundle:
         summary=RetrievalSummary(),
         planner=QueryPlan.disabled_default(),
         evidence_anchors=[],
+    )
+
+
+def _anchor(path: str, content: str) -> EvidenceAnchor:
+    return EvidenceAnchor(
+        file_path=Path(path),
+        start_line=1,
+        end_line=max(1, len(content.splitlines())),
+        content=content,
+        score=0.5,
+        score_parts={"evidence_priority": 0.0},
+        reasons=["fixture anchor"],
+        anchor_kind="other",
     )
 
 
@@ -1473,3 +1487,385 @@ def test_builder_pack_bytes_converges_at_decimal_digit_boundary() -> None:
     assert pack.budget.pack_bytes == len(encoded)
     assert 10_000 <= len(encoded) < 12_000
     assert len(str(pack.budget.pack_bytes)) == 5
+
+
+def test_empty_pack_keeps_original_query_needs_without_inventing_results() -> None:
+    pack = builder.build_context_pack(
+        _bundle("PostgreSQL configuration", []),
+        _options(),
+    )
+
+    assert pack.status == "empty"
+    assert pack.confidence == models.ReadinessConfidence(
+        level="none",
+        reasons=("no usable retrieval evidence",),
+    )
+    assert [(need.category, need.subject_terms) for need in pack.evidence_needs] == [
+        ("configs_docs", ("PostgreSQL",)),
+    ]
+    assert [item.need_id for item in pack.missing_evidence] == [
+        "need:configs_docs:postgresql"
+    ]
+    assert all(item.category != "results" for item in pack.missing_evidence)
+
+
+def test_budget_omission_of_every_required_provider_is_partial() -> None:
+    pack = builder.build_context_pack(
+        _bundle(
+            "PostgreSQL configuration",
+            [_result("config/application.properties", "PostgreSQL")],
+        ),
+        _options(max_items=0),
+    )
+
+    assert pack.status == "partial"
+    assert pack.items == ()
+    assert [item.need_id for item in pack.missing_evidence] == [
+        "need:configs_docs:postgresql"
+    ]
+    assert pack.budget.omitted_item_count == 1
+    assert pack.budget.budget_exhausted is True
+
+
+def test_truncation_is_ready_only_while_required_subject_remains_visible() -> None:
+    retained = builder.build_context_pack(
+        _bundle(
+            "PostgreSQL configuration",
+            [_result("config/application.properties", "PostgreSQL " + "x" * 80)],
+        ),
+        _options(
+            max_excerpt_bytes=20,
+            max_item_content_bytes=20,
+            max_total_content_bytes=20,
+        ),
+    )
+    removed = builder.build_context_pack(
+        _bundle(
+            "PostgreSQL configuration",
+            [_result("config/application.properties", "PostgreSQL")],
+        ),
+        _options(
+            max_excerpt_bytes=5,
+            max_item_content_bytes=5,
+            max_total_content_bytes=5,
+        ),
+    )
+
+    assert retained.status == "ready"
+    assert retained.items[0].excerpts[0].truncated is True
+    assert retained.evidence_needs[0].matched_item_ids == ("item:0",)
+    assert removed.status == "partial"
+    assert removed.evidence_needs[0].matched_item_ids == ()
+
+
+def test_omission_count_and_preview_order_cover_all_normalized_candidates() -> None:
+    pack = builder.build_context_pack(
+        _bundle(
+            "PostgreSQL configuration",
+            [
+                _result("config/primary-postgresql.properties", "PostgreSQL"),
+                _result("src/optional.py", "support"),
+                _result("config/secondary-postgresql.properties", "PostgreSQL"),
+            ],
+        ),
+        _options(max_items=1),
+    )
+    payload = serialization.context_pack_payload(pack)
+
+    assert [item.file_path for item in pack.items] == [
+        "config/primary-postgresql.properties"
+    ]
+    assert pack.budget.omitted_item_count == 2
+    assert [item.file_path for item in pack.omissions] == [
+        "config/secondary-postgresql.properties"
+    ]
+    assert tuple(payload["omissions"][0]) == (
+        "file_path",
+        "group",
+        "reason",
+        "matched_need_ids",
+    )
+    assert "score" not in payload["omissions"][0]
+    assert "content" not in payload["omissions"][0]
+
+
+def test_budget_exhausted_is_false_only_when_all_candidates_fit_intact() -> None:
+    intact = builder.build_context_pack(
+        _bundle("opaque", [_result("src/plain.py", "source")]),
+        _options(),
+    )
+    cropped = builder.build_context_pack(
+        _bundle("opaque", [_result("src/plain.py", "x" * 40)]),
+        _options(
+            max_excerpt_bytes=10,
+            max_item_content_bytes=10,
+            max_total_content_bytes=10,
+        ),
+    )
+
+    assert intact.budget.budget_exhausted is False
+    assert cropped.budget.budget_exhausted is True
+
+
+def test_confidence_table_uses_closed_reasons_in_fixed_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    required = _need("PostgreSQL")
+    recommended = models.EvidenceNeed(
+        id="need:tests:postgresql",
+        category="tests",
+        subject_terms=("PostgreSQL",),
+        required=False,
+        provenance="structural_recommendation",
+        matched_item_ids=(),
+    )
+    planner_supported = replace(
+        _need(
+            "PostgreSQL",
+            need_id="need:configs_docs:postgresql-planner",
+            required=False,
+        ),
+        provenance="planner_supported",
+    )
+    result = _result("config/application.properties", "PostgreSQL")
+
+    monkeypatch.setattr(
+        builder,
+        "derive_evidence_needs",
+        lambda bundle, *, candidates: (required, recommended),
+    )
+    recommended_gap = builder.build_context_pack(
+        _bundle("fixture", [result]),
+        _options(),
+    )
+    monkeypatch.setattr(
+        builder,
+        "derive_evidence_needs",
+        lambda bundle, *, candidates: (required, planner_supported),
+    )
+    planner_material = builder.build_context_pack(
+        _bundle("fixture", [result]),
+        _options(),
+    )
+    monkeypatch.setattr(
+        builder,
+        "derive_evidence_needs",
+        lambda bundle, *, candidates: (required,),
+    )
+    truncated = builder.build_context_pack(
+        _bundle(
+            "fixture",
+            [_result("config/application.properties", "PostgreSQL " + "x" * 80)],
+        ),
+        _options(
+            max_excerpt_bytes=20,
+            max_item_content_bytes=20,
+            max_total_content_bytes=20,
+        ),
+    )
+    no_protected = builder.build_context_pack(
+        _bundle("fixture", [replace(result, score_parts={})]),
+        _options(),
+    )
+    high = builder.build_context_pack(
+        _bundle("fixture", [result]),
+        _options(),
+    )
+    partial = builder.build_context_pack(
+        _bundle("fixture", [_result("src/plain.py", "support")]),
+        _options(),
+    )
+
+    assert recommended_gap.confidence == models.ReadinessConfidence(
+        "medium",
+        ("all required evidence is selected", "recommended tests are missing"),
+    )
+    assert planner_material.confidence == models.ReadinessConfidence(
+        "medium",
+        (
+            "all required evidence is selected",
+            "planner-supported evidence is material to readiness",
+        ),
+    )
+    assert truncated.confidence == models.ReadinessConfidence(
+        "medium",
+        (
+            "all required evidence is selected",
+            "selected required evidence is truncated",
+        ),
+    )
+    assert no_protected.confidence == models.ReadinessConfidence(
+        "medium",
+        (
+            "all required evidence is selected",
+            "protected original-direct evidence is absent",
+        ),
+    )
+    assert high.confidence == models.ReadinessConfidence(
+        "high",
+        (
+            "all required evidence is selected",
+            "protected original-direct evidence is present",
+        ),
+    )
+    assert partial.confidence == models.ReadinessConfidence(
+        "low",
+        ("required evidence is missing",),
+    )
+    assert all(len(pack.confidence.reasons) <= 4 for pack in (
+        recommended_gap,
+        planner_material,
+        truncated,
+        no_protected,
+        high,
+        partial,
+    ))
+
+
+@pytest.mark.parametrize(
+    ("score_parts", "expected_level"),
+    [
+        ({"evidence_priority": 0}, "high"),
+        ({"evidence_priority": False}, "medium"),
+        ({"evidence_priority": float("nan")}, "medium"),
+        ({"evidence_priority": 1}, "medium"),
+        ({}, "medium"),
+    ],
+)
+def test_only_exact_numeric_zero_on_a_result_is_protected_direct(
+    score_parts: dict[str, object],
+    expected_level: str,
+) -> None:
+    raw_result = replace(
+        _result("config/application.properties", "PostgreSQL"),
+        score_parts=score_parts,
+    )
+
+    pack = builder.build_context_pack(
+        _bundle("PostgreSQL configuration", [raw_result]),
+        _options(),
+    )
+
+    assert pack.confidence.level == expected_level
+
+
+def test_anchor_is_never_protected_original_direct() -> None:
+    bundle = replace(
+        _bundle("PostgreSQL configuration", []),
+        evidence_anchors=[_anchor("config/application.properties", "PostgreSQL")],
+    )
+
+    pack = builder.build_context_pack(bundle, _options())
+
+    assert pack.status == "ready"
+    assert pack.confidence.level == "medium"
+    assert "protected original-direct evidence is absent" in pack.confidence.reasons
+
+
+def test_next_query_uses_missing_required_subject_and_fixed_category_template() -> None:
+    pack = builder.build_context_pack(
+        _bundle(
+            "MySQL PostgreSQL configuration",
+            [_result("config/application-mysql.properties", "MySQL")],
+        ),
+        _options(),
+    )
+
+    assert [vars(item) for item in pack.next_queries] == [
+        {
+            "need_id": "need:configs_docs:postgresql",
+            "query": "PostgreSQL configuration documentation",
+            "purpose": "find missing required configuration evidence",
+        }
+    ]
+
+
+def test_next_queries_ignore_unrelated_planner_routes_and_owner_dto() -> None:
+    planner = QueryPlan(
+        original_query="owner details",
+        rewritten_queries=[
+            "GET /oups service implementation",
+            "owner dto model type",
+        ],
+        grep_keywords=["/oups", "OwnerDto"],
+        status="ok",
+    )
+    bundle = replace(
+        _bundle(
+            "OwnerController tests for owner registration validation",
+            [_result("src/main/controller/OwnerController.java", "OwnerController")],
+        ),
+        planner=planner,
+    )
+
+    pack = builder.build_context_pack(bundle, _options())
+
+    assert all("/oups" not in item.query.casefold() for item in pack.next_queries)
+    assert all("owner dto" not in item.query.casefold() for item in pack.next_queries)
+
+
+def test_next_queries_are_required_first_deduplicated_bounded_and_suffix_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    forced_needs = (
+        models.EvidenceNeed(
+            id="need:tests:recommended",
+            category="tests",
+            subject_terms=(),
+            required=False,
+            provenance="structural_recommendation",
+            matched_item_ids=(),
+        ),
+        *(
+            models.EvidenceNeed(
+                id=f"need:implementations:{index}",
+                category="implementations",
+                subject_terms=(),
+                required=True,
+                provenance="explicit_query",
+                matched_item_ids=(),
+            )
+            for index in range(4)
+        ),
+    )
+    monkeypatch.setattr(
+        builder,
+        "derive_evidence_needs",
+        lambda bundle, *, candidates: forced_needs,
+    )
+    bundle = _bundle("  " + "verylong " * 40, [_result("src/plain.py", "support")])
+
+    pack = builder.build_context_pack(bundle, _options())
+
+    assert len(pack.next_queries) == 2
+    assert pack.next_queries[0].need_id == "need:implementations:0"
+    assert len(pack.next_queries[0].query) <= 160
+    assert pack.next_queries[0].query.endswith("service implementation")
+    assert "  " not in pack.next_queries[0].query
+    assert pack.next_queries[1].need_id == "need:tests:recommended"
+
+
+@pytest.mark.parametrize(
+    "internal_error",
+    [
+        RuntimeError("PRIVATE INTERNAL DETAIL"),
+        models.ContextPackError("private_code", "PRIVATE CONTEXT DETAIL"),
+    ],
+)
+def test_public_builder_maps_every_internal_error_to_fixed_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    internal_error: Exception,
+) -> None:
+    def fail(_bundle: QueryBundle) -> tuple[models.ContextCandidate, ...]:
+        raise internal_error
+
+    monkeypatch.setattr(builder, "normalize_candidates", fail)
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        builder.build_context_pack(_bundle("fixture", []), _options())
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
+    assert "PRIVATE" not in str(exc_info.value)

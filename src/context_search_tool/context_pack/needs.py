@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 import re
 import unicodedata
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Iterable, Mapping
 
 from context_search_tool.context_pack.models import (
     CONTEXT_GROUPS,
     ContextCandidate,
+    ContextItem,
     EvidenceNeed,
     MissingEvidence,
     NextQuery,
+    ReadinessConfidence,
 )
 from context_search_tool.identifier_intent import infer_identifier_intent
 from context_search_tool.query_intent import infer_query_intent
@@ -165,6 +168,57 @@ _CAMEL_PART_RE = re.compile(
 _CHINESE_PAGE_RE = re.compile(r"[\u3400-\u9fff]+?(?:详情页|页面)")
 _DATABASE_RE = re.compile(r"(?<![A-Za-z0-9])(?:mysql|postgresql)(?![A-Za-z0-9])", re.I)
 _MAX_SUBJECT_CODE_POINTS = 64
+_MAX_NEXT_QUERIES = 3
+_MAX_NEXT_QUERY_CODE_POINTS = 160
+
+_EVIDENCE_LABELS = {
+    "entrypoints": "entrypoint",
+    "implementations": "implementation",
+    "related_types": "model type",
+    "tests": "test",
+    "configs_docs": "configuration",
+}
+_NEXT_QUERY_SUFFIXES = {
+    "entrypoints": "controller route entrypoint",
+    "implementations": "service implementation",
+    "related_types": "model type",
+    "tests": "test",
+    "configs_docs": "configuration documentation",
+}
+_RECOMMENDED_CONFIDENCE_REASONS = {
+    "entrypoints": "recommended entrypoints are missing",
+    "implementations": "recommended implementations are missing",
+    "related_types": "recommended model types are missing",
+    "tests": "recommended tests are missing",
+    "configs_docs": "recommended configuration evidence is missing",
+}
+_CONFIDENCE_REASON_EMPTY = "no usable retrieval evidence"
+_CONFIDENCE_REASON_PARTIAL = "required evidence is missing"
+_CONFIDENCE_REASON_NO_ITEM = "no evidence item fits the context budget"
+_CONFIDENCE_REASON_READY = "all required evidence is selected"
+_CONFIDENCE_REASON_TRUNCATED = "selected required evidence is truncated"
+_CONFIDENCE_REASON_PLANNER = (
+    "planner-supported evidence is material to readiness"
+)
+_CONFIDENCE_REASON_NO_PROTECTED = (
+    "protected original-direct evidence is absent"
+)
+_CONFIDENCE_REASON_PROTECTED = (
+    "protected original-direct evidence is present"
+)
+_CONFIDENCE_REASONS = frozenset(
+    {
+        _CONFIDENCE_REASON_EMPTY,
+        _CONFIDENCE_REASON_PARTIAL,
+        _CONFIDENCE_REASON_NO_ITEM,
+        _CONFIDENCE_REASON_READY,
+        _CONFIDENCE_REASON_TRUNCATED,
+        _CONFIDENCE_REASON_PLANNER,
+        _CONFIDENCE_REASON_NO_PROTECTED,
+        _CONFIDENCE_REASON_PROTECTED,
+        *_RECOMMENDED_CONFIDENCE_REASONS.values(),
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -252,6 +306,192 @@ def candidate_matches_need(
         _subject_matches_fields(subject, fields)
         for subject in need.subject_terms
     )
+
+
+def derive_missing_evidence(
+    evidence_needs: tuple[EvidenceNeed, ...] | Iterable[EvidenceNeed],
+) -> tuple[MissingEvidence, ...]:
+    """Describe each final unmatched need with one bounded fixed template."""
+    return tuple(
+        MissingEvidence(
+            need_id=need.id,
+            category=need.category,
+            required=need.required,
+            reason=missing_evidence_reason(need),
+        )
+        for need in evidence_needs
+        if not need.matched_item_ids
+    )
+
+
+def missing_evidence_reason(need: EvidenceNeed) -> str:
+    """Return the canonical public reason for one missing evidence need."""
+    requiredness = "required" if need.required else "recommended"
+    subject = _normalize_whitespace(" ".join(need.subject_terms))
+    label = _EVIDENCE_LABELS[need.category]
+    subject_prefix = f"{subject} " if subject else ""
+    return (
+        f"{requiredness} {subject_prefix}{label} evidence is missing "
+        "from the bounded context"
+    )
+
+
+def derive_readiness_confidence(
+    status: str,
+    evidence_needs: tuple[EvidenceNeed, ...],
+    items: tuple[ContextItem, ...],
+    candidates_by_path: Mapping[str, ContextCandidate],
+) -> ReadinessConfidence:
+    """Derive the closed confidence table from final retained evidence."""
+    if status == "empty":
+        return ReadinessConfidence(
+            level="none",
+            reasons=(_CONFIDENCE_REASON_EMPTY,),
+        )
+    if status == "partial":
+        reason = (
+            _CONFIDENCE_REASON_PARTIAL
+            if any(need.required and not need.matched_item_ids for need in evidence_needs)
+            else _CONFIDENCE_REASON_NO_ITEM
+        )
+        return ReadinessConfidence(level="low", reasons=(reason,))
+
+    need_by_id = {need.id: need for need in evidence_needs}
+    missing_recommended = next(
+        (
+            need
+            for need in evidence_needs
+            if not need.required and not need.matched_item_ids
+        ),
+        None,
+    )
+    required_truncated = any(
+        any(need_by_id[need_id].required for need_id in item.matched_need_ids)
+        and any(excerpt.truncated for excerpt in item.excerpts)
+        for item in items
+    )
+    planner_material = any(
+        need_by_id[need_id].provenance == "planner_supported"
+        for item in items
+        for need_id in item.matched_need_ids
+    )
+    protected_present = any(
+        candidates_by_path[item.file_path].protected_direct
+        for item in items
+    )
+
+    reasons = [_CONFIDENCE_REASON_READY]
+    if missing_recommended is not None:
+        reasons.append(
+            _RECOMMENDED_CONFIDENCE_REASONS[missing_recommended.category]
+        )
+    if required_truncated:
+        reasons.append(_CONFIDENCE_REASON_TRUNCATED)
+    if planner_material:
+        reasons.append(_CONFIDENCE_REASON_PLANNER)
+    if not protected_present:
+        reasons.append(_CONFIDENCE_REASON_NO_PROTECTED)
+    if len(reasons) == 1:
+        reasons.append(_CONFIDENCE_REASON_PROTECTED)
+        return ReadinessConfidence(level="high", reasons=tuple(reasons))
+    return ReadinessConfidence(level="medium", reasons=tuple(reasons[:4]))
+
+
+def derive_next_queries(
+    bundle: QueryBundle,
+    evidence_needs: tuple[EvidenceNeed, ...],
+    items: tuple[ContextItem, ...],
+    candidates_by_path: Mapping[str, ContextCandidate],
+) -> tuple[NextQuery, ...]:
+    """Build at most three grounded deterministic suggestions for missing needs."""
+    ordered_missing = tuple(
+        need
+        for required in (True, False)
+        for need in evidence_needs
+        if need.required is required and not need.matched_item_ids
+    )
+    selected_candidates = tuple(
+        candidates_by_path[item.file_path] for item in items
+    )
+    original_query = _normalize_whitespace(
+        bundle.query if isinstance(bundle.query, str) else ""
+    )
+    suggestions: list[NextQuery] = []
+    seen: set[str] = set()
+    for need in ordered_missing:
+        grounded = tuple(
+            candidate
+            for candidate in selected_candidates
+            if candidate_matches_need(candidate, need)
+        )
+        seeds: list[str] = []
+        if need.provenance != "planner_supported" and need.subject_terms:
+            seeds.append(_normalize_whitespace(" ".join(need.subject_terms)))
+        seeds.extend(
+            PurePosixPath(candidate.file_path).stem
+            for candidate in grounded
+            if candidate.protected_direct
+        )
+        if (
+            need.provenance == "planner_supported"
+            and grounded
+            and need.subject_terms
+        ):
+            seeds.append(_normalize_whitespace(" ".join(need.subject_terms)))
+        seeds.append(original_query)
+
+        query = next_query_text(need.category, seeds)
+        if not query or query.casefold() in seen:
+            continue
+        seen.add(query.casefold())
+        suggestions.append(
+            NextQuery(
+                need_id=need.id,
+                query=query,
+                purpose=next_query_purpose(need.category, need.required),
+            )
+        )
+        if len(suggestions) == _MAX_NEXT_QUERIES:
+            break
+    return tuple(suggestions)
+
+
+def next_query_purpose(category: str, required: bool) -> str:
+    """Return the closed purpose string for one category and requiredness."""
+    requiredness = "required" if required else "recommended"
+    return (
+        f"find missing {requiredness} {_EVIDENCE_LABELS[category]} evidence"
+    )
+
+
+def next_query_suffix(category: str) -> str:
+    """Return the closed category suffix for a follow-up query."""
+    return _NEXT_QUERY_SUFFIXES[category]
+
+
+def confidence_reason_is_closed(reason: str) -> bool:
+    """Return whether a confidence reason belongs to the fixed public set."""
+    return reason in _CONFIDENCE_REASONS
+
+
+def next_query_text(category: str, seeds: Iterable[str]) -> str:
+    """Choose the first safe seed and append the complete bounded suffix."""
+    suffix = _NEXT_QUERY_SUFFIXES[category]
+    for raw_seed in seeds:
+        seed = _normalize_whitespace(raw_seed)
+        if not seed or "/oups" in seed.casefold():
+            continue
+        available = _MAX_NEXT_QUERY_CODE_POINTS - len(suffix) - 1
+        if available <= 0:
+            return suffix[:_MAX_NEXT_QUERY_CODE_POINTS]
+        seed = seed[:available].rstrip()
+        if seed:
+            return f"{seed} {suffix}"
+    return ""
+
+
+def _normalize_whitespace(value: str) -> str:
+    return " ".join(value.split())
 
 
 def normalized_subject_match_span(
@@ -1145,7 +1385,15 @@ __all__ = (
     "MissingEvidence",
     "NextQuery",
     "candidate_matches_need",
+    "confidence_reason_is_closed",
     "derive_evidence_needs",
+    "derive_missing_evidence",
+    "derive_next_queries",
+    "derive_readiness_confidence",
+    "missing_evidence_reason",
+    "next_query_purpose",
+    "next_query_suffix",
+    "next_query_text",
     "normalized_subject_match_span",
     "normalized_subject_match_spans",
 )

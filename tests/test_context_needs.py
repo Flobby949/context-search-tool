@@ -787,3 +787,55 @@ def test_need_derivation_and_matching_are_pure(
     needs = derive_evidence_needs(query_bundle, candidates=candidates)
 
     assert any(candidate_matches_need(candidates[0], item) for item in needs)
+
+
+def test_missing_evidence_uses_fixed_bounded_public_templates() -> None:
+    evidence_needs = (
+        EvidenceNeed(
+            id="need:configs_docs:postgresql",
+            category="configs_docs",
+            subject_terms=("PostgreSQL",),
+            required=True,
+            provenance="explicit_query",
+            matched_item_ids=(),
+        ),
+        EvidenceNeed(
+            id="need:tests:owner-controller",
+            category="tests",
+            subject_terms=("OwnerController",),
+            required=False,
+            provenance="structural_recommendation",
+            matched_item_ids=(),
+        ),
+        EvidenceNeed(
+            id="need:implementations:any",
+            category="implementations",
+            subject_terms=(),
+            required=True,
+            provenance="explicit_query",
+            matched_item_ids=("item:0",),
+        ),
+    )
+
+    missing = context_needs.derive_missing_evidence(evidence_needs)
+
+    assert [vars(item) for item in missing] == [
+        {
+            "need_id": "need:configs_docs:postgresql",
+            "category": "configs_docs",
+            "required": True,
+            "reason": (
+                "required PostgreSQL configuration evidence is missing "
+                "from the bounded context"
+            ),
+        },
+        {
+            "need_id": "need:tests:owner-controller",
+            "category": "tests",
+            "required": False,
+            "reason": (
+                "recommended OwnerController test evidence is missing "
+                "from the bounded context"
+            ),
+        },
+    ]

@@ -3064,7 +3064,7 @@ def _v2_pack(content: str = "核心实现\n"):
         models.EvidenceNeed(
             id="need:tests",
             category="tests",
-            subject_terms=("核心", "test"),
+            subject_terms=("核心",),
             required=True,
             provenance="explicit_query",
             matched_item_ids=(),
@@ -3086,27 +3086,31 @@ def _v2_pack(content: str = "核心实现\n"):
                 need_id="need:tests",
                 category="tests",
                 required=True,
-                reason="required test evidence is missing",
+                reason=(
+                    "required 核心 test evidence is missing from the bounded context"
+                ),
             ),
         ),
         next_queries=(
             models.NextQuery(
                 need_id="need:tests",
                 query="核心 test",
-                purpose="find required tests",
+                purpose="find missing required test evidence",
             ),
         ),
         omissions=(
             models.Omission(
                 file_path="tests/legacy_test.py",
                 group="tests",
-                reason="lower-ranked duplicate",
+                reason=(
+                    "lower priority than selected evidence under the context budget"
+                ),
                 matched_need_ids=("need:tests",),
             ),
         ),
         confidence=models.ReadinessConfidence(
             level="low",
-            reasons=("required test evidence is missing",),
+            reasons=("required evidence is missing",),
         ),
         budget=models.ContextBudget(
             max_items=12,
@@ -3700,7 +3704,10 @@ def test_v2_serialization_accepts_zero_effective_item_capacity() -> None:
         missing_evidence=(),
         next_queries=(),
         omissions=(),
-        confidence=models.ReadinessConfidence(level="none", reasons=()),
+        confidence=models.ReadinessConfidence(
+            level="none",
+            reasons=("no usable retrieval evidence",),
+        ),
         budget=models.ContextBudget(
             max_items=options.max_items,
             max_excerpts_per_item=options.max_excerpts_per_item,
@@ -3747,15 +3754,27 @@ def test_v2_serialization_accepts_zero_effective_item_capacity() -> None:
             ),
             id="need-item-links-not-bidirectional-yet",
         ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                confidence=replace(
+                    pack.confidence,
+                    reasons=("recommended tests are missing",),
+                ),
+            ),
+            id="confidence-reasons-not-derived",
+        ),
     ],
 )
-def test_v2_serialization_accepts_incremental_derived_semantic_states(mutate) -> None:
-    _, _, serialization = _v2_modules()
+def test_v2_serialization_rejects_inconsistent_derived_semantic_states(mutate) -> None:
+    models, _, serialization = _v2_modules()
 
-    payload = serialization.context_pack_payload(mutate(_v2_pack()))
+    with pytest.raises(models.ContextPackError) as exc_info:
+        serialization.context_pack_payload(mutate(_v2_pack()))
 
-    assert payload["budget"]["pack_bytes"] == len(
-        serialization.canonical_context_pack_bytes(payload)
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
     )
 
 
@@ -3813,6 +3832,13 @@ def test_v2_serialization_requires_complete_consistent_item_references(
         pytest.param(
             lambda pack: replace(
                 pack,
+                items=(replace(pack.items[0], role="invented_role"),),
+            ),
+            id="role",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
                 items=(replace(pack.items[0], source_kind="anchor"),),
             ),
             id="source-kind",
@@ -3853,9 +3879,57 @@ def test_v2_serialization_requires_complete_consistent_item_references(
         pytest.param(
             lambda pack: replace(
                 pack,
+                items=(
+                    pack.items[0],
+                    replace(pack.items[0], file_path="src/duplicate.py"),
+                ),
+            ),
+            id="duplicate-item-id",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                evidence_needs=(
+                    pack.evidence_needs[0],
+                    replace(
+                        pack.evidence_needs[1],
+                        id=pack.evidence_needs[0].id,
+                    ),
+                ),
+            ),
+            id="duplicate-need-id",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(
+                    replace(
+                        pack.items[0],
+                        excerpts=(
+                            replace(
+                                pack.items[0].excerpts[0],
+                                start_line=12,
+                                end_line=11,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            id="reversed-excerpt",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
                 items=(replace(pack.items[0], reasons=["not a tuple"]),),
             ),
             id="non-json-contract-shape",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                items=(replace(pack.items[0], reasons=(object(),)),),
+            ),
+            id="non-json-value",
         ),
         pytest.param(
             lambda pack: replace(
@@ -3918,6 +3992,13 @@ def test_v2_serialization_requires_complete_consistent_item_references(
             ),
             id="negative-pack-bytes",
         ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                budget=replace(pack.budget, pack_bytes=1),
+            ),
+            id="canonical-byte-mismatch",
+        ),
     ],
 )
 def test_v2_serialization_rejects_malformed_records_with_fixed_error(mutate) -> None:
@@ -3959,3 +4040,61 @@ def test_v2_omitted_count_may_exceed_compacted_public_preview() -> None:
 
     assert payload["omissions"] == []
     assert payload["budget"]["omitted_item_count"] == 7
+
+
+def test_v2_serialization_rejects_duplicate_source_lines_with_consistent_totals() -> None:
+    models, _, serialization = _v2_modules()
+    pack = _v2_pack()
+    excerpt = pack.items[0].excerpts[0]
+    overlapping = replace(excerpt, start_line=11, end_line=12)
+    item = replace(pack.items[0], excerpts=(excerpt, overlapping))
+    malformed = replace(
+        pack,
+        items=(item,),
+        budget=replace(
+            pack.budget,
+            included_excerpts=2,
+            content_bytes=excerpt.content_bytes * 2,
+        ),
+    )
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        serialization.context_pack_payload(malformed)
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
+
+
+def test_v2_serialization_rejects_duplicate_file_items_with_consistent_indexes() -> None:
+    models, _, serialization = _v2_modules()
+    pack = _v2_pack()
+    duplicate = replace(
+        pack.items[0],
+        id="item:1",
+        matched_need_ids=(),
+    )
+    malformed = replace(
+        pack,
+        items=(pack.items[0], duplicate),
+        groups={
+            group: (("item:0", "item:1") if group == "implementations" else ())
+            for group in models.CONTEXT_GROUPS
+        },
+        reading_order=("item:0", "item:1"),
+        budget=replace(
+            pack.budget,
+            included_items=2,
+            included_excerpts=2,
+            content_bytes=pack.budget.content_bytes * 2,
+        ),
+    )
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        serialization.context_pack_payload(malformed)
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
