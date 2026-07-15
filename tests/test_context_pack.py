@@ -3952,6 +3952,45 @@ def test_v2_serialization_enforces_exact_self_describing_ready_confidence(
     )
 
 
+def test_v2_protected_present_confidence_requires_a_selected_result() -> None:
+    models, _, serialization = _v2_modules()
+    result_pack = _v2_ready_pack()
+    result_payload = serialization.context_pack_payload(result_pack)
+    anchor_item = replace(
+        result_pack.items[0],
+        source_kind="evidence_anchor",
+        retrieval_rank=None,
+        relevance_score=None,
+    )
+    anchor_pack = replace(
+        result_pack,
+        items=(anchor_item,),
+        confidence=models.ReadinessConfidence(
+            level="medium",
+            reasons=(
+                "all required evidence is selected",
+                "protected original-direct evidence is absent",
+            ),
+        ),
+    )
+    anchor_payload = serialization.context_pack_payload(anchor_pack)
+    forged = replace(
+        anchor_pack,
+        confidence=result_pack.confidence,
+        budget=replace(anchor_pack.budget, pack_bytes=0),
+    )
+
+    assert result_payload["confidence"]["level"] == "high"
+    assert anchor_payload["confidence"]["level"] == "medium"
+    with pytest.raises(models.ContextPackError) as exc_info:
+        serialization.context_pack_payload(forged)
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

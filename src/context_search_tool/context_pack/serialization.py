@@ -789,7 +789,15 @@ def _validate_contract(payload: dict[str, Any]) -> None:
             _fail()
     else:
         protected_present = protected_confidence_claim(confidence["reasons"])
-        if not items or required_missing or protected_present is None:
+        if (
+            not items
+            or required_missing
+            or protected_present is None
+            or (
+                protected_present
+                and not any(item["source_kind"] == "result" for item in items)
+            )
+        ):
             _fail()
         expected_confidence = derive_ready_confidence(
             tuple(semantic_needs[need["id"]] for need in needs),
