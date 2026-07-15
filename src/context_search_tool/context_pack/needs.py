@@ -154,6 +154,10 @@ _SUBJECT_STOP_WORDS = frozenset(
     }
 )
 _CONJUNCTION_RE = re.compile(r"\s+(?:and|or)\s+|[,;/&]+", re.IGNORECASE)
+_CLAUSE_SEPARATOR_RE = re.compile(
+    r"\s+(?:and|or)\s+|[,;/&]+|[\r\n]+",
+    re.IGNORECASE,
+)
 _ASCII_WORD_RE = re.compile(r"[A-Za-z0-9]+")
 _CAMEL_PART_RE = re.compile(
     r"[A-Z]+(?=[A-Z][a-z]|$)|[A-Z]?[a-z]+[0-9]*|[A-Z]+[0-9]*|[0-9]+"
@@ -183,6 +187,7 @@ class _IdentifierSubject:
 class _Clause:
     start: int
     end: int
+    coordinated_with_previous: bool
     roles: tuple[tuple[str, int], ...]
     identifiers: tuple[_IdentifierSubject, ...]
     subjects: tuple[tuple[int, str], ...]
@@ -415,7 +420,7 @@ def _query_clauses(
     identifiers: tuple[_IdentifierSubject, ...],
 ) -> tuple[_Clause, ...]:
     clauses: list[_Clause] = []
-    for start, end in _clause_spans(query):
+    for start, end, coordinated_with_previous in _clause_spans(query):
         text = query[start:end]
         roles = tuple(
             sorted(
@@ -464,6 +469,7 @@ def _query_clauses(
             _Clause(
                 start=start,
                 end=end,
+                coordinated_with_previous=coordinated_with_previous,
                 roles=roles,
                 identifiers=clause_identifiers,
                 subjects=_dedupe_subjects(subjects),
@@ -474,28 +480,49 @@ def _query_clauses(
     return tuple(clauses)
 
 
-def _clause_spans(query: str) -> tuple[tuple[int, int], ...]:
-    spans: list[tuple[int, int]] = []
+def _clause_spans(query: str) -> tuple[tuple[int, int, bool], ...]:
+    spans: list[tuple[int, int, bool]] = []
     start = 0
-    for separator in _CONJUNCTION_RE.finditer(query):
-        _append_trimmed_span(query, spans, start, separator.start())
+    coordinated_with_previous = False
+    for separator in _CLAUSE_SEPARATOR_RE.finditer(query):
+        _append_trimmed_span(
+            query,
+            spans,
+            start,
+            separator.start(),
+            coordinated_with_previous,
+        )
         start = separator.end()
-    _append_trimmed_span(query, spans, start, len(query))
+        coordinated_with_previous = _separator_coordinates(separator.group(0))
+    _append_trimmed_span(
+        query,
+        spans,
+        start,
+        len(query),
+        coordinated_with_previous,
+    )
     return tuple(spans)
 
 
 def _append_trimmed_span(
     query: str,
-    spans: list[tuple[int, int]],
+    spans: list[tuple[int, int, bool]],
     start: int,
     end: int,
+    coordinated_with_previous: bool,
 ) -> None:
     while start < end and query[start].isspace():
         start += 1
     while end > start and query[end - 1].isspace():
         end -= 1
     if start < end:
-        spans.append((start, end))
+        spans.append((start, end, coordinated_with_previous))
+
+
+def _separator_coordinates(separator: str) -> bool:
+    if re.search(r"\b(?:and|or)\b", separator, re.IGNORECASE):
+        return True
+    return not any(char in separator for char in ";\r\n")
 
 
 def _subjects_for_clause_role(
@@ -510,13 +537,27 @@ def _subjects_for_clause_role(
 
     preceding: list[tuple[int, str]] = []
     index = clause_index - 1
-    while index >= 0 and not clauses[index].roles:
+    connected = clause.coordinated_with_previous
+    while index >= 0 and connected and not clauses[index].roles:
+        exact_identifier_boundary = any(
+            identifier.category is not None
+            for identifier in clauses[index].identifiers
+        )
+        if direct and exact_identifier_boundary:
+            break
         preceding[0:0] = clauses[index].subjects
+        if exact_identifier_boundary:
+            break
+        connected = clauses[index].coordinated_with_previous
         index -= 1
 
     following: list[tuple[int, str]] = []
     index = clause_index + 1
-    while index < len(clauses) and not clauses[index].roles:
+    while (
+        index < len(clauses)
+        and clauses[index].coordinated_with_previous
+        and not clauses[index].roles
+    ):
         following.extend(clauses[index].subjects)
         index += 1
 
@@ -524,14 +565,13 @@ def _subjects_for_clause_role(
     if combined:
         return combined
 
-    for index in range(clause_index - 1, -1, -1):
+    index = clause_index - 1
+    while index >= 0 and clauses[index + 1].coordinated_with_previous:
         if resolved_clause_subjects.get(index):
             return resolved_clause_subjects[index]
         if clauses[index].subjects:
             return clauses[index].subjects
-    for index in range(clause_index + 1, len(clauses)):
-        if clauses[index].subjects:
-            return clauses[index].subjects
+        index -= 1
     return ()
 
 

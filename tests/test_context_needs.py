@@ -200,6 +200,60 @@ def test_mixed_clauses_bind_each_subject_only_to_its_role_category() -> None:
     ]
 
 
+@pytest.mark.parametrize("separator", ["; ", "\n"])
+def test_independent_boundaries_do_not_backfill_later_subjects(
+    separator: str,
+) -> None:
+    needs = derive_evidence_needs(
+        bundle(query=f"find service implementation{separator}Pet model type"),
+        candidates=(),
+    )
+
+    assert required(needs) == [
+        ("implementations", ()),
+        ("related_types", ("Pet",)),
+    ]
+
+
+@pytest.mark.parametrize("separator", ["; ", "\n"])
+def test_independent_boundaries_do_not_leak_identifier_subjects(
+    separator: str,
+) -> None:
+    needs = derive_evidence_needs(
+        bundle(query=f"OwnerController{separator}Pet model type"),
+        candidates=(),
+    )
+
+    assert required(needs) == [
+        ("entrypoints", ("OwnerController",)),
+        ("related_types", ("Pet",)),
+    ]
+
+
+def test_coordinated_identifier_boundary_does_not_override_scoped_subject() -> None:
+    needs = derive_evidence_needs(
+        bundle(query="OwnerController and Pet model type"),
+        candidates=(),
+    )
+
+    assert required(needs) == [
+        ("entrypoints", ("OwnerController",)),
+        ("related_types", ("Pet",)),
+    ]
+
+
+def test_unscoped_predicate_does_not_steal_a_later_coordinated_subject() -> None:
+    needs = derive_evidence_needs(
+        bundle(query="find service implementation and Pet model type"),
+        candidates=(),
+    )
+
+    assert required(needs) == [
+        ("implementations", ()),
+        ("related_types", ("Pet",)),
+    ]
+
+
 def test_multiple_identifiers_bind_only_to_their_own_exact_roles() -> None:
     needs = derive_evidence_needs(
         bundle(query="OwnerController OwnerRepository"),
