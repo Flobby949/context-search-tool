@@ -399,6 +399,27 @@ def test_exact_identifier_role_creates_only_its_own_required_category() -> None:
     )
 
 
+def test_duplicate_identifier_merge_keeps_earliest_category_order_and_provenance() -> None:
+    needs = derive_evidence_needs(
+        bundle(query="controller tests for OwnerController"),
+        candidates=(),
+    )
+    required_needs = tuple(need for need in needs if need.required)
+
+    assert [
+        (need.category, need.subject_terms, need.provenance)
+        for need in required_needs
+    ] == [
+        ("entrypoints", ("OwnerController",), "explicit_identifier"),
+        ("tests", ("OwnerController",), "explicit_query"),
+    ]
+    assert sum(
+        need.category == "entrypoints"
+        and need.subject_terms == ("OwnerController",)
+        for need in required_needs
+    ) == 1
+
+
 def test_grounded_successful_planner_term_is_recommended() -> None:
     query_bundle = bundle(
         query="opaque",

@@ -274,16 +274,18 @@ def _derive_explicit_specs(
         existing_position = positions.get(key)
         if existing_position is not None:
             existing = ordered[existing_position]
-            if (
-                existing.spec.provenance != "explicit_identifier"
-                and spec.provenance == "explicit_identifier"
-            ):
-                ordered[existing_position] = _OrderedNeedSpec(
-                    spec,
-                    min(existing.category_position, category_position),
-                    min(existing.subject_position, subject_position),
-                    existing.order,
-                )
+            merged_spec = (
+                existing.spec
+                if existing.spec.provenance == "explicit_identifier"
+                or spec.provenance != "explicit_identifier"
+                else spec
+            )
+            ordered[existing_position] = _OrderedNeedSpec(
+                merged_spec,
+                min(existing.category_position, category_position),
+                min(existing.subject_position, subject_position),
+                existing.order,
+            )
             return
         positions[key] = len(ordered)
         ordered.append(
