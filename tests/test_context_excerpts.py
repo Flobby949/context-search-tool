@@ -558,6 +558,93 @@ def test_item_allocation_reserves_each_disjoint_required_excerpt(
     assert pack.status == "ready"
 
 
+@pytest.mark.parametrize(
+    ("subjects", "source_prefix"),
+    [
+        (("Alpha", "Beta"), "Beta Alpha "),
+        (("Café", "核心"), "核心 Cafe\u0301 "),
+    ],
+)
+def test_item_allocation_preserves_joint_required_slice_in_source_order(
+    monkeypatch: pytest.MonkeyPatch,
+    subjects: tuple[str, str],
+    source_prefix: str,
+) -> None:
+    required = tuple(
+        _need(subject, need_id=f"need:configs_docs:{index}")
+        for index, subject in enumerate(subjects)
+    )
+    monkeypatch.setattr(
+        builder,
+        "derive_evidence_needs",
+        lambda bundle, *, candidates: required,
+    )
+    pack = builder.build_context_pack(
+        _bundle(
+            "fixture",
+            [
+                _result(
+                    "config/application.properties",
+                    source_prefix + "x" * 594,
+                    spans=(RetrievalSpan(1, 1, 1.0, ("semantic",)),),
+                )
+            ],
+        ),
+        _options(
+            max_items=1,
+            max_excerpts_per_item=1,
+            max_excerpt_bytes=512,
+            max_item_content_bytes=512,
+            max_total_content_bytes=512,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    assert pack.items[0].excerpts[0].content.startswith(source_prefix)
+    assert pack.items[0].excerpts[0].content_bytes == 512
+    assert all(need.matched_item_ids == ("item:0",) for need in pack.evidence_needs)
+    assert pack.status == "ready"
+
+
+def test_joint_required_slice_uses_nearest_source_occurrences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    required = tuple(
+        _need(subject, need_id=f"need:configs_docs:{index}")
+        for index, subject in enumerate(("Alpha", "Beta"))
+    )
+    monkeypatch.setattr(
+        builder,
+        "derive_evidence_needs",
+        lambda bundle, *, candidates: required,
+    )
+    content = "Alpha " + "x" * 100 + " Beta Alpha " + "y" * 594
+    pack = builder.build_context_pack(
+        _bundle(
+            "fixture",
+            [
+                _result(
+                    "config/application.properties",
+                    content,
+                    spans=(RetrievalSpan(1, 1, 1.0, ("semantic",)),),
+                )
+            ],
+        ),
+        _options(
+            max_items=1,
+            max_excerpts_per_item=1,
+            max_excerpt_bytes=512,
+            max_item_content_bytes=512,
+            max_total_content_bytes=512,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    assert pack.items[0].excerpts[0].content.startswith("Beta Alpha ")
+    assert all(need.matched_item_ids == ("item:0",) for need in pack.evidence_needs)
+    assert pack.status == "ready"
+
+
 def test_item_byte_ceiling_is_independent_of_excerpt_ceiling() -> None:
     content = "abcdefghij\nseparator\nklmnopqrst"
     pack = builder.build_context_pack(

@@ -165,6 +165,7 @@ def fit_excerpts_to_bytes(
         )
         remaining = max_bytes
         retained: dict[int, ContextExcerpt] = {}
+        reserved_terms_by_index: dict[int, tuple[str, ...]] = {}
         required_terms_by_index: dict[int, tuple[str, ...]] = {}
         for index in priorities:
             excerpt = excerpt_values[index]
@@ -179,10 +180,16 @@ def fit_excerpts_to_bytes(
             terms = required_terms_by_index[index]
             if not terms:
                 continue
-            reserved = _minimal_subject_excerpt(excerpt_values[index], terms)
-            if reserved is None or reserved.content_bytes > remaining:
+            reservation = _minimal_subject_excerpt(
+                excerpt_values[index],
+                terms,
+                remaining,
+            )
+            if reservation is None:
                 continue
+            reserved, covered_terms = reservation
             retained[index] = reserved
+            reserved_terms_by_index[index] = covered_terms
             remaining -= reserved.content_bytes
 
         for index in priorities:
@@ -198,6 +205,12 @@ def fit_excerpts_to_bytes(
                 retained_bytes + remaining,
                 terms,
             )
+            protected_terms = reserved_terms_by_index.get(index, ())
+            if protected_terms and not all(
+                _contains_subject(fitted.content, term)
+                for term in protected_terms
+            ):
+                fitted = retained[index]
             if fitted.content_bytes == 0:
                 continue
             retained[index] = fitted
@@ -427,20 +440,96 @@ def _crop_excerpt(
 def _minimal_subject_excerpt(
     excerpt: ContextExcerpt,
     terms: tuple[str, ...],
-) -> ContextExcerpt | None:
-    candidates: list[tuple[int, int, ContextExcerpt]] = []
-    for position, term in enumerate(terms):
-        match_span = _normalized_match_span(excerpt.content, term)
-        if match_span is None:
-            continue
-        start, end = match_span
-        match_bytes = len(excerpt.content[start:end].encode("utf-8"))
-        fitted = _crop_excerpt(excerpt, match_bytes, (term,))
-        if _contains_subject(fitted.content, term):
-            candidates.append((fitted.content_bytes, position, fitted))
-    if not candidates:
+    max_bytes: int,
+) -> tuple[ContextExcerpt, tuple[str, ...]] | None:
+    selected = _required_subject_slice(excerpt.content, max_bytes, terms)
+    if selected is None:
         return None
-    return min(candidates, key=lambda candidate: candidate[:2])[2]
+    start, end, covered_terms = selected
+    content = excerpt.content[start:end]
+    start_line = excerpt.start_line + excerpt.content[:start].count("\n")
+    end_line = excerpt.start_line + excerpt.content[: max(start, end - 1)].count(
+        "\n"
+    )
+    return (
+        ContextExcerpt(
+            start_line=start_line,
+            end_line=end_line,
+            content=content,
+            content_bytes=len(content.encode("utf-8")),
+            truncated=(
+                excerpt.truncated or start > 0 or end < len(excerpt.content)
+            ),
+        ),
+        covered_terms,
+    )
+
+
+def _required_subject_slice(
+    content: str,
+    max_bytes: int,
+    terms: tuple[str, ...],
+) -> tuple[int, int, tuple[str, ...]] | None:
+    spans: list[tuple[int, int, int]] = []
+    for position, term in enumerate(terms):
+        spans.extend(
+            (*match_span, position)
+            for match_span in _normalized_match_spans(content, term)
+        )
+    if not spans or max_bytes <= 0:
+        return None
+
+    ordered = sorted(spans, key=lambda span: (span[0], span[1], span[2]))
+    byte_offsets = [0]
+    for character in content:
+        byte_offsets.append(
+            byte_offsets[-1] + len(character.encode("utf-8"))
+        )
+
+    best: tuple[tuple[object, ...], int, int, tuple[int, ...]] | None = None
+    for left in range(len(ordered)):
+        start = ordered[left][0]
+        end = ordered[left][1]
+        covered: set[int] = set()
+        for right in range(left, len(ordered)):
+            end = max(end, ordered[right][1])
+            slice_bytes = byte_offsets[end] - byte_offsets[start]
+            if slice_bytes > max_bytes:
+                break
+            covered.add(ordered[right][2])
+            covered_positions = tuple(sorted(covered))
+            rank: tuple[object, ...] = (
+                -len(covered_positions),
+                covered_positions,
+                slice_bytes,
+                start,
+                end,
+            )
+            candidate = (rank, start, end, covered_positions)
+            if best is None or rank < best[0]:
+                best = candidate
+
+    if best is None:
+        return None
+    _, start, end, covered_positions = best
+    return start, end, tuple(terms[position] for position in covered_positions)
+
+
+def _normalized_match_spans(
+    content: str,
+    subject: str,
+) -> tuple[tuple[int, int], ...]:
+    spans: list[tuple[int, int]] = []
+    offset = 0
+    while offset < len(content):
+        match_span = _normalized_match_span(content[offset:], subject)
+        if match_span is None:
+            break
+        start, end = match_span
+        absolute_span = offset + start, offset + end
+        spans.append(absolute_span)
+        offset = max(absolute_span[1], offset + 1)
+    return tuple(spans)
 
 
 def _crop_text(
@@ -450,14 +539,10 @@ def _crop_text(
 ) -> str:
     if max_bytes <= 0:
         return ""
-    for term in required_terms:
-        match_span = _normalized_match_span(content, term)
-        if match_span is None:
-            continue
-        start, end = match_span
-        suffix = content[start:]
-        if len(content[start:end].encode("utf-8")) <= max_bytes:
-            return _utf8_prefix(suffix, max_bytes)
+    selected = _required_subject_slice(content, max_bytes, required_terms)
+    if selected is not None:
+        start, _, _ = selected
+        return _utf8_prefix(content[start:], max_bytes)
     return _utf8_prefix(content, max_bytes)
 
 
