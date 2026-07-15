@@ -812,6 +812,26 @@ def test_decomposed_match_end_includes_zero_growth_combining_mark() -> None:
 
 
 @pytest.mark.parametrize(
+    ("content", "subject", "expected"),
+    [
+        ("Cafe\u0301", "Café", ((0, 5),)),
+        ("a\u0315\u0300", "à\u0315", ((0, 3),)),
+        ("a\u0315\u0300", "\u0315", ((1, 2),)),
+        ("\u1100\u1161\u11a8", "각", ((0, 3),)),
+        ("각", "\u1100\u1161\u11a8", ((0, 1),)),
+        ("\u09c7\u09be", "\u09cb", ((0, 2),)),
+        ("\u0cc6\u0cc2\u0cd5", "\u0ccb", ((0, 3),)),
+    ],
+)
+def test_non_nfc_mapping_preserves_composition_and_reordering(
+    content: str,
+    subject: str,
+    expected: tuple[tuple[int, int], ...],
+) -> None:
+    assert excerpts._normalized_match_spans(content, subject) == expected
+
+
+@pytest.mark.parametrize(
     ("content", "subject"),
     [("ß", "ſ"), ("İ", "\u0307"), ("ﬃ", "ﬀ")],
 )
@@ -860,6 +880,36 @@ def test_high_frequency_ascii_occurrences_normalize_content_once(
     assert selected == (1, 4, ("row",))
     assert large_normalization_calls == 1
     assert tokenized_lengths == [3, len(content)]
+    assert elapsed < 5.0
+
+
+def test_high_frequency_decomposed_occurrences_use_linear_normalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = "\n".join(
+        f".row-{index} {{ color: Cafe\u0301xx; }}" for index in range(3132)
+    )
+    normalize = unicodedata.normalize
+    normalized_lengths: list[int] = []
+
+    def counting_normalize(form: str, value: str) -> str:
+        normalized_lengths.append(len(value))
+        return normalize(form, value)
+
+    monkeypatch.setattr(unicodedata, "normalize", counting_normalize)
+    started = time.perf_counter()
+
+    matches = excerpts._normalized_match_spans(content, "Café")
+
+    elapsed = time.perf_counter() - started
+    assert len(content) == 92_849
+    assert len(matches) == 3132
+    assert matches[0] == (16, 21)
+    assert matches[-1] == (92_839, 92_844)
+    assert [length for length in normalized_lengths if length > 4096] == [
+        len(content)
+    ]
+    assert sum(normalized_lengths) < len(content) * 10
     assert elapsed < 5.0
 
 

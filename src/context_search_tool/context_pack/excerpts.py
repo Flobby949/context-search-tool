@@ -58,6 +58,13 @@ class _SubjectSlice:
 
 
 @dataclass(frozen=True)
+class _NormalizedUnit:
+    character: str
+    raw_start: int
+    raw_end: int
+
+
+@dataclass(frozen=True)
 class _ExcerptReservation:
     index: int
     excerpt: ContextExcerpt
@@ -732,52 +739,21 @@ def _raw_match_spans(
     content: str,
     normalized_spans: tuple[tuple[int, int], ...],
 ) -> tuple[tuple[int, int], ...]:
-    if unicodedata.is_normalized("NFC", content):
-        prefix_lengths = [0]
-        for character in content:
-            prefix_lengths.append(
-                prefix_lengths[-1] + len(character.casefold())
-            )
+    if not unicodedata.is_normalized("NFC", content):
+        return _non_nfc_raw_match_spans(content, normalized_spans)
 
-        def start_boundary(normalized_offset: int) -> int:
-            return bisect_right(prefix_lengths, normalized_offset) - 1
+    prefix_lengths = [0]
+    for character in content:
+        prefix_lengths.append(prefix_lengths[-1] + len(character.casefold()))
 
-        def end_boundary(normalized_offset: int) -> int:
-            boundary = start_boundary(normalized_offset)
-            if prefix_lengths[boundary] == normalized_offset:
-                return boundary
-            return boundary + 1
+    def start_boundary(normalized_offset: int) -> int:
+        return bisect_right(prefix_lengths, normalized_offset) - 1
 
-    else:
-        prefix_lengths = {0: 0}
-
-        def prefix_length(index: int) -> int:
-            cached = prefix_lengths.get(index)
-            if cached is None:
-                cached = len(
-                    unicodedata.normalize("NFC", content[:index]).casefold()
-                )
-                prefix_lengths[index] = cached
-            return cached
-
-        def start_boundary(normalized_offset: int) -> int:
-            boundary = 0
-            low = 0
-            high = len(content)
-            while low <= high:
-                index = (low + high) // 2
-                if prefix_length(index) <= normalized_offset:
-                    boundary = index
-                    low = index + 1
-                else:
-                    high = index - 1
+    def end_boundary(normalized_offset: int) -> int:
+        boundary = start_boundary(normalized_offset)
+        if prefix_lengths[boundary] == normalized_offset:
             return boundary
-
-        def end_boundary(normalized_offset: int) -> int:
-            boundary = start_boundary(normalized_offset)
-            if prefix_length(boundary) == normalized_offset:
-                return boundary
-            return boundary + 1
+        return boundary + 1
 
     raw_spans: list[tuple[int, int]] = []
     for start, end in normalized_spans:
@@ -787,6 +763,82 @@ def _raw_match_spans(
             raw_end = min(len(content), raw_start + 1)
         raw_spans.append((raw_start, raw_end))
     return tuple(raw_spans)
+
+
+def _non_nfc_raw_match_spans(
+    content: str,
+    normalized_spans: tuple[tuple[int, int], ...],
+) -> tuple[tuple[int, int], ...]:
+    folded_starts: list[int] = []
+    folded_ends: list[int] = []
+    for unit in _nfc_raw_units(content):
+        folded_width = len(unit.character.casefold())
+        folded_starts.extend([unit.raw_start] * folded_width)
+        folded_ends.extend([unit.raw_end] * folded_width)
+
+    raw_spans: list[tuple[int, int]] = []
+    for start, end in normalized_spans:
+        raw_start = min(folded_starts[start:end])
+        raw_end = max(folded_ends[start:end])
+        if raw_end <= raw_start:
+            raw_end = min(len(content), raw_start + 1)
+        raw_spans.append((raw_start, raw_end))
+    return tuple(raw_spans)
+
+
+def _nfc_raw_units(content: str) -> tuple[_NormalizedUnit, ...]:
+    """Return canonical NFC units with each unit's contributing raw range."""
+    decomposed: list[_NormalizedUnit] = []
+    sequence: list[_NormalizedUnit] = []
+    for raw_index, raw_character in enumerate(content):
+        for character in unicodedata.normalize("NFD", raw_character):
+            if unicodedata.combining(character) == 0 and sequence:
+                decomposed.extend(
+                    sorted(
+                        sequence,
+                        key=lambda unit: unicodedata.combining(unit.character),
+                    )
+                )
+                sequence = []
+            sequence.append(
+                _NormalizedUnit(character, raw_index, raw_index + 1)
+            )
+    decomposed.extend(
+        sorted(
+            sequence,
+            key=lambda unit: unicodedata.combining(unit.character),
+        )
+    )
+
+    composed: list[_NormalizedUnit] = []
+    starter_index: int | None = None
+    last_combining_class = 0
+    for unit in decomposed:
+        combining_class = unicodedata.combining(unit.character)
+        composite: str | None = None
+        if starter_index is not None and (
+            last_combining_class < combining_class
+            or last_combining_class == 0
+        ):
+            pair = unicodedata.normalize(
+                "NFC",
+                composed[starter_index].character + unit.character,
+            )
+            if len(pair) == 1:
+                composite = pair
+        if composite is not None:
+            starter = composed[starter_index]
+            composed[starter_index] = _NormalizedUnit(
+                composite,
+                min(starter.raw_start, unit.raw_start),
+                max(starter.raw_end, unit.raw_end),
+            )
+            continue
+        if combining_class == 0:
+            starter_index = len(composed)
+        last_combining_class = combining_class
+        composed.append(unit)
+    return tuple(composed)
 
 
 def _utf8_prefix(content: str, max_bytes: int) -> str:
