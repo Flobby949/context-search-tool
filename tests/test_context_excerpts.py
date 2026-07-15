@@ -511,6 +511,53 @@ def test_allocation_redistributes_unused_line_cropping_capacity(
     assert content_by_group == {"entrypoints": 400, "tests": 400}
 
 
+def test_item_allocation_reserves_each_disjoint_required_excerpt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    required = tuple(
+        _need(subject, need_id=f"need:configs_docs:{subject.casefold()}")
+        for subject in ("Alpha", "Beta")
+    )
+    monkeypatch.setattr(
+        builder,
+        "derive_evidence_needs",
+        lambda bundle, *, candidates: required,
+    )
+    content = "Alpha " + "x" * 594 + "\nnoise\nBeta"
+    pack = builder.build_context_pack(
+        _bundle(
+            "fixture",
+            [
+                _result(
+                    "config/application.properties",
+                    content,
+                    spans=(
+                        RetrievalSpan(1, 1, 2.0, ("lexical",)),
+                        RetrievalSpan(3, 3, 1.0, ("semantic",)),
+                    ),
+                )
+            ],
+        ),
+        _options(
+            max_items=1,
+            max_excerpts_per_item=2,
+            max_excerpt_bytes=512,
+            max_item_content_bytes=512,
+            max_total_content_bytes=512,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    assert [excerpt.start_line for excerpt in pack.items[0].excerpts] == [1, 3]
+    assert all(
+        any(subject in excerpt.content for excerpt in pack.items[0].excerpts)
+        for subject in ("Alpha", "Beta")
+    )
+    assert pack.budget.content_bytes == 512
+    assert all(need.matched_item_ids == ("item:0",) for need in pack.evidence_needs)
+    assert pack.status == "ready"
+
+
 def test_item_byte_ceiling_is_independent_of_excerpt_ceiling() -> None:
     content = "abcdefghij\nseparator\nklmnopqrst"
     pack = builder.build_context_pack(
@@ -609,6 +656,41 @@ def test_unfit_required_candidate_retries_bounded_alternative() -> None:
     assert [item.file_path for item in pack.items] == [fallback_path]
     assert pack.evidence_needs[0].matched_item_ids == ("item:0",)
     assert pack.budget.omitted_item_count == 1
+
+
+def test_retry_keeps_alternative_when_primary_match_is_compacted_away(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    required = _need("PostgreSQL")
+    monkeypatch.setattr(
+        builder,
+        "derive_evidence_needs",
+        lambda bundle, *, candidates: (required,),
+    )
+    primary = replace(
+        _result("config/a.properties", "url=db"),
+        reasons=["PostgreSQL " + "x" * 3000],
+    )
+    alternative_path = f"config/{'b' * 2700}/postgresql.properties"
+    pack = builder.build_context_pack(
+        _bundle(
+            "fixture",
+            [primary, _result(alternative_path, "PostgreSQL")],
+        ),
+        _options(
+            max_items=2,
+            max_excerpt_bytes=512,
+            max_item_content_bytes=1024,
+            max_total_content_bytes=2048,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    assert [item.file_path for item in pack.items] == [alternative_path]
+    assert pack.items[0].excerpts[0].content == "PostgreSQL"
+    assert pack.evidence_needs[0].matched_item_ids == ("item:0",)
+    assert pack.status == "ready"
+    assert pack.budget.pack_bytes <= 4096
 
 
 def test_canonical_compaction_retains_required_matching_line_when_possible() -> None:

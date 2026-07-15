@@ -183,12 +183,21 @@ def build_context_pack(
                 for item in pack.items
                 for need_id in item.matched_need_ids
             }
-            lost_pairs = [
-                (selected_item.candidate.key, need_id)
-                for selected_item in selected
-                for need_id in selected_item.matched_need_ids
-                if need_id not in matched_need_ids
-            ]
+            lost_pairs: list[tuple[str, str]] = []
+            for need in needs:
+                if need.id in matched_need_ids:
+                    continue
+                providers = tuple(
+                    selected_item
+                    for selected_item in selected
+                    if need.id in selected_item.matched_need_ids
+                )
+                if providers:
+                    primary = min(
+                        providers,
+                        key=lambda selected_item: selected_item.selection_priority,
+                    )
+                    lost_pairs.append((primary.candidate.key, need.id))
             retry_pairs = [
                 pair
                 for pair in lost_pairs
@@ -613,6 +622,13 @@ def _compact_pack(
             )
             continue
 
+        compacted = _relink_retained_matches(
+            compacted,
+            tuple(item.candidate for item in compaction_state.values()),
+            needs,
+        )
+        if serialization._context_pack_size(compacted) <= options.max_pack_bytes:
+            break
         content_choice = _content_compaction_choice(
             compacted,
             need_by_id,

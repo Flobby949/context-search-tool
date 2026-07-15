@@ -165,21 +165,43 @@ def fit_excerpts_to_bytes(
         )
         remaining = max_bytes
         retained: dict[int, ContextExcerpt] = {}
+        required_terms_by_index: dict[int, tuple[str, ...]] = {}
+        for index in priorities:
+            excerpt = excerpt_values[index]
+            _validate_excerpt(excerpt)
+            required_terms_by_index[index] = tuple(
+                term
+                for term in required_subject_terms
+                if _contains_subject(excerpt.content, term)
+            )
+
+        for index in priorities:
+            terms = required_terms_by_index[index]
+            if not terms:
+                continue
+            reserved = _minimal_subject_excerpt(excerpt_values[index], terms)
+            if reserved is None or reserved.content_bytes > remaining:
+                continue
+            retained[index] = reserved
+            remaining -= reserved.content_bytes
+
         for index in priorities:
             if remaining <= 0:
                 break
             excerpt = excerpt_values[index]
-            _validate_excerpt(excerpt)
-            terms = (
-                required_subject_terms
-                if _content_has_any(excerpt.content, required_subject_terms)
-                else ()
+            terms = required_terms_by_index[index]
+            retained_bytes = (
+                retained[index].content_bytes if index in retained else 0
             )
-            fitted = _crop_excerpt(excerpt, remaining, terms)
+            fitted = _crop_excerpt(
+                excerpt,
+                retained_bytes + remaining,
+                terms,
+            )
             if fitted.content_bytes == 0:
                 continue
             retained[index] = fitted
-            remaining -= fitted.content_bytes
+            remaining += retained_bytes - fitted.content_bytes
         return tuple(retained[index] for index in sorted(retained))
     except ContextPackError:
         raise
@@ -400,6 +422,25 @@ def _crop_excerpt(
         content_bytes=cropped.content_bytes,
         truncated=True,
     )
+
+
+def _minimal_subject_excerpt(
+    excerpt: ContextExcerpt,
+    terms: tuple[str, ...],
+) -> ContextExcerpt | None:
+    candidates: list[tuple[int, int, ContextExcerpt]] = []
+    for position, term in enumerate(terms):
+        match_span = _normalized_match_span(excerpt.content, term)
+        if match_span is None:
+            continue
+        start, end = match_span
+        match_bytes = len(excerpt.content[start:end].encode("utf-8"))
+        fitted = _crop_excerpt(excerpt, match_bytes, (term,))
+        if _contains_subject(fitted.content, term):
+            candidates.append((fitted.content_bytes, position, fitted))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda candidate: candidate[:2])[2]
 
 
 def _crop_text(
