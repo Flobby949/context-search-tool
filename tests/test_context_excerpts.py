@@ -558,6 +558,69 @@ def test_item_allocation_reserves_each_disjoint_required_excerpt(
     assert pack.status == "ready"
 
 
+def test_item_allocation_prefers_one_excerpt_with_strictly_more_required_coverage(
+) -> None:
+    alpha = "甲" * 64
+    beta = "乙" * 64
+    alpha_only = models.ContextExcerpt(
+        start_line=1,
+        end_line=1,
+        content=alpha,
+        content_bytes=len(alpha.encode("utf-8")),
+        truncated=False,
+    )
+    alpha_and_beta = models.ContextExcerpt(
+        start_line=2,
+        end_line=2,
+        content=alpha + beta,
+        content_bytes=len((alpha + beta).encode("utf-8")),
+        truncated=False,
+    )
+
+    fitted = excerpts.fit_excerpts_to_bytes(
+        (alpha_only, alpha_and_beta),
+        512,
+        required_subject_terms=(alpha, beta),
+    )
+
+    assert fitted == (alpha_and_beta,)
+
+
+def test_item_allocation_uses_smaller_combination_when_coverage_ties() -> None:
+    alpha = "甲" * 64
+    beta = "乙" * 64
+    redundant_large = models.ContextExcerpt(
+        start_line=1,
+        end_line=1,
+        content=alpha + "x" * 100 + beta,
+        content_bytes=len((alpha + "x" * 100 + beta).encode("utf-8")),
+        truncated=False,
+    )
+    alpha_only = models.ContextExcerpt(
+        start_line=2,
+        end_line=2,
+        content=alpha,
+        content_bytes=len(alpha.encode("utf-8")),
+        truncated=False,
+    )
+    beta_only = models.ContextExcerpt(
+        start_line=3,
+        end_line=3,
+        content=beta,
+        content_bytes=len(beta.encode("utf-8")),
+        truncated=False,
+    )
+
+    fitted = excerpts.fit_excerpts_to_bytes(
+        (redundant_large, alpha_only, beta_only),
+        512,
+        required_subject_terms=(alpha, beta),
+    )
+
+    assert fitted == (alpha_only, beta_only)
+    assert sum(excerpt.content_bytes for excerpt in fitted) == 384
+
+
 @pytest.mark.parametrize(
     ("subjects", "source_prefix"),
     [
@@ -643,6 +706,46 @@ def test_joint_required_slice_uses_nearest_source_occurrences(
     assert pack.items[0].excerpts[0].content.startswith("Beta Alpha ")
     assert all(need.matched_item_ids == ("item:0",) for need in pack.evidence_needs)
     assert pack.status == "ready"
+
+
+def test_joint_required_slice_considers_overlapping_cjk_occurrences() -> None:
+    content = "哈哈哈核心"
+    original = models.ContextExcerpt(
+        start_line=1,
+        end_line=1,
+        content=content,
+        content_bytes=len(content.encode("utf-8")),
+        truncated=False,
+    )
+
+    fitted = excerpts.fit_excerpts_to_bytes(
+        (original,),
+        12,
+        required_subject_terms=("哈哈", "核心"),
+    )
+
+    assert fitted[0].content == "哈哈核心"
+    assert fitted[0].content_bytes == 12
+
+
+def test_overlapping_occurrence_scan_preserves_ascii_token_boundaries() -> None:
+    content = "catcat cat Core"
+    original = models.ContextExcerpt(
+        start_line=1,
+        end_line=1,
+        content=content,
+        content_bytes=len(content.encode("utf-8")),
+        truncated=False,
+    )
+
+    fitted = excerpts.fit_excerpts_to_bytes(
+        (original,),
+        12,
+        required_subject_terms=("cat", "Core"),
+    )
+
+    assert fitted[0].content == "cat Core"
+    assert fitted[0].content_bytes == 8
 
 
 def test_item_byte_ceiling_is_independent_of_excerpt_ceiling() -> None:

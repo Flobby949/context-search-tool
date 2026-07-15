@@ -24,6 +24,9 @@ from context_search_tool.models import RetrievalSpan
 
 _FAILURE_CODE = "context_failed"
 _FAILURE_MESSAGE = "Context pack construction failed"
+# Bound user-controlled term/excerpt combinations while keeping a stable frontier.
+_MAX_RESERVATION_SLICE_OPTIONS = 256
+_MAX_RESERVATION_STATES = 1024
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,28 @@ class _SourceView:
         start_index = start_line - self.start_line
         end_index = end_line - self.start_line + 1
         return "".join(line.content for line in self.lines[start_index:end_index])
+
+
+@dataclass(frozen=True)
+class _SubjectSlice:
+    start: int
+    end: int
+    covered_positions: tuple[int, ...]
+    content_bytes: int
+
+
+@dataclass(frozen=True)
+class _ExcerptReservation:
+    index: int
+    excerpt: ContextExcerpt
+    subject_slice: _SubjectSlice
+
+
+@dataclass(frozen=True)
+class _ReservationPlan:
+    coverage_mask: int
+    content_bytes: int
+    reservations: tuple[_ExcerptReservation, ...]
 
 
 def normalize_candidate_spans(
@@ -163,9 +188,6 @@ def fit_excerpts_to_bytes(
                 index,
             ),
         )
-        remaining = max_bytes
-        retained: dict[int, ContextExcerpt] = {}
-        reserved_terms_by_index: dict[int, tuple[str, ...]] = {}
         required_terms_by_index: dict[int, tuple[str, ...]] = {}
         for index in priorities:
             excerpt = excerpt_values[index]
@@ -176,23 +198,29 @@ def fit_excerpts_to_bytes(
                 if _contains_subject(excerpt.content, term)
             )
 
-        for index in priorities:
-            terms = required_terms_by_index[index]
-            if not terms:
-                continue
-            reservation = _minimal_subject_excerpt(
-                excerpt_values[index],
-                terms,
-                remaining,
+        plan = _select_required_reservations(
+            excerpt_values,
+            max_bytes,
+            required_subject_terms,
+        )
+        retained = {
+            reservation.index: reservation.excerpt
+            for reservation in plan.reservations
+        }
+        reserved_terms_by_index = {
+            reservation.index: tuple(
+                required_subject_terms[position]
+                for position in reservation.subject_slice.covered_positions
             )
-            if reservation is None:
-                continue
-            reserved, covered_terms = reservation
-            retained[index] = reserved
-            reserved_terms_by_index[index] = covered_terms
-            remaining -= reserved.content_bytes
+            for reservation in plan.reservations
+        }
+        remaining = max_bytes - plan.content_bytes
+        selected_indexes = set(retained)
+        fill_priorities = [
+            index for index in priorities if index in selected_indexes
+        ] + [index for index in priorities if index not in selected_indexes]
 
-        for index in priorities:
+        for index in fill_priorities:
             if remaining <= 0:
                 break
             excerpt = excerpt_values[index]
@@ -211,6 +239,13 @@ def fit_excerpts_to_bytes(
                 for term in protected_terms
             ):
                 fitted = retained[index]
+            if (
+                selected_indexes
+                and index not in selected_indexes
+                and terms
+                and not _content_has_any(fitted.content, terms)
+            ):
+                continue
             if fitted.content_bytes == 0:
                 continue
             retained[index] = fitted
@@ -437,31 +472,137 @@ def _crop_excerpt(
     )
 
 
-def _minimal_subject_excerpt(
+def _subject_excerpt(
     excerpt: ContextExcerpt,
-    terms: tuple[str, ...],
-    max_bytes: int,
-) -> tuple[ContextExcerpt, tuple[str, ...]] | None:
-    selected = _required_subject_slice(excerpt.content, max_bytes, terms)
-    if selected is None:
-        return None
-    start, end, covered_terms = selected
+    selected: _SubjectSlice,
+) -> ContextExcerpt:
+    start = selected.start
+    end = selected.end
     content = excerpt.content[start:end]
     start_line = excerpt.start_line + excerpt.content[:start].count("\n")
     end_line = excerpt.start_line + excerpt.content[: max(start, end - 1)].count(
         "\n"
     )
-    return (
-        ContextExcerpt(
-            start_line=start_line,
-            end_line=end_line,
-            content=content,
-            content_bytes=len(content.encode("utf-8")),
-            truncated=(
-                excerpt.truncated or start > 0 or end < len(excerpt.content)
-            ),
+    return ContextExcerpt(
+        start_line=start_line,
+        end_line=end_line,
+        content=content,
+        content_bytes=selected.content_bytes,
+        truncated=(
+            excerpt.truncated or start > 0 or end < len(excerpt.content)
         ),
-        covered_terms,
+    )
+
+
+def _select_required_reservations(
+    excerpt_values: tuple[ContextExcerpt, ...],
+    max_bytes: int,
+    terms: tuple[str, ...],
+) -> _ReservationPlan:
+    states = {0: _ReservationPlan(0, 0, ())}
+    for index, excerpt in enumerate(excerpt_values):
+        options = tuple(
+            _ExcerptReservation(
+                index=index,
+                excerpt=_subject_excerpt(excerpt, selected),
+                subject_slice=selected,
+            )
+            for selected in _required_subject_slices(
+                excerpt.content,
+                max_bytes,
+                terms,
+            )
+        )
+        next_states = dict(states)
+        for plan in tuple(states.values()):
+            for option in options:
+                option_mask = sum(
+                    1 << position
+                    for position in option.subject_slice.covered_positions
+                )
+                coverage_mask = plan.coverage_mask | option_mask
+                if coverage_mask == plan.coverage_mask:
+                    continue
+                content_bytes = plan.content_bytes + option.excerpt.content_bytes
+                if content_bytes > max_bytes:
+                    continue
+                candidate = _ReservationPlan(
+                    coverage_mask=coverage_mask,
+                    content_bytes=content_bytes,
+                    reservations=(*plan.reservations, option),
+                )
+                existing = next_states.get(coverage_mask)
+                if existing is None or _same_coverage_plan_rank(
+                    candidate
+                ) < _same_coverage_plan_rank(existing):
+                    next_states[coverage_mask] = candidate
+                if len(next_states) >= _MAX_RESERVATION_STATES * 2:
+                    next_states = _prune_reservation_states(next_states.values())
+        states = _prune_reservation_states(next_states.values())
+
+    return min(states.values(), key=_reservation_plan_rank)
+
+
+def _prune_reservation_states(
+    plans: Iterable[_ReservationPlan],
+) -> dict[int, _ReservationPlan]:
+    ranked = sorted(plans, key=_reservation_plan_rank)
+    retained: list[_ReservationPlan] = []
+    for plan in ranked:
+        if any(
+            (existing.coverage_mask | plan.coverage_mask)
+            == existing.coverage_mask
+            and _same_coverage_plan_rank(existing)
+            <= _same_coverage_plan_rank(plan)
+            for existing in retained
+        ):
+            continue
+        retained.append(plan)
+        if len(retained) >= _MAX_RESERVATION_STATES:
+            break
+    return {plan.coverage_mask: plan for plan in retained}
+
+
+def _same_coverage_plan_rank(plan: _ReservationPlan) -> tuple[object, ...]:
+    return (
+        plan.content_bytes,
+        _reservation_fragment_rank(plan),
+        _reservation_source_rank(plan),
+    )
+
+
+def _reservation_plan_rank(plan: _ReservationPlan) -> tuple[object, ...]:
+    covered_positions = tuple(
+        position
+        for position in range(plan.coverage_mask.bit_length())
+        if plan.coverage_mask & (1 << position)
+    )
+    return (
+        -len(covered_positions),
+        covered_positions,
+        plan.content_bytes,
+        _reservation_fragment_rank(plan),
+        _reservation_source_rank(plan),
+    )
+
+
+def _reservation_fragment_rank(plan: _ReservationPlan) -> tuple[int, int]:
+    return (
+        sum(reservation.excerpt.truncated for reservation in plan.reservations),
+        len(plan.reservations),
+    )
+
+
+def _reservation_source_rank(
+    plan: _ReservationPlan,
+) -> tuple[tuple[int, int, int], ...]:
+    return tuple(
+        (
+            reservation.index,
+            reservation.subject_slice.start,
+            reservation.subject_slice.end,
+        )
+        for reservation in plan.reservations
     )
 
 
@@ -470,6 +611,22 @@ def _required_subject_slice(
     max_bytes: int,
     terms: tuple[str, ...],
 ) -> tuple[int, int, tuple[str, ...]] | None:
+    options = _required_subject_slices(content, max_bytes, terms)
+    if not options:
+        return None
+    selected = options[0]
+    return (
+        selected.start,
+        selected.end,
+        tuple(terms[position] for position in selected.covered_positions),
+    )
+
+
+def _required_subject_slices(
+    content: str,
+    max_bytes: int,
+    terms: tuple[str, ...],
+) -> tuple[_SubjectSlice, ...]:
     spans: list[tuple[int, int, int]] = []
     for position, term in enumerate(terms):
         spans.extend(
@@ -477,7 +634,7 @@ def _required_subject_slice(
             for match_span in _normalized_match_spans(content, term)
         )
     if not spans or max_bytes <= 0:
-        return None
+        return ()
 
     ordered = sorted(spans, key=lambda span: (span[0], span[1], span[2]))
     byte_offsets = [0]
@@ -486,7 +643,7 @@ def _required_subject_slice(
             byte_offsets[-1] + len(character.encode("utf-8"))
         )
 
-    best: tuple[tuple[object, ...], int, int, tuple[int, ...]] | None = None
+    best_by_coverage: dict[tuple[int, ...], _SubjectSlice] = {}
     for left in range(len(ordered)):
         start = ordered[left][0]
         end = ordered[left][1]
@@ -498,21 +655,46 @@ def _required_subject_slice(
                 break
             covered.add(ordered[right][2])
             covered_positions = tuple(sorted(covered))
-            rank: tuple[object, ...] = (
-                -len(covered_positions),
-                covered_positions,
-                slice_bytes,
-                start,
-                end,
+            candidate = _SubjectSlice(
+                start=start,
+                end=end,
+                covered_positions=covered_positions,
+                content_bytes=slice_bytes,
             )
-            candidate = (rank, start, end, covered_positions)
-            if best is None or rank < best[0]:
-                best = candidate
+            existing = best_by_coverage.get(covered_positions)
+            if existing is None or _same_coverage_slice_rank(
+                candidate
+            ) < _same_coverage_slice_rank(existing):
+                best_by_coverage[covered_positions] = candidate
+            if len(best_by_coverage) >= _MAX_RESERVATION_SLICE_OPTIONS * 2:
+                best_by_coverage = _prune_subject_slices(
+                    best_by_coverage.values()
+                )
 
-    if best is None:
-        return None
-    _, start, end, covered_positions = best
-    return start, end, tuple(terms[position] for position in covered_positions)
+    return tuple(_prune_subject_slices(best_by_coverage.values()).values())
+
+
+def _prune_subject_slices(
+    slices: Iterable[_SubjectSlice],
+) -> dict[tuple[int, ...], _SubjectSlice]:
+    retained = sorted(slices, key=_subject_slice_rank)[
+        :_MAX_RESERVATION_SLICE_OPTIONS
+    ]
+    return {selected.covered_positions: selected for selected in retained}
+
+
+def _same_coverage_slice_rank(selected: _SubjectSlice) -> tuple[int, int, int]:
+    return selected.content_bytes, selected.start, selected.end
+
+
+def _subject_slice_rank(selected: _SubjectSlice) -> tuple[object, ...]:
+    return (
+        -len(selected.covered_positions),
+        selected.covered_positions,
+        selected.content_bytes,
+        selected.start,
+        selected.end,
+    )
 
 
 def _normalized_match_spans(
@@ -528,7 +710,7 @@ def _normalized_match_spans(
         start, end = match_span
         absolute_span = offset + start, offset + end
         spans.append(absolute_span)
-        offset = max(absolute_span[1], offset + 1)
+        offset = max(absolute_span[0] + 1, offset + 1)
     return tuple(spans)
 
 
