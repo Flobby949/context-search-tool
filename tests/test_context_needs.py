@@ -316,6 +316,48 @@ def test_unscoped_predicate_does_not_steal_a_later_coordinated_subject() -> None
     ]
 
 
+def test_trailing_subject_propagates_left_across_subjectless_roles() -> None:
+    needs = derive_evidence_needs(
+        bundle(query="controller and service for Owner"),
+        candidates=(),
+    )
+
+    assert required(needs) == [
+        ("entrypoints", ("Owner",)),
+        ("implementations", ("Owner",)),
+    ]
+
+
+def test_trailing_database_subjects_propagate_left_as_one_resolved_set() -> None:
+    needs = derive_evidence_needs(
+        bundle(
+            query=(
+                "configuration and integration tests for MySQL and PostgreSQL"
+            )
+        ),
+        candidates=(),
+    )
+
+    assert required(needs) == [
+        ("configs_docs", ("MySQL",)),
+        ("configs_docs", ("PostgreSQL",)),
+        ("tests", ("MySQL",)),
+        ("tests", ("PostgreSQL",)),
+    ]
+
+
+def test_trailing_model_subject_scopes_preceding_form_role() -> None:
+    needs = derive_evidence_needs(
+        bundle(query="form and model type for Owner"),
+        candidates=(),
+    )
+
+    assert required(needs) == [
+        ("entrypoints", ("Owner",)),
+        ("related_types", ("Owner",)),
+    ]
+
+
 def test_multiple_identifiers_bind_only_to_their_own_exact_roles() -> None:
     needs = derive_evidence_needs(
         bundle(query="OwnerController OwnerRepository"),

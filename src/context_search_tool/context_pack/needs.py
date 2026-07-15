@@ -576,7 +576,7 @@ def _subjects_for_clause_role(
         if clauses[index].subjects:
             return clauses[index].subjects
         index -= 1
-    return ()
+    return _connected_trailing_subjects(clauses, clause_index)
 
 
 def _is_exact_identifier_boundary(clause: _Clause) -> bool:
@@ -584,6 +584,44 @@ def _is_exact_identifier_boundary(clause: _Clause) -> bool:
         identifier.category is not None
         for identifier in clause.identifiers
     )
+
+
+def _connected_trailing_subjects(
+    clauses: tuple[_Clause, ...],
+    clause_index: int,
+) -> tuple[tuple[int, str], ...]:
+    index = clause_index + 1
+    while index < len(clauses) and clauses[index].coordinated_with_previous:
+        clause = clauses[index]
+        if not clause.roles:
+            index += 1
+            continue
+        if not clause.subjects:
+            index += 1
+            continue
+        first_role_position = min(position for _, position in clause.roles)
+        trailing = tuple(
+            subject
+            for subject in clause.subjects
+            if subject[0] > first_role_position
+        )
+        if not trailing:
+            return ()
+
+        following: list[tuple[int, str]] = []
+        following_index = index + 1
+        while (
+            following_index < len(clauses)
+            and clauses[following_index].coordinated_with_previous
+            and not clauses[following_index].roles
+        ):
+            following_clause = clauses[following_index]
+            if _is_exact_identifier_boundary(following_clause):
+                break
+            following.extend(following_clause.subjects)
+            following_index += 1
+        return _dedupe_subjects((*trailing, *following))
+    return ()
 
 
 def _direct_role_subjects(
@@ -737,7 +775,13 @@ def _extract_generic_subjects(value: str) -> list[tuple[int, str]]:
             tokens.append(normalized)
         if tokens:
             subject = _normalize_subject(" ".join(tokens))
-            values.append((max(0, segment_position), subject))
+            first_token_position = segment.casefold().find(tokens[0].casefold())
+            values.append(
+                (
+                    max(0, segment_position + max(0, first_token_position)),
+                    subject,
+                )
+            )
     return values
 
 
