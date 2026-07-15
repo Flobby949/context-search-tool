@@ -777,6 +777,57 @@ def test_occurrence_scan_preserves_normalized_subject_semantics(
     assert excerpts._normalized_match_spans(content, subject) == expected
 
 
+def test_casefold_expansion_interior_matches_cover_raw_codepoint() -> None:
+    assert needs.normalized_subject_match_spans("ß", "ſ") == ((0, 1), (1, 2))
+    assert excerpts._normalized_match_spans("ß", "ſ") == ((0, 1), (0, 1))
+
+
+def test_casefold_expansion_reservation_keeps_higher_priority_evidence() -> None:
+    sharp_s = models.ContextExcerpt(
+        start_line=1,
+        end_line=1,
+        content="ß",
+        content_bytes=2,
+        truncated=False,
+    )
+    beta = models.ContextExcerpt(
+        start_line=2,
+        end_line=2,
+        content="Beta",
+        content_bytes=4,
+        truncated=False,
+    )
+
+    fitted = excerpts.fit_excerpts_to_bytes(
+        (sharp_s, beta),
+        4,
+        required_subject_terms=("ſ", "Beta"),
+    )
+
+    assert fitted == (sharp_s,)
+
+
+def test_decomposed_match_end_includes_zero_growth_combining_mark() -> None:
+    assert excerpts._normalized_match_spans("Cafe\u0301Beta", "Café") == ((0, 5),)
+
+
+@pytest.mark.parametrize(
+    ("content", "subject"),
+    [("ß", "ſ"), ("İ", "\u0307"), ("ﬃ", "ﬀ")],
+)
+def test_nonempty_normalized_matches_have_nonempty_raw_spans(
+    content: str,
+    subject: str,
+) -> None:
+    normalized = needs.normalized_subject_match_spans(content, subject)
+    raw = excerpts._normalized_match_spans(content, subject)
+
+    assert normalized
+    assert all(start < end for start, end in normalized)
+    assert len(raw) == len(normalized)
+    assert all(start < end for start, end in raw)
+
+
 def test_high_frequency_ascii_occurrences_normalize_content_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

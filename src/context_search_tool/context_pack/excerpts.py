@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
+from bisect import bisect_right
 from dataclasses import dataclass
 from math import isfinite
 from typing import Iterable, NoReturn
@@ -710,10 +711,7 @@ def _normalized_match_spans(
     normalized_spans = normalized_subject_match_spans(content, subject)
     if content.isascii() or not normalized_spans:
         return normalized_spans
-    boundaries = _raw_offset_map(content, normalized_spans)
-    return tuple(
-        (boundaries[start], boundaries[end]) for start, end in normalized_spans
-    )
+    return _raw_match_spans(content, normalized_spans)
 
 
 def _crop_text(
@@ -730,45 +728,65 @@ def _crop_text(
     return _utf8_prefix(content, max_bytes)
 
 
-def _raw_offset_map(
+def _raw_match_spans(
     content: str,
     normalized_spans: tuple[tuple[int, int], ...],
-) -> dict[int, int]:
-    offsets = {offset for span in normalized_spans for offset in span}
+) -> tuple[tuple[int, int], ...]:
     if unicodedata.is_normalized("NFC", content):
-        last_offset = max(offsets)
-        boundaries = [0] * (last_offset + 1)
-        folded_offset = 0
-        for index, character in enumerate(content):
-            if folded_offset > last_offset:
-                break
-            next_offset = folded_offset + len(character.casefold())
-            fill_end = min(next_offset, last_offset + 1)
-            boundaries[folded_offset:fill_end] = [index] * (
-                fill_end - folded_offset
+        prefix_lengths = [0]
+        for character in content:
+            prefix_lengths.append(
+                prefix_lengths[-1] + len(character.casefold())
             )
-            folded_offset = next_offset
-            if folded_offset <= last_offset:
-                boundaries[folded_offset] = index + 1
-        return {offset: boundaries[offset] for offset in offsets}
 
-    def original_boundary(normalized_offset: int) -> int:
-        boundary = 0
-        low = 0
-        high = len(content)
-        while low <= high:
-            index = (low + high) // 2
-            prefix_length = len(
-                unicodedata.normalize("NFC", content[:index]).casefold()
-            )
-            if prefix_length <= normalized_offset:
-                boundary = index
-                low = index + 1
-            else:
-                high = index - 1
-        return boundary
+        def start_boundary(normalized_offset: int) -> int:
+            return bisect_right(prefix_lengths, normalized_offset) - 1
 
-    return {offset: original_boundary(offset) for offset in offsets}
+        def end_boundary(normalized_offset: int) -> int:
+            boundary = start_boundary(normalized_offset)
+            if prefix_lengths[boundary] == normalized_offset:
+                return boundary
+            return boundary + 1
+
+    else:
+        prefix_lengths = {0: 0}
+
+        def prefix_length(index: int) -> int:
+            cached = prefix_lengths.get(index)
+            if cached is None:
+                cached = len(
+                    unicodedata.normalize("NFC", content[:index]).casefold()
+                )
+                prefix_lengths[index] = cached
+            return cached
+
+        def start_boundary(normalized_offset: int) -> int:
+            boundary = 0
+            low = 0
+            high = len(content)
+            while low <= high:
+                index = (low + high) // 2
+                if prefix_length(index) <= normalized_offset:
+                    boundary = index
+                    low = index + 1
+                else:
+                    high = index - 1
+            return boundary
+
+        def end_boundary(normalized_offset: int) -> int:
+            boundary = start_boundary(normalized_offset)
+            if prefix_length(boundary) == normalized_offset:
+                return boundary
+            return boundary + 1
+
+    raw_spans: list[tuple[int, int]] = []
+    for start, end in normalized_spans:
+        raw_start = start_boundary(start)
+        raw_end = end_boundary(end)
+        if start < end and raw_end <= raw_start:
+            raw_end = min(len(content), raw_start + 1)
+        raw_spans.append((raw_start, raw_end))
+    return tuple(raw_spans)
 
 
 def _utf8_prefix(content: str, max_bytes: int) -> str:
