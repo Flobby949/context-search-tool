@@ -1106,7 +1106,16 @@ def test_mcp_context_feedback_keeps_only_approved_bounded_metadata(
 ) -> None:
     repo = tmp_path / "repo"
     _write_index_marker(repo)
-    bundle = _deterministic_bundle(query="public privacy query")
+    path_sentinel = "PRIVATE_CONTEXT_PATH_SENTINEL"
+    content_sentinel = "PRIVATE_CONTEXT_CONTENT_SENTINEL"
+    subject_sentinel = "PrivateSubjectSentinel"
+    bundle = _deterministic_bundle(
+        query=f"{subject_sentinel} endpoint",
+        result_path=f"src/{path_sentinel}.java",
+        result_content=(
+            f'class {subject_sentinel} {{ String value = "{content_sentinel}"; }}'
+        ),
+    )
     config = mcp_tools._load_query_config(repo, 1)
     options = resolve_context_pack_options(
         config,
@@ -1120,43 +1129,24 @@ def test_mcp_context_feedback_keeps_only_approved_bounded_metadata(
     )
     pack = payload["context_pack"]
 
+    need_id_sentinel = pack["evidence_needs"][0]["id"]
+    next_query_sentinel = pack["next_queries"][0]["query"]
     sentinels = {
-        "path": "PRIVATE_CONTEXT_PATH_SENTINEL",
-        "content": "PRIVATE_CONTEXT_CONTENT_SENTINEL",
-        "subject": "PRIVATE_CONTEXT_SUBJECT_SENTINEL",
-        "need_id": "PRIVATE_CONTEXT_NEED_ID_SENTINEL",
-        "next_query": "PRIVATE_CONTEXT_NEXT_QUERY_SENTINEL",
+        "path": path_sentinel,
+        "content": content_sentinel,
+        "subject": subject_sentinel,
+        "need_id": need_id_sentinel,
+        "next_query": next_query_sentinel,
         "planner": "PRIVATE_PLANNER_REWRITE_SENTINEL",
         "discarded": "PRIVATE_DISCARDED_HINT_SENTINEL",
         "summary": "PRIVATE_SUMMARY_SENTINEL",
     }
-    pack["items"][0]["file_path"] = sentinels["path"]
-    pack["items"][0]["excerpts"][0]["content"] = sentinels["content"]
-    pack["evidence_needs"].append(
-        {
-            "id": sentinels["need_id"],
-            "category": "tests",
-            "subject_terms": [sentinels["subject"]],
-            "required": True,
-            "provenance": "explicit_query",
-            "matched_item_ids": [],
-        }
-    )
-    pack["missing_evidence"].append(
-        {
-            "need_id": sentinels["need_id"],
-            "category": "tests",
-            "required": True,
-            "reason": sentinels["subject"],
-        }
-    )
-    pack["next_queries"].append(
-        {
-            "need_id": sentinels["need_id"],
-            "query": sentinels["next_query"],
-            "purpose": "find missing required test evidence",
-        }
-    )
+    serialized_pack = json.dumps(pack)
+    assert path_sentinel in serialized_pack
+    assert content_sentinel in serialized_pack
+    assert subject_sentinel in serialized_pack
+    assert need_id_sentinel in serialized_pack
+    assert next_query_sentinel in serialized_pack
     payload.update(
         {
             "planner": {
@@ -1167,6 +1157,8 @@ def test_mcp_context_feedback_keeps_only_approved_bounded_metadata(
             "results": [{"score": 987654321.125}],
         }
     )
+    serialized_input = json.dumps(payload)
+    assert all(sentinel in serialized_input for sentinel in sentinels.values())
 
     mcp_tools._append_query_feedback(
         repo,
@@ -1347,3 +1339,71 @@ def test_mcp_context_feedback_fails_closed_on_malformed_pack_metadata(
     event = json.loads(log_path.read_text(encoding="utf-8"))
     assert "context_pack" not in event
     assert private_sentinel not in json.dumps(event)
+
+
+def _canonical_empty_context_payload() -> dict[str, object]:
+    bundle = QueryBundle(
+        query="public empty query",
+        expanded_tokens=[],
+        results=[],
+        followup_keywords=[],
+    )
+    options = resolve_context_pack_options(
+        ToolConfig(),
+        context_lines=None,
+        max_evidence_anchors=0,
+    )
+    return {
+        "context_pack": context_pack_payload(
+            build_context_pack(bundle, options)
+        )
+    }
+
+
+def test_mcp_context_feedback_accepts_canonical_v2_pack() -> None:
+    feedback = mcp_tools._feedback_context_pack_payload(
+        _canonical_empty_context_payload()
+    )
+
+    assert feedback is not None
+    assert feedback["status"] == "empty"
+
+
+@pytest.mark.parametrize(
+    ("field", "forged_value"),
+    [
+        ("pack_bytes", 1),
+        ("content_bytes", 7),
+        ("max_pack_bytes", 0),
+    ],
+)
+def test_mcp_context_feedback_rejects_forged_budget_metadata(
+    tmp_path: Path,
+    field: str,
+    forged_value: int,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+    payload = _canonical_empty_context_payload()
+    pack = payload["context_pack"]
+    assert type(pack) is dict
+    budget = pack["budget"]
+    assert type(budget) is dict
+    budget[field] = forged_value
+
+    mcp_tools._append_query_feedback(
+        repo,
+        query="safe original query",
+        payload=payload,
+        context_lines=None,
+        full_file=False,
+        final_top_k=None,
+        tool="context_search_context",
+    )
+
+    event = json.loads(
+        (repo / ".context-search" / "mcp_calls.jsonl").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "context_pack" not in event

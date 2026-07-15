@@ -14,6 +14,7 @@ from context_search_tool.context_pack import (
     CONTEXT_GROUPS,
     ContextPackError,
     build_context_pack,
+    canonical_context_pack_bytes,
     resolve_context_pack_options,
 )
 from context_search_tool.formatters import context_payload
@@ -529,6 +530,10 @@ def _feedback_context_pack_payload(
 ) -> dict[str, Any] | None:
     pack = payload.get("context_pack")
     if type(pack) is not dict:
+        return None
+    try:
+        canonical_context_pack_bytes(pack)
+    except Exception:
         return None
     if type(pack.get("schema_version")) is not int or pack["schema_version"] != 2:
         return None
