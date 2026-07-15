@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import logging
+import math
 import re
 import sqlite3
-import logging
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -27,6 +28,7 @@ from context_search_tool.models import (
     QueryVariant,
     RetrievalCandidate,
     RetrievalResult,
+    RetrievalSpan,
     RetrievalSummary,
     SemanticMatch,
 )
@@ -148,6 +150,16 @@ _FRONTEND_IMPORT_SUPPORT_ROLES = {
     "type_decl",
     "shared_component",
 }
+_SPAN_SOURCE_KEYS = (
+    "path_symbol",
+    "lexical",
+    "semantic",
+    "planner_semantic",
+    "signal",
+    "planner_hint",
+    "anchor_expansion",
+    "relation",
+)
 
 
 @dataclass(frozen=True)
@@ -228,6 +240,7 @@ class _ExpandedResult:
     semantic_matches: list[SemanticMatch] = field(default_factory=list)
     pre_ceiling_rerank_score: float = 0.0
     was_ceiling_clamped: bool = False
+    spans: tuple[RetrievalSpan, ...] = ()
 
 
 def query_repository(
@@ -367,6 +380,7 @@ def query_repository(
             reasons=_dedupe(item.reasons + result_reasons[index]),
             followup_keywords=item.followup_keywords,
             semantic_matches=item.semantic_matches,
+            spans=item.spans,
         )
         for index, item in enumerate(visible_results)
     ]
@@ -1760,6 +1774,22 @@ def _expand_ranked_chunks(
                 semantic_matches=ranked.semantic_matches,
                 pre_ceiling_rerank_score=ranked.pre_ceiling_rerank_score,
                 was_ceiling_clamped=ranked.was_ceiling_clamped,
+                spans=_normalize_spans(
+                    (
+                        RetrievalSpan(
+                            start_line=ranked.chunk.start_line,
+                            end_line=ranked.chunk.end_line,
+                            score=(
+                                ranked.rerank_score
+                                if math.isfinite(ranked.rerank_score)
+                                else 0.0
+                            ),
+                            sources=_span_sources(ranked.score_parts),
+                        ),
+                    ),
+                    start_line,
+                    end_line,
+                ),
             )
         )
 
@@ -1890,6 +1920,7 @@ def _cap_expanded_result(
         semantic_matches=result.semantic_matches,
         pre_ceiling_rerank_score=result.pre_ceiling_rerank_score,
         was_ceiling_clamped=result.was_ceiling_clamped,
+        spans=_normalize_spans(result.spans, result.start_line, end_line),
     )
 
 
@@ -1980,11 +2011,13 @@ def _merge_expanded_result(
         else:
             merged_score_parts.pop(key, None)
 
+    start_line = min(left.start_line, right.start_line)
+    end_line = max(left.end_line, right.end_line)
     return _ExpandedResult(
         chunk_ids=_dedupe([*left.chunk_ids, *right.chunk_ids]),
         file_path=left.file_path,
-        start_line=min(left.start_line, right.start_line),
-        end_line=max(left.end_line, right.end_line),
+        start_line=start_line,
+        end_line=end_line,
         content="\n".join(content_lines),
         score=max(left.score, right.score),
         score_parts=merged_score_parts,
@@ -2000,7 +2033,58 @@ def _merge_expanded_result(
         ),
         pre_ceiling_rerank_score=winner.pre_ceiling_rerank_score,
         was_ceiling_clamped=winner.was_ceiling_clamped,
+        spans=_normalize_spans(
+            (*left.spans, *right.spans),
+            start_line,
+            end_line,
+        ),
     )
+
+
+def _span_sources(score_parts: dict[str, float]) -> tuple[str, ...]:
+    sources = tuple(
+        key for key in _SPAN_SOURCE_KEYS if score_parts.get(key, 0.0) > 0.0
+    )
+    return sources or ("ranked",)
+
+
+def _normalize_spans(
+    spans: tuple[RetrievalSpan, ...],
+    start_line: int,
+    end_line: int,
+) -> tuple[RetrievalSpan, ...]:
+    visible_end = max(start_line, end_line)
+    normalized: list[RetrievalSpan] = []
+    for span in spans:
+        span_start = min(max(span.start_line, start_line), visible_end)
+        span_end = min(max(span.end_line, span_start), visible_end)
+        normalized.append(
+            RetrievalSpan(
+                start_line=span_start,
+                end_line=span_end,
+                score=span.score if math.isfinite(span.score) else 0.0,
+                sources=span.sources or ("ranked",),
+            )
+        )
+
+    ordered = sorted(
+        normalized,
+        key=lambda span: (
+            span.start_line,
+            span.end_line,
+            -span.score,
+            span.sources,
+        ),
+    )
+    deduplicated: list[RetrievalSpan] = []
+    seen_windows: set[tuple[int, int]] = set()
+    for span in ordered:
+        window = (span.start_line, span.end_line)
+        if window in seen_windows:
+            continue
+        seen_windows.add(window)
+        deduplicated.append(span)
+    return tuple(deduplicated)
 
 
 def _normalized_score_parts(candidate: RetrievalCandidate) -> dict[str, float]:

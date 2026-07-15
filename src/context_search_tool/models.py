@@ -140,6 +140,14 @@ class RetrievalCandidate:
 
 
 @dataclass(frozen=True)
+class RetrievalSpan:
+    start_line: int
+    end_line: int
+    score: float
+    sources: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class RetrievalResult:
     file_path: Path
     start_line: int
@@ -150,6 +158,7 @@ class RetrievalResult:
     reasons: list[str]
     followup_keywords: list[str]
     semantic_matches: list[SemanticMatch] = field(default_factory=list)
+    spans: tuple[RetrievalSpan, ...] = ()
 
 
 @dataclass(frozen=True)

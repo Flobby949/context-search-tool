@@ -20,6 +20,8 @@ from context_search_tool.models import (
     QueryPlan,
     QueryVariant,
     RetrievalCandidate,
+    RetrievalResult,
+    RetrievalSpan,
     RetrievalSummary,
     SemanticMatch,
     SymbolRef,
@@ -28,6 +30,35 @@ from context_search_tool.paths import index_dir_for
 from context_search_tool.retrieval import query_repository
 from context_search_tool.sqlite_store import SQLiteStore
 from context_search_tool.vector_store import VectorSearchResult
+
+
+def _span_ranked_chunk(
+    file_path: Path,
+    *,
+    chunk_id: str,
+    start_line: int,
+    end_line: int,
+    rerank_score: float,
+    score_parts: dict[str, float],
+) -> retrieval._RankedChunk:
+    return retrieval._RankedChunk(
+        chunk=DocumentChunk(
+            chunk_id=chunk_id,
+            file_path=file_path,
+            start_line=start_line,
+            end_line=end_line,
+            content="chunk",
+            chunk_type="symbol",
+            lexical_tokens=[chunk_id],
+        ),
+        score=rerank_score,
+        score_parts=score_parts,
+        reasons=[chunk_id],
+        rank_tier=0,
+        rerank_score=rerank_score,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
 
 
 class FakePlanner:
@@ -10913,3 +10944,418 @@ def test_cohort_rerank_demotes_cross_project_unit_candidates_against_top1_anchor
     reasons_by_chunk = {item.chunk.chunk_id: item.reasons for item in ranked}
     assert "cross-project cohort mismatch penalty" in reasons_by_chunk["fund-data-client"]
     assert "cross-project cohort mismatch penalty" not in reasons_by_chunk["fund-service"]
+
+
+def test_expanded_result_records_ranked_chunk_span_and_ordered_sources(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    path = Path("Example.java")
+    (repo / path).write_text(
+        "\n".join(f"line {line}" for line in range(1, 11)),
+        encoding="utf-8",
+    )
+    score_parts = {
+        "relation": 0.1,
+        "anchor_expansion": 0.2,
+        "planner_hint": 0.3,
+        "signal": 0.4,
+        "planner_semantic": 0.5,
+        "semantic": 0.6,
+        "lexical": 0.7,
+        "path_symbol": 0.8,
+        "direct_text": 1.0,
+        "penalty": -1.0,
+    }
+
+    expanded = retrieval._expand_ranked_chunks(
+        repo,
+        [
+            _span_ranked_chunk(
+                path,
+                chunk_id="one",
+                start_line=3,
+                end_line=4,
+                rerank_score=1.25,
+                score_parts=score_parts,
+            )
+        ],
+        ToolConfig(
+            retrieval=RetrievalConfig(
+                context_before_lines=1,
+                context_after_lines=1,
+            )
+        ),
+        context_lines=None,
+        full_file=False,
+    )
+
+    assert expanded[0].spans == (
+        RetrievalSpan(
+            start_line=3,
+            end_line=4,
+            score=1.25,
+            sources=(
+                "path_symbol",
+                "lexical",
+                "semantic",
+                "planner_semantic",
+                "signal",
+                "planner_hint",
+                "anchor_expansion",
+                "relation",
+            ),
+        ),
+    )
+
+
+def test_overlapping_results_preserve_distinct_spans_in_normalized_order(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    path = Path("Overlap.java")
+    (repo / path).write_text(
+        "\n".join(f"line {line}" for line in range(1, 13)),
+        encoding="utf-8",
+    )
+    ranked = [
+        _span_ranked_chunk(
+            path,
+            chunk_id="later-start",
+            start_line=4,
+            end_line=7,
+            rerank_score=0.9,
+            score_parts={"semantic": 0.9},
+        ),
+        _span_ranked_chunk(
+            path,
+            chunk_id="earlier-start",
+            start_line=3,
+            end_line=5,
+            rerank_score=0.7,
+            score_parts={"lexical": 0.7},
+        ),
+    ]
+
+    expanded = retrieval._expand_ranked_chunks(
+        repo,
+        ranked,
+        ToolConfig(
+            retrieval=RetrievalConfig(
+                context_before_lines=0,
+                context_after_lines=0,
+            )
+        ),
+        context_lines=None,
+        full_file=False,
+    )
+
+    assert len(expanded) == 1
+    assert expanded[0].spans == (
+        RetrievalSpan(3, 5, 0.7, ("lexical",)),
+        RetrievalSpan(4, 7, 0.9, ("semantic",)),
+    )
+    assert all(
+        expanded[0].start_line <= span.start_line <= span.end_line <= expanded[0].end_line
+        for span in expanded[0].spans
+    )
+
+
+def test_disjoint_chunks_from_one_file_keep_separate_spans(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    path = Path("Disjoint.java")
+    (repo / path).write_text(
+        "\n".join(f"line {line}" for line in range(1, 13)),
+        encoding="utf-8",
+    )
+    ranked = [
+        _span_ranked_chunk(
+            path,
+            chunk_id="first",
+            start_line=2,
+            end_line=3,
+            rerank_score=0.8,
+            score_parts={"lexical": 0.8},
+        ),
+        _span_ranked_chunk(
+            path,
+            chunk_id="second",
+            start_line=8,
+            end_line=9,
+            rerank_score=0.6,
+            score_parts={},
+        ),
+    ]
+
+    expanded = retrieval._expand_ranked_chunks(
+        repo,
+        ranked,
+        ToolConfig(
+            retrieval=RetrievalConfig(
+                context_before_lines=0,
+                context_after_lines=0,
+            )
+        ),
+        context_lines=None,
+        full_file=False,
+    )
+
+    assert len(expanded) == 2
+    assert {span for item in expanded for span in item.spans} == {
+        RetrievalSpan(2, 3, 0.8, ("lexical",)),
+        RetrievalSpan(8, 9, 0.6, ("ranked",)),
+    }
+
+
+def test_duplicate_span_windows_keep_highest_score_and_its_sources(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    path = Path("Duplicate.java")
+    (repo / path).write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
+    ranked = [
+        _span_ranked_chunk(
+            path,
+            chunk_id="lower",
+            start_line=2,
+            end_line=3,
+            rerank_score=0.5,
+            score_parts={"lexical": 0.5},
+        ),
+        _span_ranked_chunk(
+            path,
+            chunk_id="higher",
+            start_line=2,
+            end_line=3,
+            rerank_score=0.9,
+            score_parts={"semantic": 0.9},
+        ),
+    ]
+
+    expanded = retrieval._expand_ranked_chunks(
+        repo,
+        ranked,
+        ToolConfig(
+            retrieval=RetrievalConfig(
+                context_before_lines=0,
+                context_after_lines=0,
+            )
+        ),
+        context_lines=None,
+        full_file=False,
+    )
+
+    assert expanded[0].spans == (RetrievalSpan(2, 3, 0.9, ("semantic",)),)
+
+
+def test_full_and_byte_capped_results_clamp_spans_to_visible_lines(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    path = Path("Capped.java")
+    content = "aaaa\nbbbb\ncccc\ndddd\neeee\nffff\n"
+    (repo / path).write_text(content, encoding="utf-8")
+    ranked = _span_ranked_chunk(
+        path,
+        chunk_id="capped",
+        start_line=3,
+        end_line=5,
+        rerank_score=0.75,
+        score_parts={"lexical": 0.75},
+    )
+
+    full = retrieval._expand_ranked_chunks(
+        repo,
+        [ranked],
+        ToolConfig(index=IndexConfig(max_full_file_bytes=1_000)),
+        context_lines=None,
+        full_file=True,
+    )[0]
+    capped = retrieval._expand_ranked_chunks(
+        repo,
+        [ranked],
+        ToolConfig(
+            index=IndexConfig(max_full_file_bytes=9),
+            retrieval=RetrievalConfig(
+                context_before_lines=0,
+                context_after_lines=0,
+            ),
+        ),
+        context_lines=None,
+        full_file=True,
+    )[0]
+
+    assert full.spans == (RetrievalSpan(3, 5, 0.75, ("lexical",)),)
+    assert capped.end_line == 4
+    assert capped.spans == (RetrievalSpan(3, 4, 0.75, ("lexical",)),)
+
+
+def test_non_finite_ranked_score_is_normalized_for_span(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    path = Path("Finite.java")
+    (repo / path).write_text("one\ntwo\n", encoding="utf-8")
+
+    expanded = retrieval._expand_ranked_chunks(
+        repo,
+        [
+            _span_ranked_chunk(
+                path,
+                chunk_id="finite",
+                start_line=1,
+                end_line=1,
+                rerank_score=float("inf"),
+                score_parts={"lexical": 1.0},
+            )
+        ],
+        DEFAULT_CONFIG,
+        context_lines=0,
+        full_file=False,
+    )
+
+    assert expanded[0].spans == (RetrievalSpan(1, 1, 0.0, ("lexical",)),)
+
+
+def test_legacy_retrieval_result_defaults_to_no_spans() -> None:
+    result = RetrievalResult(
+        file_path=Path("Legacy.java"),
+        start_line=1,
+        end_line=1,
+        content="legacy",
+        score=0.5,
+        score_parts={},
+        reasons=[],
+        followup_keywords=[],
+    )
+
+    assert result.spans == ()
+
+
+def test_span_recording_reuses_existing_file_reads_and_stops_after_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    path = Path("Reads.java")
+    (repo / path).write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
+    ranked = [
+        _span_ranked_chunk(
+            path,
+            chunk_id="one",
+            start_line=1,
+            end_line=2,
+            rerank_score=0.8,
+            score_parts={"lexical": 0.8},
+        ),
+        _span_ranked_chunk(
+            path,
+            chunk_id="two",
+            start_line=3,
+            end_line=4,
+            rerank_score=0.7,
+            score_parts={"semantic": 0.7},
+        ),
+    ]
+    original_stat = Path.stat
+    original_read_text = Path.read_text
+    counts = {"stat": 0, "read_text": 0}
+
+    def counted_stat(self: Path, *args: object, **kwargs: object):
+        counts["stat"] += 1
+        return original_stat(self, *args, **kwargs)
+
+    def counted_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        counts["read_text"] += 1
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", counted_stat)
+    monkeypatch.setattr(Path, "read_text", counted_read_text)
+
+    expanded = retrieval._expand_ranked_chunks(
+        repo,
+        ranked,
+        ToolConfig(
+            retrieval=RetrievalConfig(
+                context_before_lines=0,
+                context_after_lines=0,
+            )
+        ),
+        context_lines=None,
+        full_file=False,
+    )
+    counts_at_return = dict(counts)
+
+    assert counts_at_return == {"stat": 2, "read_text": 2}
+    assert sum(len(item.spans) for item in expanded) == 2
+    assert counts == counts_at_return
+
+
+def test_returned_bundle_spans_trigger_no_followup_store_or_file_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from context_search_tool.formatters import query_payload
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "KnownService.java").write_text(
+        "class KnownService { void spanTargetToken() {} }\n",
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=5,
+            final_top_k=5,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    index_repository(repo, config)
+
+    original_lexical_search = SQLiteStore.lexical_search
+    original_chunks_for_ids = SQLiteStore.chunks_for_ids
+    original_read_text = Path.read_text
+    counts = {"lexical_search": 0, "chunks_for_ids": 0, "read_text": 0}
+
+    def counted_lexical_search(
+        self: SQLiteStore,
+        tokens: list[str],
+        limit: int,
+    ) -> list[RetrievalCandidate]:
+        counts["lexical_search"] += 1
+        return original_lexical_search(self, tokens, limit)
+
+    def counted_chunks_for_ids(
+        self: SQLiteStore,
+        chunk_ids: list[str],
+    ) -> dict[str, DocumentChunk]:
+        counts["chunks_for_ids"] += 1
+        return original_chunks_for_ids(self, chunk_ids)
+
+    def counted_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        counts["read_text"] += 1
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(SQLiteStore, "lexical_search", counted_lexical_search)
+    monkeypatch.setattr(SQLiteStore, "chunks_for_ids", counted_chunks_for_ids)
+    monkeypatch.setattr(Path, "read_text", counted_read_text)
+
+    bundle = query_repository(repo, "spanTargetToken", config)
+    counts_at_return = dict(counts)
+
+    assert bundle.results
+    assert all(result.spans for result in bundle.results)
+    assert counts_at_return["lexical_search"] == 1
+    assert counts_at_return["chunks_for_ids"] == 1
+    assert counts_at_return["read_text"] >= 1
+
+    payload = query_payload(bundle)
+    assert all("spans" not in result for result in payload["results"])
+    assert counts == counts_at_return

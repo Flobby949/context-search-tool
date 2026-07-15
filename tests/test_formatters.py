@@ -16,6 +16,7 @@ from context_search_tool.models import (
     QueryPlan,
     QueryVariant,
     RetrievalResult,
+    RetrievalSpan,
     RetrievalSummary,
     SemanticMatch,
 )
@@ -282,7 +283,40 @@ def test_format_json_preserves_complete_pre_refactor_output() -> None:
 def test_query_payload_matches_the_complete_raw_query_payload() -> None:
     bundle = compatibility_bundle()
 
-    assert formatters.query_payload(bundle) == json.loads(format_json(bundle))
+    payload = formatters.query_payload(bundle)
+
+    assert payload == json.loads(format_json(bundle))
+    assert list(payload["results"][0]) == [
+        "file_path",
+        "start_line",
+        "end_line",
+        "content",
+        "score",
+        "score_parts",
+        "reasons",
+        "followup_keywords",
+        "semantic_matches",
+    ]
+    assert b'"spans"' not in format_json(bundle).encode("utf-8")
+
+
+def test_raw_query_payload_ignores_internal_retrieval_spans() -> None:
+    baseline = compatibility_bundle()
+    with_spans = replace(
+        baseline,
+        results=[
+            replace(
+                baseline.results[0],
+                spans=(RetrievalSpan(7, 9, 0.91, ("lexical", "semantic")),),
+            ),
+            baseline.results[1],
+        ],
+    )
+
+    assert formatters.query_payload(with_spans) == formatters.query_payload(baseline)
+    assert format_json(with_spans).encode("utf-8") == format_json(baseline).encode(
+        "utf-8"
+    )
 
 
 def test_context_json_appends_pack_without_changing_raw_query_payload() -> None:
