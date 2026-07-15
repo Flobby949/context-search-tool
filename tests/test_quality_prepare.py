@@ -4,13 +4,14 @@ import json
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
 
 import context_search_tool.quality.prepare as quality_prepare
 from context_search_tool.quality.__main__ import quality_app
-from context_search_tool.quality.cases import load_quality_fixture
+from context_search_tool.quality.cases import QualityRepo, load_quality_fixture
 from context_search_tool.quality.prepare import (
     PROVENANCE_FILENAME,
     _git,
@@ -182,6 +183,237 @@ def test_prepare_is_idempotent_for_valid_owned_checkout(
 
     assert manifest_path.read_bytes() == first_manifest
     assert (repos_dir / "prepared-repo").stat().st_ino == first_inode
+
+
+def test_prepare_fetches_and_advances_an_owned_checkout_to_a_new_pinned_commit(
+    tmp_path: Path,
+    local_remote: tuple[str, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_url, first_commit, second_commit = local_remote
+    fixture = _write_remote_fixture(tmp_path, source_url, first_commit)
+    repos_dir = tmp_path / "repos"
+    prepare_quality_fixture(fixture, "p2_real_context", repos_dir)
+    first_manifest = json.loads(
+        (repos_dir / PROVENANCE_FILENAME).read_text(encoding="utf-8")
+    )
+    _write_remote_fixture(tmp_path, source_url, second_commit)
+    calls: list[tuple[str, ...]] = []
+    real_git = quality_prepare._git
+
+    def capture_git(*args: str, cwd: Path | None = None) -> str:
+        calls.append(args)
+        return real_git(*args, cwd=cwd)
+
+    monkeypatch.setattr(quality_prepare, "_git", capture_git)
+
+    prepare_quality_fixture(fixture, "p2_real_context", repos_dir)
+
+    checkout = repos_dir / "prepared-repo"
+    assert ("fetch", "--", "origin", second_commit) in calls
+    assert ("checkout", "--detach", second_commit) in calls
+    assert _run_git("rev-parse", "HEAD", cwd=checkout) == second_commit
+    assert _run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=checkout) == "HEAD"
+    assert _run_git("status", "--porcelain", "--untracked-files=no", cwd=checkout) == ""
+    second_manifest = json.loads(
+        (repos_dir / PROVENANCE_FILENAME).read_text(encoding="utf-8")
+    )
+    assert second_manifest["repos"]["sample_remote"]["source_commit"] == second_commit
+    assert second_manifest["repos"]["sample_remote"]["prepared_at"] != (
+        first_manifest["repos"]["sample_remote"]["prepared_at"]
+    )
+
+    calls.clear()
+    prepare_quality_fixture(fixture, "p2_real_context", repos_dir)
+    assert not any(call[0] in {"clone", "fetch", "checkout"} for call in calls)
+
+
+def test_prepare_leaves_owned_checkout_unchanged_when_update_fetch_fails(
+    tmp_path: Path,
+    local_remote: tuple[str, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_url, first_commit, second_commit = local_remote
+    fixture = _write_remote_fixture(tmp_path, source_url, first_commit)
+    repos_dir = tmp_path / "repos"
+    prepare_quality_fixture(fixture, "p2_real_context", repos_dir)
+    manifest_path = repos_dir / PROVENANCE_FILENAME
+    first_manifest = manifest_path.read_bytes()
+    _write_remote_fixture(tmp_path, source_url, second_commit)
+    real_git = quality_prepare._git
+    fetch_calls: list[tuple[str, ...]] = []
+
+    def fail_fetch(*args: str, cwd: Path | None = None) -> str:
+        if args[0] == "fetch":
+            fetch_calls.append(args)
+            raise subprocess.CalledProcessError(128, ["git", *args], stderr="secret")
+        return real_git(*args, cwd=cwd)
+
+    monkeypatch.setattr(quality_prepare, "_git", fail_fetch)
+
+    with pytest.raises(ValueError, match="repository preparation failed") as exc_info:
+        prepare_quality_fixture(fixture, "p2_real_context", repos_dir)
+
+    checkout = repos_dir / "prepared-repo"
+    assert fetch_calls == [("fetch", "--", "origin", second_commit)]
+    assert "secret" not in str(exc_info.value)
+    assert _run_git("rev-parse", "HEAD", cwd=checkout) == first_commit
+    assert manifest_path.read_bytes() == first_manifest
+
+
+def test_prepare_rolls_back_head_and_manifest_when_updated_manifest_write_fails(
+    tmp_path: Path,
+    local_remote: tuple[str, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_url, first_commit, second_commit = local_remote
+    fixture = _write_remote_fixture(tmp_path, source_url, first_commit)
+    repos_dir = tmp_path / "repos"
+    prepare_quality_fixture(fixture, "p2_real_context", repos_dir)
+    manifest_path = repos_dir / PROVENANCE_FILENAME
+    first_manifest = manifest_path.read_bytes()
+    _write_remote_fixture(tmp_path, source_url, second_commit)
+    real_write = quality_prepare._write_provenance
+    written_commits: list[str] = []
+
+    def fail_after_new_write(root: Path, manifest: dict[str, Any]) -> None:
+        commit = manifest["repos"]["sample_remote"]["source_commit"]
+        written_commits.append(commit)
+        real_write(root, manifest)
+        if commit == second_commit:
+            raise OSError("simulated post-replace failure")
+
+    monkeypatch.setattr(quality_prepare, "_write_provenance", fail_after_new_write)
+
+    with pytest.raises(ValueError, match="repository preparation failed"):
+        prepare_quality_fixture(fixture, "p2_real_context", repos_dir)
+
+    checkout = repos_dir / "prepared-repo"
+    assert written_commits == [second_commit, first_commit]
+    assert _run_git("rev-parse", "HEAD", cwd=checkout) == first_commit
+    assert _run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=checkout) == "HEAD"
+    assert _run_git("status", "--porcelain", "--untracked-files=no", cwd=checkout) == ""
+    assert manifest_path.read_bytes() == first_manifest
+
+
+def test_prepare_rolls_back_when_updated_checkout_fails_post_validation(
+    tmp_path: Path,
+    local_remote: tuple[str, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_url, first_commit, second_commit = local_remote
+    fixture = _write_remote_fixture(tmp_path, source_url, first_commit)
+    repos_dir = tmp_path / "repos"
+    prepare_quality_fixture(fixture, "p2_real_context", repos_dir)
+    manifest_path = repos_dir / PROVENANCE_FILENAME
+    first_manifest = manifest_path.read_bytes()
+    _write_remote_fixture(tmp_path, source_url, second_commit)
+    real_validate = quality_prepare._validate_checkout
+    rejected_commits: list[str] = []
+
+    def reject_new_checkout(checkout: Path, repo: QualityRepo) -> None:
+        real_validate(checkout, repo)
+        if repo.source_commit == second_commit:
+            rejected_commits.append(repo.source_commit)
+            raise ValueError("simulated post-check failure")
+
+    monkeypatch.setattr(quality_prepare, "_validate_checkout", reject_new_checkout)
+
+    with pytest.raises(ValueError, match="repository preparation failed"):
+        prepare_quality_fixture(fixture, "p2_real_context", repos_dir)
+
+    checkout = repos_dir / "prepared-repo"
+    assert rejected_commits == [second_commit]
+    assert _run_git("rev-parse", "HEAD", cwd=checkout) == first_commit
+    assert manifest_path.read_bytes() == first_manifest
+
+
+@pytest.mark.parametrize("corruption", ["head", "remote", "dirty"])
+def test_prepare_rejects_corrupt_owned_checkout_before_fetching_update(
+    tmp_path: Path,
+    local_remote: tuple[str, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str,
+) -> None:
+    source_url, first_commit, second_commit = local_remote
+    fixture = _write_remote_fixture(tmp_path, source_url, first_commit)
+    repos_dir = tmp_path / "repos"
+    prepare_quality_fixture(fixture, "p2_real_context", repos_dir)
+    checkout = repos_dir / "prepared-repo"
+    manifest_path = repos_dir / PROVENANCE_FILENAME
+    first_manifest = manifest_path.read_bytes()
+    if corruption == "head":
+        _run_git("checkout", "--detach", second_commit, cwd=checkout)
+    elif corruption == "remote":
+        _run_git(
+            "remote",
+            "set-url",
+            "origin",
+            "https://other.example.test/repo.git",
+            cwd=checkout,
+        )
+    else:
+        (checkout / "App.java").write_text("dirty\n", encoding="utf-8")
+    _write_remote_fixture(tmp_path, source_url, second_commit)
+    real_git = quality_prepare._git
+    fetch_calls: list[tuple[str, ...]] = []
+
+    def capture_git(*args: str, cwd: Path | None = None) -> str:
+        if args[0] == "fetch":
+            fetch_calls.append(args)
+        return real_git(*args, cwd=cwd)
+
+    monkeypatch.setattr(quality_prepare, "_git", capture_git)
+
+    with pytest.raises(ValueError):
+        prepare_quality_fixture(fixture, "p2_real_context", repos_dir)
+
+    assert fetch_calls == []
+    assert manifest_path.read_bytes() == first_manifest
+
+
+@pytest.mark.parametrize("identity_field", ["source_url", "checkout_dir"])
+def test_prepare_never_updates_when_catalog_identity_differs_from_provenance(
+    tmp_path: Path,
+    local_remote: tuple[str, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    identity_field: str,
+) -> None:
+    source_url, first_commit, second_commit = local_remote
+    fixture = _write_remote_fixture(tmp_path, source_url, first_commit)
+    repos_dir = tmp_path / "repos"
+    prepare_quality_fixture(fixture, "p2_real_context", repos_dir)
+    manifest_path = repos_dir / PROVENANCE_FILENAME
+    first_manifest = manifest_path.read_bytes()
+    if identity_field == "source_url":
+        _write_remote_fixture(
+            tmp_path,
+            "https://other.example.test/remote.git",
+            second_commit,
+        )
+    else:
+        _write_remote_fixture(
+            tmp_path,
+            source_url,
+            second_commit,
+            checkout_dir="different-repo",
+        )
+    real_git = quality_prepare._git
+    mutating_calls: list[tuple[str, ...]] = []
+
+    def capture_git(*args: str, cwd: Path | None = None) -> str:
+        if args[0] in {"clone", "fetch", "checkout"}:
+            mutating_calls.append(args)
+        return real_git(*args, cwd=cwd)
+
+    monkeypatch.setattr(quality_prepare, "_git", capture_git)
+
+    with pytest.raises(ValueError, match="provenance manifest does not match"):
+        prepare_quality_fixture(fixture, "p2_real_context", repos_dir)
+
+    assert mutating_calls == []
+    assert manifest_path.read_bytes() == first_manifest
+    assert not (repos_dir / "different-repo").exists()
 
 
 @pytest.mark.parametrize("corruption", ["commit", "remote", "dirty"])

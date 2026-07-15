@@ -6,7 +6,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -106,7 +106,8 @@ def _prepare_repo(
     records = manifest["repos"]
     record = records.get(repo.repo_key)
     if record is not None and (
-        not isinstance(record, dict) or not _record_matches(record, repo)
+        not isinstance(record, dict)
+        or not _record_source_identity_matches(record, repo)
     ):
         raise ValueError("prepared provenance manifest does not match catalog")
     for other_key, other_record in records.items():
@@ -124,8 +125,27 @@ def _prepare_repo(
             raise ValueError("prepared checkout collision")
         if not _is_real_directory(checkout):
             raise ValueError("prepared checkout collision")
-        _validate_checkout(checkout, repo)
+        if _record_matches(record, repo):
+            _validate_checkout(checkout, repo)
+            return
+        previous_repo = replace(repo, source_commit=record["source_commit"])
+        try:
+            _validate_checkout(checkout, previous_repo)
+        except ValueError:
+            raise ValueError(
+                "prepared provenance manifest does not match catalog"
+            ) from None
+        _update_owned_checkout(
+            checkout,
+            repo,
+            previous_repo,
+            root,
+            manifest,
+        )
         return
+
+    if record is not None and not _record_matches(record, repo):
+        raise ValueError("prepared provenance manifest does not match catalog")
 
     temporary = Path(
         tempfile.mkdtemp(prefix=f".{repo.checkout_dir}.", dir=root)
@@ -148,12 +168,7 @@ def _prepare_repo(
         _remove_owned_temporary(temporary)
         raise ValueError("quality repository preparation failed") from None
 
-    records[repo.repo_key] = {
-        "source_url": repo.source_url,
-        "source_commit": repo.source_commit,
-        "checkout_dir": repo.checkout_dir,
-        "prepared_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-    }
+    records[repo.repo_key] = _provenance_record(repo)
     try:
         _write_provenance(root, manifest)
     except Exception:
@@ -162,6 +177,55 @@ def _prepare_repo(
         _remove_owned_temporary(checkout)
         records.pop(repo.repo_key, None)
         raise ValueError("quality repository preparation failed") from None
+
+
+def _update_owned_checkout(
+    checkout: Path,
+    repo: QualityRepo,
+    previous_repo: QualityRepo,
+    root: Path,
+    manifest: dict[str, Any],
+) -> None:
+    records = manifest["repos"]
+    previous_record = dict(records[repo.repo_key])
+    checkout_attempted = False
+    manifest_attempted = False
+    try:
+        _git("fetch", "--", "origin", repo.source_commit, cwd=checkout)
+        checkout_attempted = True
+        _git("checkout", "--detach", repo.source_commit, cwd=checkout)
+        _validate_checkout(checkout, repo)
+        records[repo.repo_key] = _provenance_record(repo)
+        manifest_attempted = True
+        _write_provenance(root, manifest)
+    except Exception:
+        records[repo.repo_key] = previous_record
+        if checkout_attempted:
+            try:
+                _git(
+                    "checkout",
+                    "--detach",
+                    previous_repo.source_commit,
+                    cwd=checkout,
+                )
+                _validate_checkout(checkout, previous_repo)
+            except Exception:
+                pass
+        if manifest_attempted:
+            try:
+                _write_provenance(root, manifest)
+            except Exception:
+                pass
+        raise ValueError("quality repository preparation failed") from None
+
+
+def _provenance_record(repo: QualityRepo) -> dict[str, str]:
+    return {
+        "source_url": repo.source_url,
+        "source_commit": repo.source_commit,
+        "checkout_dir": repo.checkout_dir,
+        "prepared_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    }
 
 
 def _repos_root(repos_dir: Path, *, create: bool) -> Path:
@@ -261,9 +325,18 @@ def _valid_record(record: Any) -> bool:
 
 def _record_matches(record: dict[str, Any], repo: QualityRepo) -> bool:
     return (
+        _record_source_identity_matches(record, repo)
+        and record["source_commit"] == repo.source_commit
+    )
+
+
+def _record_source_identity_matches(
+    record: dict[str, Any],
+    repo: QualityRepo,
+) -> bool:
+    return (
         _valid_record(record)
         and record["source_url"] == repo.source_url
-        and record["source_commit"] == repo.source_commit
         and record["checkout_dir"] == repo.checkout_dir
     )
 

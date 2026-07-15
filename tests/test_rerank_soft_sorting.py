@@ -616,8 +616,8 @@ def test_rerank_merge_field_consistency():
         chunk_ids=["chunk_a"],
         file_path=Path("test.py"),
         start_line=10,
-        end_line=20,
-        content="line 10\nline 11\n...\nline 20",
+        end_line=13,
+        content="line 10\nline 11\nline 12\nline 13",
         score=0.8,  # higher combined_score
         score_parts={"semantic": 0.7, "lexical": 0.1, "combined_score": 0.8, "rerank_score": 0.6, "evidence_priority": 1.0},
         reasons=["left reasons"],
@@ -632,9 +632,9 @@ def test_rerank_merge_field_consistency():
     right = _ExpandedResult(
         chunk_ids=["chunk_b"],
         file_path=Path("test.py"),
-        start_line=15,
-        end_line=25,
-        content="line 15\nline 16\n...\nline 25",
+        start_line=12,
+        end_line=15,
+        content="line 12\nline 13\nline 14\nline 15",
         score=0.5,  # lower combined_score
         score_parts={"semantic": 0.4, "lexical": 0.1, "combined_score": 0.5, "rerank_score": 0.9, "evidence_priority": 0.0},
         reasons=["right reasons"],

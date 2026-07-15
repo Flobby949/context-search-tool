@@ -5211,4 +5211,4 @@ def test_run_quality_fixture_forwards_repos_dir_for_remote_source(
         "p2_real_context",
         repos_dir,
     )
-    assert full_file_calls == [True]
+    assert full_file_calls == [False]

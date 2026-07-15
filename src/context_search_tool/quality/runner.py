@@ -263,16 +263,7 @@ def run_quality_fixture(
             for case in selected_cases:
                 started = time.perf_counter()
                 try:
-                    bundle = (
-                        query_repository(
-                            workspace,
-                            case.query,
-                            repo_config,
-                            full_file=True,
-                        )
-                        if profile == "p2_real_context"
-                        else query_repository(workspace, case.query, repo_config)
-                    )
+                    bundle = query_repository(workspace, case.query, repo_config)
                     latency_ms = int((time.perf_counter() - started) * 1000)
                     evaluation = evaluate_case(
                         case,

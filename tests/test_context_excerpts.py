@@ -173,6 +173,23 @@ def test_windows_expand_merge_adjacency_then_restore_source_order() -> None:
     assert [item.content for item in selected] == ["one\ntwo\n", "five\n"]
 
 
+def test_trailing_blank_source_line_reaches_excerpt_without_invented_text() -> None:
+    candidate = _candidate(
+        "three\nfour\n\n",
+        spans=(RetrievalSpan(3, 3, 1.0, ("lexical",)),),
+    )
+
+    selected = excerpts.build_candidate_excerpts(
+        candidate=candidate,
+        needs=(),
+        options=_options(max_excerpts_per_item=1),
+    )
+
+    assert [(item.start_line, item.end_line) for item in selected] == [(3, 3)]
+    assert selected[0].content == "\n"
+    assert selected[0].content in candidate.content
+
+
 def test_duplicate_spans_keep_highest_score_and_stable_source_union() -> None:
     candidate = _candidate(
         "one\ntwo\nthree",

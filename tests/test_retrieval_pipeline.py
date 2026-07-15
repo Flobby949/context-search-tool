@@ -415,6 +415,86 @@ def test_merge_expanded_result_unions_matches_in_variant_order() -> None:
     ]
 
 
+def test_merge_overlapping_results_preserves_a_real_trailing_blank_line() -> None:
+    def result(
+        chunk_id: str,
+        start_line: int,
+        end_line: int,
+        content: str,
+    ) -> retrieval._ExpandedResult:
+        return retrieval._ExpandedResult(
+            chunk_ids=[chunk_id],
+            file_path=Path("App.java"),
+            start_line=start_line,
+            end_line=end_line,
+            content=content,
+            score=0.5,
+            score_parts={"combined_score": 0.5, "rerank_score": 0.5},
+            reasons=[],
+            followup_keywords=[],
+            rank_tier=0,
+            rerank_score=0.5,
+            evidence_class="original_direct",
+            evidence_priority=0,
+        )
+
+    merged = retrieval._merge_overlapping_results(
+        [
+            result("first", 1, 3, "one\ntwo\nthree"),
+            result("blank", 3, 5, "three\nfour\n\n"),
+            result("last", 5, 7, "\nfive\nsix"),
+        ]
+    )
+
+    assert len(merged) == 1
+    assert (merged[0].start_line, merged[0].end_line) == (1, 7)
+    assert merged[0].content == "one\ntwo\nthree\nfour\n\nfive\nsix"
+    assert len(merged[0].content.splitlines(keepends=True)) == 7
+
+
+def test_expand_ranked_chunk_preserves_a_trailing_blank_source_line(
+    tmp_path: Path,
+) -> None:
+    source = "one\ntwo\nthree\nfour\n\nfive\nsix\n"
+    (tmp_path / "App.java").write_text(source, encoding="utf-8")
+    ranked = _span_ranked_chunk(
+        Path("App.java"),
+        chunk_id="middle",
+        start_line=3,
+        end_line=4,
+        rerank_score=1.0,
+        score_parts={"combined_score": 1.0, "rerank_score": 1.0},
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            context_before_lines=0,
+            context_after_lines=1,
+        )
+    )
+
+    expanded = retrieval._expand_ranked_chunks(
+        tmp_path,
+        [ranked],
+        config,
+        context_lines=None,
+        full_file=False,
+    )
+
+    source_lines = source.splitlines()
+    assert source_lines[2:5] == ["three", "four", ""]
+    assert retrieval.expand_lines(source_lines, 3, 4, 0, 1) == (
+        3,
+        5,
+        "three\nfour\n",
+    )
+    assert len(expanded) == 1
+    assert (expanded[0].start_line, expanded[0].end_line) == (3, 5)
+    assert expanded[0].content == "three\nfour\n\n"
+    assert expanded[0].spans == (
+        RetrievalSpan(3, 4, 1.0, ("ranked",)),
+    )
+
+
 def test_query_repository_returns_original_variant_on_empty_results(
     tmp_path: Path,
 ) -> None:
@@ -10671,7 +10751,7 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
         file_path=Path("Test.java"),
         start_line=1,
         end_line=10,
-        content="line1\nline2\nline3",
+        content="\n".join(f"line{line}" for line in range(1, 11)),
         score=1.5,  # Higher combined_score
         score_parts={
             "combined_score": 1.5,
@@ -10700,7 +10780,7 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
         file_path=Path("Test.java"),
         start_line=8,
         end_line=15,
-        content="line8\nline9\nline10",
+        content="\n".join(f"line{line}" for line in range(8, 16)),
         score=1.2,  # Lower combined_score
         score_parts={
             "combined_score": 1.2,
@@ -10750,7 +10830,7 @@ def test_rerank_merge_frontend_import_boost_is_winner_scoped() -> None:
         file_path=Path("src/services/imageDetection.ts"),
         start_line=1,
         end_line=5,
-        content="line1\nline2\nline3",
+        content="\n".join(f"line{line}" for line in range(1, 6)),
         score=1.5,
         score_parts={
             "combined_score": 1.5,
@@ -10769,7 +10849,7 @@ def test_rerank_merge_frontend_import_boost_is_winner_scoped() -> None:
         file_path=Path("src/services/imageDetection.ts"),
         start_line=4,
         end_line=8,
-        content="line4\nline5\nline6",
+        content="\n".join(f"line{line}" for line in range(4, 9)),
         score=1.2,
         score_parts={
             "combined_score": 1.2,

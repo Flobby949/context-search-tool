@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -12,12 +14,15 @@ from context_search_tool.config import DEFAULT_CONFIG, ToolConfig
 from context_search_tool.context_pack import (
     ContextPackOptions,
     build_context_pack,
+    canonical_context_pack_bytes,
     context_pack_payload,
     resolve_context_pack_options,
 )
 from context_search_tool.indexer import index_repository
-from context_search_tool.quality.cases import load_quality_fixture
-from context_search_tool.quality.runner import run_quality_fixture
+from context_search_tool.quality.cases import Gate, QualityRepo, load_quality_fixture
+from context_search_tool.quality.metrics import evaluate_case, evaluate_context_pack
+from context_search_tool.quality.prepare import validate_prepared_repo
+from context_search_tool.quality.runner import _copy_source_repo, run_quality_fixture
 from context_search_tool.retrieval import (
     evidence_anchor_top_k,
     query_repository,
@@ -37,10 +42,28 @@ IndexedP2Snapshots = tuple[
     ContextPackOptions,
     dict[str, Path],
 ]
+IndexedRealContext = tuple[
+    Path,
+    QualityRepo,
+    ToolConfig,
+    ContextPackOptions,
+    Path,
+]
+REAL_CONTEXT_REPOS_ENV = "CST_P2_REAL_CONTEXT_REPOS_DIR"
+REAL_CONTEXT_CASE_IDS = (
+    "owner-registration-validation-flow",
+    "owner-controller-registration-tests",
+    "owner-details-pets-visits",
+    "database-profiles-integration-tests",
+)
 
 
 def _p2_config() -> ToolConfig:
-    overrides = load_quality_fixture(CATALOG).profile_configs["p2_context_pack"]
+    return _profile_config("p2_context_pack")
+
+
+def _profile_config(profile: str) -> ToolConfig:
+    overrides = load_quality_fixture(CATALOG).profile_configs[profile]
     return replace(
         DEFAULT_CONFIG,
         **{
@@ -70,6 +93,30 @@ def indexed_p2_snapshots(
         index_repository(workspace, config)
         workspaces[snapshot_name] = workspace
     return config, pack_options, workspaces
+
+
+@pytest.fixture(scope="module")
+def indexed_real_context(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> IndexedRealContext:
+    raw_repos_dir = os.environ.get(REAL_CONTEXT_REPOS_ENV)
+    if not raw_repos_dir:
+        pytest.skip(f"set {REAL_CONTEXT_REPOS_ENV} to a prepared repositories root")
+
+    repos_dir = Path(raw_repos_dir).expanduser()
+    fixture = load_quality_fixture(CATALOG)
+    repo = next(item for item in fixture.repos if item.repo_key == "spring_petclinic")
+    source = validate_prepared_repo(repo, repos_dir)
+    config = _profile_config("p2_real_context")
+    pack_options = resolve_context_pack_options(
+        config,
+        context_lines=None,
+        max_evidence_anchors=evidence_anchor_top_k(config.retrieval.final_top_k),
+    )
+    workspace = tmp_path_factory.mktemp("p2-real-context") / repo.checkout_dir
+    _copy_source_repo(source, workspace)
+    index_repository(workspace, config)
+    return repos_dir, repo, config, pack_options, workspace
 
 
 def test_phase_two_context_pack_profile_is_deterministic_offline() -> None:
@@ -166,26 +213,25 @@ def test_real_context_profile_is_opt_in_and_does_not_change_offline_selection() 
     )
 
 
-def test_real_context_contract_repeats_pack_and_keeps_feedback_metadata_only(
-    indexed_p2_snapshots: IndexedP2Snapshots,
+@pytest.mark.parametrize("case_id", REAL_CONTEXT_CASE_IDS)
+def test_pinned_real_context_case_is_deterministic_bounded_private_and_passing(
+    indexed_real_context: IndexedRealContext,
+    case_id: str,
 ) -> None:
-    config, pack_options, workspaces = indexed_p2_snapshots
-    query = "workspace test file"
+    _, repo, config, pack_options, workspace = indexed_real_context
+    case = next(item for item in repo.queries if item.case_id == case_id)
 
-    first = context_pack_payload(
-        build_context_pack(
-            query_repository(workspaces["context-pack-java"], query, config),
-            pack_options,
-        )
-    )
-    second = context_pack_payload(
-        build_context_pack(
-            query_repository(workspaces["context-pack-java"], query, config),
-            pack_options,
-        )
-    )
+    first_bundle = query_repository(workspace, case.query, config)
+    second_bundle = query_repository(workspace, case.query, config)
+    first_pack = build_context_pack(first_bundle, pack_options)
+    second_pack = build_context_pack(second_bundle, pack_options)
+    first = context_pack_payload(first_pack)
 
-    assert first == second
+    assert case.gate is Gate.REQUIRED
+    assert case.mode == "context_pack"
+    assert canonical_context_pack_bytes(first_pack) == canonical_context_pack_bytes(
+        second_pack
+    )
     assert {
         key: first["budget"][key]
         for key in (
@@ -204,17 +250,77 @@ def test_real_context_contract_repeats_pack_and_keeps_feedback_metadata_only(
         "max_total_content_bytes": 49_152,
         "max_pack_bytes": 65_536,
     }
+    evaluation = evaluate_case(
+        case,
+        first_bundle.results,
+        latency_ms=0,
+        anchor_paths=[
+            anchor.file_path.as_posix()
+            for anchor in first_bundle.evidence_anchors
+        ],
+    )
+    evaluation = evaluate_context_pack(case, first_pack, evaluation)
+    assert evaluation.status == "pass"
+    assert evaluation.failures == []
+
     feedback = mcp_tools._feedback_context_pack_payload({"context_pack": first})
     assert feedback is not None
     serialized_feedback = json.dumps(feedback, ensure_ascii=False)
     private_values = [
-        query,
+        case.query,
         *(item["file_path"] for item in first["items"]),
         *(excerpt["content"] for item in first["items"] for excerpt in item["excerpts"]),
         *(term for need in first["evidence_needs"] for term in need["subject_terms"]),
         *(item["query"] for item in first["next_queries"]),
     ]
     assert all(value not in serialized_feedback for value in private_values if value)
+
+
+def test_pinned_real_context_reports_repeat_except_timing_and_runtime_provenance(
+    indexed_real_context: IndexedRealContext,
+) -> None:
+    repos_dir, _, _, _, _ = indexed_real_context
+
+    first = run_quality_fixture(
+        CATALOG,
+        "p2_real_context",
+        None,
+        None,
+        repos_dir=repos_dir,
+    )
+    second = run_quality_fixture(
+        CATALOG,
+        "p2_real_context",
+        None,
+        None,
+        repos_dir=repos_dir,
+    )
+
+    assert first["aggregate"]["passed"] == 4
+    assert first["aggregate"]["errors"] == 0
+    assert _stable_report_payload(first) == _stable_report_payload(second)
+
+
+def _stable_report_payload(report: dict[str, Any]) -> dict[str, Any]:
+    payload = json.loads(json.dumps(report))
+    payload.pop("generated_at", None)
+    payload["fixture"].pop("path", None)
+    payload["tool"].pop("git_commit", None)
+    for repo in payload["repos"]:
+        repo.pop("workspace", None)
+    return _without_latency(payload)
+
+
+def _without_latency(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_latency(item)
+            for key, item in value.items()
+            if key != "latency_ms"
+        }
+    if isinstance(value, list):
+        return [_without_latency(item) for item in value]
+    return value
 
 
 def test_exact_service_symbol_does_not_invent_required_flow_or_test_requirements(

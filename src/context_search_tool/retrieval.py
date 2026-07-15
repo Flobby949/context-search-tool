@@ -1762,12 +1762,15 @@ def _expand_ranked_chunks(
             content = file_content
         else:
             before, after = _context_window(config, context_lines)
-            start_line, end_line, content = expand_lines(
+            start_line, end_line, _ = expand_lines(
                 lines,
                 ranked.chunk.start_line,
                 ranked.chunk.end_line,
                 before,
                 after,
+            )
+            content = _join_expanded_result_lines(
+                lines[start_line - 1 : end_line]
             )
         if full_file:
             end_line, content = _cap_content_bytes(
@@ -2000,8 +2003,8 @@ def _merge_expanded_result(
     left: _ExpandedResult,
     right: _ExpandedResult,
 ) -> _ExpandedResult:
-    left_lines = left.content.splitlines()
-    right_lines = right.content.splitlines()
+    left_lines = _expanded_result_lines(left)
+    right_lines = _expanded_result_lines(right)
     overlap = max(0, left.end_line - right.start_line + 1)
     content_lines = [*left_lines, *right_lines[overlap:]]
 
@@ -2038,7 +2041,7 @@ def _merge_expanded_result(
         file_path=left.file_path,
         start_line=start_line,
         end_line=end_line,
-        content="\n".join(content_lines),
+        content=_join_expanded_result_lines(content_lines),
         score=max(left.score, right.score),
         score_parts=merged_score_parts,
         reasons=winner.reasons,
@@ -2059,6 +2062,25 @@ def _merge_expanded_result(
             end_line,
         ),
     )
+
+
+def _expanded_result_lines(result: _ExpandedResult) -> list[str]:
+    expected_count = result.end_line - result.start_line + 1
+    lines = result.content.splitlines()
+    if not lines:
+        lines = [""]
+    if len(lines) != expected_count:
+        raise ValueError("expanded result content does not match its line range")
+    return lines
+
+
+def _join_expanded_result_lines(lines: list[str]) -> str:
+    content = "\n".join(lines)
+    if len(lines) > 1 and lines[-1] == "":
+        content += "\n"
+    if max(1, len(content.splitlines(keepends=True))) != len(lines):
+        raise ValueError("expanded result lines cannot be represented exactly")
+    return content
 
 
 def _span_sources(score_parts: dict[str, float]) -> tuple[str, ...]:
