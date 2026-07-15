@@ -185,7 +185,7 @@ def _classify_candidate(
             anchor_kind,
             ("supporting", "evidence_anchor", "fallback"),
         )
-    return "supporting", path_role.name, "fallback"
+    return "supporting", path_role.name, path_role.basis
 
 
 def _merge_candidate(

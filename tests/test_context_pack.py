@@ -2777,6 +2777,22 @@ def test_v2_normalize_maps_shared_roles_to_closed_groups(
     assert candidate.group in context_pack_v2_models.CONTEXT_GROUPS
 
 
+def test_v2_normalize_preserves_shared_basis_for_unmapped_non_frontend_role() -> None:
+    path = "backend/components/Widget.java"
+    shared_role = context_pack_v2_roles.classify_path_role(Path(path))
+
+    candidate = context_pack_v2_roles.normalize_candidates(
+        _v2_bundle([_v2_result(path)])
+    )[0]
+
+    assert (shared_role.name, shared_role.basis) == ("component", "path")
+    assert (
+        candidate.group,
+        candidate.role,
+        candidate.classification_basis,
+    ) == ("supporting", shared_role.name, shared_role.basis)
+
+
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
