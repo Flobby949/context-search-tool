@@ -148,6 +148,46 @@ def test_multiple_database_subjects_have_distinct_ids_and_query_order() -> None:
     assert len({need.id for need in required_needs}) == 4
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "MySQL and PostgreSQL database profile configuration and integration tests",
+        "MySQL, PostgreSQL database profile configuration, integration tests",
+    ],
+)
+def test_coordinated_database_clauses_reuse_all_resolved_subjects(
+    query: str,
+) -> None:
+    needs = derive_evidence_needs(bundle(query=query), candidates=())
+
+    assert required(needs) == [
+        ("configs_docs", ("MySQL",)),
+        ("configs_docs", ("PostgreSQL",)),
+        ("tests", ("MySQL",)),
+        ("tests", ("PostgreSQL",)),
+    ]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Owner and Pet controller and tests",
+        "Owner, Pet controller, tests",
+    ],
+)
+def test_coordinated_generic_clauses_reuse_all_resolved_subjects(
+    query: str,
+) -> None:
+    needs = derive_evidence_needs(bundle(query=query), candidates=())
+
+    assert required(needs) == [
+        ("entrypoints", ("Owner",)),
+        ("entrypoints", ("Pet",)),
+        ("tests", ("Owner",)),
+        ("tests", ("Pet",)),
+    ]
+
+
 def test_mixed_clauses_bind_each_subject_only_to_its_role_category() -> None:
     needs = derive_evidence_needs(
         bundle(query="Owner form and Pet model type"),

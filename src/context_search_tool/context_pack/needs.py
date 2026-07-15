@@ -257,6 +257,7 @@ def _derive_explicit_specs(
     clauses = _query_clauses(query, identifiers)
     ordered: list[_OrderedNeedSpec] = []
     positions: dict[tuple[str, tuple[str, ...]], int] = {}
+    resolved_clause_subjects: dict[int, tuple[tuple[int, str], ...]] = {}
 
     def add(
         spec: _NeedSpec,
@@ -310,6 +311,13 @@ def _derive_explicit_specs(
                 clause_index,
                 category,
                 role_position,
+                resolved_clause_subjects,
+            )
+            resolved_clause_subjects[clause_index] = _dedupe_subjects(
+                (
+                    *resolved_clause_subjects.get(clause_index, ()),
+                    *subjects,
+                )
             )
             if not subjects:
                 add(
@@ -495,6 +503,7 @@ def _subjects_for_clause_role(
     clause_index: int,
     category: str,
     role_position: int,
+    resolved_clause_subjects: dict[int, tuple[tuple[int, str], ...]],
 ) -> tuple[tuple[int, str], ...]:
     clause = clauses[clause_index]
     direct = _direct_role_subjects(clause, category, role_position)
@@ -516,6 +525,8 @@ def _subjects_for_clause_role(
         return combined
 
     for index in range(clause_index - 1, -1, -1):
+        if resolved_clause_subjects.get(index):
+            return resolved_clause_subjects[index]
         if clauses[index].subjects:
             return clauses[index].subjects
     for index in range(clause_index + 1, len(clauses)):
