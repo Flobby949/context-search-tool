@@ -328,6 +328,27 @@ def test_trailing_subject_propagates_left_across_subjectless_roles() -> None:
     ]
 
 
+def test_trailing_combining_subject_uses_raw_offset_and_nfc_public_value() -> None:
+    composed = derive_evidence_needs(
+        bundle(query="controller and service for Café"),
+        candidates=(),
+    )
+    decomposed = derive_evidence_needs(
+        bundle(query="controller and service for Cafe\u0301"),
+        candidates=(),
+    )
+
+    expected = [
+        ("entrypoints", ("Café",)),
+        ("implementations", ("Café",)),
+    ]
+    assert required(composed) == expected
+    assert required(decomposed) == expected
+    assert tuple(need for need in composed if need.required) == tuple(
+        need for need in decomposed if need.required
+    )
+
+
 def test_trailing_database_subjects_propagate_left_as_one_resolved_set() -> None:
     needs = derive_evidence_needs(
         bundle(

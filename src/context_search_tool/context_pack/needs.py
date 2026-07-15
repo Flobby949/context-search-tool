@@ -767,15 +767,19 @@ def _extract_generic_subjects(value: str) -> list[tuple[int, str]]:
         for terms in _EXPLICIT_ROLE_TERMS.values():
             for term in sorted(terms, key=len, reverse=True):
                 cleaned = _remove_term(cleaned, term)
-        tokens = []
+        tokens: list[tuple[str, str]] = []
         for token in re.findall(r"[^\s]+", cleaned):
             normalized = _normalize_subject(token)
             if not normalized or normalized.casefold() in _SUBJECT_STOP_WORDS:
                 continue
-            tokens.append(normalized)
+            tokens.append((token, normalized))
         if tokens:
-            subject = _normalize_subject(" ".join(tokens))
-            first_token_position = segment.casefold().find(tokens[0].casefold())
+            subject = _normalize_subject(
+                " ".join(normalized for _, normalized in tokens)
+            )
+            first_token_position = segment.casefold().find(
+                tokens[0][0].casefold()
+            )
             values.append(
                 (
                     max(0, segment_position + max(0, first_token_position)),
