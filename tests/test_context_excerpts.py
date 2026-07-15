@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import unicodedata
 from dataclasses import replace
 from pathlib import Path
@@ -7,7 +8,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from context_search_tool.context_pack import builder, excerpts, models, serialization
+from context_search_tool.context_pack import (
+    builder,
+    excerpts,
+    models,
+    needs,
+    serialization,
+)
 from context_search_tool.models import (
     QueryPlan,
     RetrievalResult,
@@ -746,6 +753,63 @@ def test_overlapping_occurrence_scan_preserves_ascii_token_boundaries() -> None:
 
     assert fitted[0].content == "cat Core"
     assert fitted[0].content_bytes == 8
+
+
+@pytest.mark.parametrize(
+    ("content", "subject", "expected"),
+    [
+        (
+            "AppController app controller AppControllerX AppController",
+            "AppController",
+            ((0, 13), (14, 28), (29, 42), (44, 57)),
+        ),
+        ("哈哈哈核心", "哈哈", ((0, 2), (1, 3))),
+        ("Cafe\u0301 Café", "Café", ((0, 5), (6, 10))),
+        ("Straße STRASSE", "straße", ((0, 6), (7, 14))),
+        ("catcat cat Core", "cat", ((7, 10),)),
+    ],
+)
+def test_occurrence_scan_preserves_normalized_subject_semantics(
+    content: str,
+    subject: str,
+    expected: tuple[tuple[int, int], ...],
+) -> None:
+    assert excerpts._normalized_match_spans(content, subject) == expected
+
+
+def test_high_frequency_ascii_occurrences_normalize_content_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = "\n".join(
+        f".row-{index} {{ color: #123456; }}" for index in range(3132)
+    )
+    normalize = unicodedata.normalize
+    tokenize = needs._ascii_and_camel_token_spans
+    large_normalization_calls = 0
+    tokenized_lengths: list[int] = []
+
+    def counting_normalize(form: str, value: str) -> str:
+        nonlocal large_normalization_calls
+        if len(value) > 4096:
+            large_normalization_calls += 1
+        return normalize(form, value)
+
+    def counting_tokenize(value: str):
+        tokenized_lengths.append(len(value))
+        return tokenize(value)
+
+    monkeypatch.setattr(unicodedata, "normalize", counting_normalize)
+    monkeypatch.setattr(needs, "_ascii_and_camel_token_spans", counting_tokenize)
+    started = time.perf_counter()
+
+    selected = excerpts._required_subject_slice(content, 4096, ("row",))
+
+    elapsed = time.perf_counter() - started
+    assert len(content) == 92_849
+    assert selected == (1, 4, ("row",))
+    assert large_normalization_calls == 1
+    assert tokenized_lengths == [3, len(content)]
+    assert elapsed < 5.0
 
 
 def test_item_byte_ceiling_is_independent_of_excerpt_ceiling() -> None:

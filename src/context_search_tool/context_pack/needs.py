@@ -259,34 +259,71 @@ def normalized_subject_match_span(
     subject: str,
 ) -> tuple[int, int] | None:
     """Return the first candidate-semantic match in NFC-casefolded offsets."""
+    matches = _normalized_subject_match_spans(content, subject, first_only=True)
+    return matches[0] if matches else None
+
+
+def normalized_subject_match_spans(
+    content: str,
+    subject: str,
+) -> tuple[tuple[int, int], ...]:
+    """Return all candidate-semantic matches in NFC-casefolded offsets."""
+    return _normalized_subject_match_spans(content, subject, first_only=False)
+
+
+def _normalized_subject_match_spans(
+    content: str,
+    subject: str,
+    *,
+    first_only: bool,
+) -> tuple[tuple[int, int], ...]:
     normalized_subject = _normalize_subject(subject)
     if not normalized_subject:
-        return None
+        return ()
     normalized_content = unicodedata.normalize("NFC", content)
-    folded_content = normalized_content.casefold()
 
     if _contains_cjk(normalized_subject) or not normalized_subject.isascii():
+        folded_content = normalized_content.casefold()
         needle = normalized_subject.casefold()
-        start = folded_content.find(needle)
-        return None if start < 0 else (start, start + len(needle))
+        matches: list[tuple[int, int]] = []
+        offset = 0
+        while offset < len(folded_content):
+            start = folded_content.find(needle, offset)
+            if start < 0:
+                break
+            matches.append((start, start + len(needle)))
+            if first_only:
+                break
+            offset = start + 1
+        return tuple(matches)
 
-    raw_subject = _ascii_tokens(normalized_subject)
-    camel_subject = _camel_tokens(normalized_subject)
-    matches = tuple(
-        span
-        for span in (
-            _token_sequence_span(_ascii_token_spans(normalized_content), raw_subject),
-            _token_sequence_span(_camel_token_spans(normalized_content), camel_subject),
-        )
-        if span is not None
+    raw_subject_spans, camel_subject_spans = _ascii_and_camel_token_spans(
+        normalized_subject
+    )
+    raw_content_spans, camel_content_spans = _ascii_and_camel_token_spans(
+        normalized_content
+    )
+    raw_subject = tuple(token for token, _, _ in raw_subject_spans)
+    camel_subject = tuple(token for token, _, _ in camel_subject_spans)
+    matches = sorted(
+        {
+            *_token_sequence_spans(
+                raw_content_spans,
+                raw_subject,
+                first_only=first_only,
+            ),
+            *_token_sequence_spans(
+                camel_content_spans,
+                camel_subject,
+                first_only=first_only,
+            ),
+        }
     )
     if not matches:
-        return None
-    start, end = min(matches)
-    return (
-        len(normalized_content[:start].casefold()),
-        len(normalized_content[:end].casefold()),
-    )
+        return ()
+    offsets = _casefold_offsets(normalized_content)
+    converted = tuple((offsets[start], offsets[end]) for start, end in matches)
+    return converted[:1] if first_only else converted
 
 
 def _derive_explicit_specs(
@@ -1041,51 +1078,62 @@ def _subject_matches_fields(subject: str, fields: tuple[str, ...]) -> bool:
     )
 
 
-def _ascii_tokens(value: str) -> tuple[str, ...]:
-    return tuple(token for token, _, _ in _ascii_token_spans(value))
-
-
-def _ascii_token_spans(value: str) -> tuple[tuple[str, int, int], ...]:
-    return tuple(
-        (match.group(0).casefold(), match.start(), match.end())
-        for match in _ASCII_WORD_RE.finditer(value)
-    )
-
-
 def _camel_tokens(value: str) -> tuple[str, ...]:
-    return tuple(token for token, _, _ in _camel_token_spans(value))
+    _, camel_spans = _ascii_and_camel_token_spans(value)
+    return tuple(token for token, _, _ in camel_spans)
 
 
-def _camel_token_spans(value: str) -> tuple[tuple[str, int, int], ...]:
-    parts: list[tuple[str, int, int]] = []
+def _ascii_and_camel_token_spans(
+    value: str,
+) -> tuple[
+    tuple[tuple[str, int, int], ...],
+    tuple[tuple[str, int, int], ...],
+]:
+    ascii_parts: list[tuple[str, int, int]] = []
+    camel_parts: list[tuple[str, int, int]] = []
     for word_match in _ASCII_WORD_RE.finditer(value):
         word = word_match.group(0)
+        ascii_parts.append((word.casefold(), word_match.start(), word_match.end()))
         split = tuple(_CAMEL_PART_RE.finditer(word))
         if not split:
-            parts.append((word.casefold(), word_match.start(), word_match.end()))
+            camel_parts.append(
+                (word.casefold(), word_match.start(), word_match.end())
+            )
             continue
         for part in split:
-            parts.append(
+            camel_parts.append(
                 (
                     part.group(0).casefold(),
                     word_match.start() + part.start(),
                     word_match.start() + part.end(),
                 )
             )
-    return tuple(parts)
+    return tuple(ascii_parts), tuple(camel_parts)
 
 
-def _token_sequence_span(
+def _token_sequence_spans(
     haystack: tuple[tuple[str, int, int], ...],
     needle: tuple[str, ...],
-) -> tuple[int, int] | None:
+    *,
+    first_only: bool,
+) -> tuple[tuple[int, int], ...]:
     if not needle or len(needle) > len(haystack):
-        return None
+        return ()
+    matches: list[tuple[int, int]] = []
     width = len(needle)
     for index in range(len(haystack) - width + 1):
         if tuple(token for token, _, _ in haystack[index : index + width]) == needle:
-            return haystack[index][1], haystack[index + width - 1][2]
-    return None
+            matches.append((haystack[index][1], haystack[index + width - 1][2]))
+            if first_only:
+                break
+    return tuple(matches)
+
+
+def _casefold_offsets(value: str) -> tuple[int, ...]:
+    offsets = [0]
+    for character in value:
+        offsets.append(offsets[-1] + len(character.casefold()))
+    return tuple(offsets)
 
 
 def _contains_cjk(value: str) -> bool:
@@ -1099,4 +1147,5 @@ __all__ = (
     "candidate_matches_need",
     "derive_evidence_needs",
     "normalized_subject_match_span",
+    "normalized_subject_match_spans",
 )

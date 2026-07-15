@@ -18,6 +18,7 @@ from context_search_tool.context_pack.models import (
 from context_search_tool.context_pack.needs import (
     candidate_matches_need,
     normalized_subject_match_span,
+    normalized_subject_match_spans,
 )
 from context_search_tool.models import RetrievalSpan
 
@@ -628,10 +629,15 @@ def _required_subject_slices(
     terms: tuple[str, ...],
 ) -> tuple[_SubjectSlice, ...]:
     spans: list[tuple[int, int, int]] = []
+    matches_by_term: dict[str, tuple[tuple[int, int], ...]] = {}
     for position, term in enumerate(terms):
+        match_spans = matches_by_term.get(term)
+        if match_spans is None:
+            match_spans = _normalized_match_spans(content, term)
+            matches_by_term[term] = match_spans
         spans.extend(
             (*match_span, position)
-            for match_span in _normalized_match_spans(content, term)
+            for match_span in match_spans
         )
     if not spans or max_bytes <= 0:
         return ()
@@ -701,17 +707,13 @@ def _normalized_match_spans(
     content: str,
     subject: str,
 ) -> tuple[tuple[int, int], ...]:
-    spans: list[tuple[int, int]] = []
-    offset = 0
-    while offset < len(content):
-        match_span = _normalized_match_span(content[offset:], subject)
-        if match_span is None:
-            break
-        start, end = match_span
-        absolute_span = offset + start, offset + end
-        spans.append(absolute_span)
-        offset = max(absolute_span[0] + 1, offset + 1)
-    return tuple(spans)
+    normalized_spans = normalized_subject_match_spans(content, subject)
+    if content.isascii() or not normalized_spans:
+        return normalized_spans
+    boundaries = _raw_offset_map(content, normalized_spans)
+    return tuple(
+        (boundaries[start], boundaries[end]) for start, end in normalized_spans
+    )
 
 
 def _crop_text(
@@ -728,11 +730,27 @@ def _crop_text(
     return _utf8_prefix(content, max_bytes)
 
 
-def _normalized_match_span(content: str, subject: str) -> tuple[int, int] | None:
-    normalized_span = normalized_subject_match_span(content, subject)
-    if normalized_span is None:
-        return None
-    normalized_start, normalized_end = normalized_span
+def _raw_offset_map(
+    content: str,
+    normalized_spans: tuple[tuple[int, int], ...],
+) -> dict[int, int]:
+    offsets = {offset for span in normalized_spans for offset in span}
+    if unicodedata.is_normalized("NFC", content):
+        last_offset = max(offsets)
+        boundaries = [0] * (last_offset + 1)
+        folded_offset = 0
+        for index, character in enumerate(content):
+            if folded_offset > last_offset:
+                break
+            next_offset = folded_offset + len(character.casefold())
+            fill_end = min(next_offset, last_offset + 1)
+            boundaries[folded_offset:fill_end] = [index] * (
+                fill_end - folded_offset
+            )
+            folded_offset = next_offset
+            if folded_offset <= last_offset:
+                boundaries[folded_offset] = index + 1
+        return {offset: boundaries[offset] for offset in offsets}
 
     def original_boundary(normalized_offset: int) -> int:
         boundary = 0
@@ -750,10 +768,7 @@ def _normalized_match_span(content: str, subject: str) -> tuple[int, int] | None
                 high = index - 1
         return boundary
 
-    return (
-        original_boundary(normalized_start),
-        original_boundary(normalized_end),
-    )
+    return {offset: original_boundary(offset) for offset in offsets}
 
 
 def _utf8_prefix(content: str, max_bytes: int) -> str:
