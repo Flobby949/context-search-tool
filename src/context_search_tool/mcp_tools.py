@@ -648,12 +648,12 @@ def _feedback_context_pack_payload(
         if type(value) is not int or value < 0:
             return None
         counters[key] = value
-    if counters != {
-        "included_items": len(items),
-        "included_excerpts": excerpt_count,
-        "truncated_item_count": computed_truncated_items,
-        "omitted_item_count": len(omissions),
-    }:
+    if (
+        counters["included_items"] != len(items)
+        or counters["included_excerpts"] != excerpt_count
+        or counters["truncated_item_count"] != computed_truncated_items
+        or len(omissions) > counters["omitted_item_count"]
+    ):
         return None
     return {
         "schema_version": 2,

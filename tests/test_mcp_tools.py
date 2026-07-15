@@ -1,5 +1,6 @@
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -1377,6 +1378,36 @@ def test_mcp_context_feedback_accepts_canonical_v2_pack() -> None:
 
     assert feedback is not None
     assert feedback["status"] == "empty"
+
+
+def test_mcp_context_feedback_uses_total_omission_count_not_preview() -> None:
+    base = _deterministic_bundle()
+    results = [
+        replace(
+            base.results[0],
+            file_path=Path(f"src/AuditController{index}.java"),
+            content=f"class AuditController{index} {{}}",
+        )
+        for index in range(8)
+    ]
+    bundle = replace(base, results=results, evidence_anchors=[])
+    options = resolve_context_pack_options(
+        ToolConfig(),
+        context_lines=None,
+        max_evidence_anchors=0,
+        max_items=1,
+    )
+    pack = context_pack_payload(build_context_pack(bundle, options))
+    assert len(pack["items"]) == 1
+    assert len(pack["omissions"]) == 1
+    assert pack["budget"]["omitted_item_count"] == 7
+
+    feedback = mcp_tools._feedback_context_pack_payload(
+        {"context_pack": pack}
+    )
+
+    assert feedback is not None
+    assert feedback["omitted_item_count"] == 7
 
 
 @pytest.mark.parametrize(
