@@ -1,7 +1,8 @@
 # P2.1 ContextPack v2 Agent-First Hardening Design
 
 Date: 2026-07-15
-Status: Ready for written review; architecture direction approved
+Status: Approved; written review complete
+Implementation plan: `docs/superpowers/plans/2026-07-15-p2-context-pack-v2-hardening.md`
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
 Predecessor: `docs/superpowers/specs/2026-07-14-p2-context-pack-output-design.md`
 Roadmap: `roadmap/2026-07-08-fast-context-like-retrieval-roadmap.md`
