@@ -349,6 +349,42 @@ def test_java_declarations_accept_arbitrary_annotation_modifiers(
 
 
 @pytest.mark.parametrize(
+    ("path", "content", "expected"),
+    [
+        (
+            "src/main/java/com/example/service/OwnerService.java",
+            "class Holder { public interface OwnerService {} }",
+            PathRole("service_interface", 35, "content"),
+        ),
+        (
+            "src/main/java/com/example/Outer.java",
+            "class Outer { record Visit(long id) {} }",
+            PathRole("data_type", 45, "content"),
+        ),
+        (
+            "src/main/java/com/example/Outer.java",
+            "class Outer { enum VisitKind { CHECKUP } }",
+            PathRole("data_type", 45, "content"),
+        ),
+        (
+            "src/main/java/com/example/Outer.java",
+            (
+                "class Outer { @jakarta.persistence.Entity(name = \"owner\") "
+                "private static class Owner {} }"
+            ),
+            PathRole("data_type", 45, "content"),
+        ),
+    ],
+)
+def test_java_declarations_accept_same_line_nested_types(
+    path: str,
+    content: str,
+    expected: PathRole,
+) -> None:
+    assert classify_path_role(Path(path), content) == expected
+
+
+@pytest.mark.parametrize(
     "content",
     [
         "import jakarta.persistence.Entity;\npublic class Owner {}",
@@ -367,6 +403,8 @@ def test_java_declarations_accept_arbitrary_annotation_modifiers(
         "@Entity arbitrary occurrence\npublic class Owner {}",
         "public class Owner {\n  @Entity\n  private String marker;\n}",
         "public class Owner {\n  @Document\n  void document() {}\n}",
+        "class Owner { @Entity private String marker; }",
+        "class Owner { @Document void document() {} }",
     ],
 )
 def test_java_content_roles_ignore_non_declaration_occurrences(content: str) -> None:

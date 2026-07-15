@@ -49,7 +49,10 @@ _SPRING_CONFIG_NAME_RE = re.compile(
     r"(?:application|bootstrap)(?:-.+)?\.(?:properties|yaml|yml)"
 )
 _SPRING_LOGGING_CONFIG_RE = re.compile(r"(?:logback|log4j).*\.xml")
-_JAVA_LINE_START_RE = re.compile(r"^[ \t]*", re.MULTILINE)
+_JAVA_DECLARATION_BOUNDARY_RE = re.compile(
+    r"(?:^[ \t]*|(?<=[;{}:])[ \t]*)",
+    re.MULTILINE,
+)
 _JAVA_ANNOTATION_RE = re.compile(
     r"@(?P<name>[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)"
 )
@@ -293,8 +296,8 @@ def _has_java_data_type_declaration(content: str) -> bool:
 
 
 def _iter_java_type_declarations(masked: str) -> Iterator[tuple[str, bool]]:
-    for line_start in _JAVA_LINE_START_RE.finditer(masked):
-        index = line_start.end()
+    for boundary in _JAVA_DECLARATION_BOUNDARY_RE.finditer(masked):
+        index = boundary.end()
         has_data_type_annotation = False
         while index < len(masked):
             index = _skip_whitespace(masked, index)
