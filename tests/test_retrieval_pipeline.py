@@ -12,6 +12,10 @@ from context_search_tool.config import (
     RetrievalConfig,
     ToolConfig,
 )
+from context_search_tool.context_pack import (
+    build_context_pack,
+    resolve_context_pack_options,
+)
 from context_search_tool.indexer import index_repository
 from context_search_tool.models import (
     CodeRelation,
@@ -27,7 +31,7 @@ from context_search_tool.models import (
     SymbolRef,
 )
 from context_search_tool.paths import index_dir_for
-from context_search_tool.retrieval import query_repository
+from context_search_tool.retrieval import evidence_anchor_top_k, query_repository
 from context_search_tool.sqlite_store import SQLiteStore
 from context_search_tool.vector_store import VectorSearchResult
 
@@ -415,7 +419,7 @@ def test_merge_expanded_result_unions_matches_in_variant_order() -> None:
     ]
 
 
-def test_merge_overlapping_results_preserves_a_real_trailing_blank_line() -> None:
+def test_merge_overlapping_results_preserves_legacy_raw_and_exact_context() -> None:
     def result(
         chunk_id: str,
         start_line: int,
@@ -448,11 +452,13 @@ def test_merge_overlapping_results_preserves_a_real_trailing_blank_line() -> Non
 
     assert len(merged) == 1
     assert (merged[0].start_line, merged[0].end_line) == (1, 7)
-    assert merged[0].content == "one\ntwo\nthree\nfour\n\nfive\nsix"
-    assert len(merged[0].content.splitlines(keepends=True)) == 7
+    assert merged[0].content == "one\ntwo\nthree\nfour\nfive\nsix"
+    assert getattr(merged[0], "_context_content", None) == (
+        "one\ntwo\nthree\nfour\n\nfive\nsix"
+    )
 
 
-def test_expand_ranked_chunk_preserves_a_trailing_blank_source_line(
+def test_expand_ranked_chunk_preserves_legacy_raw_and_exact_context_content(
     tmp_path: Path,
 ) -> None:
     source = "one\ntwo\nthree\nfour\n\nfive\nsix\n"
@@ -489,10 +495,44 @@ def test_expand_ranked_chunk_preserves_a_trailing_blank_source_line(
     )
     assert len(expanded) == 1
     assert (expanded[0].start_line, expanded[0].end_line) == (3, 5)
-    assert expanded[0].content == "three\nfour\n\n"
+    assert expanded[0].content == "three\nfour\n"
+    assert getattr(expanded[0], "_context_content", None) == "three\nfour\n\n"
     assert expanded[0].spans == (
         RetrievalSpan(3, 4, 1.0, ("ranked",)),
     )
+
+
+def test_raw_result_stays_legacy_while_context_pack_keeps_trailing_blank(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.py").write_text("target = 1\nfour = 4\n\n", encoding="utf-8")
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=20,
+            final_top_k=1,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    index_repository(repo, config)
+
+    bundle = query_repository(repo, "target", config)
+
+    assert len(bundle.results) == 1
+    assert bundle.results[0].content == "target = 1\nfour = 4\n"
+    assert getattr(bundle.results[0], "_context_content", None) == (
+        "target = 1\nfour = 4\n\n"
+    )
+    options = resolve_context_pack_options(
+        config,
+        context_lines=None,
+        max_evidence_anchors=evidence_anchor_top_k(config.retrieval.final_top_k),
+    )
+    pack = build_context_pack(bundle, options)
+    assert pack.items[0].excerpts[0].content == "target = 1\nfour = 4\n\n"
 
 
 def test_query_repository_returns_original_variant_on_empty_results(

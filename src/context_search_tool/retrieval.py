@@ -261,6 +261,7 @@ class _ExpandedResult:
     pre_ceiling_rerank_score: float = 0.0
     was_ceiling_clamped: bool = False
     spans: tuple[RetrievalSpan, ...] = ()
+    _context_content: str | None = field(default=None, repr=False, compare=False)
 
 
 def query_repository(
@@ -401,6 +402,7 @@ def query_repository(
             followup_keywords=item.followup_keywords,
             semantic_matches=item.semantic_matches,
             spans=item.spans,
+            _context_content=item._context_content,
         )
         for index, item in enumerate(visible_results)
     ]
@@ -463,6 +465,7 @@ def _evidence_anchor_from_expanded(
         reasons=item.reasons,
         anchor_kind=anchor_kind,
         semantic_matches=item.semantic_matches,
+        _context_content=item._context_content,
     )
 
 
@@ -1760,16 +1763,17 @@ def _expand_ranked_chunks(
             start_line = 1
             end_line = len(lines)
             content = file_content
+            context_content = file_content
         else:
             before, after = _context_window(config, context_lines)
-            start_line, end_line, _ = expand_lines(
+            start_line, end_line, content = expand_lines(
                 lines,
                 ranked.chunk.start_line,
                 ranked.chunk.end_line,
                 before,
                 after,
             )
-            content = _join_expanded_result_lines(
+            context_content = _join_expanded_result_lines(
                 lines[start_line - 1 : end_line]
             )
         if full_file:
@@ -1777,6 +1781,16 @@ def _expand_ranked_chunks(
                 content,
                 start_line,
                 config.index.max_full_file_bytes,
+            )
+            _, context_content = _cap_content_bytes(
+                context_content,
+                start_line,
+                config.index.max_full_file_bytes,
+            )
+            context_content = _context_content_for_range(
+                context_content,
+                start_line,
+                end_line,
             )
 
         expanded.append(
@@ -1813,6 +1827,7 @@ def _expand_ranked_chunks(
                     start_line,
                     end_line,
                 ),
+                _context_content=context_content,
             )
         )
 
@@ -1926,6 +1941,19 @@ def _cap_expanded_result(
         result.start_line,
         max_bytes,
     )
+    source_context_content = result._context_content
+    if source_context_content is None:
+        source_context_content = result.content
+    _, context_content = _cap_content_bytes(
+        source_context_content,
+        result.start_line,
+        max_bytes,
+    )
+    context_content = _context_content_for_range(
+        context_content,
+        result.start_line,
+        end_line,
+    )
     return _ExpandedResult(
         chunk_ids=result.chunk_ids,
         file_path=result.file_path,
@@ -1944,6 +1972,7 @@ def _cap_expanded_result(
         pre_ceiling_rerank_score=result.pre_ceiling_rerank_score,
         was_ceiling_clamped=result.was_ceiling_clamped,
         spans=_normalize_spans(result.spans, result.start_line, end_line),
+        _context_content=context_content,
     )
 
 
@@ -2003,10 +2032,13 @@ def _merge_expanded_result(
     left: _ExpandedResult,
     right: _ExpandedResult,
 ) -> _ExpandedResult:
-    left_lines = _expanded_result_lines(left)
-    right_lines = _expanded_result_lines(right)
+    left_lines = left.content.splitlines()
+    right_lines = right.content.splitlines()
     overlap = max(0, left.end_line - right.start_line + 1)
     content_lines = [*left_lines, *right_lines[overlap:]]
+    left_context_lines = _expanded_result_lines(left)
+    right_context_lines = _expanded_result_lines(right)
+    context_lines = [*left_context_lines, *right_context_lines[overlap:]]
 
     winner = min(left, right, key=_expanded_result_sort_key)
 
@@ -2041,7 +2073,7 @@ def _merge_expanded_result(
         file_path=left.file_path,
         start_line=start_line,
         end_line=end_line,
-        content=_join_expanded_result_lines(content_lines),
+        content="\n".join(content_lines),
         score=max(left.score, right.score),
         score_parts=merged_score_parts,
         reasons=winner.reasons,
@@ -2061,17 +2093,28 @@ def _merge_expanded_result(
             start_line,
             end_line,
         ),
+        _context_content=_join_expanded_result_lines(context_lines),
     )
 
 
 def _expanded_result_lines(result: _ExpandedResult) -> list[str]:
     expected_count = result.end_line - result.start_line + 1
-    lines = result.content.splitlines()
+    content = result._context_content
+    if content is None:
+        content = result.content
+    lines = content.splitlines()
     if not lines:
         lines = [""]
     if len(lines) != expected_count:
         raise ValueError("expanded result content does not match its line range")
     return lines
+
+
+def _context_content_for_range(content: str, start_line: int, end_line: int) -> str:
+    lines = content.splitlines()
+    if not lines:
+        lines = [""]
+    return _join_expanded_result_lines(lines[: end_line - start_line + 1])
 
 
 def _join_expanded_result_lines(lines: list[str]) -> str:

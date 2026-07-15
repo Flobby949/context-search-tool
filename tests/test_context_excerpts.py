@@ -190,6 +190,46 @@ def test_trailing_blank_source_line_reaches_excerpt_without_invented_text() -> N
     assert selected[0].content in candidate.content
 
 
+def test_normalization_uses_private_exact_content_for_results_and_anchors() -> None:
+    result = RetrievalResult(
+        file_path=Path("App.py"),
+        start_line=3,
+        end_line=5,
+        content="three\nfour\n",
+        score=1.0,
+        score_parts={"evidence_priority": 0.0},
+        reasons=["fixture"],
+        followup_keywords=[],
+        spans=(RetrievalSpan(5, 5, 1.0, ("lexical",)),),
+    )
+    anchor = EvidenceAnchor(
+        file_path=Path("README.md"),
+        start_line=3,
+        end_line=5,
+        content="three\nfour\n",
+        score=0.5,
+        score_parts={},
+        reasons=["fixture"],
+        anchor_kind="readme",
+    )
+    object.__setattr__(result, "_context_content", "three\nfour\n\n")
+    object.__setattr__(anchor, "_context_content", "three\nfour\n\n")
+
+    result_candidate = builder.normalize_candidates(_bundle("three", [result]))[0]
+    anchor_candidate = builder.normalize_candidates(
+        replace(_bundle("three", []), evidence_anchors=[anchor])
+    )[0]
+
+    assert result_candidate.content == "three\nfour\n\n"
+    assert anchor_candidate.content == "three\nfour\n\n"
+    selected = excerpts.build_candidate_excerpts(
+        candidate=result_candidate,
+        needs=(),
+        options=_options(max_excerpts_per_item=1),
+    )
+    assert selected[0].content == "\n"
+
+
 def test_duplicate_spans_keep_highest_score_and_stable_source_union() -> None:
     candidate = _candidate(
         "one\ntwo\nthree",

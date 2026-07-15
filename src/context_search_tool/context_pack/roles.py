@@ -110,12 +110,15 @@ def _result_candidate(raw_result: Any, result_index: int) -> ContextCandidate:
     group, role, basis = _classify_candidate(path, raw_result.content)
     reasons = _bounded_reasons(raw_result.reasons)
     score_parts = dict(raw_result.score_parts)
+    context_content = getattr(raw_result, "_context_content", None)
+    if context_content is None:
+        context_content = raw_result.content
     return ContextCandidate(
         key=key,
         file_path=key,
         start_line=raw_result.start_line,
         end_line=raw_result.end_line,
-        content=raw_result.content,
+        content=context_content,
         group=group,
         role=role,
         classification_basis=basis,
@@ -141,12 +144,15 @@ def _anchor_candidate(raw_anchor: Any, anchor_index: int) -> ContextCandidate:
         is_anchor=True,
     )
     reasons = _bounded_reasons(raw_anchor.reasons)
+    context_content = getattr(raw_anchor, "_context_content", None)
+    if context_content is None:
+        context_content = raw_anchor.content
     return ContextCandidate(
         key=key,
         file_path=key,
         start_line=raw_anchor.start_line,
         end_line=raw_anchor.end_line,
-        content=raw_anchor.content,
+        content=context_content,
         group=group,
         role=role,
         classification_basis=basis,

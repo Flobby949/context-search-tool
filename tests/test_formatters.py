@@ -448,6 +448,31 @@ def test_raw_query_payload_ignores_internal_retrieval_spans() -> None:
     )
 
 
+def test_raw_formatters_ignore_private_exact_context_content() -> None:
+    baseline = compatibility_bundle()
+    with_exact_context = compatibility_bundle()
+    object.__setattr__(
+        with_exact_context.results[0],
+        "_context_content",
+        f"{with_exact_context.results[0].content}\nPRIVATE_RESULT_SENTINEL",
+    )
+    object.__setattr__(
+        with_exact_context.evidence_anchors[0],
+        "_context_content",
+        f"{with_exact_context.evidence_anchors[0].content}\nPRIVATE_ANCHOR_SENTINEL",
+    )
+
+    assert formatters.query_payload(with_exact_context) == formatters.query_payload(
+        baseline
+    )
+    assert format_json(with_exact_context).encode("utf-8") == format_json(
+        baseline
+    ).encode("utf-8")
+    assert format_markdown(with_exact_context).encode("utf-8") == format_markdown(
+        baseline
+    ).encode("utf-8")
+
+
 def test_markdown_formatter_contains_paths_reasons_and_snippets() -> None:
     output = format_markdown(sample_bundle())
 

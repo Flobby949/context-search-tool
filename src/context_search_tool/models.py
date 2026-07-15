@@ -159,6 +159,7 @@ class RetrievalResult:
     followup_keywords: list[str]
     semantic_matches: list[SemanticMatch] = field(default_factory=list)
     spans: tuple[RetrievalSpan, ...] = ()
+    _context_content: str | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -172,6 +173,7 @@ class EvidenceAnchor:
     reasons: list[str]
     anchor_kind: str
     semantic_matches: list[SemanticMatch] = field(default_factory=list)
+    _context_content: str | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass

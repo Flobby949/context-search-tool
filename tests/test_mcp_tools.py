@@ -106,6 +106,25 @@ def _deterministic_bundle(
     )
 
 
+def test_mcp_raw_payload_ignores_private_exact_context_content() -> None:
+    baseline = _deterministic_bundle()
+    with_exact_context = _deterministic_bundle()
+    object.__setattr__(
+        with_exact_context.results[0],
+        "_context_content",
+        f"{with_exact_context.results[0].content}\nPRIVATE_RESULT_SENTINEL",
+    )
+    object.__setattr__(
+        with_exact_context.evidence_anchors[0],
+        "_context_content",
+        f"{with_exact_context.evidence_anchors[0].content}\nPRIVATE_ANCHOR_SENTINEL",
+    )
+
+    assert mcp_tools._query_payload(with_exact_context) == mcp_tools._query_payload(
+        baseline
+    )
+
+
 def test_mcp_tools_index_query_stats_and_explain(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _write_java_repo(repo)
