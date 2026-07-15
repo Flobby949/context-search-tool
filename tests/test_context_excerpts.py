@@ -4,6 +4,7 @@ import time
 import unicodedata
 from dataclasses import replace
 from pathlib import Path
+from random import Random
 from types import SimpleNamespace
 
 import pytest
@@ -829,6 +830,118 @@ def test_non_nfc_mapping_preserves_composition_and_reordering(
     expected: tuple[tuple[int, int], ...],
 ) -> None:
     assert excerpts._normalized_match_spans(content, subject) == expected
+
+
+def test_raw_match_closure_includes_intersecting_composition_contributors() -> None:
+    content = "a\u0327\u0301ﬃ"
+    subject = "\u0327ﬃ"
+
+    raw_spans = excerpts._normalized_match_spans(content, subject)
+
+    assert unicodedata.normalize("NFC", content) == "á\u0327ﬃ"
+    assert raw_spans == ((0, 4),)
+    assert needs.normalized_subject_match_spans(content[0:4], subject)
+
+
+def test_composition_closure_preserves_higher_priority_complete_excerpt() -> None:
+    content = "a\u0327\u0301ﬃ"
+    subject = "\u0327ﬃ"
+    first = models.ContextExcerpt(
+        start_line=1,
+        end_line=1,
+        content=content,
+        content_bytes=len(content.encode("utf-8")),
+        truncated=False,
+    )
+    beta = models.ContextExcerpt(
+        start_line=2,
+        end_line=2,
+        content="Beta",
+        content_bytes=4,
+        truncated=False,
+    )
+
+    fitted = excerpts.fit_excerpts_to_bytes(
+        (first, beta),
+        11,
+        required_subject_terms=(subject, "Beta"),
+    )
+
+    assert first.content_bytes == 8
+    assert fitted == (first,)
+
+
+def test_composition_closure_does_not_expand_standalone_reordered_mark() -> None:
+    content = "a\u0315\u0300"
+    subject = "\u0315"
+
+    raw_spans = excerpts._normalized_match_spans(content, subject)
+
+    assert raw_spans == ((1, 2),)
+    assert needs.normalized_subject_match_spans(content[1:2], subject)
+
+
+def test_mapped_unicode_slices_rematch_subject_fuzz() -> None:
+    random = Random(20260717)
+    components = (
+        "a",
+        "e",
+        "ß",
+        "İ",
+        "ﬃ",
+        "\u0300",
+        "\u0301",
+        "\u0315",
+        "\u0323",
+        "\u0327",
+        "\u0344",
+        "\u1100",
+        "\u1102",
+        "\u1161",
+        "\u1162",
+        "\u11a8",
+        "\u09c7",
+        "\u09be",
+        "\u0cc6",
+        "\u0cc2",
+        "\u0cd5",
+        "\u0f42",
+        "\u0fb7",
+        "\u0f73",
+    )
+    checked = 0
+    for case_index in range(640):
+        if case_index == 0:
+            content = "a\u0327\u0301ﬃ"
+            subject = "\u0327ﬃ"
+        else:
+            content = "".join(
+                random.choice(components)
+                for _ in range(random.randrange(2, 16))
+            ) + "ﬃ"
+            normalized = unicodedata.normalize("NFC", content)
+            subject_start = random.choice(
+                [
+                    index
+                    for index, character in enumerate(normalized)
+                    if not character.isascii()
+                ]
+            )
+            subject_end = min(
+                len(normalized),
+                subject_start + random.randrange(1, 4),
+            )
+            subject = normalized[subject_start:subject_end]
+
+        raw_spans = excerpts._normalized_match_spans(content, subject)
+
+        assert raw_spans, (case_index, content, subject)
+        for start, end in raw_spans:
+            assert needs.normalized_subject_match_spans(
+                content[start:end], subject
+            ), (case_index, content, subject, (start, end))
+        checked += 1
+    assert checked >= 636
 
 
 @pytest.mark.parametrize(

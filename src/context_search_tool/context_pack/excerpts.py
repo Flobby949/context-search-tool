@@ -60,8 +60,7 @@ class _SubjectSlice:
 @dataclass(frozen=True)
 class _NormalizedUnit:
     character: str
-    raw_start: int
-    raw_end: int
+    raw_positions: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -769,25 +768,60 @@ def _non_nfc_raw_match_spans(
     content: str,
     normalized_spans: tuple[tuple[int, int], ...],
 ) -> tuple[tuple[int, int], ...]:
-    folded_starts: list[int] = []
-    folded_ends: list[int] = []
-    for unit in _nfc_raw_units(content):
+    units = _nfc_raw_units(content)
+    folded_consumers: list[int] = []
+    raw_consumers: list[list[int]] = [[] for _ in content]
+    for unit_index, unit in enumerate(units):
         folded_width = len(unit.character.casefold())
-        folded_starts.extend([unit.raw_start] * folded_width)
-        folded_ends.extend([unit.raw_end] * folded_width)
+        folded_consumers.extend([unit_index] * folded_width)
+        for raw_position in unit.raw_positions:
+            raw_consumers[raw_position].append(unit_index)
 
-    raw_spans: list[tuple[int, int]] = []
-    for start, end in normalized_spans:
-        raw_start = min(folded_starts[start:end])
-        raw_end = max(folded_ends[start:end])
-        if raw_end <= raw_start:
-            raw_end = min(len(content), raw_start + 1)
-        raw_spans.append((raw_start, raw_end))
-    return tuple(raw_spans)
+    return tuple(
+        _closed_raw_span(
+            units,
+            raw_consumers,
+            set(folded_consumers[start:end]),
+        )
+        for start, end in normalized_spans
+    )
+
+
+def _closed_raw_span(
+    units: tuple[_NormalizedUnit, ...],
+    raw_consumers: list[list[int]],
+    included_consumers: set[int],
+) -> tuple[int, int]:
+    included_positions = [
+        raw_position
+        for consumer in included_consumers
+        for raw_position in units[consumer].raw_positions
+    ]
+    raw_start = min(included_positions)
+    raw_end = max(included_positions) + 1
+    pending_ranges = [(raw_start, raw_end)]
+
+    while pending_ranges:
+        range_start, range_end = pending_ranges.pop()
+        for raw_position in range(range_start, range_end):
+            for consumer in raw_consumers[raw_position]:
+                if consumer in included_consumers:
+                    continue
+                included_consumers.add(consumer)
+                positions = units[consumer].raw_positions
+                consumer_start = min(positions)
+                consumer_end = max(positions) + 1
+                if consumer_start < raw_start:
+                    pending_ranges.append((consumer_start, raw_start))
+                    raw_start = consumer_start
+                if consumer_end > raw_end:
+                    pending_ranges.append((raw_end, consumer_end))
+                    raw_end = consumer_end
+    return raw_start, raw_end
 
 
 def _nfc_raw_units(content: str) -> tuple[_NormalizedUnit, ...]:
-    """Return canonical NFC units with each unit's contributing raw range."""
+    """Return canonical NFC units with exact contributing raw positions."""
     decomposed: list[_NormalizedUnit] = []
     sequence: list[_NormalizedUnit] = []
     for raw_index, raw_character in enumerate(content):
@@ -801,7 +835,7 @@ def _nfc_raw_units(content: str) -> tuple[_NormalizedUnit, ...]:
                 )
                 sequence = []
             sequence.append(
-                _NormalizedUnit(character, raw_index, raw_index + 1)
+                _NormalizedUnit(character, (raw_index,))
             )
     decomposed.extend(
         sorted(
@@ -830,8 +864,11 @@ def _nfc_raw_units(content: str) -> tuple[_NormalizedUnit, ...]:
             starter = composed[starter_index]
             composed[starter_index] = _NormalizedUnit(
                 composite,
-                min(starter.raw_start, unit.raw_start),
-                max(starter.raw_end, unit.raw_end),
+                tuple(
+                    sorted(
+                        set(starter.raw_positions).union(unit.raw_positions)
+                    )
+                ),
             )
             continue
         if combining_class == 0:
