@@ -539,10 +539,7 @@ def _subjects_for_clause_role(
     index = clause_index - 1
     connected = clause.coordinated_with_previous
     while index >= 0 and connected and not clauses[index].roles:
-        exact_identifier_boundary = any(
-            identifier.category is not None
-            for identifier in clauses[index].identifiers
-        )
+        exact_identifier_boundary = _is_exact_identifier_boundary(clauses[index])
         if direct and exact_identifier_boundary:
             break
         preceding[0:0] = clauses[index].subjects
@@ -558,7 +555,12 @@ def _subjects_for_clause_role(
         and clauses[index].coordinated_with_previous
         and not clauses[index].roles
     ):
+        exact_identifier_boundary = _is_exact_identifier_boundary(clauses[index])
+        if direct and exact_identifier_boundary:
+            break
         following.extend(clauses[index].subjects)
+        if exact_identifier_boundary:
+            break
         index += 1
 
     combined = _dedupe_subjects((*preceding, *direct, *following))
@@ -573,6 +575,13 @@ def _subjects_for_clause_role(
             return clauses[index].subjects
         index -= 1
     return ()
+
+
+def _is_exact_identifier_boundary(clause: _Clause) -> bool:
+    return any(
+        identifier.category is not None
+        for identifier in clause.identifiers
+    )
 
 
 def _direct_role_subjects(

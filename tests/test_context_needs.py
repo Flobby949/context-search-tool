@@ -242,6 +242,68 @@ def test_coordinated_identifier_boundary_does_not_override_scoped_subject() -> N
     ]
 
 
+@pytest.mark.parametrize("separator", [" and ", ", "])
+def test_following_identifier_boundary_does_not_override_scoped_subject(
+    separator: str,
+) -> None:
+    needs = derive_evidence_needs(
+        bundle(query=f"Pet model type{separator}OwnerController"),
+        candidates=(),
+    )
+
+    assert required(needs) == [
+        ("related_types", ("Pet",)),
+        ("entrypoints", ("OwnerController",)),
+    ]
+
+
+@pytest.mark.parametrize("separator", [" and ", ", "])
+def test_subjectful_test_stops_before_following_identifier(
+    separator: str,
+) -> None:
+    needs = derive_evidence_needs(
+        bundle(query=f"PetController tests{separator}OwnerController"),
+        candidates=(),
+    )
+
+    assert required(needs) == [
+        ("entrypoints", ("PetController",)),
+        ("entrypoints", ("OwnerController",)),
+        ("tests", ("PetController",)),
+    ]
+
+
+@pytest.mark.parametrize("separator", [" and ", ", "])
+def test_reversed_subjectful_test_has_symmetric_identifier_boundary(
+    separator: str,
+) -> None:
+    needs = derive_evidence_needs(
+        bundle(query=f"OwnerController{separator}PetController tests"),
+        candidates=(),
+    )
+
+    assert required(needs) == [
+        ("entrypoints", ("OwnerController",)),
+        ("entrypoints", ("PetController",)),
+        ("tests", ("PetController",)),
+    ]
+
+
+@pytest.mark.parametrize("separator", [" and ", ", "])
+def test_subjectless_role_consumes_one_following_identifier_boundary(
+    separator: str,
+) -> None:
+    needs = derive_evidence_needs(
+        bundle(query=f"tests{separator}OwnerController"),
+        candidates=(),
+    )
+
+    assert required(needs) == [
+        ("tests", ("OwnerController",)),
+        ("entrypoints", ("OwnerController",)),
+    ]
+
+
 def test_unscoped_predicate_does_not_steal_a_later_coordinated_subject() -> None:
     needs = derive_evidence_needs(
         bundle(query="find service implementation and Pet model type"),
