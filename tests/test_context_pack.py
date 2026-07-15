@@ -3943,3 +3943,19 @@ def test_v2_canonical_serialization_rejects_malformed_payload_keys() -> None:
         "context_failed",
         "Context pack construction failed",
     )
+
+
+def test_v2_omitted_count_may_exceed_compacted_public_preview() -> None:
+    _, _, serialization = _v2_modules()
+    pack = _v2_pack()
+
+    payload = serialization.context_pack_payload(
+        replace(
+            pack,
+            omissions=(),
+            budget=replace(pack.budget, omitted_item_count=7),
+        )
+    )
+
+    assert payload["omissions"] == []
+    assert payload["budget"]["omitted_item_count"] == 7

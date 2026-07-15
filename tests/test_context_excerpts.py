@@ -1,0 +1,573 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from context_search_tool.context_pack import builder, excerpts, models, serialization
+from context_search_tool.models import (
+    QueryPlan,
+    RetrievalResult,
+    RetrievalSpan,
+    RetrievalSummary,
+)
+from context_search_tool.retrieval import QueryBundle
+
+
+def _options(**changes: int) -> models.ContextPackOptions:
+    values = {
+        "max_items": 12,
+        "max_excerpts_per_item": 2,
+        "max_excerpt_bytes": 4096,
+        "max_item_content_bytes": 8192,
+        "max_total_content_bytes": 49_152,
+        "max_pack_bytes": 65_536,
+        "context_before_lines": 0,
+        "context_after_lines": 0,
+    }
+    values.update(changes)
+    return models.ContextPackOptions(**values)
+
+
+def _candidate(
+    content: str,
+    *,
+    path: str = "config/application.properties",
+    group: str = "configs_docs",
+    source_kind: str = "result",
+    spans: tuple[RetrievalSpan, ...] = (),
+    protected_direct: bool = False,
+) -> models.ContextCandidate:
+    line_count = max(1, len(content.splitlines()))
+    return models.ContextCandidate(
+        key=path,
+        file_path=path,
+        start_line=1,
+        end_line=line_count,
+        content=content,
+        group=group,
+        role="runtime_config",
+        classification_basis="path",
+        source_kind=source_kind,
+        retrieval_rank=0 if source_kind == "result" else None,
+        source_order=0,
+        relevance_score=1.0 if source_kind == "result" else None,
+        reasons=("fixture",),
+        score_parts={},
+        spans=spans,
+        trusted_provenance_text=path,
+        protected_direct=protected_direct,
+    )
+
+
+def _need(
+    subject: str,
+    *,
+    need_id: str = "need:configs_docs:postgresql",
+    required: bool = True,
+    category: str = "configs_docs",
+) -> models.EvidenceNeed:
+    return models.EvidenceNeed(
+        id=need_id,
+        category=category,
+        subject_terms=(subject,),
+        required=required,
+        provenance="explicit_query" if required else "structural_recommendation",
+        matched_item_ids=(),
+    )
+
+
+def _result(
+    path: str,
+    content: str,
+    *,
+    spans: tuple[RetrievalSpan, ...] = (),
+    rank_score: float = 1.0,
+) -> RetrievalResult:
+    return RetrievalResult(
+        file_path=Path(path),
+        start_line=1,
+        end_line=max(1, len(content.splitlines())),
+        content=content,
+        score=rank_score,
+        score_parts={"evidence_priority": 0.0},
+        reasons=["fixture"],
+        followup_keywords=[],
+        spans=spans,
+    )
+
+
+def _bundle(query: str, results: list[RetrievalResult]) -> QueryBundle:
+    return QueryBundle(
+        query=query,
+        expanded_tokens=[],
+        results=results,
+        followup_keywords=[],
+        summary=RetrievalSummary(),
+        planner=QueryPlan.disabled_default(),
+        evidence_anchors=[],
+    )
+
+
+def test_required_matching_span_wins_over_higher_scored_optional_span() -> None:
+    candidate = _candidate(
+        "optional\ncontext\nmore\npostgresql.url=db\ntail",
+        spans=(
+            RetrievalSpan(1, 1, 99.0, ("semantic",)),
+            RetrievalSpan(4, 4, 1.0, ("lexical",)),
+        ),
+    )
+
+    selected = excerpts.build_candidate_excerpts(
+        candidate=candidate,
+        needs=(_need("PostgreSQL"),),
+        options=_options(max_excerpts_per_item=1),
+    )
+
+    assert [(item.start_line, item.end_line) for item in selected] == [(4, 4)]
+    assert "postgresql" in selected[0].content.casefold()
+
+
+def test_windows_expand_merge_adjacency_then_restore_source_order() -> None:
+    candidate = _candidate(
+        "one\ntwo\nthree\nfour\nfive\nsix",
+        spans=(
+            RetrievalSpan(5, 5, 8.0, ("semantic",)),
+            RetrievalSpan(1, 1, 6.0, ("lexical",)),
+            RetrievalSpan(2, 2, 7.0, ("signal",)),
+        ),
+    )
+
+    selected = excerpts.build_candidate_excerpts(
+        candidate=candidate,
+        needs=(),
+        options=_options(max_excerpts_per_item=2),
+    )
+
+    assert [(item.start_line, item.end_line) for item in selected] == [(1, 2), (5, 5)]
+    assert [item.content for item in selected] == ["one\ntwo\n", "five\n"]
+
+
+def test_duplicate_spans_keep_highest_score_and_stable_source_union() -> None:
+    candidate = _candidate(
+        "one\ntwo\nthree",
+        spans=(
+            RetrievalSpan(2, 2, 1.0, ("lexical", "semantic")),
+            RetrievalSpan(2, 2, 3.0, ("semantic", "signal")),
+            RetrievalSpan(1, 2, 2.0, ("path_symbol",)),
+        ),
+    )
+
+    normalized = excerpts.normalize_candidate_spans(candidate)
+
+    assert normalized == (
+        RetrievalSpan(2, 2, 3.0, ("lexical", "semantic", "signal")),
+        RetrievalSpan(1, 2, 2.0, ("path_symbol",)),
+    )
+
+
+def test_result_without_spans_uses_exact_legacy_fallback_span() -> None:
+    candidate = replace(_candidate("one\ntwo\nthree"), relevance_score=2.5)
+
+    assert excerpts.normalize_candidate_spans(candidate) == (
+        RetrievalSpan(1, 3, 2.5, ("legacy_result",)),
+    )
+
+
+def test_anchor_prefers_exact_subject_line_then_head_fallback() -> None:
+    candidate = _candidate(
+        "head\nother\nPostgreSQL profile\ntail",
+        source_kind="evidence_anchor",
+    )
+
+    matched = excerpts.build_candidate_excerpts(
+        candidate=candidate,
+        needs=(_need("PostgreSQL"),),
+        options=_options(max_excerpts_per_item=1, max_excerpt_bytes=20),
+    )
+    fallback = excerpts.build_candidate_excerpts(
+        candidate=candidate,
+        needs=(_need("MySQL"),),
+        options=_options(max_excerpts_per_item=1, max_excerpt_bytes=20),
+    )
+
+    assert (matched[0].start_line, matched[0].content) == (3, "PostgreSQL profile\n")
+    assert (fallback[0].start_line, fallback[0].content) == (1, "head\n")
+
+
+def test_short_anchor_is_retained_whole_and_long_anchor_expands_match() -> None:
+    short = _candidate("README\nsetup", source_kind="evidence_anchor")
+    long = _candidate(
+        "head\nbefore\nPostgreSQL profile\nafter\ntail",
+        source_kind="evidence_anchor",
+    )
+
+    short_excerpt = excerpts.build_candidate_excerpts(
+        candidate=short,
+        needs=(),
+        options=_options(),
+    )
+    long_excerpt = excerpts.build_candidate_excerpts(
+        candidate=long,
+        needs=(_need("PostgreSQL"),),
+        options=_options(
+            max_excerpt_bytes=35,
+            context_before_lines=1,
+            context_after_lines=1,
+        ),
+    )
+
+    assert short_excerpt[0].content == "README\nsetup"
+    assert (long_excerpt[0].start_line, long_excerpt[0].end_line) == (2, 4)
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        replace(_candidate("line"), start_line=0),
+        replace(_candidate("line"), end_line=0),
+        _candidate("line", spans=(RetrievalSpan(1, 1, float("nan"), ("ranked",)),)),
+        _candidate("line", spans=(RetrievalSpan(2, 2, 1.0, ("ranked",)),)),
+        _candidate("line\ntwo", spans=(RetrievalSpan(2, 1, 1.0, ("ranked",)),)),
+    ],
+)
+def test_invalid_line_or_span_contract_fails_sanitized(
+    candidate: models.ContextCandidate,
+) -> None:
+    with pytest.raises(models.ContextPackError) as exc_info:
+        excerpts.build_candidate_excerpts(
+            candidate=candidate,
+            needs=(),
+            options=_options(),
+        )
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "ASCII alpha beta\nsecond line\n",
+        "中文配置数据库\n第二行\n",
+        "emoji 🐶🐱✨\nnext\n",
+        "e\u0301cole and cafe\u0301\nnext\n",
+        "first\r\nsecond\r\n",
+        "one very very very long single line",
+        "no final newline",
+        "first\n\n",
+    ],
+)
+def test_excerpt_cropping_is_utf8_safe_and_preserves_source_bytes(content: str) -> None:
+    candidate = _candidate(content)
+    selected = excerpts.build_candidate_excerpts(
+        candidate=candidate,
+        needs=(),
+        options=_options(max_excerpt_bytes=17),
+    )
+
+    assert selected
+    for excerpt in selected:
+        assert excerpt.content_bytes == len(excerpt.content.encode("utf-8"))
+        assert excerpt.content_bytes <= 17
+        assert excerpt.content.encode("utf-8").decode("utf-8") == excerpt.content
+        assert excerpt.content in content
+    if len(content.encode("utf-8")) <= 17:
+        assert selected[0].content == content
+
+
+def test_byte_crop_keeps_required_subject_line_before_surrounding_context() -> None:
+    candidate = _candidate(
+        "large leading context line\nPostgreSQL\nlarge trailing context line",
+        spans=(RetrievalSpan(1, 3, 1.0, ("semantic",)),),
+    )
+
+    selected = excerpts.build_candidate_excerpts(
+        candidate=candidate,
+        needs=(_need("PostgreSQL"),),
+        options=_options(max_excerpt_bytes=12),
+    )
+
+    assert selected[0].content == "PostgreSQL\n"
+    assert selected[0].truncated is True
+
+
+def test_builder_enforces_each_subordinate_budget_and_rechecks_matches() -> None:
+    results = [
+        _result(
+            "src/main/controller/OwnerController.java",
+            "class OwnerController {}\nline two\nline three",
+            spans=(
+                RetrievalSpan(1, 1, 4.0, ("path_symbol",)),
+                RetrievalSpan(3, 3, 2.0, ("semantic",)),
+            ),
+        ),
+        _result(
+            "tests/OwnerControllerTests.java",
+            "class OwnerControllerTests {}\nline two\nline three",
+            spans=(RetrievalSpan(1, 3, 3.0, ("lexical",)),),
+        ),
+    ]
+    options = _options(
+        max_items=1,
+        max_excerpts_per_item=1,
+        max_excerpt_bytes=18,
+        max_item_content_bytes=18,
+        max_total_content_bytes=18,
+        max_pack_bytes=4096,
+    )
+
+    pack = builder.build_context_pack(
+        _bundle("OwnerController tests", results),
+        options,
+    )
+    payload = serialization.context_pack_payload(pack)
+
+    assert len(pack.items) <= 1
+    assert all(len(item.excerpts) <= 1 for item in pack.items)
+    assert all(
+        excerpt.content_bytes <= options.max_excerpt_bytes
+        for item in pack.items
+        for excerpt in item.excerpts
+    )
+    assert all(
+        sum(excerpt.content_bytes for excerpt in item.excerpts)
+        <= options.max_item_content_bytes
+        for item in pack.items
+    )
+    assert pack.budget.content_bytes <= options.max_total_content_bytes
+    assert pack.budget.pack_bytes == len(serialization.canonical_context_pack_bytes(pack))
+    assert pack.budget.pack_bytes <= options.max_pack_bytes
+    assert payload["budget"]["pack_bytes"] == pack.budget.pack_bytes
+
+
+def test_required_512_reservation_precedes_recommended_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    required = models.EvidenceNeed(
+        id="need:entrypoints:general",
+        category="entrypoints",
+        subject_terms=(),
+        required=True,
+        provenance="explicit_query",
+        matched_item_ids=(),
+    )
+    recommended = models.EvidenceNeed(
+        id="need:tests:general",
+        category="tests",
+        subject_terms=(),
+        required=False,
+        provenance="structural_recommendation",
+        matched_item_ids=(),
+    )
+    monkeypatch.setattr(
+        builder,
+        "derive_evidence_needs",
+        lambda bundle, *, candidates: (required, recommended),
+    )
+    pack = builder.build_context_pack(
+        _bundle(
+            "fixture",
+            [
+                _result("src/main/controller/AppController.java", "r" * 600),
+                _result("tests/AppControllerTests.java", "t" * 600),
+            ],
+        ),
+        _options(
+            max_items=2,
+            max_excerpt_bytes=600,
+            max_item_content_bytes=600,
+            max_total_content_bytes=700,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    content_by_group = {
+        item.group: sum(excerpt.content_bytes for excerpt in item.excerpts)
+        for item in pack.items
+    }
+    assert content_by_group == {"entrypoints": 512, "tests": 188}
+
+
+def test_item_byte_ceiling_is_independent_of_excerpt_ceiling() -> None:
+    content = "abcdefghij\nseparator\nklmnopqrst"
+    pack = builder.build_context_pack(
+        _bundle(
+            "find source",
+            [
+                _result(
+                    "src/plain.py",
+                    content,
+                    spans=(
+                        RetrievalSpan(1, 1, 2.0, ("lexical",)),
+                        RetrievalSpan(3, 3, 1.0, ("semantic",)),
+                    ),
+                )
+            ],
+        ),
+        _options(
+            max_excerpt_bytes=11,
+            max_item_content_bytes=15,
+            max_total_content_bytes=100,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    assert len(pack.items[0].excerpts) == 2
+    assert all(excerpt.content_bytes <= 11 for excerpt in pack.items[0].excerpts)
+    assert sum(excerpt.content_bytes for excerpt in pack.items[0].excerpts) == 15
+
+
+def test_excerpt_count_budget_only_exhausts_when_merged_window_is_lost() -> None:
+    def build(spans: tuple[RetrievalSpan, ...]):
+        return builder.build_context_pack(
+            _bundle(
+                "find source",
+                [_result("src/plain.py", "one\ntwo\nthree", spans=spans)],
+            ),
+            _options(max_excerpts_per_item=1),
+        )
+
+    adjacent = build(
+        (
+            RetrievalSpan(1, 1, 2.0, ("lexical",)),
+            RetrievalSpan(2, 2, 1.0, ("semantic",)),
+        )
+    )
+    disjoint = build(
+        (
+            RetrievalSpan(1, 1, 2.0, ("lexical",)),
+            RetrievalSpan(3, 3, 1.0, ("semantic",)),
+        )
+    )
+
+    assert adjacent.budget.budget_exhausted is False
+    assert disjoint.budget.budget_exhausted is True
+
+
+def test_metadata_too_large_omits_unfit_item_without_exceeding_pack_ceiling() -> None:
+    long_path = f"src/{'x' * 5000}/OwnerController.java"
+    pack = builder.build_context_pack(
+        _bundle("OwnerController", [_result(long_path, "class OwnerController {}")]),
+        _options(
+            max_excerpt_bytes=512,
+            max_item_content_bytes=1024,
+            max_total_content_bytes=1024,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    assert pack.items == ()
+    assert pack.status == "partial"
+    assert pack.budget.pack_bytes <= 4096
+    assert pack.budget.omitted_item_count == 1
+
+
+def test_unfit_required_candidate_retries_bounded_alternative() -> None:
+    unfit_path = f"config/{'x' * 5000}/postgresql.properties"
+    fallback_path = "config/postgresql.properties"
+
+    pack = builder.build_context_pack(
+        _bundle(
+            "PostgreSQL configuration",
+            [
+                _result(unfit_path, "postgresql.url=first"),
+                _result(fallback_path, "postgresql.url=second"),
+            ],
+        ),
+        _options(
+            max_items=1,
+            max_excerpt_bytes=512,
+            max_item_content_bytes=1024,
+            max_total_content_bytes=1024,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    assert [item.file_path for item in pack.items] == [fallback_path]
+    assert pack.evidence_needs[0].matched_item_ids == ("item:0",)
+    assert pack.budget.omitted_item_count == 1
+
+
+def test_canonical_compaction_retains_required_matching_line_when_possible() -> None:
+    lines = [
+        *(f"leading context {index:03d}" for index in range(180)),
+        "spring.datasource.platform=PostgreSQL",
+        *(f"trailing context {index:03d}" for index in range(180)),
+    ]
+    content = "\n".join(lines)
+    pack = builder.build_context_pack(
+        _bundle(
+            "PostgreSQL configuration",
+            [
+                _result(
+                    "config/application.properties",
+                    content,
+                    spans=(RetrievalSpan(1, len(lines), 1.0, ("semantic",)),),
+                )
+            ],
+        ),
+        _options(
+            max_excerpt_bytes=3500,
+            max_item_content_bytes=3500,
+            max_total_content_bytes=3500,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    retained = "".join(
+        excerpt.content for item in pack.items for excerpt in item.excerpts
+    )
+    assert "PostgreSQL" in retained
+    assert pack.evidence_needs[0].matched_item_ids == ("item:0",)
+    assert pack.budget.pack_bytes <= 4096
+
+
+def test_large_css_pack_is_bounded_deterministic_and_performs_no_file_io(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = "\n".join(f".row-{index} {{ color: #123456; }}" for index in range(3132))
+    result = _result(
+        "src/main/resources/static/app.css",
+        content,
+        spans=(RetrievalSpan(1, 3132, 1.0, ("semantic",)),),
+    )
+    bundle = _bundle("find stylesheet", [result])
+
+    def fail_io(*args: object, **kwargs: object) -> None:
+        pytest.fail("context construction must not reread candidate files")
+
+    monkeypatch.setattr(Path, "open", fail_io)
+    monkeypatch.setattr(Path, "read_text", fail_io)
+    first = builder.build_context_pack(bundle, _options())
+    second = builder.build_context_pack(bundle, _options())
+    first_bytes = serialization.canonical_context_pack_bytes(first)
+    second_bytes = serialization.canonical_context_pack_bytes(second)
+
+    assert len(content.splitlines()) == 3132
+    assert first == second
+    assert first_bytes == second_bytes
+    assert len(first_bytes) == first.budget.pack_bytes <= 65_536
+    assert first.budget.content_bytes <= 49_152
+
+
+def test_builder_pack_bytes_converges_at_decimal_digit_boundary() -> None:
+    base = "x" * 9100
+    pack = builder.build_context_pack(
+        _bundle("find source", [_result("src/plain.py", base)]),
+        _options(
+            max_excerpt_bytes=9500,
+            max_item_content_bytes=9500,
+            max_total_content_bytes=9500,
+            max_pack_bytes=12_000,
+        ),
+    )
+    encoded = serialization.canonical_context_pack_bytes(pack)
+
+    assert pack.budget.pack_bytes == len(encoded)
+    assert 10_000 <= len(encoded) < 12_000
+    assert len(str(pack.budget.pack_bytes)) == 5

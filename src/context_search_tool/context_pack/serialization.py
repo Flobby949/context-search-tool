@@ -129,6 +129,18 @@ def canonical_context_pack_bytes(
         _fail()
 
 
+def _context_pack_size(pack: ContextPack) -> int:
+    """Return canonical self-sized bytes before enforcing the pack ceiling."""
+    try:
+        normalized = _normalize_payload(_materialize_pack(pack))
+        _, encoded = _self_size_payload(normalized, enforce_limit=False)
+        return len(encoded)
+    except ContextPackError:
+        raise
+    except Exception:
+        _fail()
+
+
 def _materialize_pack(pack: ContextPack) -> dict[str, Any]:
     if type(pack) is not ContextPack:
         _fail()
@@ -557,7 +569,7 @@ def _validate_contract(payload: dict[str, Any]) -> None:
         or budget["included_excerpts"] != included_excerpts
         or budget["content_bytes"] != content_bytes
         or budget["truncated_item_count"] != truncated_item_count
-        or budget["omitted_item_count"] != len(payload["omissions"])
+        or budget["omitted_item_count"] < len(payload["omissions"])
         or len(items) > budget["max_items"]
         or included_excerpts
         > len(items) * budget["max_excerpts_per_item"]
@@ -581,6 +593,8 @@ def _validate_contract(payload: dict[str, Any]) -> None:
 
 def _self_size_payload(
     payload: dict[str, Any],
+    *,
+    enforce_limit: bool = True,
 ) -> tuple[dict[str, Any], bytes]:
     candidate = payload["budget"]["pack_bytes"]
     for _ in range(_MAX_SIZE_ITERATIONS):
@@ -594,7 +608,10 @@ def _self_size_payload(
         ).encode("utf-8")
         actual_size = len(encoded)
         if actual_size == candidate:
-            if actual_size > payload["budget"]["max_pack_bytes"]:
+            if (
+                enforce_limit
+                and actual_size > payload["budget"]["max_pack_bytes"]
+            ):
                 _fail()
             return payload, encoded
         candidate = actual_size
