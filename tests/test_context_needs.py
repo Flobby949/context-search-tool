@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from context_search_tool.context_pack.models import ContextCandidate, EvidenceNeed
+from context_search_tool.context_pack.models import (
+    ContextCandidate,
+    ContextExcerpt,
+    ContextItem,
+    EvidenceNeed,
+)
 from context_search_tool.context_pack import needs as context_needs
 from context_search_tool.context_pack.needs import (
     candidate_matches_need,
@@ -839,3 +844,53 @@ def test_missing_evidence_uses_fixed_bounded_public_templates() -> None:
             ),
         },
     ]
+
+
+def test_unrelated_truncated_excerpt_does_not_lower_ready_confidence() -> None:
+    required_need = EvidenceNeed(
+        id="need:configs_docs:postgresql",
+        category="configs_docs",
+        subject_terms=("PostgreSQL",),
+        required=True,
+        provenance="explicit_query",
+        matched_item_ids=("item:0",),
+    )
+    complete = ContextExcerpt(
+        start_line=1,
+        end_line=1,
+        content="PostgreSQL\n",
+        content_bytes=len("PostgreSQL\n".encode("utf-8")),
+        truncated=False,
+    )
+    unrelated = ContextExcerpt(
+        start_line=3,
+        end_line=3,
+        content="unrelated support",
+        content_bytes=len("unrelated support".encode("utf-8")),
+        truncated=True,
+    )
+    item = ContextItem(
+        id="item:0",
+        file_path="config/application.properties",
+        group="configs_docs",
+        role="runtime_config",
+        classification_basis="path",
+        source_kind="result",
+        retrieval_rank=0,
+        relevance_score=1.0,
+        reasons=("fixture",),
+        matched_need_ids=(required_need.id,),
+        excerpts=(complete, unrelated),
+    )
+
+    confidence = context_needs.derive_ready_confidence(
+        (required_need,),
+        (item,),
+        protected_present=True,
+    )
+
+    assert confidence.level == "high"
+    assert confidence.reasons == (
+        "all required evidence is selected",
+        "protected original-direct evidence is present",
+    )

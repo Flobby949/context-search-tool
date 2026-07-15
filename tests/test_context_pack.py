@@ -3155,6 +3155,41 @@ def _v2_ready_pack():
     )
 
 
+def _v2_two_item_pack():
+    pack = _v2_pack()
+    support_content = "support\n"
+    support_excerpt = replace(
+        pack.items[0].excerpts[0],
+        content=support_content,
+        content_bytes=len(support_content.encode("utf-8")),
+    )
+    support = replace(
+        pack.items[0],
+        id="item:1",
+        file_path="src/support.py",
+        reasons=("support",),
+        matched_need_ids=(),
+        excerpts=(support_excerpt,),
+    )
+    return replace(
+        pack,
+        items=(pack.items[0], support),
+        groups={
+            group: (("item:0", "item:1") if group == "implementations" else ())
+            for group in pack.groups
+        },
+        reading_order=("item:0", "item:1"),
+        budget=replace(
+            pack.budget,
+            included_items=2,
+            included_excerpts=2,
+            content_bytes=(
+                pack.budget.content_bytes + support_excerpt.content_bytes
+            ),
+        ),
+    )
+
+
 def test_v2_schema_constants_error_and_frozen_record_fields_are_exact() -> None:
     models, _, _ = _v2_modules()
     expected_fields = {
@@ -3870,6 +3905,42 @@ def test_v2_serialization_revalidates_every_semantic_need_item_link(
     )
 
 
+def test_v2_serialization_rejects_an_undeclared_visible_semantic_match() -> None:
+    models, _, serialization = _v2_modules()
+    pack = _v2_ready_pack()
+    item = replace(pack.items[0], matched_need_ids=())
+    need = replace(pack.evidence_needs[0], matched_item_ids=())
+    malformed = replace(
+        pack,
+        status="partial",
+        items=(item,),
+        evidence_needs=(need,),
+        missing_evidence=(
+            models.MissingEvidence(
+                need_id=need.id,
+                category=need.category,
+                required=True,
+                reason=(
+                    "required 核心 implementation evidence is missing "
+                    "from the bounded context"
+                ),
+            ),
+        ),
+        confidence=models.ReadinessConfidence(
+            level="low",
+            reasons=("required evidence is missing",),
+        ),
+    )
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        serialization.context_pack_payload(malformed)
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
+
+
 @pytest.mark.parametrize(
     ("level", "reasons", "recommended_missing"),
     [
@@ -4024,6 +4095,56 @@ def test_v2_serialization_requires_complete_consistent_item_references(
 
     with pytest.raises(models.ContextPackError) as exc_info:
         serialization.context_pack_payload(mutate(_v2_pack()))
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["reversed_reading_order", "reversed_group_order", "renamed_ids"],
+)
+def test_v2_serialization_requires_canonical_item_ids_and_order(
+    fault: str,
+) -> None:
+    models, _, serialization = _v2_modules()
+    pack = _v2_two_item_pack()
+    serialization.context_pack_payload(pack)
+
+    if fault == "reversed_reading_order":
+        malformed = replace(pack, reading_order=("item:1", "item:0"))
+    elif fault == "reversed_group_order":
+        malformed = replace(
+            pack,
+            groups={
+                **pack.groups,
+                "implementations": ("item:1", "item:0"),
+            },
+        )
+    else:
+        renamed_items = (
+            replace(pack.items[0], id="x"),
+            replace(pack.items[1], id="y"),
+        )
+        renamed_needs = (
+            replace(pack.evidence_needs[0], matched_item_ids=("x",)),
+            pack.evidence_needs[1],
+        )
+        malformed = replace(
+            pack,
+            items=renamed_items,
+            groups={
+                group: (("x", "y") if group == "implementations" else ())
+                for group in pack.groups
+            },
+            reading_order=("x", "y"),
+            evidence_needs=renamed_needs,
+        )
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        serialization.context_pack_payload(malformed)
 
     assert (exc_info.value.code, exc_info.value.message) == (
         "context_failed",
@@ -4223,6 +4344,38 @@ def test_v2_serialization_rejects_malformed_records_with_fixed_error(mutate) -> 
     assert exc_info.value.code == "context_failed"
     assert exc_info.value.message == "Context pack construction failed"
     assert str(exc_info.value) == "Context pack construction failed"
+
+
+@pytest.mark.parametrize("boundary", ["item", "omission"])
+@pytest.mark.parametrize(
+    "path",
+    ["/tmp/local-secret.py", "../outside.py", "a/./b.py", "C:\\secret.py"],
+)
+def test_v2_serialization_rejects_non_repo_relative_public_paths(
+    boundary: str,
+    path: str,
+) -> None:
+    models, _, serialization = _v2_modules()
+    pack = _v2_pack()
+    serialization.context_pack_payload(pack)
+    if boundary == "item":
+        malformed = replace(
+            pack,
+            items=(replace(pack.items[0], file_path=path),),
+        )
+    else:
+        malformed = replace(
+            pack,
+            omissions=(replace(pack.omissions[0], file_path=path),),
+        )
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        serialization.context_pack_payload(malformed)
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
 
 
 def test_v2_canonical_serialization_rejects_malformed_payload_keys() -> None:

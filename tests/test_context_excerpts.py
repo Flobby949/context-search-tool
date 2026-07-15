@@ -1957,6 +1957,67 @@ def test_builder_rejects_normalized_candidate_contract_violations(
 
 
 @pytest.mark.parametrize(
+    "path",
+    ["/tmp/local-secret.py", "../outside.py", "a/./b.py", "C:\\secret.py"],
+)
+def test_builder_rejects_non_repo_relative_candidate_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    bundle = _bundle(
+        "PostgreSQL configuration",
+        [_result("config/application.properties", "PostgreSQL")],
+    )
+    candidate = builder.normalize_candidates(bundle)[0]
+    malformed = replace(
+        candidate,
+        key=path,
+        file_path=path,
+        trusted_provenance_text="\n".join((path, *candidate.reasons)),
+    )
+    monkeypatch.setattr(
+        builder,
+        "normalize_candidates",
+        lambda _bundle: (malformed,),
+    )
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        builder.build_context_pack(bundle, _options(max_items=0))
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
+
+
+def test_builder_accepts_a_canonical_posix_relative_candidate_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle(
+        "PostgreSQL configuration",
+        [_result("config/application.properties", "PostgreSQL")],
+    )
+    candidate = builder.normalize_candidates(bundle)[0]
+    path = "config/nested/application.properties"
+    candidate = replace(
+        candidate,
+        key=path,
+        file_path=path,
+        trusted_provenance_text="\n".join((path, *candidate.reasons)),
+    )
+    monkeypatch.setattr(
+        builder,
+        "normalize_candidates",
+        lambda _bundle: (candidate,),
+    )
+
+    pack = builder.build_context_pack(bundle, _options(max_items=0))
+
+    assert pack.omissions == ()
+    assert pack.budget.omitted_item_count == 1
+
+
+@pytest.mark.parametrize(
     "internal_error",
     [
         RuntimeError("PRIVATE INTERNAL DETAIL"),

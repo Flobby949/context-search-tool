@@ -1301,6 +1301,9 @@ def _validate_candidates(candidates: tuple[ContextCandidate, ...]) -> None:
             or type(candidate.key) is not str
             or not candidate.key
             or candidate.key != candidate.file_path
+            or not serialization._repo_relative_path_is_canonical(
+                candidate.file_path
+            )
             or candidate.key in seen_keys
             or candidate.file_path in seen_paths
             or candidate.group not in CONTEXT_GROUPS

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Iterable, Mapping
 from context_search_tool.context_pack.models import (
     CONTEXT_GROUPS,
     ContextCandidate,
+    ContextExcerpt,
     ContextItem,
     EvidenceNeed,
     MissingEvidence,
@@ -316,19 +317,28 @@ def retained_item_matches_need(
     """Match one link against public fields and one retained excerpt at a time."""
     if item.group != need.category or not item.excerpts:
         return False
+    return any(
+        _retained_excerpt_matches_need(item, excerpt, need)
+        for excerpt in item.excerpts
+    )
+
+
+def _retained_excerpt_matches_need(
+    item: ContextItem,
+    excerpt: ContextExcerpt,
+    need: EvidenceNeed,
+) -> bool:
+    if item.group != need.category:
+        return False
     if not need.subject_terms:
         return True
-
     provenance_text = "\n".join((item.file_path, *item.reasons))
-    return any(
-        all(
-            _subject_matches_fields(
-                subject,
-                (item.file_path, provenance_text, excerpt.content),
-            )
-            for subject in need.subject_terms
+    return all(
+        _subject_matches_fields(
+            subject,
+            (item.file_path, provenance_text, excerpt.content),
         )
-        for excerpt in item.excerpts
+        for subject in need.subject_terms
     )
 
 
@@ -408,9 +418,18 @@ def derive_ready_confidence(
         None,
     )
     required_truncated = any(
-        any(need_by_id[need_id].required for need_id in item.matched_need_ids)
-        and any(excerpt.truncated for excerpt in item.excerpts)
+        excerpt.truncated
+        and any(
+            need_by_id[need_id].required
+            and _retained_excerpt_matches_need(
+                item,
+                excerpt,
+                need_by_id[need_id],
+            )
+            for need_id in item.matched_need_ids
+        )
         for item in items
+        for excerpt in item.excerpts
     )
     planner_material = any(
         need_by_id[need_id].provenance == "planner_supported"

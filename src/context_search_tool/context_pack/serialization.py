@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from math import isfinite
+from pathlib import PurePosixPath
 from typing import Any, NoReturn
 
 from context_search_tool.context_pack.models import (
@@ -171,6 +172,28 @@ def _role_is_valid(group: object, role: object) -> bool:
         type(group) is str
         and type(role) is str
         and role in _ROLES_BY_GROUP.get(group, ())
+    )
+
+
+def _repo_relative_path_is_canonical(value: object) -> bool:
+    if (
+        type(value) is not str
+        or not value
+        or "\\" in value
+        or "\x00" in value
+        or (
+            len(value) >= 2
+            and value[0].isalpha()
+            and value[1] == ":"
+        )
+    ):
+        return False
+    path = PurePosixPath(value)
+    return (
+        value not in {".", ".."}
+        and not path.is_absolute()
+        and ".." not in path.parts
+        and path.as_posix() == value
     )
 
 
@@ -422,6 +445,9 @@ def _normalize_item(value: Any) -> dict[str, Any]:
     source_kind = _closed_string(value["source_kind"], _SOURCE_KINDS)
     group = _closed_string(value["group"], frozenset(CONTEXT_GROUPS))
     role = _closed_string(value["role"], _ROLES_BY_GROUP[group])
+    file_path = _nonempty_string(value["file_path"])
+    if not _repo_relative_path_is_canonical(file_path):
+        _fail()
     score = value["relevance_score"]
     if source_kind == "result":
         if type(score) not in (int, float) or not isfinite(score):
@@ -448,7 +474,7 @@ def _normalize_item(value: Any) -> dict[str, Any]:
         _fail()
     return {
         "id": _nonempty_string(value["id"]),
-        "file_path": _nonempty_string(value["file_path"]),
+        "file_path": file_path,
         "group": group,
         "role": role,
         "classification_basis": _closed_string(
@@ -529,8 +555,11 @@ def _normalize_next_query(value: Any) -> dict[str, Any]:
 
 def _normalize_omission(value: Any) -> dict[str, Any]:
     _require_exact_keys(value, _OMISSION_KEYS)
+    file_path = _nonempty_string(value["file_path"])
+    if not _repo_relative_path_is_canonical(file_path):
+        _fail()
     return {
-        "file_path": _nonempty_string(value["file_path"]),
+        "file_path": file_path,
         "group": _closed_string(value["group"], frozenset(CONTEXT_GROUPS)),
         "reason": _nonempty_string(value["reason"]),
         "matched_need_ids": _string_list(value["matched_need_ids"]),
@@ -607,29 +636,16 @@ def _validate_contract(payload: dict[str, Any]) -> None:
     item_ids = [item["id"] for item in items]
     file_paths = [item["file_path"] for item in items]
     if (
-        len(item_ids) != len(set(item_ids))
+        item_ids != [f"item:{index}" for index in range(len(items))]
         or len(file_paths) != len(set(file_paths))
     ):
         _fail()
     item_id_set = set(item_ids)
-    grouped_item_ids = [
-        item_id
+    if any(
+        payload["groups"][group]
+        != [item["id"] for item in items if item["group"] == group]
         for group in CONTEXT_GROUPS
-        for item_id in payload["groups"][group]
-    ]
-    if (
-        len(grouped_item_ids) != len(item_ids)
-        or set(grouped_item_ids) != item_id_set
-        or any(
-            item["id"] not in payload["groups"][item["group"]]
-            for item in items
-        )
-    ):
-        _fail()
-    if (
-        len(payload["reading_order"]) != len(item_ids)
-        or set(payload["reading_order"]) != item_id_set
-    ):
+    ) or payload["reading_order"] != item_ids:
         _fail()
 
     needs = payload["evidence_needs"]
@@ -667,15 +683,17 @@ def _validate_contract(payload: dict[str, Any]) -> None:
         need["id"]: _semantic_need(need)
         for need in needs
     }
-    if any(
-        not retained_item_matches_need(
-            semantic_items[item["id"]],
-            semantic_needs[need_id],
-        )
-        for item in items
-        for need_id in item["matched_need_ids"]
-    ):
-        _fail()
+    for item in items:
+        expected_need_ids = [
+            need["id"]
+            for need in needs
+            if retained_item_matches_need(
+                semantic_items[item["id"]],
+                semantic_needs[need["id"]],
+            )
+        ]
+        if item["matched_need_ids"] != expected_need_ids:
+            _fail()
 
     missing = payload["missing_evidence"]
     unmatched_needs = [need for need in needs if not need["matched_item_ids"]]
@@ -789,6 +807,8 @@ def _validate_contract(payload: dict[str, Any]) -> None:
             _fail()
     else:
         protected_present = protected_confidence_claim(confidence["reasons"])
+        # score_parts are intentionally private: serialization checks only the
+        # public result-backed claim; the builder owns evidence_priority truth.
         if (
             not items
             or required_missing
