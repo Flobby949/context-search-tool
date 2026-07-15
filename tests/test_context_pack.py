@@ -32,6 +32,7 @@ from context_search_tool.context_pack import (
 )
 from context_search_tool.context_pack import builder as context_pack_v2_builder
 from context_search_tool.context_pack import models as context_pack_v2_models
+from context_search_tool.context_pack import roles as context_pack_v2_roles
 from context_search_tool.context_pack import serialization as context_pack_v2_serialization
 from context_search_tool.models import (
     EvidenceAnchor,
@@ -2629,6 +2630,387 @@ def _v2_modules():
         context_pack_v2_builder,
         context_pack_v2_serialization,
     )
+
+
+def _v2_result(
+    path: str,
+    *,
+    content: str = "source",
+    score: float = 0.75,
+    score_parts: dict[str, float] | None = None,
+    reasons: list[str] | None = None,
+    spans: tuple[object, ...] = (),
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        file_path=Path(path),
+        start_line=3,
+        end_line=8,
+        content=content,
+        score=score,
+        score_parts=score_parts if score_parts is not None else {},
+        reasons=reasons if reasons is not None else ["fixture result"],
+        spans=spans,
+    )
+
+
+def _v2_anchor(
+    path: str,
+    kind: str,
+    *,
+    content: str = "anchor",
+    score_parts: dict[str, float] | None = None,
+    reasons: list[str] | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        file_path=Path(path),
+        start_line=10,
+        end_line=12,
+        content=content,
+        score=0.5,
+        score_parts=score_parts if score_parts is not None else {},
+        reasons=reasons if reasons is not None else ["fixture anchor"],
+        anchor_kind=kind,
+    )
+
+
+def _v2_bundle(
+    results: list[SimpleNamespace] | None = None,
+    anchors: list[SimpleNamespace] | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        results=list(results or ()),
+        evidence_anchors=list(anchors or ()),
+    )
+
+
+def test_v2_normalize_result_preserves_bounded_public_candidate_metadata() -> None:
+    score_parts = _DictSubclass({"evidence_priority": 0, "semantic": 0.75})
+    spans = (object(), object())
+    raw_result = _v2_result(
+        "src/main/java/com/example/Owner.java",
+        content="@Entity\npublic class Owner {}",
+        score_parts=score_parts,
+        reasons=["direct", "direct", "semantic", "path", "signal", "ignored"],
+        spans=spans,
+    )
+
+    candidates = context_pack_v2_roles.normalize_candidates(
+        _v2_bundle([raw_result])
+    )
+
+    assert candidates == (
+        context_pack_v2_models.ContextCandidate(
+            key="src/main/java/com/example/Owner.java",
+            file_path="src/main/java/com/example/Owner.java",
+            start_line=3,
+            end_line=8,
+            content="@Entity\npublic class Owner {}",
+            group="related_types",
+            role="data_type",
+            classification_basis="content",
+            source_kind="result",
+            retrieval_rank=0,
+            source_order=0,
+            relevance_score=0.75,
+            reasons=("direct", "semantic", "path", "signal"),
+            score_parts={"evidence_priority": 0, "semantic": 0.75},
+            spans=spans,
+            trusted_provenance_text=(
+                "src/main/java/com/example/Owner.java\n"
+                "direct\nsemantic\npath\nsignal"
+            ),
+            protected_direct=True,
+        ),
+    )
+    assert candidates[0].score_parts is not score_parts
+
+
+@pytest.mark.parametrize(
+    ("path", "content", "expected"),
+    [
+        (
+            "src/main/controller/AppController.java",
+            "class AppController {}",
+            ("entrypoints", "entrypoint", "path"),
+        ),
+        (
+            "src/main/service/impl/AppServiceImpl.java",
+            "class AppServiceImpl {}",
+            ("implementations", "service_impl", "path"),
+        ),
+        (
+            "src/main/service/AppService.java",
+            "interface AppService {}",
+            ("related_types", "service_interface", "content"),
+        ),
+        (
+            "src/main/resources/application.yml",
+            "spring.main.banner-mode=off",
+            ("configs_docs", "runtime_config", "path"),
+        ),
+        (
+            "tests/test_app.py",
+            "def test_app(): pass",
+            ("tests", "test", "path"),
+        ),
+        (
+            "src/plain.py",
+            "source",
+            ("supporting", "source", "fallback"),
+        ),
+    ],
+)
+def test_v2_normalize_maps_shared_roles_to_closed_groups(
+    path: str,
+    content: str,
+    expected: tuple[str, str, str],
+) -> None:
+    candidate = context_pack_v2_roles.normalize_candidates(
+        _v2_bundle([_v2_result(path, content=content)])
+    )[0]
+
+    assert (
+        candidate.group,
+        candidate.role,
+        candidate.classification_basis,
+    ) == expected
+    assert candidate.group in context_pack_v2_models.CONTEXT_GROUPS
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("src/router/index.ts", ("entrypoints", "route_config", "path")),
+        (
+            "src/components/Widget.vue",
+            ("implementations", "shared_component", "path"),
+        ),
+        ("src/App.tsx", ("entrypoints", "layout_component", "path")),
+        ("src/utils/format.ts", ("implementations", "utility", "path")),
+    ],
+)
+def test_v2_normalize_preserves_v1_frontend_precedence(
+    path: str,
+    expected: tuple[str, str, str],
+) -> None:
+    candidate = context_pack_v2_roles.normalize_candidates(
+        _v2_bundle([_v2_result(path)])
+    )[0]
+
+    assert (
+        candidate.group,
+        candidate.role,
+        candidate.classification_basis,
+    ) == expected
+
+
+@pytest.mark.parametrize(
+    ("score_parts", "expected"),
+    [
+        ({"evidence_priority": False}, False),
+        ({"evidence_priority": True}, False),
+        ({"evidence_priority": 0}, True),
+        ({"evidence_priority": 0.0}, True),
+        ({"evidence_priority": 1}, False),
+        ({}, False),
+    ],
+)
+def test_v2_protected_direct_requires_non_bool_numeric_zero(
+    score_parts: dict[str, float],
+    expected: bool,
+) -> None:
+    candidate = context_pack_v2_roles.normalize_candidates(
+        _v2_bundle([_v2_result("src/plain.py", score_parts=score_parts)])
+    )[0]
+
+    assert candidate.protected_direct is expected
+
+
+def test_v2_anchor_uses_shared_classification_before_bounded_kind_fallback() -> None:
+    candidates = context_pack_v2_roles.normalize_candidates(
+        _v2_bundle(
+            anchors=[
+                _v2_anchor(
+                    "src/main/resources/application.yml",
+                    "readme",
+                    score_parts={"anchor": 1.0},
+                ),
+                _v2_anchor("evidence/readme.bin", "readme"),
+                _v2_anchor("evidence/risks.bin", "risks"),
+                _v2_anchor("evidence/pom.bin", "pom"),
+                _v2_anchor("evidence/other.bin", "other"),
+                _v2_anchor(
+                    "src/main/java/com/example/Owner.java",
+                    "other",
+                    content="@Entity\npublic class Owner {}",
+                ),
+            ]
+        )
+    )
+
+    assert [
+        (
+            candidate.group,
+            candidate.role,
+            candidate.classification_basis,
+            candidate.source_kind,
+            candidate.retrieval_rank,
+            candidate.source_order,
+            candidate.relevance_score,
+            candidate.spans,
+            candidate.protected_direct,
+        )
+        for candidate in candidates
+    ] == [
+        ("configs_docs", "runtime_config", "path", "evidence_anchor", None, 0, None, (), False),
+        ("configs_docs", "readme", "fallback", "evidence_anchor", None, 1, None, (), False),
+        ("configs_docs", "risks", "fallback", "evidence_anchor", None, 2, None, (), False),
+        ("configs_docs", "pom", "fallback", "evidence_anchor", None, 3, None, (), False),
+        ("supporting", "evidence_anchor", "fallback", "evidence_anchor", None, 4, None, (), False),
+        ("related_types", "data_type", "content", "evidence_anchor", None, 5, None, (), False),
+    ]
+    assert candidates[0].score_parts == {"anchor": 1.0}
+
+
+def test_v2_normalize_deduplicates_paths_and_promotes_only_fallback_result_role() -> None:
+    first_result = _v2_result(
+        "src/main/java/com/example/Owner.java",
+        content="public class Owner {}",
+        reasons=["result reason", "shared"],
+        spans=("result span",),
+    )
+    duplicate_result = _v2_result(
+        "src/main/java/com/example/Owner.java",
+        content="SECOND RESULT CONTENT",
+        reasons=["shared", "duplicate result"],
+    )
+    promoting_anchor = _v2_anchor(
+        "src/main/java/com/example/Owner.java",
+        "other",
+        content="@Entity\npublic class Owner {}",
+        reasons=["anchor reason", "ignored fifth"],
+    )
+    service_result = _v2_result(
+        "src/main/java/com/example/service/AppService.java",
+        content="class AppService {}",
+        reasons=["service result"],
+    )
+    non_promoting_anchor = _v2_anchor(
+        "src/main/java/com/example/service/AppService.java",
+        "readme",
+        content="@Entity\npublic class AppService {}",
+        reasons=["service anchor"],
+    )
+
+    candidates = context_pack_v2_roles.normalize_candidates(
+        _v2_bundle(
+            [first_result, duplicate_result, service_result],
+            [promoting_anchor, non_promoting_anchor],
+        )
+    )
+
+    assert len(candidates) == 2
+    promoted, service = candidates
+    assert (
+        promoted.source_kind,
+        promoted.content,
+        promoted.retrieval_rank,
+        promoted.relevance_score,
+        promoted.spans,
+        promoted.group,
+        promoted.role,
+        promoted.classification_basis,
+        promoted.reasons,
+    ) == (
+        "result",
+        "public class Owner {}",
+        0,
+        0.75,
+        ("result span",),
+        "related_types",
+        "data_type",
+        "content",
+        ("result reason", "shared", "duplicate result", "anchor reason"),
+    )
+    assert promoted.trusted_provenance_text.endswith(
+        "result reason\nshared\nduplicate result\nanchor reason"
+    )
+    assert (service.group, service.role, service.classification_basis) == (
+        "implementations",
+        "service",
+        "path",
+    )
+    assert service.reasons == ("service result", "service anchor")
+
+
+def test_v2_duplicate_results_preserve_first_result_classification() -> None:
+    candidates = context_pack_v2_roles.normalize_candidates(
+        _v2_bundle(
+            [
+                _v2_result(
+                    "src/main/java/com/example/Owner.java",
+                    content="public class Owner {}",
+                ),
+                _v2_result(
+                    "src/main/java/com/example/Owner.java",
+                    content="@Entity\npublic class Owner {}",
+                ),
+            ]
+        )
+    )
+
+    assert len(candidates) == 1
+    assert (
+        candidates[0].group,
+        candidates[0].role,
+        candidates[0].classification_basis,
+    ) == ("supporting", "source", "fallback")
+
+
+def test_v2_normalize_orders_results_then_unique_anchors_with_case_sensitive_keys() -> None:
+    candidates = context_pack_v2_roles.normalize_candidates(
+        _v2_bundle(
+            [
+                _v2_result("src/File.py"),
+                _v2_result("src/file.py"),
+            ],
+            [
+                _v2_anchor("src/File.py", "other"),
+                _v2_anchor("README.md", "readme"),
+            ],
+        )
+    )
+
+    assert [candidate.key for candidate in candidates] == [
+        "src/File.py",
+        "src/file.py",
+        "README.md",
+    ]
+    assert [candidate.file_path for candidate in candidates] == [
+        "src/File.py",
+        "src/file.py",
+        "README.md",
+    ]
+    assert [candidate.source_order for candidate in candidates] == [0, 1, 1]
+    assert [candidate.retrieval_rank for candidate in candidates] == [0, 1, None]
+
+
+def test_v2_normalize_candidates_performs_no_path_io(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_io(*args: object, **kwargs: object) -> None:
+        pytest.fail("candidate normalization must not perform path I/O")
+
+    monkeypatch.setattr(Path, "open", fail_io)
+    monkeypatch.setattr(Path, "read_text", fail_io)
+    bundle = _v2_bundle(
+        [_v2_result("src/plain.py")],
+        [_v2_anchor("README.md", "readme")],
+    )
+
+    candidates = context_pack_v2_roles.normalize_candidates(bundle)
+
+    assert len(candidates) == 2
 
 
 def _v2_pack(content: str = "核心实现\n"):
