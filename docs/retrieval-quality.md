@@ -156,7 +156,7 @@ PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality ru
 Preparation validates the catalog URL, 40-character pin and portable checkout
 name, clones to a sibling temporary directory, checks out detached HEAD, and
 records provenance only after verifying exact HEAD/origin and a clean tracked
-worktree. Repeating it is idempotent. It refuses unrelated, symlinked, dirty,
+worktree. Repeating it is idempotent. It refuses unrelated, symlinked, tracked-dirty,
 wrong-remote or wrong-commit state. `quality run --profile p2_real_context`
 accepts only that prepared checkout and never performs implicit network access,
 environment fallback, or a skip on invalid state.
