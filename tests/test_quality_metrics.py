@@ -1,3 +1,4 @@
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -193,10 +194,11 @@ def _context_pack(
 
 
 def _built_context_pack(query: str, *, matched: bool) -> ContextPack:
+    subject = query.removesuffix(" config")
     results = (
         [
             _result(
-                "config/application-postgresql.properties",
+                f"config/application-{subject}.properties",
                 reasons=["fixture"],
             )
         ]
@@ -207,7 +209,7 @@ def _built_context_pack(query: str, *, matched: bool) -> ContextPack:
         results[0] = replace(
             results[0],
             end_line=1,
-            content="postgresql datasource config",
+            content=f"{subject} datasource config",
         )
     options = resolve_context_pack_options(
         DEFAULT_CONFIG,
@@ -516,6 +518,49 @@ def test_expected_need_match_uses_public_subject_and_matched_item_ids(
     assert evaluation.metrics["required_need_count"] == 1
     assert evaluation.metrics["matched_required_need_count"] == int(matched)
     assert evaluation.metrics["evidence_need_completeness"] == expected_completeness
+
+
+def test_expected_need_match_uses_nfc_canonical_equivalence() -> None:
+    evaluation = quality_metrics.evaluate_context_pack(
+        QualityCase(
+            case_id="unicode-need-match",
+            query="café config",
+            mode="context_pack",
+            expected_need_matches=(
+                quality_cases.ExpectedNeedMatch(
+                    category="configs_docs",
+                    subject="cafe\u0301",
+                    required=True,
+                    matched=True,
+                ),
+            ),
+        ),
+        _built_context_pack("café config", matched=True),
+        _raw_evaluation(),
+    )
+
+    assert evaluation.failures == []
+
+
+def test_programmatic_unsafe_regex_is_rejected_before_runtime_search() -> None:
+    started = time.perf_counter()
+
+    with pytest.raises(
+        ValueError,
+        match="unsupported or unsafe regular expression syntax",
+    ):
+        quality_metrics.evaluate_context_pack(
+            QualityCase(
+                case_id="unsafe-runtime-regex",
+                query="postgresql config",
+                mode="context_pack",
+                forbidden_next_query_patterns=("(a+)+$",),
+            ),
+            _built_context_pack("postgresql config", matched=False),
+            _raw_evaluation(),
+        )
+
+    assert time.perf_counter() - started < 0.5
 
 
 def test_v2_numeric_metrics_aggregate_while_null_context_completeness_is_excluded() -> None:

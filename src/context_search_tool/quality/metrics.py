@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -15,6 +14,8 @@ from context_search_tool.quality.cases import (
     Gate,
     Matcher,
     QualityCase,
+    _compile_safe_forbidden_next_query_pattern,
+    _normalize_public_subject,
     normalize_result_path,
 )
 
@@ -227,7 +228,9 @@ def evaluate_context_pack(
     actual_need_matches = {
         (
             need["category"].casefold(),
-            " ".join(" ".join(need["subject_terms"]).split()).casefold(),
+            _normalize_public_subject(
+                " ".join(need["subject_terms"])
+            ).casefold(),
             need["required"],
             bool(need["matched_item_ids"]),
         )
@@ -236,7 +239,7 @@ def evaluate_context_pack(
     for expected in case.expected_need_matches:
         expected_key = (
             expected.category.casefold(),
-            " ".join(expected.subject.split()).casefold(),
+            _normalize_public_subject(expected.subject).casefold(),
             expected.required,
             expected.matched,
         )
@@ -271,8 +274,9 @@ def evaluate_context_pack(
         )
 
     for pattern in case.forbidden_next_query_patterns:
+        compiled_pattern = _compile_safe_forbidden_next_query_pattern(pattern)
         if any(
-            re.search(pattern, query["query"], re.IGNORECASE)
+            compiled_pattern.search(query["query"])
             for query in payload["next_queries"]
         ):
             failures.append(

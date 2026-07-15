@@ -240,6 +240,30 @@ def test_context_pack_case_parses_typed_expectations(tmp_path: Path) -> None:
     )
 
 
+def test_expected_need_subject_is_nfc_normalized_before_length_validation(
+    tmp_path: Path,
+) -> None:
+    decomposed = "e\u0301" * 64
+
+    case = _load_canonical_case(
+        tmp_path,
+        {
+            "mode": "context_pack",
+            "expected_need_matches": [
+                {
+                    "category": "configs_docs",
+                    "subject": decomposed,
+                    "required": True,
+                    "matched": True,
+                }
+            ],
+        },
+    )
+
+    assert case.expected_need_matches[0].subject == "é" * 64
+    assert len(case.expected_need_matches[0].subject) == 64
+
+
 def test_case_without_mode_keeps_results_defaults(tmp_path: Path) -> None:
     case = _load_canonical_case(tmp_path)
 
@@ -395,7 +419,20 @@ def test_maximum_truncated_items_requires_a_non_negative_integer(
         )
 
 
-@pytest.mark.parametrize("pattern", ["", "   ", "x" * 161, "["])
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "",
+        "   ",
+        "x" * 161,
+        "[",
+        "(a+)+$",
+        "(a|aa)+$",
+        r"(a)\1",
+        "(?=a)a",
+        r"\s+\s+$",
+    ],
+)
 def test_forbidden_next_query_patterns_are_bounded_valid_regexes(
     tmp_path: Path,
     pattern: str,
@@ -408,6 +445,28 @@ def test_forbidden_next_query_patterns_are_bounded_valid_regexes(
                 "forbidden_next_query_patterns": [pattern],
             },
         )
+
+
+def test_forbidden_next_query_patterns_accept_documented_safe_subset(
+    tmp_path: Path,
+) -> None:
+    case = _load_canonical_case(
+        tmp_path,
+        {
+            "mode": "context_pack",
+            "forbidden_next_query_patterns": [
+                "/oups",
+                "GET /owners dto",
+                r"POSTGRESQL\s+CONFIGURATION",
+            ],
+        },
+    )
+
+    assert case.forbidden_next_query_patterns == (
+        "/oups",
+        "GET /owners dto",
+        r"POSTGRESQL\s+CONFIGURATION",
+    )
 
 
 def test_informational_measurement_fields_parse(tmp_path: Path) -> None:

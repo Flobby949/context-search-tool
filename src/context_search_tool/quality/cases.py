@@ -3,6 +3,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import re
+import unicodedata
 from dataclasses import dataclass, field, fields, replace
 from enum import Enum
 from pathlib import Path
@@ -39,6 +40,8 @@ _CONTEXT_ONLY_FIELDS = {
     "forbidden_next_query_patterns",
 }
 _MAX_FORBIDDEN_NEXT_QUERY_PATTERN_CODEPOINTS = 160
+_UNSAFE_REGEX_METACHARS = frozenset(".^$*+?{}[]|()")
+_SAFE_LITERAL_ESCAPES = frozenset(".^$*+?{}[]\\|()")
 
 
 @dataclass(frozen=True)
@@ -704,10 +707,10 @@ def _parse_expected_need_matches(raw: Any) -> tuple[ExpectedNeedMatch, ...]:
         if category not in CONTEXT_GROUPS:
             raise ValueError(f"{label}.category is invalid")
         subject_value = _require_str(item.get("subject"), f"{label}.subject")
-        subject = " ".join(subject_value.split())
+        subject = _normalize_public_subject(subject_value)
         if not subject or len(subject) > 64:
             raise ValueError(
-                f"{label}.subject must contain 1 to 64 code points"
+                f"{label}.subject must contain 1 to 64 NFC code points"
             )
         required = item.get("required")
         if type(required) is not bool:
@@ -726,23 +729,71 @@ def _parse_expected_need_matches(raw: Any) -> tuple[ExpectedNeedMatch, ...]:
     return tuple(parsed)
 
 
+def _normalize_public_subject(value: str) -> str:
+    return unicodedata.normalize("NFC", " ".join(value.split()))
+
+
 def _parse_forbidden_next_query_patterns(raw: Any) -> tuple[str, ...]:
     values = _require_sequence(raw, "forbidden_next_query_patterns")
     patterns: list[str] = []
     for index, value in enumerate(values):
         label = f"forbidden_next_query_patterns[{index}]"
-        pattern = _require_str(value, label)
-        if (
-            not pattern.strip()
-            or len(pattern) > _MAX_FORBIDDEN_NEXT_QUERY_PATTERN_CODEPOINTS
-        ):
-            raise ValueError(f"{label} must contain 1 to 160 code points")
-        try:
-            re.compile(pattern, re.IGNORECASE)
-        except re.error:
-            raise ValueError(f"{label} must be a valid regular expression") from None
-        patterns.append(pattern)
+        compiled = _compile_safe_forbidden_next_query_pattern(value, label)
+        patterns.append(compiled.pattern)
     return tuple(patterns)
+
+
+def _compile_safe_forbidden_next_query_pattern(
+    raw: Any,
+    label: str = "forbidden_next_query_patterns",
+) -> re.Pattern[str]:
+    pattern = _require_str(raw, label)
+    if (
+        not pattern.strip()
+        or len(pattern) > _MAX_FORBIDDEN_NEXT_QUERY_PATTERN_CODEPOINTS
+    ):
+        raise ValueError(f"{label} must contain 1 to 160 code points")
+
+    repeated_whitespace = False
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char != "\\":
+            if char in _UNSAFE_REGEX_METACHARS:
+                raise ValueError(
+                    f"{label} uses unsupported or unsafe regular expression syntax"
+                )
+            index += 1
+            continue
+
+        if index + 1 == len(pattern):
+            raise ValueError(
+                f"{label} uses unsupported or unsafe regular expression syntax"
+            )
+        escaped = pattern[index + 1]
+        if escaped == "s":
+            index += 2
+            if index < len(pattern) and pattern[index] == "+":
+                if repeated_whitespace:
+                    raise ValueError(
+                        f"{label} uses unsupported or unsafe regular expression syntax"
+                    )
+                repeated_whitespace = True
+                index += 1
+            continue
+        if escaped in {"t", "n", "r"} or escaped in _SAFE_LITERAL_ESCAPES:
+            index += 2
+            continue
+        raise ValueError(
+            f"{label} uses unsupported or unsafe regular expression syntax"
+        )
+
+    try:
+        return re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        raise ValueError(
+            f"{label} uses unsupported or unsafe regular expression syntax"
+        ) from None
 
 
 def _parse_context_groups(raw: Any) -> dict[str, tuple[Matcher, ...]]:
