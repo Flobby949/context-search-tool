@@ -10958,8 +10958,9 @@ def test_expanded_result_records_ranked_chunk_span_and_ordered_sources(
     )
     score_parts = {
         "relation": 0.1,
-        "anchor_expansion": 0.2,
-        "planner_hint": 0.3,
+        "anchored_relation": 0.2,
+        "same_file_anchor": 0.2,
+        "planner_lexical": 0.3,
         "signal": 0.4,
         "planner_semantic": 0.5,
         "semantic": 0.6,
@@ -11008,6 +11009,45 @@ def test_expanded_result_records_ranked_chunk_span_and_ordered_sources(
             ),
         ),
     )
+
+
+@pytest.mark.parametrize(
+    ("score_parts", "expected"),
+    [
+        ({"planner_lexical": 0.1}, ("planner_hint",)),
+        ({"planner_path_symbol": 0.1}, ("planner_hint",)),
+        ({"planner_signal": 0.1}, ("planner_hint",)),
+        ({"planner_hint": 0.1}, ("planner_hint",)),
+        ({"anchored_relation": 0.1}, ("anchor_expansion",)),
+        ({"same_file_anchor": 0.1}, ("anchor_expansion",)),
+        ({"directory_anchor": 0.1}, ("anchor_expansion",)),
+        ({"anchor_expansion": 0.1}, ("anchor_expansion",)),
+        (
+            {
+                "planner_signal": 0.3,
+                "directory_anchor": 0.2,
+                "relation": 0.1,
+            },
+            ("planner_hint", "anchor_expansion", "relation"),
+        ),
+        (
+            {"anchored_relation": 0.2, "same_file_anchor": 0.2},
+            ("anchor_expansion",),
+        ),
+        (
+            {"planner_lexical": 0.0, "directory_anchor": -0.1},
+            ("ranked",),
+        ),
+    ],
+)
+def test_span_sources_canonicalize_real_producer_keys_without_mutation(
+    score_parts: dict[str, float],
+    expected: tuple[str, ...],
+) -> None:
+    original = dict(score_parts)
+
+    assert retrieval._span_sources(score_parts) == expected
+    assert score_parts == original
 
 
 def test_overlapping_results_preserve_distinct_spans_in_normalized_order(

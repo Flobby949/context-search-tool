@@ -160,6 +160,26 @@ _SPAN_SOURCE_KEYS = (
     "anchor_expansion",
     "relation",
 )
+_SPAN_SOURCE_SCORE_KEYS = {
+    "path_symbol": ("path_symbol",),
+    "lexical": ("lexical",),
+    "semantic": ("semantic",),
+    "planner_semantic": ("planner_semantic",),
+    "signal": ("signal",),
+    "planner_hint": (
+        "planner_hint",
+        "planner_lexical",
+        "planner_path_symbol",
+        "planner_signal",
+    ),
+    "anchor_expansion": (
+        "anchor_expansion",
+        "anchored_relation",
+        "same_file_anchor",
+        "directory_anchor",
+    ),
+    "relation": ("relation",),
+}
 
 
 @dataclass(frozen=True)
@@ -2043,7 +2063,12 @@ def _merge_expanded_result(
 
 def _span_sources(score_parts: dict[str, float]) -> tuple[str, ...]:
     sources = tuple(
-        key for key in _SPAN_SOURCE_KEYS if score_parts.get(key, 0.0) > 0.0
+        source
+        for source in _SPAN_SOURCE_KEYS
+        if any(
+            score_parts.get(score_key, 0.0) > 0.0
+            for score_key in _SPAN_SOURCE_SCORE_KEYS[source]
+        )
     )
     return sources or ("ranked",)
 
