@@ -215,9 +215,22 @@ cst quality run tests/fixtures/retrieval_quality/queries.json \
 
 On 2026-07-15 at implementation commit
 `9dd8254e30bb4fc2e8348c527fe3642e52366ca5`, no external smoke repository
-variables were set. The current command selected 22 cases, executed and passed
-the six committed `program_tool` cases, and explicitly skipped 16 missing-repo
-cases. This is a partial dependency result, not a verified 22-case smoke pass.
+variables were set (`CST_SMOKE_REPOS_DIR`, `CST_SMOKE_IMAGEBED_REPO`,
+`CST_SMOKE_ENV_CHANGE_REPO`, `CST_SMOKE_INVESTMENT_ASSISTANT_REPO`, and
+`CST_SMOKE_PROGRAM_TOOL_REPO` were all unset). The exact command was:
+
+```bash
+PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality run \
+  tests/fixtures/retrieval_quality/queries.json \
+  --profile smoke \
+  --output .quality/real-projects/smoke-p2-1-final.json \
+  --markdown .quality/real-projects/smoke-p2-1-final.md
+```
+
+`smoke-p2-1-final.json` selected 22 cases, executed and passed the six committed
+`program_tool` cases, and explicitly skipped 16 missing-repo cases, with zero
+failures and errors. This is a partial dependency result, not a verified 22-case
+smoke pass.
 
 ## Baseline And Candidate Comparison
 
