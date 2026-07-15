@@ -129,6 +129,15 @@ EXPECTED_PROFILE_CONFIGS = {
         },
         "query_planner": {"enabled": False},
     },
+    "p2_real_context": {
+        "retrieval": {"final_top_k": 12},
+        "embedding": {
+            "provider": "hash",
+            "model": "hash-v1",
+            "dimensions": 384,
+        },
+        "query_planner": {"enabled": False},
+    },
 }
 
 EXPECTED_REPO_WIRING = (
@@ -227,6 +236,14 @@ EXPECTED_REPO_WIRING = (
         "CST_QUALITY_AB_REPO",
         "embedding-ab",
         "tests/fixtures/real_projects/embedding_ab",
+        {},
+    ),
+    (
+        "spring_petclinic",
+        ("p2_real_context",),
+        "",
+        "",
+        "",
         {},
     ),
 )
@@ -807,6 +824,237 @@ EXPECTED_NEW_CASES = {
             "p1_hybrid_bge": {"planner_status": "ok"},
         },
     },
+    "spring_petclinic/owner-registration-validation-flow": {
+        **EXPECTED_NEW_CASE_DEFAULTS,
+        "repo_key": "spring_petclinic",
+        "case_id": "owner-registration-validation-flow",
+        "query": "owner registration form validation flow",
+        "profiles": ("p2_real_context",),
+        "tags": ("p2", "real_project", "java_spring", "validation"),
+        "mode": "context_pack",
+        "gate": Gate.REQUIRED,
+        "expected_top_k": (
+            {
+                "path": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java",
+                "top_k": 12,
+            },
+            {
+                "path": "src/main/java/org/springframework/samples/petclinic/owner/Owner.java",
+                "top_k": 12,
+            },
+        ),
+        "expected_any_top_k": (),
+        "preferred_rank": (),
+        "expected_context_groups": {
+            "entrypoints": (
+                {
+                    "path": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
+                },
+            ),
+            "related_types": (
+                {
+                    "path": "src/main/java/org/springframework/samples/petclinic/owner/Owner.java"
+                },
+            ),
+        },
+        "expected_pack_status": "ready",
+        "minimum_context_confidence": "medium",
+        "expected_need_matches": (
+            {
+                "category": "entrypoints",
+                "subject": "owner",
+                "required": True,
+                "matched": True,
+            },
+            {
+                "category": "implementations",
+                "subject": "owner",
+                "required": False,
+                "matched": True,
+            },
+            {
+                "category": "tests",
+                "subject": "owner",
+                "required": False,
+                "matched": False,
+            },
+        ),
+        "maximum_pack_bytes": 65_536,
+        "maximum_truncated_items": 4,
+        "forbidden_next_query_patterns": ("/oups", "owner DTO"),
+    },
+    "spring_petclinic/owner-controller-registration-tests": {
+        **EXPECTED_NEW_CASE_DEFAULTS,
+        "repo_key": "spring_petclinic",
+        "case_id": "owner-controller-registration-tests",
+        "query": "OwnerController tests for owner registration validation",
+        "profiles": ("p2_real_context",),
+        "tags": ("p2", "real_project", "java_spring", "test"),
+        "mode": "context_pack",
+        "gate": Gate.REQUIRED,
+        "expected_top_k": (
+            {
+                "path": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java",
+                "top_k": 12,
+            },
+            {
+                "path": "src/test/java/org/springframework/samples/petclinic/owner/OwnerControllerTests.java",
+                "top_k": 12,
+            },
+        ),
+        "expected_any_top_k": (),
+        "preferred_rank": (),
+        "expected_context_groups": {
+            "entrypoints": (
+                {
+                    "path": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
+                },
+            ),
+            "tests": (
+                {
+                    "path": "src/test/java/org/springframework/samples/petclinic/owner/OwnerControllerTests.java"
+                },
+            ),
+        },
+        "expected_pack_status": "ready",
+        "minimum_context_confidence": "medium",
+        "expected_need_matches": (
+            {
+                "category": "entrypoints",
+                "subject": "OwnerController",
+                "required": True,
+                "matched": True,
+            },
+            {
+                "category": "tests",
+                "subject": "OwnerController",
+                "required": True,
+                "matched": True,
+            },
+            {
+                "category": "implementations",
+                "subject": "OwnerController",
+                "required": False,
+                "matched": False,
+            },
+        ),
+        "maximum_pack_bytes": 65_536,
+        "maximum_truncated_items": 4,
+        "forbidden_next_query_patterns": ("/oups", "owner DTO"),
+    },
+    "spring_petclinic/owner-details-pets-visits": {
+        **EXPECTED_NEW_CASE_DEFAULTS,
+        "repo_key": "spring_petclinic",
+        "case_id": "owner-details-pets-visits",
+        "query": "宠物主人详情页如何加载宠物和就诊记录",
+        "profiles": ("p2_real_context",),
+        "tags": ("p2", "real_project", "java_spring", "localized_cjk"),
+        "mode": "context_pack",
+        "gate": Gate.REQUIRED,
+        "expected_top_k": (
+            {
+                "path": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java",
+                "top_k": 12,
+            },
+        ),
+        "expected_any_top_k": (),
+        "preferred_rank": (),
+        "expected_context_groups": {
+            "entrypoints": (
+                {
+                    "path": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
+                },
+            ),
+        },
+        "expected_pack_status": "partial",
+        "minimum_context_confidence": "low",
+        "expected_need_matches": (
+            {
+                "category": "entrypoints",
+                "subject": "宠物主人详情页",
+                "required": True,
+                "matched": False,
+            },
+            {
+                "category": "implementations",
+                "subject": "宠物主人详情页",
+                "required": False,
+                "matched": False,
+            },
+            {
+                "category": "tests",
+                "subject": "宠物主人详情页",
+                "required": False,
+                "matched": False,
+            },
+        ),
+        "maximum_pack_bytes": 65_536,
+        "maximum_truncated_items": 4,
+        "forbidden_next_query_patterns": ("/oups",),
+    },
+    "spring_petclinic/database-profiles-integration-tests": {
+        **EXPECTED_NEW_CASE_DEFAULTS,
+        "repo_key": "spring_petclinic",
+        "case_id": "database-profiles-integration-tests",
+        "query": "MySQL PostgreSQL database profile configuration and integration tests",
+        "profiles": ("p2_real_context",),
+        "tags": ("p2", "real_project", "java_spring", "database", "test"),
+        "mode": "context_pack",
+        "gate": Gate.REQUIRED,
+        "expected_top_k": (
+            {
+                "path": "src/test/java/org/springframework/samples/petclinic/MySqlIntegrationTests.java",
+                "top_k": 12,
+            },
+            {
+                "path": "src/test/java/org/springframework/samples/petclinic/PostgresIntegrationTests.java",
+                "top_k": 12,
+            },
+        ),
+        "expected_any_top_k": (),
+        "preferred_rank": (),
+        "expected_context_groups": {
+            "tests": (
+                {
+                    "path": "src/test/java/org/springframework/samples/petclinic/MySqlIntegrationTests.java"
+                },
+                {
+                    "path": "src/test/java/org/springframework/samples/petclinic/PostgresIntegrationTests.java"
+                },
+            ),
+        },
+        "expected_pack_status": "partial",
+        "minimum_context_confidence": "low",
+        "expected_need_matches": (
+            {
+                "category": "configs_docs",
+                "subject": "MySQL",
+                "required": True,
+                "matched": True,
+            },
+            {
+                "category": "tests",
+                "subject": "MySQL",
+                "required": True,
+                "matched": True,
+            },
+            {
+                "category": "configs_docs",
+                "subject": "PostgreSQL",
+                "required": True,
+                "matched": True,
+            },
+            {
+                "category": "tests",
+                "subject": "PostgreSQL",
+                "required": True,
+                "matched": False,
+            },
+        ),
+        "maximum_pack_bytes": 65_536,
+        "maximum_truncated_items": 4,
+        "forbidden_next_query_patterns": ("owner DTO",),
+    },
 }
 
 EXPECTED_P1_CASE_KEYS = {
@@ -825,6 +1073,13 @@ EXPECTED_P2_CASE_KEYS = {
     "context_pack_java/workspace-service-symbol",
     "context_pack_frontend/qrcode-feature-context",
     "context_pack_docs/program-tool-developer-docs",
+}
+
+EXPECTED_P2_REAL_CASE_KEYS = {
+    "spring_petclinic/owner-registration-validation-flow",
+    "spring_petclinic/owner-controller-registration-tests",
+    "spring_petclinic/owner-details-pets-visits",
+    "spring_petclinic/database-profiles-integration-tests",
 }
 
 EXPECTED_CI_CASE_KEYS = {
@@ -1175,7 +1430,7 @@ def test_catalog_profile_registry_and_inventory() -> None:
     cases = _catalog_cases()
 
     assert fixture.profile_configs == EXPECTED_PROFILE_CONFIGS
-    assert len(cases) == 49
+    assert len(cases) == 53
     assert "program_tool/qrcode-tool" in cases
     assert "program_tool_snapshot/qrcode-entrypoint" not in cases
     assert cases["cross_language_dashboard/dashboard-cross-language"].tags == (
@@ -1275,6 +1530,56 @@ def test_phase_two_profile_selects_exact_required_context_pack_cases() -> None:
     assert all(cases[key].mode == "context_pack" for key in EXPECTED_P2_CASE_KEYS)
 
 
+def test_pinned_real_context_profile_and_source_declaration_are_exact() -> None:
+    fixture = load_quality_fixture(CATALOG_PATH)
+    assert fixture.profile_configs["p2_real_context"] == {
+        "retrieval": {"final_top_k": 12},
+        "embedding": {
+            "provider": "hash",
+            "model": "hash-v1",
+            "dimensions": 384,
+        },
+        "query_planner": {"enabled": False},
+    }
+    repo = next(repo for repo in fixture.repos if repo.repo_key == "spring_petclinic")
+    assert (
+        repo.source_url,
+        repo.source_commit,
+        repo.checkout_dir,
+        repo.profiles,
+        repo.path_env,
+        repo.repo_dir_name,
+        repo.snapshot_path,
+    ) == (
+        "https://github.com/spring-projects/spring-petclinic.git",
+        "51045d1648dad955df586150c1a1a6e22ef400c2",
+        "spring-petclinic",
+        ("p2_real_context",),
+        "",
+        "",
+        "",
+    )
+
+
+def test_pinned_real_context_profile_selects_four_required_bounded_cases() -> None:
+    fixture = load_quality_fixture(CATALOG_PATH)
+    selected = {
+        f"{repo.repo_key}/{case.case_id}": case
+        for repo in fixture.repos
+        for case in repo.queries
+        if "p2_real_context" in repo.profiles
+        and (not case.profiles or "p2_real_context" in case.profiles)
+    }
+
+    assert set(selected) == EXPECTED_P2_REAL_CASE_KEYS
+    assert all(case.gate is Gate.REQUIRED for case in selected.values())
+    assert all(case.mode == "context_pack" for case in selected.values())
+    assert all(case.maximum_pack_bytes == 65_536 for case in selected.values())
+    assert all(case.maximum_truncated_items == 4 for case in selected.values())
+    assert all(case.expected_need_matches for case in selected.values())
+    assert all(case.forbidden_next_query_patterns for case in selected.values())
+
+
 def test_ci_profile_selection_remains_exactly_eight_cases() -> None:
     fixture = load_quality_fixture(CATALOG_PATH)
     selected = {
@@ -1328,6 +1633,10 @@ def test_catalog_case_profiles_match_approved_selection() -> None:
         **{
             key: ("p2_context_pack",)
             for key in EXPECTED_P2_CASE_KEYS
+        },
+        **{
+            key: ("p2_real_context",)
+            for key in EXPECTED_P2_REAL_CASE_KEYS
         },
         **{
             f"embedding_ab/{case_id}": ("ab_hash", "ab_bge")

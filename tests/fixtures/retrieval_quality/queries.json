@@ -96,6 +96,19 @@
       "query_planner": {
         "enabled": false
       }
+    },
+    "p2_real_context": {
+      "retrieval": {
+        "final_top_k": 12
+      },
+      "embedding": {
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384
+      },
+      "query_planner": {
+        "enabled": false
+      }
     }
   },
   "repos": [
@@ -1892,6 +1905,271 @@
               "planner_status": "ok"
             }
           }
+        }
+      ]
+    },
+    {
+      "repo_key": "spring_petclinic",
+      "source_url": "https://github.com/spring-projects/spring-petclinic.git",
+      "source_commit": "51045d1648dad955df586150c1a1a6e22ef400c2",
+      "checkout_dir": "spring-petclinic",
+      "profiles": [
+        "p2_real_context"
+      ],
+      "queries": [
+        {
+          "id": "owner-registration-validation-flow",
+          "query": "owner registration form validation flow",
+          "profiles": [
+            "p2_real_context"
+          ],
+          "mode": "context_pack",
+          "tags": [
+            "p2",
+            "real_project",
+            "java_spring",
+            "validation"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java",
+              "top_k": 12
+            },
+            {
+              "path": "src/main/java/org/springframework/samples/petclinic/owner/Owner.java",
+              "top_k": 12
+            }
+          ],
+          "expected_context_groups": {
+            "entrypoints": [
+              {
+                "path": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
+              }
+            ],
+            "related_types": [
+              {
+                "path": "src/main/java/org/springframework/samples/petclinic/owner/Owner.java"
+              }
+            ]
+          },
+          "expected_pack_status": "ready",
+          "minimum_context_confidence": "medium",
+          "expected_need_matches": [
+            {
+              "category": "entrypoints",
+              "subject": "owner",
+              "required": true,
+              "matched": true
+            },
+            {
+              "category": "implementations",
+              "subject": "owner",
+              "required": false,
+              "matched": true
+            },
+            {
+              "category": "tests",
+              "subject": "owner",
+              "required": false,
+              "matched": false
+            }
+          ],
+          "maximum_pack_bytes": 65536,
+          "maximum_truncated_items": 4,
+          "forbidden_next_query_patterns": [
+            "/oups",
+            "owner DTO"
+          ]
+        },
+        {
+          "id": "owner-controller-registration-tests",
+          "query": "OwnerController tests for owner registration validation",
+          "profiles": [
+            "p2_real_context"
+          ],
+          "mode": "context_pack",
+          "tags": [
+            "p2",
+            "real_project",
+            "java_spring",
+            "test"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java",
+              "top_k": 12
+            },
+            {
+              "path": "src/test/java/org/springframework/samples/petclinic/owner/OwnerControllerTests.java",
+              "top_k": 12
+            }
+          ],
+          "expected_context_groups": {
+            "entrypoints": [
+              {
+                "path": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
+              }
+            ],
+            "tests": [
+              {
+                "path": "src/test/java/org/springframework/samples/petclinic/owner/OwnerControllerTests.java"
+              }
+            ]
+          },
+          "expected_pack_status": "ready",
+          "minimum_context_confidence": "medium",
+          "expected_need_matches": [
+            {
+              "category": "entrypoints",
+              "subject": "OwnerController",
+              "required": true,
+              "matched": true
+            },
+            {
+              "category": "tests",
+              "subject": "OwnerController",
+              "required": true,
+              "matched": true
+            },
+            {
+              "category": "implementations",
+              "subject": "OwnerController",
+              "required": false,
+              "matched": false
+            }
+          ],
+          "maximum_pack_bytes": 65536,
+          "maximum_truncated_items": 4,
+          "forbidden_next_query_patterns": [
+            "/oups",
+            "owner DTO"
+          ]
+        },
+        {
+          "id": "owner-details-pets-visits",
+          "query": "宠物主人详情页如何加载宠物和就诊记录",
+          "profiles": [
+            "p2_real_context"
+          ],
+          "mode": "context_pack",
+          "tags": [
+            "p2",
+            "real_project",
+            "java_spring",
+            "localized_cjk"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java",
+              "top_k": 12
+            }
+          ],
+          "expected_context_groups": {
+            "entrypoints": [
+              {
+                "path": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
+              }
+            ]
+          },
+          "expected_pack_status": "partial",
+          "minimum_context_confidence": "low",
+          "expected_need_matches": [
+            {
+              "category": "entrypoints",
+              "subject": "宠物主人详情页",
+              "required": true,
+              "matched": false
+            },
+            {
+              "category": "implementations",
+              "subject": "宠物主人详情页",
+              "required": false,
+              "matched": false
+            },
+            {
+              "category": "tests",
+              "subject": "宠物主人详情页",
+              "required": false,
+              "matched": false
+            }
+          ],
+          "maximum_pack_bytes": 65536,
+          "maximum_truncated_items": 4,
+          "forbidden_next_query_patterns": [
+            "/oups"
+          ]
+        },
+        {
+          "id": "database-profiles-integration-tests",
+          "query": "MySQL PostgreSQL database profile configuration and integration tests",
+          "profiles": [
+            "p2_real_context"
+          ],
+          "mode": "context_pack",
+          "tags": [
+            "p2",
+            "real_project",
+            "java_spring",
+            "database",
+            "test"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {
+              "path": "src/test/java/org/springframework/samples/petclinic/MySqlIntegrationTests.java",
+              "top_k": 12
+            },
+            {
+              "path": "src/test/java/org/springframework/samples/petclinic/PostgresIntegrationTests.java",
+              "top_k": 12
+            }
+          ],
+          "expected_context_groups": {
+            "tests": [
+              {
+                "path": "src/test/java/org/springframework/samples/petclinic/MySqlIntegrationTests.java"
+              },
+              {
+                "path": "src/test/java/org/springframework/samples/petclinic/PostgresIntegrationTests.java"
+              }
+            ]
+          },
+          "expected_pack_status": "partial",
+          "minimum_context_confidence": "low",
+          "expected_need_matches": [
+            {
+              "category": "configs_docs",
+              "subject": "MySQL",
+              "required": true,
+              "matched": true
+            },
+            {
+              "category": "tests",
+              "subject": "MySQL",
+              "required": true,
+              "matched": true
+            },
+            {
+              "category": "configs_docs",
+              "subject": "PostgreSQL",
+              "required": true,
+              "matched": true
+            },
+            {
+              "category": "tests",
+              "subject": "PostgreSQL",
+              "required": true,
+              "matched": false
+            }
+          ],
+          "maximum_pack_bytes": 65536,
+          "maximum_truncated_items": 4,
+          "forbidden_next_query_patterns": [
+            "owner DTO"
+          ]
         }
       ]
     }

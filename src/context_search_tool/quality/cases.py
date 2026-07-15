@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import ntpath
 import re
 import unicodedata
 from dataclasses import dataclass, field, fields, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from context_search_tool.config import DEFAULT_CONFIG, ToolConfig
 from context_search_tool.context_pack import CONTEXT_GROUPS
@@ -42,6 +44,21 @@ _CONTEXT_ONLY_FIELDS = {
 _MAX_FORBIDDEN_NEXT_QUERY_PATTERN_CODEPOINTS = 160
 _UNSAFE_REGEX_METACHARS = frozenset(".^$*+?{}[]|()")
 _SAFE_LITERAL_ESCAPES = frozenset(".^$*+?{}[]\\|()")
+_REMOTE_SOURCE_FIELDS = frozenset({"source_url", "source_commit", "checkout_dir"})
+_DIRECT_SOURCE_FIELDS = ("path_env", "repo_dir_name", "snapshot_path")
+_SOURCE_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+_MAX_PORTABLE_COMPONENT_BYTES = 255
+_WINDOWS_RESERVED_NAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    "conin$",
+    "conout$",
+    *(f"com{suffix}" for suffix in "123456789¹²³"),
+    *(f"lpt{suffix}" for suffix in "123456789¹²³"),
+}
+_WINDOWS_INVALID_COMPONENT_CHARS = frozenset('<>:"/\\|?*')
 
 
 @dataclass(frozen=True)
@@ -198,6 +215,9 @@ class QualityRepo:
     path_env: str = ""
     repo_dir_name: str = ""
     snapshot_path: str = ""
+    source_url: str = ""
+    source_commit: str = ""
+    checkout_dir: str = ""
     profiles: tuple[str, ...] = ("ci",)
     queries: tuple[QualityCase, ...] = ()
     default_config: dict[str, Any] = field(default_factory=dict)
@@ -391,6 +411,30 @@ def validate_profile_compatible(
                 "p2_context_pack profile does not allow remote embedding settings"
             )
         return
+    if profile == "p2_real_context":
+        if (
+            config.embedding.provider != "hash"
+            or config.embedding.model != "hash-v1"
+            or config.embedding.dimensions != 384
+        ):
+            raise ValueError(
+                "p2_real_context profile requires hash-v1 embeddings "
+                "at 384 dimensions"
+            )
+        if config.retrieval.final_top_k != 12:
+            raise ValueError("p2_real_context profile requires final_top_k 12")
+        if config.query_planner.enabled:
+            raise ValueError(
+                "p2_real_context profile requires the query planner disabled"
+            )
+        if (
+            config.embedding.api_key_env is not None
+            or config.embedding.base_url is not None
+        ):
+            raise ValueError(
+                "p2_real_context profile does not allow remote embedding settings"
+            )
+        return
     if profile in {"calibration_bge", "ab_bge"}:
         if (
             config.embedding.provider != "bge"
@@ -429,15 +473,99 @@ def _parse_repo(raw: dict[str, Any]) -> QualityRepo:
         for section, values in raw_default_config.items()
     }
 
+    profiles = _require_str_tuple(raw.get("profiles", ("ci",)), "profiles")
+    if not profiles or any(not profile for profile in profiles):
+        raise ValueError("quality repo requires at least one profile")
+
+    present_remote_fields = _REMOTE_SOURCE_FIELDS.intersection(raw)
+    if present_remote_fields and present_remote_fields != _REMOTE_SOURCE_FIELDS:
+        raise ValueError("remote source fields must appear together")
+    source_url = ""
+    source_commit = ""
+    checkout_dir = ""
+    if present_remote_fields:
+        if any(
+            _require_str(raw.get(field, ""), field)
+            for field in _DIRECT_SOURCE_FIELDS
+        ):
+            raise ValueError(
+                "remote source fields are mutually exclusive with direct source fields"
+            )
+        source_url = _validate_source_url(raw["source_url"])
+        source_commit = _validate_source_commit(raw["source_commit"])
+        checkout_dir = _validate_checkout_dir(raw["checkout_dir"])
+        _validate_portable_component(repo_key, "repo_key")
+
     return QualityRepo(
         repo_key=repo_key,
         path_env=_require_str(raw.get("path_env", ""), "path_env"),
         repo_dir_name=_require_str(raw.get("repo_dir_name", ""), "repo_dir_name"),
         snapshot_path=_require_str(raw.get("snapshot_path", ""), "snapshot_path"),
-        profiles=_require_str_tuple(raw.get("profiles", ("ci",)), "profiles"),
+        source_url=source_url,
+        source_commit=source_commit,
+        checkout_dir=checkout_dir,
+        profiles=profiles,
         queries=tuple(_parse_case(raw_case) for raw_case in raw_queries),
         default_config=dict(default_config),
     )
+
+
+def _validate_source_url(value: Any) -> str:
+    value = _require_non_empty_str(value, "source_url")
+    if value.startswith("-") or "\n" in value or "\r" in value:
+        raise ValueError("source_url must be a safe HTTPS URL")
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname
+    except ValueError as exc:
+        raise ValueError("source_url must be a safe HTTPS URL") from exc
+    if (
+        parsed.scheme != "https"
+        or not host
+        or not parsed.path.strip("/")
+        or parsed.username is not None
+        or parsed.password is not None
+        or bool(parsed.fragment)
+    ):
+        raise ValueError("source_url must be a safe HTTPS URL")
+    return value
+
+
+def _validate_source_commit(value: Any) -> str:
+    value = _require_non_empty_str(value, "source_commit")
+    if _SOURCE_COMMIT_RE.fullmatch(value) is None:
+        raise ValueError("source_commit must be an exact 40-hex commit")
+    return value.lower()
+
+
+def _validate_checkout_dir(value: Any) -> str:
+    return _validate_portable_component(value, "checkout_dir")
+
+
+def _validate_portable_component(value: Any, field_name: str) -> str:
+    value = _require_non_empty_str(value, field_name)
+    has_invalid_character = any(
+        character in _WINDOWS_INVALID_COMPONENT_CHARS or ord(character) < 32
+        for character in value
+    )
+    is_reserved = getattr(ntpath, "isreserved", None)
+    reserved = (
+        is_reserved(value)
+        if is_reserved is not None
+        else value.split(".", 1)[0].rstrip(" ").casefold()
+        in _WINDOWS_RESERVED_NAMES
+    )
+    if (
+        value in {".", ".."}
+        or value.startswith("-")
+        or has_invalid_character
+        or value.endswith((".", " "))
+        or Path(value).is_absolute()
+        or reserved
+        or len(value.encode("utf-8")) > _MAX_PORTABLE_COMPONENT_BYTES
+    ):
+        raise ValueError(f"{field_name} must be a safe path component")
+    return value
 
 
 def _validate_fixture_profiles(

@@ -7,6 +7,7 @@ import pytest
 import context_search_tool.quality as quality
 import context_search_tool.quality.cases as quality_cases
 from context_search_tool.config import (
+    DEFAULT_CONFIG,
     EmbeddingConfig,
     QueryPlannerConfig,
     ToolConfig,
@@ -1755,3 +1756,176 @@ def test_unknown_canonical_profile_is_not_treated_as_p2_context_pack() -> None:
         ToolConfig(embedding=_VALID_BGE_EMBEDDING),
         canonical=True,
     )
+
+
+def test_remote_quality_repo_fields_parse_together_and_normalize_commit(
+    tmp_path: Path,
+) -> None:
+    data = _minimal_fixture(
+        repo_overrides={
+            "source_url": "https://example.test/owner/spring-petclinic.git",
+            "source_commit": "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+            "checkout_dir": "spring-petclinic",
+            "profiles": ["p2_real_context"],
+        }
+    )
+    data["profile_configs"] = {
+        "p2_real_context": {
+            "retrieval": {"final_top_k": 12},
+            "embedding": {
+                "provider": "hash",
+                "model": "hash-v1",
+                "dimensions": 384,
+            },
+            "query_planner": {"enabled": False},
+        }
+    }
+
+    repo = load_quality_fixture(_write_fixture(tmp_path, data)).repos[0]
+
+    assert repo.source_url == "https://example.test/owner/spring-petclinic.git"
+    assert repo.source_commit == "abcdef0123456789abcdef0123456789abcdef01"
+    assert repo.checkout_dir == "spring-petclinic"
+    assert repo.profiles == ("p2_real_context",)
+
+
+@pytest.mark.parametrize(
+    "repo_overrides, message",
+    [
+        ({"source_url": "https://example.test/repo.git"}, "remote source fields"),
+        (
+            {
+                "source_url": "https://example.test/repo.git",
+                "source_commit": "a" * 40,
+                "checkout_dir": "repo",
+                "snapshot_path": "snapshot",
+            },
+            "mutually exclusive",
+        ),
+        (
+            {
+                "source_url": "http://example.test/repo.git",
+                "source_commit": "a" * 40,
+                "checkout_dir": "repo",
+            },
+            "source_url",
+        ),
+        (
+            {
+                "source_url": "https://user@example.test/repo.git",
+                "source_commit": "a" * 40,
+                "checkout_dir": "repo",
+            },
+            "source_url",
+        ),
+        (
+            {
+                "source_url": "https://example.test/repo.git#main",
+                "source_commit": "a" * 40,
+                "checkout_dir": "repo",
+            },
+            "source_url",
+        ),
+        (
+            {
+                "source_url": "https://example.test/repo.git\n--upload-pack=oops",
+                "source_commit": "a" * 40,
+                "checkout_dir": "repo",
+            },
+            "source_url",
+        ),
+        (
+            {
+                "source_url": "https://example.test/repo.git",
+                "source_commit": "abc123",
+                "checkout_dir": "repo",
+            },
+            "source_commit",
+        ),
+        (
+            {
+                "source_url": "https://example.test/repo.git",
+                "source_commit": "a" * 40,
+                "checkout_dir": "../repo",
+            },
+            "checkout_dir",
+        ),
+        (
+            {
+                "source_url": "https://example.test/repo.git",
+                "source_commit": "a" * 40,
+                "checkout_dir": "CON.txt",
+            },
+            "checkout_dir",
+        ),
+        (
+            {
+                "source_url": "https://example.test/repo.git",
+                "source_commit": "a" * 40,
+                "checkout_dir": "--repo",
+            },
+            "checkout_dir",
+        ),
+        (
+            {
+                "source_url": "https://example.test/repo.git",
+                "source_commit": "a" * 40,
+                "checkout_dir": "a" * 256,
+            },
+            "checkout_dir",
+        ),
+        (
+            {
+                "repo_key": "bad\nkey",
+                "source_url": "https://example.test/repo.git",
+                "source_commit": "a" * 40,
+                "checkout_dir": "repo",
+            },
+            "repo_key",
+        ),
+        ({"profiles": []}, "at least one profile"),
+    ],
+)
+def test_remote_quality_repo_rejects_unsafe_or_ambiguous_sources(
+    tmp_path: Path,
+    repo_overrides: dict,
+    message: str,
+) -> None:
+    data = _minimal_fixture(repo_overrides=repo_overrides)
+
+    with pytest.raises(ValueError, match=message):
+        load_quality_fixture(_write_fixture(tmp_path, data))
+
+
+def test_p2_real_context_profile_requires_offline_deterministic_config() -> None:
+    validate_profile_compatible(
+        "p2_real_context",
+        replace(
+            DEFAULT_CONFIG,
+            retrieval=replace(DEFAULT_CONFIG.retrieval, final_top_k=12),
+            embedding=EmbeddingConfig(
+                provider="hash",
+                model="hash-v1",
+                dimensions=384,
+            ),
+            query_planner=QueryPlannerConfig(enabled=False),
+        ),
+        canonical=True,
+    )
+
+    with pytest.raises(ValueError, match="p2_real_context.*hash-v1"):
+        validate_profile_compatible(
+            "p2_real_context",
+            replace(DEFAULT_CONFIG, embedding=EmbeddingConfig(provider="local")),
+            canonical=True,
+        )
+
+    with pytest.raises(ValueError, match="p2_real_context.*final_top_k.*12"):
+        validate_profile_compatible(
+            "p2_real_context",
+            replace(
+                DEFAULT_CONFIG,
+                retrieval=replace(DEFAULT_CONFIG.retrieval, final_top_k=11),
+            ),
+            canonical=True,
+        )

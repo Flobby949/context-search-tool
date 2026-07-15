@@ -8,6 +8,7 @@ import typer
 
 from context_search_tool.quality.compare import compare_reports
 from context_search_tool.quality.feedback import summarize_feedback_log
+from context_search_tool.quality.prepare import prepare_quality_fixture
 from context_search_tool.quality.reports import render_markdown_comparison
 from context_search_tool.quality.runner import (
     _publish_artifacts,
@@ -33,14 +34,25 @@ def run(
     output: Path = typer.Option(..., "--output"),
     markdown: Optional[Path] = typer.Option(None, "--markdown"),
     allow_empty: bool = typer.Option(False, "--allow-empty"),
+    repos_dir: Path = typer.Option(Path(".quality/repos"), "--repos-dir"),
 ) -> None:
-    report = run_quality_fixture(
-        fixture,
-        profile=profile,
-        output_path=output,
-        markdown_path=markdown,
-        allow_empty=allow_empty,
-    )
+    try:
+        report = run_quality_fixture(
+            fixture,
+            profile=profile,
+            output_path=output,
+            markdown_path=markdown,
+            allow_empty=allow_empty,
+            repos_dir=repos_dir,
+        )
+    except Exception:
+        if profile == "p2_real_context":
+            typer.echo(
+                "Error: prepared quality repository validation failed",
+                err=True,
+            )
+            raise typer.Exit(code=1) from None
+        raise
     aggregate = report.get("aggregate", {})
     typer.echo(
         "selected={selected} executed={executed} passed={passed} "
@@ -54,6 +66,24 @@ def run(
     )
     if aggregate.get("failed", 0) > 0 or aggregate.get("errors", 0) > 0:
         raise typer.Exit(code=1)
+
+
+@quality_app.command()
+def prepare(
+    fixture: Path = typer.Argument(...),
+    profile: str = typer.Option(..., "--profile"),
+    repos_dir: Path = typer.Option(Path(".quality/repos"), "--repos-dir"),
+) -> None:
+    try:
+        prepared = prepare_quality_fixture(fixture, profile, repos_dir)
+    except Exception:
+        typer.echo("Error: quality repository preparation failed", err=True)
+        raise typer.Exit(code=1) from None
+    for repo in prepared:
+        typer.echo(
+            f"repo={repo.repo_key} commit={repo.commit} "
+            f"checkout={repo.checkout_dir}"
+        )
 
 
 @quality_app.command()

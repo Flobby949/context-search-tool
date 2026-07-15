@@ -48,6 +48,7 @@ from context_search_tool.quality.metrics import (
     evaluate_case,
     evaluate_context_pack,
 )
+from context_search_tool.quality.prepare import validate_prepared_repo
 from context_search_tool.retrieval import (
     QueryBundle,
     evidence_anchor_top_k,
@@ -133,6 +134,7 @@ def run_quality_fixture(
     keep_workspace: bool = False,
     config: ToolConfig = DEFAULT_CONFIG,
     allow_empty: bool = False,
+    repos_dir: Path = Path(".quality/repos"),
 ) -> dict[str, Any]:
     fixture = load_quality_fixture(fixture_path)
     if profile not in fixture.profile_configs:
@@ -183,7 +185,11 @@ def run_quality_fixture(
             )
             api_key_env = repo_config.embedding.api_key_env
             api_key = (os.environ.get(api_key_env) or None) if api_key_env else None
-            source = _resolve_repo_source(repo, fixture.path, profile)
+            source = (
+                _resolve_repo_source(repo, fixture.path, profile, repos_dir)
+                if repo.source_url
+                else _resolve_repo_source(repo, fixture.path, profile)
+            )
             if source is None:
                 cases.extend(
                     _case_records_for_cases(
@@ -257,7 +263,16 @@ def run_quality_fixture(
             for case in selected_cases:
                 started = time.perf_counter()
                 try:
-                    bundle = query_repository(workspace, case.query, repo_config)
+                    bundle = (
+                        query_repository(
+                            workspace,
+                            case.query,
+                            repo_config,
+                            full_file=True,
+                        )
+                        if profile == "p2_real_context"
+                        else query_repository(workspace, case.query, repo_config)
+                    )
                     latency_ms = int((time.perf_counter() - started) * 1000)
                     evaluation = evaluate_case(
                         case,
@@ -387,7 +402,15 @@ def _resolve_repo_source(
     repo: QualityRepo,
     fixture_path: Path,
     profile: str,
+    repos_dir: Path = Path(".quality/repos"),
 ) -> ResolvedSource | None:
+    if repo.source_url:
+        checkout = validate_prepared_repo(repo, repos_dir)
+        return ResolvedSource(
+            path=checkout,
+            source_type="prepared_remote",
+            locator=repo.checkout_dir,
+        )
     if profile in _SNAPSHOT_ONLY_PROFILES:
         if not repo.snapshot_path:
             raise ValueError(

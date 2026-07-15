@@ -5066,3 +5066,149 @@ def test_runner_rejects_zero_selected_or_executed_without_allow_empty(
             None,
             allow_empty=True,
         )
+
+
+def test_remote_source_resolves_only_validated_prepared_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "repos" / "spring-petclinic"
+    checkout.mkdir(parents=True)
+    repo = QualityRepo(
+        repo_key="spring_petclinic",
+        source_url="https://example.test/spring-petclinic.git",
+        source_commit="a" * 40,
+        checkout_dir="spring-petclinic",
+        profiles=("p2_real_context",),
+        queries=(QualityCase(case_id="case", query="owner"),),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_validate(candidate: QualityRepo, repos_dir: Path) -> Path:
+        captured.update(repo=candidate, repos_dir=repos_dir)
+        return checkout.resolve()
+
+    monkeypatch.setattr(quality_runner, "validate_prepared_repo", fake_validate)
+
+    resolved = _resolve_repo_source(
+        repo,
+        tmp_path / "fixture.json",
+        "p2_real_context",
+        tmp_path / "repos",
+    )
+
+    assert resolved == ResolvedSource(
+        checkout.resolve(),
+        "prepared_remote",
+        "spring-petclinic",
+    )
+    assert captured == {"repo": repo, "repos_dir": tmp_path / "repos"}
+
+
+def test_remote_source_missing_prepared_checkout_is_required_error_without_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    repo = QualityRepo(
+        repo_key="spring_petclinic",
+        source_url="https://example.test/spring-petclinic.git",
+        source_commit="a" * 40,
+        checkout_dir="spring-petclinic",
+        snapshot_path=str(snapshot),
+        profiles=("p2_real_context",),
+        queries=(QualityCase(case_id="case", query="owner"),),
+    )
+
+    def reject_prepared(candidate: QualityRepo, repos_dir: Path) -> Path:
+        raise ValueError("prepared checkout is missing")
+
+    monkeypatch.setattr(quality_runner, "validate_prepared_repo", reject_prepared)
+
+    with pytest.raises(ValueError, match="prepared checkout is missing"):
+        _resolve_repo_source(
+            repo,
+            tmp_path / "fixture.json",
+            "p2_real_context",
+            tmp_path / "repos",
+        )
+
+
+def test_run_quality_fixture_forwards_repos_dir_for_remote_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_source_repo(tmp_path / "source-root")
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {
+                "p2_real_context": {
+                    "retrieval": {"final_top_k": 12},
+                    "embedding": {
+                        "provider": "hash",
+                        "model": "hash-v1",
+                        "dimensions": 384,
+                    },
+                    "query_planner": {"enabled": False},
+                }
+            },
+            "repos": [
+                {
+                    "repo_key": "spring_petclinic",
+                    "source_url": "https://example.test/spring-petclinic.git",
+                    "source_commit": "a" * 40,
+                    "checkout_dir": "spring-petclinic",
+                    "profiles": ["p2_real_context"],
+                    "queries": [{"id": "case", "query": "owner"}],
+                }
+            ],
+        },
+    )
+    repos_dir = tmp_path / "custom-repos"
+    captured_sources: list[tuple[QualityRepo, Path, str, Path]] = []
+
+    def fake_resolve(
+        repo: QualityRepo,
+        fixture_path: Path,
+        profile: str,
+        prepared_repos_dir: Path,
+    ) -> ResolvedSource:
+        captured_sources.append((repo, fixture_path, profile, prepared_repos_dir))
+        return ResolvedSource(source, "prepared_remote", repo.checkout_dir)
+
+    monkeypatch.setattr(quality_runner, "_resolve_repo_source", fake_resolve)
+    captured_config: list[tuple[Path, ToolConfig]] = []
+    _patch_runner_dependencies(monkeypatch, captured_config)
+    full_file_calls: list[bool] = []
+
+    def fake_remote_query(
+        repo: Path,
+        query: str,
+        config: ToolConfig,
+        *,
+        full_file: bool = False,
+    ) -> QueryBundle:
+        full_file_calls.append(full_file)
+        return QueryBundle(query, [], [], [])
+
+    monkeypatch.setattr(quality_runner, "query_repository", fake_remote_query)
+
+    report = run_quality_fixture(
+        fixture,
+        "p2_real_context",
+        None,
+        None,
+        repos_dir=repos_dir,
+    )
+
+    assert report["aggregate"]["executed"] == 1
+    assert len(captured_sources) == 1
+    assert captured_sources[0][1:] == (
+        fixture,
+        "p2_real_context",
+        repos_dir,
+    )
+    assert full_file_calls == [True]
