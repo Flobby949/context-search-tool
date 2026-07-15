@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 from context_search_tool import cli, context_pack
 from context_search_tool.cli import app
 from context_search_tool.config import (
+    ContextConfig,
     IndexConfig,
     QueryPlannerConfig,
     RetrievalConfig,
@@ -15,8 +16,6 @@ from context_search_tool.config import (
     render_config,
 )
 from context_search_tool.context_pack import (
-    INVALID_REFERENCE_ERROR,
-    UNEXPECTED_CONTEXT_ERROR,
     ContextPackError,
     ContextPackOptions,
 )
@@ -91,8 +90,16 @@ class ApplyAuditController {
     )
     assert context_result.exit_code == 0
     context_payload = json.loads(context_result.output)
-    assert context_payload["context_pack"]["schema_version"] == 1
-    assert context_payload["results"] == parsed["results"]
+    assert context_payload["context_pack"]["schema_version"] == 2
+    assert set(context_payload) == {
+        "ok",
+        "repo",
+        "query",
+        "retrieval",
+        "context_pack",
+    }
+    assert context_payload["retrieval"]["result_count"] == len(parsed["results"])
+    assert "results" not in context_payload
 
     stats_result = runner.invoke(app, ["stats", str(repo)])
     assert stats_result.exit_code == 0
@@ -313,6 +320,10 @@ def test_context_passes_query_flags_and_resolves_pack_options(
             "--context-lines",
             "5",
             "--full-file",
+            "--max-items",
+            "4",
+            "--max-context-bytes",
+            "4096",
             flag,
         ],
     )
@@ -325,12 +336,14 @@ def test_context_passes_query_flags_and_resolves_pack_options(
     assert query_kwargs == {"context_lines": 5, "full_file": True}
     assert captured["bundle"].query == "AppController"
     assert captured["options"] == ContextPackOptions(
-        max_results=6,
-        max_evidence_anchors=2,
+        max_items=4,
+        max_excerpts_per_item=2,
+        max_excerpt_bytes=4095,
+        max_item_content_bytes=4095,
+        max_total_content_bytes=4095,
+        max_pack_bytes=4096,
         context_before_lines=5,
         context_after_lines=5,
-        full_file=True,
-        max_full_file_bytes=123_456,
     )
 
 
@@ -369,6 +382,82 @@ def test_context_calls_query_and_builder_once_while_query_never_builds(
     assert counts == {"query": 2, "build": 1}
 
 
+@pytest.mark.parametrize(
+    ("flags", "message"),
+    [
+        (["--max-items", "0"], "max_items must be a positive integer"),
+        (
+            ["--max-context-bytes", "4095"],
+            "max_context_bytes must be an integer of at least 4096 bytes",
+        ),
+    ],
+)
+def test_context_rejects_request_limits_before_retrieval_or_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: list[str],
+    message: str,
+) -> None:
+    repo, runner = _indexed_repo(tmp_path)
+    counts = {"query": 0, "build": 0}
+
+    def counted_query(*args, **kwargs):
+        counts["query"] += 1
+        return _context_bundle()
+
+    def counted_build(*args, **kwargs):
+        counts["build"] += 1
+        raise AssertionError("invalid options must not reach the builder")
+
+    monkeypatch.setattr(cli, "query_repository", counted_query)
+    monkeypatch.setattr(cli, "build_context_pack", counted_build)
+
+    result = runner.invoke(
+        app,
+        ["context", str(repo), "AppController", "--json", *flags],
+    )
+
+    assert result.exit_code == 1
+    assert result.output == f"Error: invalid_context_options: {message}\n"
+    assert counts == {"query": 0, "build": 0}
+
+
+def test_context_rejects_invalid_persisted_limits_before_retrieval_or_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, runner = _indexed_repo(tmp_path)
+    config = ToolConfig(context=ContextConfig(max_items=0))
+    (repo / ".context-search" / "config.toml").write_text(
+        render_config(config),
+        encoding="utf-8",
+    )
+    counts = {"query": 0, "build": 0}
+
+    def counted_query(*args, **kwargs):
+        counts["query"] += 1
+        return _context_bundle()
+
+    def counted_build(*args, **kwargs):
+        counts["build"] += 1
+        raise AssertionError("invalid options must not reach the builder")
+
+    monkeypatch.setattr(cli, "query_repository", counted_query)
+    monkeypatch.setattr(cli, "build_context_pack", counted_build)
+
+    result = runner.invoke(
+        app,
+        ["context", str(repo), "AppController", "--json"],
+    )
+
+    assert result.exit_code == 1
+    assert result.output == (
+        "Error: invalid_context_options: "
+        "context.max_items must be a positive integer\n"
+    )
+    assert counts == {"query": 0, "build": 0}
+
+
 def test_context_defaults_to_markdown_and_json_is_structured(
     tmp_path: Path,
     monkeypatch,
@@ -388,12 +477,13 @@ def test_context_defaults_to_markdown_and_json_is_structured(
 
     assert markdown_result.exit_code == 0
     assert markdown_result.output.startswith("# Context Pack\n")
-    assert "AppController.py:1-2" in markdown_result.output
+    assert "AppController.py" in markdown_result.output
     assert json_result.exit_code == 0
     payload = json.loads(json_result.output)
-    assert payload["results"][0]["file_path"] == "AppController.py"
-    assert payload["context_pack"]["schema_version"] == 1
-    assert payload["context_pack"]["reading_order"] == ["result:0"]
+    assert set(payload) == {"ok", "repo", "query", "retrieval", "context_pack"}
+    assert payload["context_pack"]["schema_version"] == 2
+    assert len(payload["context_pack"]["reading_order"]) == 1
+    assert payload["context_pack"]["items"][0]["file_path"] == "AppController.py"
 
 
 def test_context_empty_bundle_succeeds_in_json_and_markdown(
@@ -421,39 +511,27 @@ def test_context_empty_bundle_succeeds_in_json_and_markdown(
 
     assert json_result.exit_code == 0
     payload = json.loads(json_result.output)
-    assert payload["results"] == []
+    assert payload["retrieval"]["result_count"] == 0
     assert payload["context_pack"]["status"] == "empty"
-    assert payload["context_pack"]["missing_evidence"] == [
-        {
-            "category": "results",
-            "required": True,
-            "reason": (
-                "no result or evidence anchor is present in the bounded result set"
-            ),
-        }
-    ]
+    assert payload["context_pack"]["missing_evidence"] == []
     assert payload["context_pack"]["next_queries"] == []
     assert markdown_result.exit_code == 0
-    assert "Status: empty" in markdown_result.output
+    assert "## Status\n- empty" in markdown_result.output
     assert "## Read First\n- (none)" in markdown_result.output
 
 
 @pytest.mark.parametrize(
-    ("error", "expected_message"),
+    "error",
     [
-        (
-            ContextPackError("invalid ContextPack classification"),
-            "invalid ContextPack classification",
-        ),
-        (ValueError("secret"), UNEXPECTED_CONTEXT_ERROR),
-        (RuntimeError("secret"), UNEXPECTED_CONTEXT_ERROR),
+        ContextPackError("context_failed", "Context pack construction failed"),
+        ValueError("secret"),
+        RuntimeError("secret"),
     ],
 )
 def test_context_maps_builder_failures_to_bounded_errors(
     tmp_path: Path,
     monkeypatch,
     error: Exception,
-    expected_message: str,
 ) -> None:
     repo, runner = _indexed_repo(tmp_path)
     monkeypatch.setattr(
@@ -473,11 +551,13 @@ def test_context_maps_builder_failures_to_bounded_errors(
     )
 
     assert result.exit_code == 1
-    assert result.output == f"Error: context_failed: {expected_message}\n"
+    assert result.output == (
+        "Error: context_failed: Context pack construction failed\n"
+    )
     assert "secret" not in result.output
 
 
-def test_context_maps_invalid_markdown_reference_to_exact_error(
+def test_context_maps_invalid_markdown_reference_to_sanitized_error(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -487,14 +567,16 @@ def test_context_maps_invalid_markdown_reference_to_exact_error(
 
     def invalid_builder(bundle_arg, options):
         pack = context_pack.build_context_pack(bundle_arg, options)
-        return replace(pack, reading_order=(*pack.reading_order, "result:999"))
+        return replace(pack, reading_order=(*pack.reading_order, "item:999"))
 
     monkeypatch.setattr(cli, "build_context_pack", invalid_builder, raising=False)
 
     result = runner.invoke(app, ["context", str(repo), "AppController"])
 
     assert result.exit_code == 1
-    assert result.output == f"Error: context_failed: {INVALID_REFERENCE_ERROR}\n"
+    assert result.output == (
+        "Error: context_failed: Context pack construction failed\n"
+    )
 
 
 def test_context_hides_json_encoding_error_details(
@@ -520,7 +602,7 @@ def test_context_hides_json_encoding_error_details(
 
     assert result.exit_code == 1
     assert result.output == (
-        f"Error: context_failed: {UNEXPECTED_CONTEXT_ERROR}\n"
+        "Error: context_failed: Context pack construction failed\n"
     )
     assert "secret" not in result.output
 
@@ -546,7 +628,7 @@ def test_context_query_phase_value_error_keeps_existing_error_contract(
     assert "context_failed" not in result.output
 
 
-def test_context_help_has_query_output_controls_without_tuning_flags() -> None:
+def test_context_help_has_query_output_and_budget_controls() -> None:
     runner = CliRunner()
 
     result = runner.invoke(app, ["context", "--help"])
@@ -556,6 +638,8 @@ def test_context_help_has_query_output_controls_without_tuning_flags() -> None:
         "--json",
         "--context-lines",
         "--full-file",
+        "--max-items",
+        "--max-context-bytes",
         "--planner",
         "--no-planner",
     ):

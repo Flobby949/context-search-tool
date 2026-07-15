@@ -12,12 +12,11 @@ import requests
 from context_search_tool.config import ToolConfig, load_config
 from context_search_tool.context_pack import (
     CONTEXT_GROUPS,
-    UNEXPECTED_CONTEXT_ERROR,
     ContextPackError,
     build_context_pack,
-    context_pack_payload,
     resolve_context_pack_options,
 )
+from context_search_tool.formatters import context_payload
 from context_search_tool.indexer import (
     IncompatibleIndexError,
     index_repository,
@@ -45,6 +44,7 @@ from context_search_tool.retrieval import (
 from context_search_tool.sqlite_store import SQLiteStore
 
 _FEEDBACK_LOG_MAX_BYTES = 10 * 1024 * 1024
+_CONTEXT_FAILED_MESSAGE = "Context pack construction failed"
 
 
 def context_search_index_tool(repo: str) -> dict[str, Any]:
@@ -133,6 +133,8 @@ def context_search_context_tool(
     context_lines: int | None = None,
     full_file: bool = False,
     final_top_k: int | None = None,
+    max_items: int | None = None,
+    max_context_bytes: int | None = None,
 ) -> dict[str, Any]:
     try:
         resolved_repo = find_repo_root(Path(repo))
@@ -148,18 +150,7 @@ def context_search_context_tool(
 
     try:
         config = _load_query_config(resolved_repo, final_top_k)
-        bundle = query_repository(
-            resolved_repo,
-            query,
-            config,
-            context_lines=context_lines,
-            full_file=full_file,
-        )
-        payload = _query_payload(bundle)
-        payload["ok"] = True
-        payload["repo"] = str(resolved_repo)
-        payload["index"] = _index_state(resolved_repo, config)
-    except (ValueError, requests.HTTPError) as exc:
+    except ValueError as exc:
         payload = _error("query_failed", str(exc))
         _try_append_query_feedback(
             resolved_repo,
@@ -177,15 +168,51 @@ def context_search_context_tool(
         options = resolve_context_pack_options(
             config,
             context_lines=context_lines,
-            full_file=full_file,
             max_evidence_anchors=anchor_limit,
+            max_items=max_items,
+            max_pack_bytes=max_context_bytes,
         )
-        pack = build_context_pack(bundle, options)
-        payload["context_pack"] = context_pack_payload(bundle, pack)
     except ContextPackError as exc:
-        payload = _error("context_failed", str(exc))
+        payload = _error(exc.code, exc.message)
+        _try_append_query_feedback(
+            resolved_repo,
+            query=query,
+            payload=payload,
+            context_lines=context_lines,
+            full_file=full_file,
+            final_top_k=final_top_k,
+            tool="context_search_context",
+        )
+        return payload
+
+    try:
+        bundle = query_repository(
+            resolved_repo,
+            query,
+            config,
+            context_lines=context_lines,
+            full_file=full_file,
+        )
+    except (ValueError, requests.HTTPError) as exc:
+        payload = _error("query_failed", str(exc))
+        _try_append_query_feedback(
+            resolved_repo,
+            query=query,
+            payload=payload,
+            context_lines=context_lines,
+            full_file=full_file,
+            final_top_k=final_top_k,
+            tool="context_search_context",
+        )
+        return payload
+
+    try:
+        pack = build_context_pack(bundle, options)
+        payload = context_payload(resolved_repo, bundle, pack)
+    except ContextPackError:
+        payload = _error("context_failed", _CONTEXT_FAILED_MESSAGE)
     except Exception:
-        payload = _error("context_failed", UNEXPECTED_CONTEXT_ERROR)
+        payload = _error("context_failed", _CONTEXT_FAILED_MESSAGE)
 
     _try_append_query_feedback(
         resolved_repo,
@@ -470,20 +497,27 @@ def _append_query_feedback(
         "context_lines": context_lines,
         "full_file": full_file,
         "final_top_k": final_top_k,
-        "result_count": len(payload.get("results", [])),
-        "top_score": _top_score(payload),
-        "top_score_parts": _top_score_parts(payload),
-        "summary_counts": _summary_counts(payload),
-        "followup_keyword_count": len(payload.get("followup_keywords", [])),
-        "embedding": payload.get("index", {}).get("embedding", {}),
-        "planner": _feedback_planner_payload(payload),
-        "variant_retrieval": _feedback_variant_payload(payload),
         "error_code": payload.get("error", {}).get("code"),
     }
     if tool == "context_search_context":
         context_pack_feedback = _feedback_context_pack_payload(payload)
         if context_pack_feedback is not None:
             event["context_pack"] = context_pack_feedback
+    else:
+        event.update(
+            {
+                "result_count": len(payload.get("results", [])),
+                "top_score": _top_score(payload),
+                "top_score_parts": _top_score_parts(payload),
+                "summary_counts": _summary_counts(payload),
+                "followup_keyword_count": len(
+                    payload.get("followup_keywords", [])
+                ),
+                "embedding": payload.get("index", {}).get("embedding", {}),
+                "planner": _feedback_planner_payload(payload),
+                "variant_retrieval": _feedback_variant_payload(payload),
+            }
+        )
     log_path = index_dir / "mcp_calls.jsonl"
     _rotate_feedback_log(log_path)
     with log_path.open("a", encoding="utf-8") as handle:
@@ -496,7 +530,8 @@ def _feedback_context_pack_payload(
     pack = payload.get("context_pack")
     if type(pack) is not dict:
         return None
-
+    if type(pack.get("schema_version")) is not int or pack["schema_version"] != 2:
+        return None
     status = pack.get("status")
     if type(status) is not str or status not in {"empty", "partial", "ready"}:
         return None
@@ -513,56 +548,115 @@ def _feedback_context_pack_payload(
         return None
 
     items = pack.get("items")
+    if type(items) is not list or any(type(item) is not dict for item in items):
+        return None
     groups = pack.get("groups")
-    if type(groups) is not dict:
-        groups = {}
+    if type(groups) is not dict or tuple(groups) != CONTEXT_GROUPS:
+        return None
     group_counts: dict[str, int] = {}
     for group in CONTEXT_GROUPS:
         group_items = groups.get(group)
-        group_counts[group] = len(group_items) if type(group_items) is list else 0
+        if type(group_items) is not list:
+            return None
+        group_counts[group] = len(group_items)
+    if sum(group_counts.values()) != len(items):
+        return None
+
+    excerpt_count = 0
+    computed_truncated_items = 0
+    for item in items:
+        excerpts = item.get("excerpts")
+        if type(excerpts) is not list or any(
+            type(excerpt) is not dict
+            or type(excerpt.get("truncated")) is not bool
+            for excerpt in excerpts
+        ):
+            return None
+        excerpt_count += len(excerpts)
+        computed_truncated_items += int(
+            any(excerpt["truncated"] for excerpt in excerpts)
+        )
+
+    evidence_needs = pack.get("evidence_needs")
+    if type(evidence_needs) is not list or any(
+        type(need) is not dict or type(need.get("required")) is not bool
+        for need in evidence_needs
+    ):
+        return None
+    required_need_count = sum(need["required"] for need in evidence_needs)
 
     required_categories: set[str] = set()
     recommended_categories: set[str] = set()
     missing_evidence = pack.get("missing_evidence")
-    if type(missing_evidence) is list:
-        for evidence in missing_evidence:
-            if type(evidence) is not dict:
-                continue
-            category = evidence.get("category")
-            required = evidence.get("required")
-            if type(category) is not str or type(required) is not bool:
-                continue
-            if required and category in ("results", *CONTEXT_GROUPS):
-                required_categories.add(category)
-            elif not required and category in CONTEXT_GROUPS:
-                recommended_categories.add(category)
+    if type(missing_evidence) is not list:
+        return None
+    for evidence in missing_evidence:
+        if type(evidence) is not dict:
+            return None
+        category = evidence.get("category")
+        required = evidence.get("required")
+        if category not in CONTEXT_GROUPS or type(required) is not bool:
+            return None
+        if required:
+            required_categories.add(category)
+        else:
+            recommended_categories.add(category)
     recommended_categories.difference_update(required_categories)
 
     next_queries = pack.get("next_queries")
+    if type(next_queries) is not list:
+        return None
+    omissions = pack.get("omissions")
+    if type(omissions) is not list:
+        return None
     raw_budget = pack.get("budget")
     if type(raw_budget) is not dict:
-        raw_budget = {}
+        return None
     budget_keys = (
-        "max_results",
-        "max_evidence_anchors",
         "max_items",
-        "included_results",
-        "included_evidence_anchors",
+        "max_pack_bytes",
         "content_bytes",
+        "pack_bytes",
     )
     budget: dict[str, int] = {}
     for key in budget_keys:
         value = raw_budget.get(key)
-        if type(value) is int and value >= 0:
-            budget[key] = value
+        if type(value) is not int or value < 0:
+            return None
+        budget[key] = value
+    counter_keys = (
+        "included_items",
+        "included_excerpts",
+        "truncated_item_count",
+        "omitted_item_count",
+    )
+    counters: dict[str, int] = {}
+    for key in counter_keys:
+        value = raw_budget.get(key)
+        if type(value) is not int or value < 0:
+            return None
+        counters[key] = value
+    if counters != {
+        "included_items": len(items),
+        "included_excerpts": excerpt_count,
+        "truncated_item_count": computed_truncated_items,
+        "omitted_item_count": len(omissions),
+    }:
+        return None
     return {
+        "schema_version": 2,
         "status": status,
         "confidence": confidence,
-        "item_count": len(items) if type(items) is list else 0,
         "group_counts": group_counts,
+        "need_count": len(evidence_needs),
+        "required_need_count": required_need_count,
+        "selected_item_count": len(items),
+        "excerpt_count": excerpt_count,
+        "truncated_item_count": counters["truncated_item_count"],
+        "omitted_item_count": counters["omitted_item_count"],
         "required_missing_categories": [
             category
-            for category in ("results", *CONTEXT_GROUPS)
+            for category in CONTEXT_GROUPS
             if category in required_categories
         ],
         "recommended_missing_categories": [
@@ -570,8 +664,8 @@ def _feedback_context_pack_payload(
             for category in CONTEXT_GROUPS
             if category in recommended_categories
         ],
-        "next_query_count": len(next_queries) if type(next_queries) is list else 0,
         "budget": budget,
+        "next_query_count": len(next_queries),
     }
 
 

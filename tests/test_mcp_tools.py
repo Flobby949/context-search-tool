@@ -3,8 +3,14 @@ import json
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 import context_search_tool.mcp_tools as mcp_tools
+from context_search_tool import cli, formatters
+from context_search_tool.cli import app
+from context_search_tool.config import ContextConfig, ToolConfig, render_config
+from context_search_tool.context_pack import builder as context_pack_v2_builder
+from context_search_tool.context_pack import serialization as context_pack_v2_serialization
 from context_search_tool.context_pack import (
     CONTEXT_GROUPS,
     ContextPackError,
@@ -74,7 +80,7 @@ def _deterministic_bundle(
             RetrievalResult(
                 file_path=Path(result_path),
                 start_line=10,
-                end_line=20,
+                end_line=10 + result_content.count("\n"),
                 content=result_content,
                 score=0.87,
                 score_parts={"lexical": 0.8, "evidence_priority": 0.0},
@@ -86,7 +92,7 @@ def _deterministic_bundle(
             EvidenceAnchor(
                 file_path=Path("README.md"),
                 start_line=1,
-                end_line=4,
+                end_line=1,
                 content="Audit endpoint documentation",
                 score=0.42,
                 score_parts={"lexical": 0.2},
@@ -131,15 +137,13 @@ def test_mcp_tools_index_query_stats_and_explain(tmp_path: Path) -> None:
     )
     assert context["ok"] is True
     assert context["repo"] == str(repo)
-    assert context["index"] == queried["index"]
-    assert context["context_pack"]["schema_version"] == 1
-    assert context["results"] == queried["results"]
-    assert context["evidence_anchors"] == queried["evidence_anchors"]
-    assert context["context_pack"]["budget"]["max_results"] == 1
-    assert context["context_pack"]["budget"]["max_evidence_anchors"] == 1
+    assert set(context) == {"ok", "repo", "query", "retrieval", "context_pack"}
+    assert context["context_pack"]["schema_version"] == 2
+    assert context["retrieval"]["result_count"] == len(queried["results"])
+    assert context["retrieval"]["evidence_anchor_count"] == len(
+        queried["evidence_anchors"]
+    )
     assert context["context_pack"]["budget"]["max_items"] == 2
-    assert context["context_pack"]["budget"]["context_before_lines"] == 0
-    assert context["context_pack"]["budget"]["context_after_lines"] == 0
 
     stats = context_search_stats_tool(str(repo))
     assert stats["ok"] is True
@@ -698,7 +702,7 @@ def test_mcp_query_payload_keeps_direct_text_diagnostics_numeric(tmp_path: Path)
         assert isinstance(result["diagnostics"]["anchored_relation"], (int, float))
 
 
-def test_mcp_context_preserves_raw_payload_and_matches_shared_pack(
+def test_mcp_context_matches_shared_bounded_envelope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -714,34 +718,29 @@ def test_mcp_context_preserves_raw_payload_and_matches_shared_pack(
         final_top_k=1,
     )
 
-    raw_payload = mcp_tools._query_payload(bundle)
-    for key, value in raw_payload.items():
-        assert payload[key] == value
     config = mcp_tools._load_query_config(repo, 1)
     options = resolve_context_pack_options(
         config,
         context_lines=3,
-        full_file=False,
         max_evidence_anchors=evidence_anchor_top_k(config.retrieval.final_top_k),
     )
-    expected_pack = context_pack_payload(
+    expected = formatters.context_payload(
+        repo,
         bundle,
         build_context_pack(bundle, options),
     )
-    assert payload["context_pack"] == expected_pack
-    assert payload["ok"] is True
-    assert payload["repo"] == str(repo)
+    assert payload == expected
     json.dumps(payload, allow_nan=False)
 
 
-def test_mcp_context_queries_builds_and_materializes_once(
+def test_mcp_context_queries_builds_and_envelopes_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "repo"
     _write_index_marker(repo)
     bundle = _deterministic_bundle()
-    calls = {"query": 0, "build": 0, "materialize": 0}
+    calls = {"query": 0, "build": 0, "envelope": 0}
 
     def query_once(*args: object, **kwargs: object) -> QueryBundle:
         calls["query"] += 1
@@ -751,13 +750,13 @@ def test_mcp_context_queries_builds_and_materializes_once(
         calls["build"] += 1
         return build_context_pack(*args, **kwargs)
 
-    def materialize_once(*args: object, **kwargs: object) -> dict[str, object]:
-        calls["materialize"] += 1
-        return context_pack_payload(*args, **kwargs)
+    def envelope_once(*args: object, **kwargs: object) -> dict[str, object]:
+        calls["envelope"] += 1
+        return formatters.context_payload(*args, **kwargs)
 
     monkeypatch.setattr(mcp_tools, "query_repository", query_once)
     monkeypatch.setattr(mcp_tools, "build_context_pack", build_once)
-    monkeypatch.setattr(mcp_tools, "context_pack_payload", materialize_once)
+    monkeypatch.setattr(mcp_tools, "context_payload", envelope_once)
 
     payload = context_search_context_tool(
         str(repo),
@@ -766,7 +765,169 @@ def test_mcp_context_queries_builds_and_materializes_once(
     )
 
     assert payload["ok"] is True
-    assert calls == {"query": 1, "build": 1, "materialize": 1}
+    assert calls == {"query": 1, "build": 1, "envelope": 1}
+
+
+def test_mcp_context_v2_is_the_exact_shared_bounded_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+    bundle = _deterministic_bundle()
+    monkeypatch.setattr(mcp_tools, "query_repository", lambda *args, **kwargs: bundle)
+
+    payload = context_search_context_tool(
+        str(repo),
+        bundle.query,
+        context_lines=3,
+        final_top_k=1,
+        max_items=1,
+        max_context_bytes=4096,
+    )
+    config = mcp_tools._load_query_config(repo, 1)
+    options = context_pack_v2_builder.resolve_context_pack_options(
+        config,
+        context_lines=3,
+        max_evidence_anchors=evidence_anchor_top_k(1),
+        max_items=1,
+        max_pack_bytes=4096,
+    )
+    expected_pack = context_pack_v2_builder.build_context_pack(bundle, options)
+    expected = formatters.context_payload(repo, bundle, expected_pack)
+
+    assert payload == expected
+    assert payload["context_pack"] == context_pack_v2_serialization.context_pack_payload(
+        expected_pack
+    )
+    assert set(payload) == {"ok", "repo", "query", "retrieval", "context_pack"}
+    assert set(payload).isdisjoint(
+        {
+            "results",
+            "evidence_anchors",
+            "summary",
+            "query_variants",
+            "expanded_tokens",
+            "followup_keywords",
+            "planner",
+            "index",
+        }
+    )
+    assert json.loads(formatters.format_context_json(expected))["context_pack"] == payload[
+        "context_pack"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"max_items": 0}, "max_items must be a positive integer"),
+        (
+            {"max_context_bytes": 4095},
+            "max_context_bytes must be an integer of at least 4096 bytes",
+        ),
+    ],
+)
+def test_mcp_context_rejects_limits_before_retrieval_or_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kwargs: dict[str, int],
+    message: str,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+    counts = {"query": 0, "build": 0}
+
+    def counted_query(*args: object, **call_kwargs: object) -> QueryBundle:
+        counts["query"] += 1
+        return _deterministic_bundle()
+
+    def counted_build(*args: object, **call_kwargs: object):
+        counts["build"] += 1
+        raise AssertionError("invalid options must not reach the builder")
+
+    monkeypatch.setattr(mcp_tools, "query_repository", counted_query)
+    monkeypatch.setattr(mcp_tools, "build_context_pack", counted_build)
+
+    payload = context_search_context_tool(str(repo), "audit", **kwargs)
+
+    assert payload == {
+        "ok": False,
+        "error": {"code": "invalid_context_options", "message": message},
+    }
+    assert counts == {"query": 0, "build": 0}
+
+
+def test_mcp_context_rejects_persisted_limits_before_retrieval_or_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+    (repo / ".context-search" / "config.toml").write_text(
+        render_config(ToolConfig(context=ContextConfig(max_items=0))),
+        encoding="utf-8",
+    )
+    counts = {"query": 0, "build": 0}
+
+    def counted_query(*args: object, **kwargs: object) -> QueryBundle:
+        counts["query"] += 1
+        return _deterministic_bundle()
+
+    def counted_build(*args: object, **kwargs: object):
+        counts["build"] += 1
+        raise AssertionError("invalid options must not reach the builder")
+
+    monkeypatch.setattr(mcp_tools, "query_repository", counted_query)
+    monkeypatch.setattr(mcp_tools, "build_context_pack", counted_build)
+
+    payload = context_search_context_tool(str(repo), "audit")
+
+    assert payload == {
+        "ok": False,
+        "error": {
+            "code": "invalid_context_options",
+            "message": "context.max_items must be a positive integer",
+        },
+    }
+    assert counts == {"query": 0, "build": 0}
+
+
+def test_cli_and_mcp_context_pack_values_are_identical(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+    bundle = _deterministic_bundle()
+    monkeypatch.setattr(cli, "query_repository", lambda *args, **kwargs: bundle)
+    monkeypatch.setattr(mcp_tools, "query_repository", lambda *args, **kwargs: bundle)
+    monkeypatch.setattr(cli, "_warn_if_signal_schema_stale", lambda repo: None)
+
+    cli_result = CliRunner().invoke(
+        app,
+        [
+            "context",
+            str(repo),
+            bundle.query,
+            "--json",
+            "--max-items",
+            "1",
+            "--max-context-bytes",
+            "4096",
+        ],
+    )
+    mcp_payload = context_search_context_tool(
+        str(repo),
+        bundle.query,
+        max_items=1,
+        max_context_bytes=4096,
+    )
+
+    assert cli_result.exit_code == 0
+    cli_payload = json.loads(cli_result.output)
+    assert mcp_payload["ok"] is True
+    assert cli_payload["context_pack"] == mcp_payload["context_pack"]
 
 
 def test_mcp_context_empty_bundle_is_success_and_feedback_is_bounded(
@@ -790,13 +951,7 @@ def test_mcp_context_empty_bundle_is_success_and_feedback_is_bounded(
     assert "error" not in payload
     pack = payload["context_pack"]
     assert pack["status"] == "empty"
-    assert pack["missing_evidence"] == [
-        {
-            "category": "results",
-            "required": True,
-            "reason": "no result or evidence anchor is present in the bounded result set",
-        }
-    ]
+    assert pack["missing_evidence"] == []
     assert pack["next_queries"] == []
 
     log_path = repo / ".context-search" / "mcp_calls.jsonl"
@@ -804,24 +959,28 @@ def test_mcp_context_empty_bundle_is_success_and_feedback_is_bounded(
     assert event["tool"] == "context_search_context"
     assert event["query"] == "public empty query"
     assert event["context_pack"] == {
+        "schema_version": 2,
         "status": "empty",
         "confidence": "none",
-        "item_count": 0,
         "group_counts": {group: 0 for group in CONTEXT_GROUPS},
-        "required_missing_categories": ["results"],
+        "need_count": 0,
+        "required_need_count": 0,
+        "selected_item_count": 0,
+        "excerpt_count": 0,
+        "truncated_item_count": 0,
+        "omitted_item_count": 0,
+        "required_missing_categories": [],
         "recommended_missing_categories": [],
-        "next_query_count": 0,
         "budget": {
             key: pack["budget"][key]
             for key in (
-                "max_results",
-                "max_evidence_anchors",
                 "max_items",
-                "included_results",
-                "included_evidence_anchors",
+                "max_pack_bytes",
                 "content_bytes",
+                "pack_bytes",
             )
         },
+        "next_query_count": 0,
     }
     serialized_metadata = json.dumps(event["context_pack"])
     assert bundle_query not in serialized_metadata
@@ -862,21 +1021,17 @@ def test_mcp_context_matches_query_repo_and_index_errors(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize(
-    ("exception", "message"),
+    "exception",
     [
-        (
-            ContextPackError("ContextPack budget exceeded"),
-            "ContextPack budget exceeded",
-        ),
-        (ValueError("private detail"), "Context pack construction failed"),
-        (RuntimeError("private detail"), "Context pack construction failed"),
+        ContextPackError("context_failed", "Context pack construction failed"),
+        ValueError("private detail"),
+        RuntimeError("private detail"),
     ],
 )
 def test_mcp_context_contains_pack_phase_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     exception: Exception,
-    message: str,
 ) -> None:
     repo = tmp_path / "repo"
     _write_index_marker(repo)
@@ -892,7 +1047,10 @@ def test_mcp_context_contains_pack_phase_failures(
 
     assert payload == {
         "ok": False,
-        "error": {"code": "context_failed", "message": message},
+        "error": {
+            "code": "context_failed",
+            "message": "Context pack construction failed",
+        },
     }
     assert set(payload) == {"ok", "error"}
     assert set(mcp_tools._query_payload(bundle)).isdisjoint(payload)
@@ -940,78 +1098,91 @@ def test_mcp_context_feedback_failure_is_non_fatal(
     )
 
     assert payload["ok"] is True
-    assert payload["context_pack"]["schema_version"] == 1
+    assert payload["context_pack"]["schema_version"] == 2
 
 
-def test_mcp_context_feedback_keeps_only_bounded_pack_metadata(
+def test_mcp_context_feedback_keeps_only_approved_bounded_metadata(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "repo"
     _write_index_marker(repo)
-    content_sentinel = "PRIVATE_CONTEXT_CONTENT_SENTINEL"
-    path_sentinel = "PRIVATE_CONTEXT_PATH_SENTINEL"
-    item_id_sentinel = "PRIVATE_CONTEXT_ITEM_ID_SENTINEL"
-    next_query_sentinel = "PRIVATE_CONTEXT_NEXT_QUERY_SENTINEL"
-    planner_rewrite_sentinel = "PRIVATE_PLANNER_REWRITE_SENTINEL"
-    semantic_variant_sentinel = "PRIVATE_SEMANTIC_VARIANT_SENTINEL"
-    discarded_hint_sentinel = "PRIVATE_DISCARDED_HINT_SENTINEL"
-    public_query = "public privacy query"
-    base = _deterministic_bundle(
-        query=public_query,
-        result_path=f"src/{path_sentinel}/AuditController.java",
-        result_content=content_sentinel,
+    bundle = _deterministic_bundle(query="public privacy query")
+    config = mcp_tools._load_query_config(repo, 1)
+    options = resolve_context_pack_options(
+        config,
+        context_lines=None,
+        max_evidence_anchors=evidence_anchor_top_k(1),
     )
-    bundle = QueryBundle(
-        query=base.query,
-        expanded_tokens=base.expanded_tokens,
-        results=base.results,
-        followup_keywords=base.followup_keywords,
-        summary=RetrievalSummary(entry_points=[next_query_sentinel]),
-        planner=QueryPlan(
-            original_query=public_query,
-            rewritten_queries=[planner_rewrite_sentinel],
-            intent="endpoint_lookup",
-            status="ok",
-            provider="test",
-            model="test",
-            discarded_hints=[discarded_hint_sentinel],
-        ),
-        evidence_anchors=base.evidence_anchors,
-        query_variants=[
-            QueryVariant("original", public_query, "original"),
-            QueryVariant("planner:0", semantic_variant_sentinel, "planner"),
-        ],
-        variant_retrieval_status="hybrid",
+    payload = formatters.context_payload(
+        repo,
+        bundle,
+        build_context_pack(bundle, options),
     )
-    original_materialize = context_pack_payload
-
-    def materialize_with_private_item_id(*args: object, **kwargs: object):
-        pack_payload = original_materialize(*args, **kwargs)
-        pack_payload["items"][0]["id"] = item_id_sentinel
-        return pack_payload
-
-    monkeypatch.setattr(mcp_tools, "query_repository", lambda *args, **kwargs: bundle)
-    monkeypatch.setattr(
-        mcp_tools,
-        "context_pack_payload",
-        materialize_with_private_item_id,
-    )
-
-    payload = context_search_context_tool(
-        str(repo),
-        public_query,
-        final_top_k=1,
-    )
-
-    assert payload["ok"] is True
     pack = payload["context_pack"]
-    assert any(
-        next_query_sentinel in next_query["query"]
-        for next_query in pack["next_queries"]
+
+    sentinels = {
+        "path": "PRIVATE_CONTEXT_PATH_SENTINEL",
+        "content": "PRIVATE_CONTEXT_CONTENT_SENTINEL",
+        "subject": "PRIVATE_CONTEXT_SUBJECT_SENTINEL",
+        "need_id": "PRIVATE_CONTEXT_NEED_ID_SENTINEL",
+        "next_query": "PRIVATE_CONTEXT_NEXT_QUERY_SENTINEL",
+        "planner": "PRIVATE_PLANNER_REWRITE_SENTINEL",
+        "discarded": "PRIVATE_DISCARDED_HINT_SENTINEL",
+        "summary": "PRIVATE_SUMMARY_SENTINEL",
+    }
+    pack["items"][0]["file_path"] = sentinels["path"]
+    pack["items"][0]["excerpts"][0]["content"] = sentinels["content"]
+    pack["evidence_needs"].append(
+        {
+            "id": sentinels["need_id"],
+            "category": "tests",
+            "subject_terms": [sentinels["subject"]],
+            "required": True,
+            "provenance": "explicit_query",
+            "matched_item_ids": [],
+        }
     )
-    log_path = repo / ".context-search" / "mcp_calls.jsonl"
-    event = json.loads(log_path.read_text(encoding="utf-8"))
+    pack["missing_evidence"].append(
+        {
+            "need_id": sentinels["need_id"],
+            "category": "tests",
+            "required": True,
+            "reason": sentinels["subject"],
+        }
+    )
+    pack["next_queries"].append(
+        {
+            "need_id": sentinels["need_id"],
+            "query": sentinels["next_query"],
+            "purpose": "find missing required test evidence",
+        }
+    )
+    payload.update(
+        {
+            "planner": {
+                "rewritten_queries": [sentinels["planner"]],
+                "discarded_hints": [sentinels["discarded"]],
+            },
+            "summary": {"entry_points": [sentinels["summary"]]},
+            "results": [{"score": 987654321.125}],
+        }
+    )
+
+    mcp_tools._append_query_feedback(
+        repo,
+        query="public privacy query",
+        payload=payload,
+        context_lines=None,
+        full_file=False,
+        final_top_k=1,
+        tool="context_search_context",
+    )
+
+    event = json.loads(
+        (repo / ".context-search" / "mcp_calls.jsonl").read_text(
+            encoding="utf-8"
+        )
+    )
     assert set(event) == {
         "timestamp",
         "tool",
@@ -1021,60 +1192,61 @@ def test_mcp_context_feedback_keeps_only_bounded_pack_metadata(
         "context_lines",
         "full_file",
         "final_top_k",
-        "result_count",
-        "top_score",
-        "top_score_parts",
-        "summary_counts",
-        "followup_keyword_count",
-        "embedding",
-        "planner",
-        "variant_retrieval",
         "error_code",
         "context_pack",
     }
-    assert event["tool"] == "context_search_context"
-    assert event["query"] == public_query
     assert event["context_pack"] == {
+        "schema_version": 2,
         "status": pack["status"],
         "confidence": pack["confidence"]["level"],
-        "item_count": len(pack["items"]),
         "group_counts": {
             group: len(pack["groups"][group]) for group in CONTEXT_GROUPS
         },
+        "need_count": len(pack["evidence_needs"]),
+        "required_need_count": sum(
+            need["required"] for need in pack["evidence_needs"]
+        ),
+        "selected_item_count": len(pack["items"]),
+        "excerpt_count": sum(
+            len(item["excerpts"]) for item in pack["items"]
+        ),
+        "truncated_item_count": pack["budget"]["truncated_item_count"],
+        "omitted_item_count": pack["budget"]["omitted_item_count"],
         "required_missing_categories": [
-            evidence["category"]
-            for evidence in pack["missing_evidence"]
-            if evidence["required"]
+            category
+            for category in CONTEXT_GROUPS
+            if any(
+                missing["category"] == category and missing["required"]
+                for missing in pack["missing_evidence"]
+            )
         ],
         "recommended_missing_categories": [
-            evidence["category"]
-            for evidence in pack["missing_evidence"]
-            if not evidence["required"]
+            category
+            for category in CONTEXT_GROUPS
+            if any(
+                missing["category"] == category and not missing["required"]
+                for missing in pack["missing_evidence"]
+            )
+            and not any(
+                missing["category"] == category and missing["required"]
+                for missing in pack["missing_evidence"]
+            )
         ],
-        "next_query_count": len(pack["next_queries"]),
         "budget": {
             key: pack["budget"][key]
             for key in (
-                "max_results",
-                "max_evidence_anchors",
                 "max_items",
-                "included_results",
-                "included_evidence_anchors",
+                "max_pack_bytes",
                 "content_bytes",
+                "pack_bytes",
             )
         },
+        "next_query_count": len(pack["next_queries"]),
     }
     serialized = json.dumps(event)
-    for sentinel in (
-        content_sentinel,
-        path_sentinel,
-        item_id_sentinel,
-        next_query_sentinel,
-        planner_rewrite_sentinel,
-        semantic_variant_sentinel,
-        discarded_hint_sentinel,
-    ):
+    for sentinel in sentinels.values():
         assert sentinel not in serialized
+    assert "987654321.125" not in serialized
 
 
 def test_mcp_context_unexpected_failure_feedback_has_no_partial_pack(
@@ -1106,8 +1278,10 @@ def test_mcp_context_unexpected_failure_feedback_has_no_partial_pack(
     event = json.loads(log_path.read_text(encoding="utf-8"))
     assert event["tool"] == "context_search_context"
     assert event["error_code"] == "context_failed"
-    assert event["result_count"] == 0
     assert "context_pack" not in event
+    assert "result_count" not in event
+    assert "planner" not in event
+    assert "summary_counts" not in event
     serialized = json.dumps(event)
     assert private_exception not in serialized
     assert raw_sentinel not in serialized
@@ -1171,25 +1345,5 @@ def test_mcp_context_feedback_fails_closed_on_malformed_pack_metadata(
 
     log_path = repo / ".context-search" / "mcp_calls.jsonl"
     event = json.loads(log_path.read_text(encoding="utf-8"))
-    assert event["context_pack"] == {
-        "status": "partial",
-        "confidence": "low",
-        "item_count": 2,
-        "group_counts": {
-            "entrypoints": 1,
-            "implementations": 0,
-            "related_types": 0,
-            "tests": 2,
-            "configs_docs": 0,
-            "supporting": 0,
-        },
-        "required_missing_categories": ["results", "entrypoints"],
-        "recommended_missing_categories": ["supporting"],
-        "next_query_count": 1,
-        "budget": {
-            "max_results": 2,
-            "included_results": 1,
-            "content_bytes": 4,
-        },
-    }
+    assert "context_pack" not in event
     assert private_sentinel not in json.dumps(event)

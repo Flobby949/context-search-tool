@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from context_search_tool.context_pack import (
-    INVALID_REFERENCE_ERROR,
     ContextPack,
     ContextPackError,
+    canonical_context_pack_bytes,
     context_pack_payload,
-    resolve_context_item,
 )
 from context_search_tool.models import (
     EvidenceAnchor,
@@ -154,15 +154,33 @@ def format_json(bundle: QueryBundle) -> str:
     return json.dumps(query_payload(bundle), ensure_ascii=True, indent=2, sort_keys=True)
 
 
-def format_context_json(
-    raw_payload: dict[str, Any],
+def context_payload(
+    repo: Path,
     bundle: QueryBundle,
     pack: ContextPack,
-) -> str:
-    payload = dict(raw_payload)
-    payload["context_pack"] = context_pack_payload(bundle, pack)
+) -> dict[str, Any]:
+    """Return the shared bounded context success envelope."""
+    return {
+        "ok": True,
+        "repo": str(repo.resolve()),
+        "query": bundle.query,
+        "retrieval": {
+            "result_count": len(bundle.results),
+            "evidence_anchor_count": len(bundle.evidence_anchors),
+            "planner_status": bundle.planner.status,
+            "planner_intent": (
+                bundle.planner.intent
+                if bundle.planner.status == "ok"
+                else "unknown"
+            ),
+        },
+        "context_pack": context_pack_payload(pack),
+    }
+
+
+def format_context_json(envelope: dict[str, Any]) -> str:
     return json.dumps(
-        payload,
+        envelope,
         ensure_ascii=True,
         indent=2,
         sort_keys=False,
@@ -170,95 +188,156 @@ def format_context_json(
     )
 
 
-def format_context_markdown(bundle: QueryBundle, pack: ContextPack) -> str:
-    context_pack_payload(bundle, pack)
-    planner_line = _planner_markdown_line(bundle.planner)
-    lines = [
-        "# Context Pack",
-        "",
-        f"Query: {bundle.query}",
-        f"Status: {pack.status}",
-        f"Confidence: {pack.confidence.level}",
-        f"Planner: {bundle.planner.status}",
-        *([planner_line] if planner_line else []),
-        "",
-        "## Read First",
-    ]
-
-    items_by_id = {item.id: item for item in pack.items}
-    if not pack.reading_order:
-        lines.append("- (none)")
-    else:
-        for item_id in pack.reading_order:
-            item = items_by_id.get(item_id)
-            if item is None:
-                raise ContextPackError(INVALID_REFERENCE_ERROR)
-            source = resolve_context_item(bundle, item)
-            fence = _markdown_fence(source.content)
-            lines.extend(
-                [
-                    "",
-                    (
-                        f"### {item.id} - {item.file_path}:"
-                        f"{item.start_line}-{item.end_line}"
-                    ),
-                    f"Group: {item.group}",
-                    f"Role: {item.role}",
-                    f"Source: {item.source}",
-                    "",
-                    "Reasons:",
-                    *_format_bullets(list(source.reasons)),
-                    "",
-                    "Snippet:",
-                    fence,
-                    source.content,
-                    fence,
-                ]
-            )
-
-    lines.extend(["", "## Missing Evidence"])
-    if not pack.missing_evidence:
-        lines.append("- (none)")
-    else:
-        for evidence in pack.missing_evidence:
-            label = "Required" if evidence.required else "Recommended"
-            lines.append(f"- {label}: {evidence.category} — {evidence.reason}")
-
-    lines.extend(["", "## Next Queries"])
-    if not pack.next_queries:
-        lines.append("- (none)")
-    else:
-        for suggestion in pack.next_queries:
-            lines.extend(
-                [
-                    f"- Purpose: {suggestion.purpose}",
-                    f"  Query: {suggestion.query}",
-                    f"  Reason: {suggestion.reason}",
-                ]
-            )
-
-    budget = pack.budget
-    lines.extend(
-        [
+def format_context_markdown(envelope: dict[str, Any]) -> str:
+    try:
+        pack = _validated_context_pack_payload(envelope)
+        retrieval = envelope["retrieval"]
+        confidence = pack["confidence"]
+        lines = [
+            "# Context Pack",
             "",
-            "## Budget",
-            f"- max_results: {budget.max_results}",
-            f"- max_evidence_anchors: {budget.max_evidence_anchors}",
-            f"- max_items: {budget.max_items}",
-            f"- included_results: {budget.included_results}",
-            (
-                "- included_evidence_anchors: "
-                f"{budget.included_evidence_anchors}"
-            ),
-            f"- content_bytes: {budget.content_bytes}",
-            f"- context_before_lines: {budget.context_before_lines}",
-            f"- context_after_lines: {budget.context_after_lines}",
-            f"- full_file: {budget.full_file}",
-            f"- max_full_file_bytes: {budget.max_full_file_bytes}",
+            f"Repository: {envelope['repo']}",
+            f"Query: {envelope['query']}",
             "",
+            "## Status",
+            f"- {pack['status']}",
+            "",
+            "## Confidence",
+            f"- Level: {confidence['level']}",
+            *_format_bullets(confidence["reasons"]),
+            "",
+            "## Retrieval",
+            f"- Results: {retrieval['result_count']}",
+            f"- Evidence anchors: {retrieval['evidence_anchor_count']}",
+            f"- Planner status: {retrieval['planner_status']}",
+            f"- Planner intent: {retrieval['planner_intent']}",
+            "",
+            "## Evidence Needs",
         ]
-    )
-    return "\n".join(lines)
+
+        if not pack["evidence_needs"]:
+            lines.append("- (none)")
+        else:
+            for need in pack["evidence_needs"]:
+                label = "Required" if need["required"] else "Recommended"
+                subjects = ", ".join(need["subject_terms"]) or "(none)"
+                lines.append(
+                    f"- {label}: {need['category']} ({need['id']}); "
+                    f"subjects: {subjects}; provenance: {need['provenance']}"
+                )
+
+        lines.extend(["", "## Read First"])
+        items_by_id = {item["id"]: item for item in pack["items"]}
+        if not pack["reading_order"]:
+            lines.append("- (none)")
+        else:
+            for item_id in pack["reading_order"]:
+                item = items_by_id[item_id]
+                lines.extend(
+                    [
+                        "",
+                        f"### {item_id} — {item['file_path']}",
+                        f"- Group: {item['group']}",
+                        f"- Role: {item['role']}",
+                        f"- Classification: {item['classification_basis']}",
+                        f"- Source: {item['source_kind']}",
+                    ]
+                )
+                if item["reasons"]:
+                    lines.extend(["", "Reasons:", *_format_bullets(item["reasons"])])
+                for excerpt in item["excerpts"]:
+                    fence = _markdown_fence(excerpt["content"])
+                    lines.extend(
+                        [
+                            "",
+                            (
+                                f"#### Lines {excerpt['start_line']}-"
+                                f"{excerpt['end_line']}"
+                            ),
+                            fence,
+                            excerpt["content"],
+                            fence,
+                        ]
+                    )
+
+        lines.extend(["", "## Missing Evidence"])
+        if not pack["missing_evidence"]:
+            lines.append("- (none)")
+        else:
+            for evidence in pack["missing_evidence"]:
+                label = "Required" if evidence["required"] else "Recommended"
+                lines.append(
+                    f"- {label}: {evidence['category']} "
+                    f"({evidence['need_id']}) — {evidence['reason']}"
+                )
+
+        lines.extend(["", "## Omissions"])
+        if not pack["omissions"]:
+            lines.append("- (none)")
+        else:
+            for omission in pack["omissions"]:
+                lines.append(
+                    f"- {omission['file_path']} [{omission['group']}] — "
+                    f"{omission['reason']}"
+                )
+
+        lines.extend(["", "## Next Queries"])
+        if not pack["next_queries"]:
+            lines.append("- (none)")
+        else:
+            for suggestion in pack["next_queries"]:
+                lines.extend(
+                    [
+                        f"- Purpose: {suggestion['purpose']}",
+                        f"  Query: {suggestion['query']}",
+                        f"  Need: {suggestion['need_id']}",
+                    ]
+                )
+
+        budget = pack["budget"]
+        lines.extend(
+            [
+                "",
+                "## Budget",
+                f"- Max items: {budget['max_items']}",
+                f"- Included items: {budget['included_items']}",
+                f"- Included excerpts: {budget['included_excerpts']}",
+                f"- Content bytes: {budget['content_bytes']}",
+                (
+                    "- Canonical JSON pack bytes: "
+                    f"{budget['pack_bytes']} / {budget['max_pack_bytes']}"
+                ),
+                f"- Truncated items: {budget['truncated_item_count']}",
+                f"- Omitted items: {budget['omitted_item_count']}",
+                f"- Budget exhausted: {str(budget['budget_exhausted']).lower()}",
+                "",
+            ]
+        )
+        return "\n".join(lines)
+    except ContextPackError:
+        raise
+    except Exception as exc:
+        raise ContextPackError(
+            "context_failed",
+            "Context pack construction failed",
+        ) from exc
+
+
+def _validated_context_pack_payload(
+    envelope: dict[str, Any],
+) -> dict[str, Any]:
+    if type(envelope) is not dict or set(envelope) != {
+        "ok",
+        "repo",
+        "query",
+        "retrieval",
+        "context_pack",
+    }:
+        raise ContextPackError("context_failed", "Context pack construction failed")
+    if envelope.get("ok") is not True:
+        raise ContextPackError("context_failed", "Context pack construction failed")
+    encoded = canonical_context_pack_bytes(envelope["context_pack"])
+    return json.loads(encoded)
 
 
 def _query_variant_payload(variant: QueryVariant) -> dict[str, Any]:

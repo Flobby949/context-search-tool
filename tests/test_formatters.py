@@ -4,13 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from context_search_tool import context_pack, formatters
-from context_search_tool.context_pack import (
-    CONTEXT_GROUPS,
-    INVALID_REFERENCE_ERROR,
-    ContextPackError,
-    ContextPackOptions,
-)
+from context_search_tool import formatters
+from context_search_tool.config import ToolConfig
+from context_search_tool.context_pack import builder as context_pack_v2_builder
 from context_search_tool.models import (
     EvidenceAnchor,
     QueryPlan,
@@ -119,15 +115,148 @@ def compatibility_bundle() -> QueryBundle:
     )
 
 
-def context_options() -> ContextPackOptions:
-    return ContextPackOptions(
-        max_results=12,
-        max_evidence_anchors=4,
-        context_before_lines=8,
-        context_after_lines=12,
-        full_file=False,
-        max_full_file_bytes=200_000,
+def _v2_context_pack(bundle: QueryBundle):
+    bundle = replace(
+        bundle,
+        results=[
+            replace(
+                result,
+                end_line=result.start_line + result.content.count("\n"),
+            )
+            for result in bundle.results
+        ],
+        evidence_anchors=[
+            replace(
+                anchor,
+                end_line=anchor.start_line + anchor.content.count("\n"),
+            )
+            for anchor in bundle.evidence_anchors
+        ],
     )
+    options = context_pack_v2_builder.resolve_context_pack_options(
+        ToolConfig(),
+        context_lines=None,
+        max_evidence_anchors=4,
+    )
+    return context_pack_v2_builder.build_context_pack(bundle, options)
+
+
+def test_context_v2_envelope_is_exact_bounded_and_json_native(tmp_path: Path) -> None:
+    bundle = compatibility_bundle()
+    pack = _v2_context_pack(bundle)
+
+    envelope = formatters.context_payload(tmp_path, bundle, pack)
+
+    assert envelope == {
+        "ok": True,
+        "repo": str(tmp_path.resolve()),
+        "query": bundle.query,
+        "retrieval": {
+            "result_count": len(bundle.results),
+            "evidence_anchor_count": len(bundle.evidence_anchors),
+            "planner_status": "ok",
+            "planner_intent": "feature_lookup",
+        },
+        "context_pack": context_pack_v2_builder.serialization.context_pack_payload(
+            pack
+        ),
+    }
+    assert set(envelope).isdisjoint(
+        {
+            "results",
+            "evidence_anchors",
+            "summary",
+            "query_variants",
+            "expanded_tokens",
+            "followup_keywords",
+            "planner",
+        }
+    )
+    assert "score_parts" not in json.dumps(envelope)
+    content_paths: list[tuple[object, ...]] = []
+
+    def collect_content_paths(value: object, path: tuple[object, ...] = ()) -> None:
+        if type(value) is dict:
+            for key, child in value.items():
+                child_path = (*path, key)
+                if key == "content":
+                    content_paths.append(child_path)
+                collect_content_paths(child, child_path)
+        elif type(value) is list:
+            for index, child in enumerate(value):
+                collect_content_paths(child, (*path, index))
+
+    collect_content_paths(envelope)
+    assert content_paths
+    assert all(path[-3] == "excerpts" for path in content_paths)
+    assert json.loads(formatters.format_context_json(envelope)) == envelope
+
+
+def test_context_v2_markdown_uses_only_self_contained_pack_in_reading_order(
+    tmp_path: Path,
+) -> None:
+    bundle = compatibility_bundle()
+    unique_contents = [
+        f"SOURCE_SENTINEL_{index}\n{result.content}"
+        for index, result in enumerate(bundle.results)
+    ]
+    bundle = replace(
+        bundle,
+        results=[
+            replace(result, content=unique_contents[index])
+            for index, result in enumerate(bundle.results)
+        ],
+        evidence_anchors=[],
+    )
+    pack = _v2_context_pack(bundle)
+    envelope = formatters.context_payload(tmp_path, bundle, pack)
+
+    output = formatters.format_context_markdown(envelope)
+
+    for heading in (
+        "## Status",
+        "## Confidence",
+        "## Evidence Needs",
+        "## Missing Evidence",
+        "## Omissions",
+        "## Next Queries",
+        "## Budget",
+    ):
+        assert heading in output
+    item_positions = [
+        output.index(f"### {item_id}")
+        for item_id in envelope["context_pack"]["reading_order"]
+    ]
+    assert item_positions == sorted(item_positions)
+    for item in envelope["context_pack"]["items"]:
+        for excerpt in item["excerpts"]:
+            assert output.count(excerpt["content"]) == 1
+    assert "Canonical JSON pack bytes:" in output
+    assert "Markdown bytes:" not in output
+
+
+def test_context_v2_json_rejects_nan_dataclasses_and_paths(tmp_path: Path) -> None:
+    pack = _v2_context_pack(compatibility_bundle())
+    envelope = formatters.context_payload(
+        tmp_path,
+        compatibility_bundle(),
+        pack,
+    )
+
+    with pytest.raises(ValueError):
+        formatters.format_context_json(
+            {
+                **envelope,
+                "retrieval": {
+                    **envelope["retrieval"],
+                    "result_count": float("nan"),
+                },
+            }
+        )
+    with pytest.raises(TypeError):
+        formatters.format_context_json({**envelope, "repo": tmp_path})
+    with pytest.raises(TypeError):
+        formatters.format_context_json({**envelope, "repo": pack})
 
 
 def test_format_json_preserves_complete_pre_refactor_output() -> None:
@@ -317,182 +446,6 @@ def test_raw_query_payload_ignores_internal_retrieval_spans() -> None:
     assert format_json(with_spans).encode("utf-8") == format_json(baseline).encode(
         "utf-8"
     )
-
-
-def test_context_json_appends_pack_without_changing_raw_query_payload() -> None:
-    bundle = compatibility_bundle()
-    pack = context_pack.build_context_pack(bundle, context_options())
-    raw_payload = formatters.query_payload(bundle)
-    raw_snapshot = dict(raw_payload)
-
-    output = formatters.format_context_json(raw_payload, bundle, pack)
-    parsed = json.loads(output)
-    parsed_pack = parsed.pop("context_pack")
-
-    assert raw_payload == raw_snapshot
-    assert parsed == json.loads(format_json(bundle))
-    assert parsed_pack == context_pack.context_pack_payload(bundle, pack)
-    assert list(parsed_pack["groups"]) == list(CONTEXT_GROUPS)
-    assert list(json.loads(output))[-1] == "context_pack"
-
-
-def test_context_json_rejects_non_finite_values() -> None:
-    bundle = compatibility_bundle()
-    pack = context_pack.build_context_pack(bundle, context_options())
-
-    with pytest.raises(ValueError):
-        formatters.format_context_json({"score": float("nan")}, bundle, pack)
-
-
-def test_context_markdown_renders_sections_items_and_budget_in_reading_order() -> None:
-    bundle = compatibility_bundle()
-    pack = context_pack.build_context_pack(bundle, context_options())
-
-    output = formatters.format_context_markdown(bundle, pack)
-
-    ordered_tokens = [
-        "# Context Pack",
-        "Query:",
-        "Status:",
-        "Confidence:",
-        "## Read First",
-        "## Missing Evidence",
-        "## Next Queries",
-        "## Budget",
-    ]
-    positions = [output.index(token) for token in ordered_tokens]
-    assert positions == sorted(positions)
-    assert "Planner: ok" in output
-    assert "Query expanded by qwen-test: PageService, PageController, audit" in output
-
-    for item_id in pack.reading_order:
-        item = next(item for item in pack.items if item.id == item_id)
-        source = context_pack.resolve_context_item(bundle, item)
-        heading = (
-            f"### {item.id} - {item.file_path}:"
-            f"{item.start_line}-{item.end_line}"
-        )
-        assert output.count(heading) == 1
-        assert f"Group: {item.group}" in output
-        assert f"Role: {item.role}" in output
-        assert output.count(source.content) == 1
-        for reason in source.reasons:
-            assert f"- {reason}" in output
-
-    assert "- Recommended: related_types" in output
-    assert "- Recommended: tests" in output
-    for suggestion in pack.next_queries:
-        assert f"- Purpose: {suggestion.purpose}" in output
-        assert f"  Query: {suggestion.query}" in output
-        assert f"  Reason: {suggestion.reason}" in output
-
-    for field_name in (
-        "max_results",
-        "max_evidence_anchors",
-        "max_items",
-        "included_results",
-        "included_evidence_anchors",
-        "content_bytes",
-        "context_before_lines",
-        "context_after_lines",
-        "full_file",
-        "max_full_file_bytes",
-    ):
-        assert f"- {field_name}: {getattr(pack.budget, field_name)}" in output
-
-
-def test_context_markdown_labels_required_missing_evidence() -> None:
-    bundle = replace(
-        sample_bundle(),
-        query="controller route",
-        results=[
-            replace(
-                sample_bundle().results[0],
-                file_path=Path("src/services/audit.py"),
-            )
-        ],
-    )
-    pack = context_pack.build_context_pack(bundle, context_options())
-
-    output = formatters.format_context_markdown(bundle, pack)
-
-    assert "- Required: entrypoints" in output
-    assert "- Purpose: find_entrypoints" in output
-    assert "  Query:" in output
-    assert "  Reason: required evidence for entrypoints is missing" in output
-
-
-@pytest.mark.parametrize(
-    ("planner", "expected_status", "has_hint"),
-    [
-        (QueryPlan.disabled_default(), "disabled", False),
-        (
-            QueryPlan(
-                original_query="数据看板 audit",
-                status="fallback",
-                provider="ollama",
-                model="qwen-test",
-                error="secret planner error",
-            ),
-            "fallback",
-            False,
-        ),
-        (compatibility_bundle().planner, "ok", True),
-    ],
-)
-def test_context_markdown_always_emits_planner_status_and_only_existing_hint(
-    planner: QueryPlan,
-    expected_status: str,
-    has_hint: bool,
-) -> None:
-    bundle = replace(compatibility_bundle(), planner=planner)
-    pack = context_pack.build_context_pack(bundle, context_options())
-
-    output = formatters.format_context_markdown(bundle, pack)
-
-    assert f"Planner: {expected_status}" in output
-    assert ("Query expanded by" in output) is has_hint
-
-
-def test_context_markdown_renders_an_empty_pack() -> None:
-    bundle = QueryBundle(
-        query="missing",
-        expanded_tokens=[],
-        results=[],
-        followup_keywords=[],
-    )
-    pack = context_pack.build_context_pack(bundle, context_options())
-
-    output = formatters.format_context_markdown(bundle, pack)
-
-    assert "Status: empty" in output
-    assert "Confidence: none" in output
-    assert "## Read First\n- (none)" in output
-    assert "- Required: results" in output
-    assert "## Next Queries\n- (none)" in output
-
-
-def test_context_markdown_rejects_nonexistent_reading_order_id() -> None:
-    bundle = compatibility_bundle()
-    pack = context_pack.build_context_pack(bundle, context_options())
-    invalid_pack = replace(pack, reading_order=(*pack.reading_order, "result:999"))
-
-    with pytest.raises(ContextPackError) as exc_info:
-        formatters.format_context_markdown(bundle, invalid_pack)
-
-    assert str(exc_info.value) == INVALID_REFERENCE_ERROR
-
-
-def test_context_markdown_rejects_invalid_source_index() -> None:
-    bundle = compatibility_bundle()
-    pack = context_pack.build_context_pack(bundle, context_options())
-    invalid_item = replace(pack.items[0], source_index=999)
-    invalid_pack = replace(pack, items=(invalid_item, *pack.items[1:]))
-
-    with pytest.raises(ContextPackError) as exc_info:
-        formatters.format_context_markdown(bundle, invalid_pack)
-
-    assert str(exc_info.value) == INVALID_REFERENCE_ERROR
 
 
 def test_markdown_formatter_contains_paths_reasons_and_snippets() -> None:

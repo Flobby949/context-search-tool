@@ -51,6 +51,8 @@ def context_search_context(
     context_lines: int | None = None,
     full_file: bool = False,
     final_top_k: int | None = None,
+    max_items: int | None = None,
+    max_context_bytes: int | None = None,
 ) -> dict[str, Any]:
     """Return an agent-oriented ContextPack from one bounded retrieval pass."""
     return context_search_context_tool(
@@ -59,6 +61,8 @@ def context_search_context(
         context_lines=context_lines,
         full_file=full_file,
         final_top_k=final_top_k,
+        max_items=max_items,
+        max_context_bytes=max_context_bytes,
     )
 
 

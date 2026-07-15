@@ -10,17 +10,16 @@ import typer
 
 from context_search_tool.config import ToolConfig, load_config
 from context_search_tool.context_pack import (
-    UNEXPECTED_CONTEXT_ERROR,
     ContextPackError,
     build_context_pack,
     resolve_context_pack_options,
 )
 from context_search_tool.formatters import (
+    context_payload,
     format_context_json,
     format_context_markdown,
     format_json,
     format_markdown,
-    query_payload,
 )
 from context_search_tool.indexer import (
     IncompatibleIndexError,
@@ -41,6 +40,8 @@ app = typer.Typer(
     help="Context Search Tool",
     no_args_is_help=True,
 )
+
+_CONTEXT_FAILED_MESSAGE = "Context pack construction failed"
 
 from context_search_tool.quality.__main__ import quality_app
 
@@ -130,6 +131,16 @@ def context(
         "--full-file",
         help="Return full files when they are below the configured size limit.",
     ),
+    max_items: Optional[int] = typer.Option(
+        None,
+        "--max-items",
+        help="Override the maximum number of context items.",
+    ),
+    max_context_bytes: Optional[int] = typer.Option(
+        None,
+        "--max-context-bytes",
+        help="Override the canonical JSON context pack byte limit.",
+    ),
     planner: bool = typer.Option(False, "--planner", help="Force query planner on."),
     no_planner: bool = typer.Option(
         False,
@@ -144,6 +155,18 @@ def context(
         no_planner=no_planner,
     )
     try:
+        anchor_limit = evidence_anchor_top_k(config.retrieval.final_top_k)
+        pack_options = resolve_context_pack_options(
+            config,
+            context_lines=context_lines,
+            max_evidence_anchors=anchor_limit,
+            max_items=max_items,
+            max_pack_bytes=max_context_bytes,
+        )
+    except ContextPackError as exc:
+        _exit_context_error(exc.code, exc.message)
+
+    try:
         bundle = query_repository(
             repo,
             query_text,
@@ -151,28 +174,21 @@ def context(
             context_lines=context_lines,
             full_file=full_file,
         )
-        raw_payload = query_payload(bundle)
     except (ValueError, requests.HTTPError) as exc:
         _exit_with_error(exc)
 
     try:
-        anchor_limit = evidence_anchor_top_k(config.retrieval.final_top_k)
-        pack_options = resolve_context_pack_options(
-            config,
-            context_lines=context_lines,
-            full_file=full_file,
-            max_evidence_anchors=anchor_limit,
-        )
         pack = build_context_pack(bundle, pack_options)
+        envelope = context_payload(repo, bundle, pack)
         output = (
-            format_context_json(raw_payload, bundle, pack)
+            format_context_json(envelope)
             if json_output
-            else format_context_markdown(bundle, pack)
+            else format_context_markdown(envelope)
         )
-    except ContextPackError as exc:
-        _exit_context_error(str(exc))
+    except ContextPackError:
+        _exit_context_error("context_failed", _CONTEXT_FAILED_MESSAGE)
     except Exception:
-        _exit_context_error(UNEXPECTED_CONTEXT_ERROR)
+        _exit_context_error("context_failed", _CONTEXT_FAILED_MESSAGE)
     typer.echo(output)
 
 
@@ -339,8 +355,8 @@ def _exit_with_error(exc: Exception) -> None:
     raise typer.Exit(code=1) from exc
 
 
-def _exit_context_error(message: str) -> None:
-    typer.echo(f"Error: context_failed: {message}", err=True)
+def _exit_context_error(code: str, message: str) -> None:
+    typer.echo(f"Error: {code}: {message}", err=True)
     raise typer.Exit(code=1) from None
 
 
