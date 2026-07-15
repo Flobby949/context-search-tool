@@ -3151,6 +3151,7 @@ def test_v2_serialization_accepts_evidence_anchor_without_retrieval_rank() -> No
         pack.items[0],
         source_kind="evidence_anchor",
         retrieval_rank=None,
+        relevance_score=None,
     )
 
     payload = serialization.context_pack_payload(
@@ -3159,6 +3160,44 @@ def test_v2_serialization_accepts_evidence_anchor_without_retrieval_rank() -> No
 
     assert payload["items"][0]["source_kind"] == "evidence_anchor"
     assert payload["items"][0]["retrieval_rank"] is None
+    assert payload["items"][0]["relevance_score"] is None
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "retrieval_rank", "relevance_score"),
+    [
+        pytest.param("result", 0, None, id="result-without-score"),
+        pytest.param(
+            "evidence_anchor",
+            None,
+            0.75,
+            id="evidence-anchor-with-score",
+        ),
+    ],
+)
+def test_v2_serialization_rejects_source_kind_score_mismatches(
+    source_kind: str,
+    retrieval_rank: int | None,
+    relevance_score: float | None,
+) -> None:
+    models, _, serialization = _v2_modules()
+    pack = _v2_pack()
+    malformed_item = replace(
+        pack.items[0],
+        source_kind=source_kind,
+        retrieval_rank=retrieval_rank,
+        relevance_score=relevance_score,
+    )
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        serialization.context_pack_payload(
+            replace(pack, items=(malformed_item,))
+        )
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
 
 
 def test_v2_canonical_serialization_is_unicode_native_deterministic_and_self_sized(
@@ -3319,6 +3358,46 @@ def test_v2_serialization_accepts_incremental_derived_semantic_states(mutate) ->
 
     assert payload["budget"]["pack_bytes"] == len(
         serialization.canonical_context_pack_bytes(payload)
+    )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                groups={**pack.groups, "implementations": ()},
+            ),
+            id="missing-group-membership",
+        ),
+        pytest.param(
+            lambda pack: replace(pack, reading_order=()),
+            id="missing-reading-order-membership",
+        ),
+        pytest.param(
+            lambda pack: replace(
+                pack,
+                groups={
+                    group: (("item:0",) if group == "supporting" else ())
+                    for group in pack.groups
+                },
+            ),
+            id="wrong-group-membership",
+        ),
+    ],
+)
+def test_v2_serialization_requires_complete_consistent_item_references(
+    mutate,
+) -> None:
+    models, _, serialization = _v2_modules()
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        serialization.context_pack_payload(mutate(_v2_pack()))
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
     )
 
 

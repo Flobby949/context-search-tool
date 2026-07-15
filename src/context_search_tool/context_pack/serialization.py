@@ -330,11 +330,13 @@ def _normalize_payload(value: Any) -> dict[str, Any]:
 
 def _normalize_item(value: Any) -> dict[str, Any]:
     _require_exact_keys(value, _ITEM_KEYS)
+    source_kind = _closed_string(value["source_kind"], _SOURCE_KINDS)
     score = value["relevance_score"]
-    if score is not None:
+    if source_kind == "result":
         if type(score) not in (int, float) or not isfinite(score):
             _fail()
-    source_kind = _closed_string(value["source_kind"], _SOURCE_KINDS)
+    elif score is not None:
+        _fail()
     retrieval_rank = value["retrieval_rank"]
     if source_kind == "result":
         retrieval_rank = _nonnegative_int(retrieval_rank)
@@ -493,13 +495,17 @@ def _validate_contract(payload: dict[str, Any]) -> None:
         for item_id in payload["groups"][group]
     ]
     if (
-        len(grouped_item_ids) != len(set(grouped_item_ids))
-        or not set(grouped_item_ids).issubset(item_id_set)
+        len(grouped_item_ids) != len(item_ids)
+        or set(grouped_item_ids) != item_id_set
+        or any(
+            item["id"] not in payload["groups"][item["group"]]
+            for item in items
+        )
     ):
         _fail()
     if (
-        len(payload["reading_order"]) != len(set(payload["reading_order"]))
-        or not set(payload["reading_order"]).issubset(item_id_set)
+        len(payload["reading_order"]) != len(item_ids)
+        or set(payload["reading_order"]) != item_id_set
     ):
         _fail()
 
