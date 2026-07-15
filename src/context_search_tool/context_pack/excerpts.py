@@ -408,13 +408,44 @@ def _crop_text(
     if max_bytes <= 0:
         return ""
     for term in required_terms:
-        start = content.casefold().find(term.casefold())
-        if start < 0:
+        match_span = _normalized_match_span(content, term)
+        if match_span is None:
             continue
+        start, end = match_span
         suffix = content[start:]
-        if len(term.encode("utf-8")) <= max_bytes:
+        if len(content[start:end].encode("utf-8")) <= max_bytes:
             return _utf8_prefix(suffix, max_bytes)
     return _utf8_prefix(content, max_bytes)
+
+
+def _normalized_match_span(content: str, subject: str) -> tuple[int, int] | None:
+    normalized_content = unicodedata.normalize("NFKC", content).casefold()
+    normalized_subject = unicodedata.normalize("NFKC", subject).casefold()
+    normalized_start = normalized_content.find(normalized_subject)
+    if not normalized_subject or normalized_start < 0:
+        return None
+    normalized_end = normalized_start + len(normalized_subject)
+
+    def original_boundary(normalized_offset: int) -> int:
+        boundary = 0
+        low = 0
+        high = len(content)
+        while low <= high:
+            index = (low + high) // 2
+            prefix_length = len(
+                unicodedata.normalize("NFKC", content[:index]).casefold()
+            )
+            if prefix_length <= normalized_offset:
+                boundary = index
+                low = index + 1
+            else:
+                high = index - 1
+        return boundary
+
+    return (
+        original_boundary(normalized_start),
+        original_boundary(normalized_end),
+    )
 
 
 def _utf8_prefix(content: str, max_bytes: int) -> str:
@@ -495,8 +526,8 @@ def _line_bytes(lines: list[_SourceLine]) -> int:
 
 
 def _ordered_union(left: tuple[str, ...], right: tuple[str, ...]) -> tuple[str, ...]:
-    values = list(left)
-    for value in right:
+    values: list[str] = []
+    for value in (*left, *right):
         if value not in values:
             values.append(value)
     return tuple(values)

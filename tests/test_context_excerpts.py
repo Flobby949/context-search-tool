@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -154,8 +155,8 @@ def test_duplicate_spans_keep_highest_score_and_stable_source_union() -> None:
     candidate = _candidate(
         "one\ntwo\nthree",
         spans=(
-            RetrievalSpan(2, 2, 1.0, ("lexical", "semantic")),
-            RetrievalSpan(2, 2, 3.0, ("semantic", "signal")),
+            RetrievalSpan(2, 2, 1.0, ("semantic", "semantic")),
+            RetrievalSpan(2, 2, 3.0, ("lexical", "semantic")),
             RetrievalSpan(1, 2, 2.0, ("path_symbol",)),
         ),
     )
@@ -163,7 +164,7 @@ def test_duplicate_spans_keep_highest_score_and_stable_source_union() -> None:
     normalized = excerpts.normalize_candidate_spans(candidate)
 
     assert normalized == (
-        RetrievalSpan(2, 2, 3.0, ("lexical", "semantic", "signal")),
+        RetrievalSpan(2, 2, 3.0, ("semantic", "lexical")),
         RetrievalSpan(1, 2, 2.0, ("path_symbol",)),
     )
 
@@ -296,6 +297,36 @@ def test_byte_crop_keeps_required_subject_line_before_surrounding_context() -> N
     assert selected[0].truncated is True
 
 
+@pytest.mark.parametrize(
+    ("content", "subject"),
+    [
+        (f"{'ß' * 100}PostgreSQL", "PostgreSQL"),
+        (f"{'x' * 100}Cafe\u0301", "Café"),
+    ],
+)
+def test_required_crop_maps_normalized_match_to_original_offsets(
+    content: str,
+    subject: str,
+) -> None:
+    candidate = _candidate(
+        content,
+        spans=(RetrievalSpan(1, 1, 1.0, ("semantic",)),),
+    )
+
+    selected = excerpts.build_candidate_excerpts(
+        candidate=candidate,
+        needs=(_need(subject),),
+        options=_options(max_excerpt_bytes=20),
+    )
+
+    assert unicodedata.normalize("NFC", subject).casefold() in unicodedata.normalize(
+        "NFC",
+        selected[0].content,
+    ).casefold()
+    assert selected[0].content in candidate.content
+    assert selected[0].content_bytes <= 20
+
+
 def test_builder_enforces_each_subordinate_budget_and_rechecks_matches() -> None:
     results = [
         _result(
@@ -391,6 +422,57 @@ def test_required_512_reservation_precedes_recommended_allocation(
         for item in pack.items
     }
     assert content_by_group == {"entrypoints": 512, "tests": 188}
+
+
+def test_allocation_redistributes_unused_line_cropping_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    required = models.EvidenceNeed(
+        id="need:entrypoints:general",
+        category="entrypoints",
+        subject_terms=(),
+        required=True,
+        provenance="explicit_query",
+        matched_item_ids=(),
+    )
+    recommended = models.EvidenceNeed(
+        id="need:tests:general",
+        category="tests",
+        subject_terms=(),
+        required=False,
+        provenance="structural_recommendation",
+        matched_item_ids=(),
+    )
+    monkeypatch.setattr(
+        builder,
+        "derive_evidence_needs",
+        lambda bundle, *, candidates: (required, recommended),
+    )
+    pack = builder.build_context_pack(
+        _bundle(
+            "fixture",
+            [
+                _result(
+                    "src/main/controller/AppController.java",
+                    f"{'r' * 399}\n{'R' * 400}",
+                ),
+                _result("tests/AppControllerTests.java", "t" * 600),
+            ],
+        ),
+        _options(
+            max_items=2,
+            max_excerpt_bytes=800,
+            max_item_content_bytes=800,
+            max_total_content_bytes=800,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    content_by_group = {
+        item.group: sum(excerpt.content_bytes for excerpt in item.excerpts)
+        for item in pack.items
+    }
+    assert content_by_group == {"entrypoints": 400, "tests": 400}
 
 
 def test_item_byte_ceiling_is_independent_of_excerpt_ceiling() -> None:
@@ -525,6 +607,104 @@ def test_canonical_compaction_retains_required_matching_line_when_possible() -> 
     assert "PostgreSQL" in retained
     assert pack.evidence_needs[0].matched_item_ids == ("item:0",)
     assert pack.budget.pack_bytes <= 4096
+
+
+def test_optional_item_is_omitted_before_required_minimum_is_destroyed() -> None:
+    optional_path = f"src/{'x' * 2700}/helper.py"
+    pack = builder.build_context_pack(
+        _bundle(
+            "PostgreSQL configuration",
+            [
+                _result(
+                    "config/application.properties",
+                    "spring.datasource.platform=PostgreSQL",
+                ),
+                _result(optional_path, "def helper(): pass"),
+            ],
+        ),
+        _options(
+            max_items=2,
+            max_excerpt_bytes=1024,
+            max_item_content_bytes=1024,
+            max_total_content_bytes=2048,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    assert [item.file_path for item in pack.items] == [
+        "config/application.properties"
+    ]
+    assert pack.items[0].excerpts[0].content == (
+        "spring.datasource.platform=PostgreSQL"
+    )
+    assert pack.evidence_needs[0].matched_item_ids == ("item:0",)
+    assert pack.budget.omitted_item_count == 1
+
+
+def test_compaction_uses_candidate_priority_not_reverse_reading_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recommended = models.EvidenceNeed(
+        id="need:configs_docs:postgresql",
+        category="configs_docs",
+        subject_terms=("PostgreSQL",),
+        required=False,
+        provenance="structural_recommendation",
+        matched_item_ids=(),
+    )
+    monkeypatch.setattr(
+        builder,
+        "derive_evidence_needs",
+        lambda bundle, *, candidates: (recommended,),
+    )
+    support_path = "README.md"
+    recommended_path = "config/application.properties"
+    pack = builder.build_context_pack(
+        _bundle(
+            "fixture",
+            [
+                _result(support_path, "s" * 1700),
+                _result(recommended_path, "PostgreSQL " + "r" * 1689),
+            ],
+        ),
+        _options(
+            max_items=2,
+            max_excerpt_bytes=1800,
+            max_item_content_bytes=1800,
+            max_total_content_bytes=3400,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    content_bytes = {
+        item.file_path: sum(excerpt.content_bytes for excerpt in item.excerpts)
+        for item in pack.items
+    }
+    assert content_bytes[recommended_path] == 1700
+    assert content_bytes.get(support_path, 0) < 1700
+    assert pack.evidence_needs[0].matched_item_ids
+
+
+def test_retained_rematch_does_not_trust_compacted_away_reason() -> None:
+    raw_result = replace(
+        _result("config/application.properties", "url=db"),
+        reasons=[f"PostgreSQL {'x' * 2990}"],
+    )
+
+    pack = builder.build_context_pack(
+        _bundle("PostgreSQL configuration", [raw_result]),
+        _options(
+            max_excerpt_bytes=1024,
+            max_item_content_bytes=1024,
+            max_total_content_bytes=2048,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    assert pack.items[0].reasons == ()
+    assert pack.items[0].matched_need_ids == ()
+    assert pack.evidence_needs[0].matched_item_ids == ()
+    assert pack.status == "partial"
 
 
 def test_large_css_pack_is_bounded_deterministic_and_performs_no_file_io(
