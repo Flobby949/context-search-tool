@@ -532,8 +532,18 @@ def _feedback_context_pack_payload(
     if type(pack) is not dict:
         return None
     try:
-        canonical_context_pack_bytes(pack)
+        encoded = canonical_context_pack_bytes(pack)
     except Exception:
+        return None
+    raw_budget = pack.get("budget")
+    if type(raw_budget) is not dict:
+        return None
+    declared_pack_bytes = raw_budget.get("pack_bytes")
+    if (
+        type(declared_pack_bytes) is not int
+        or declared_pack_bytes <= 0
+        or declared_pack_bytes != len(encoded)
+    ):
         return None
     if type(pack.get("schema_version")) is not int or pack["schema_version"] != 2:
         return None
@@ -613,9 +623,6 @@ def _feedback_context_pack_payload(
         return None
     omissions = pack.get("omissions")
     if type(omissions) is not list:
-        return None
-    raw_budget = pack.get("budget")
-    if type(raw_budget) is not dict:
         return None
     budget_keys = (
         "max_items",

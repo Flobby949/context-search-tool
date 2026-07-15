@@ -1361,9 +1361,19 @@ def _canonical_empty_context_payload() -> dict[str, object]:
 
 
 def test_mcp_context_feedback_accepts_canonical_v2_pack() -> None:
-    feedback = mcp_tools._feedback_context_pack_payload(
-        _canonical_empty_context_payload()
+    payload = _canonical_empty_context_payload()
+    pack = payload["context_pack"]
+    assert type(pack) is dict
+    budget = pack["budget"]
+    assert type(budget) is dict
+    declared_pack_bytes = budget["pack_bytes"]
+    assert type(declared_pack_bytes) is int
+    assert declared_pack_bytes > 0
+    assert declared_pack_bytes == len(
+        context_pack_v2_serialization.canonical_context_pack_bytes(pack)
     )
+
+    feedback = mcp_tools._feedback_context_pack_payload(payload)
 
     assert feedback is not None
     assert feedback["status"] == "empty"
@@ -1372,6 +1382,7 @@ def test_mcp_context_feedback_accepts_canonical_v2_pack() -> None:
 @pytest.mark.parametrize(
     ("field", "forged_value"),
     [
+        ("pack_bytes", 0),
         ("pack_bytes", 1),
         ("content_bytes", 7),
         ("max_pack_bytes", 0),
