@@ -12,7 +12,8 @@
 | `ab_bge` | Ollama BGE-M3 | BGE candidate report |
 | `p1_vector_bge` | local `bge-m3` | Phase 1 vector-only acceptance baseline |
 | `p1_hybrid_bge` | local `bge-m3` and `qwen3.5:4b-mlx` | Phase 1 hybrid acceptance candidate |
-| `p2_context_pack` | committed snapshots and offline `hash-v1` | Phase 2 deterministic ContextPack acceptance |
+| `p2_context_pack` | committed snapshots and offline `hash-v1` | deterministic ContextPack v2 acceptance |
+| `p2_real_context` | explicitly prepared pinned PetClinic checkout | opt-in real-project ContextPack v2 acceptance |
 
 All commands below assume that `cst` imports `context_search_tool` from the
 current checkout. Editable installs and multiple worktrees can point elsewhere,
@@ -60,31 +61,49 @@ evaluation) and `context_pack`. The following fields are valid only for
     "related_types": [{"contains": "Dto"}]
   },
   "expected_pack_status": "ready",
-  "minimum_context_confidence": "medium"
+  "minimum_context_confidence": "medium",
+  "expected_need_matches": [
+    {
+      "category": "configs_docs",
+      "subject": "postgresql",
+      "required": true,
+      "matched": false
+    }
+  ],
+  "maximum_pack_bytes": 65536,
+  "maximum_truncated_items": 4,
+  "forbidden_next_query_patterns": ["/oups", "GET\\s+/owners dto"]
 }
 ```
 
-`expected_context_groups` uses the six ContextPack v1 group names and the
+`expected_context_groups` uses the six ContextPack v2 group names and the
 existing `path`, `glob`, or `contains` matchers. Legal status values are
 `empty`, `partial`, and `ready`; legal minimum-confidence values are `none`,
-`low`, `medium`, and `high`.
+`low`, `medium`, and `high`. Each `expected_need_matches` entry is a typed tuple
+of category, normalized subject, required boolean, and matched boolean; all four
+must match one returned need. Budget expectations are positive/non-negative
+integers, not strings. Forbidden next-query patterns use a conservative safe
+subset (literals, escaped literals, whitespace escapes, and a single `\s+`),
+not arbitrary Python regular expressions.
 
 Context metrics have these meanings:
 
 | metric | definition |
 | --- | --- |
-| `context_expected_count` | Declared group/matcher pairs in the case. |
-| `context_matched_count` | Expected pairs matched by at least one item in the same declared group. |
 | `context_completeness` | Matched pairs divided by expected pairs. With no expected pairs it is `null`, and that case is excluded from aggregate means. |
-| `context_group_count` | Number of non-empty groups in the returned pack. |
-| `required_missing_count` | Missing-evidence records marked required. |
-| `recommended_missing_count` | Missing-evidence records marked recommended rather than required. |
-| `next_query_count` | Deterministically composed next-query records in the pack. |
-| `context_content_bytes` | UTF-8 bytes of returned result and evidence-anchor content recorded by the pack budget. |
+| `evidence_need_count` | All derived evidence needs. |
+| `required_need_count` | Needs marked required. |
+| `matched_required_need_count` | Required needs with at least one selected matching item. |
+| `evidence_need_completeness` | Matched required needs divided by required needs; `null` when no required needs exist. |
+| `pack_bytes` | Exact canonical compact UTF-8 ContextPack JSON bytes, including the final self-sized integer. |
+| `content_bytes` | UTF-8 bytes included in item excerpts. |
+| `truncated_item_count` | Included items with at least one truncated excerpt. |
+| `omitted_item_count` | Total candidates omitted under item/content/pack budgets. |
 
-`context_pack` status and confidence are structural metadata on the bounded
-returned pack, and the quality report records them as case metadata; they are
-not relevance probabilities and do not claim repository-wide completeness.
+The eight v2 metrics after historical `context_completeness` are the persisted
+acceptance surface. Status and confidence are structural metadata on the bounded
+pack; they are not relevance probabilities or repository-wide completeness
+claims.
 
 The offline profile contains five required cases over three committed snapshot
 repositories:
@@ -100,18 +119,91 @@ overrides cannot replace these inputs. Generate the P2 and unchanged raw-result
 CI reports from the current checkout with:
 
 ```bash
-PYTHONPATH="$PWD/src" conda run -n base cst quality run \
+PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality run \
   tests/fixtures/retrieval_quality/queries.json \
   --profile p2_context_pack \
-  --output .quality/real-projects/p2-context-pack-final.json \
-  --markdown .quality/real-projects/p2-context-pack-final.md
+  --output .quality/real-projects/p2-context-pack-v2-final.json \
+  --markdown .quality/real-projects/p2-context-pack-v2-final.md
 
-PYTHONPATH="$PWD/src" conda run -n base cst quality run \
+PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality run \
   tests/fixtures/retrieval_quality/queries.json \
   --profile ci \
-  --output .quality/real-projects/ci-p2-final.json \
-  --markdown .quality/real-projects/ci-p2-final.md
+  --output .quality/real-projects/ci-p2-1-final.json \
+  --markdown .quality/real-projects/ci-p2-1-final.md
 ```
+
+### Pinned real-project profile
+
+`p2_real_context` uses
+`https://github.com/spring-projects/spring-petclinic.git` at exact commit
+`51045d1648dad955df586150c1a1a6e22ef400c2`. Preparation is the only step that
+may clone or fetch:
+
+```bash
+PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality prepare \
+  tests/fixtures/retrieval_quality/queries.json \
+  --profile p2_real_context \
+  --repos-dir .quality/repos/p2-real-context-final
+
+PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality run \
+  tests/fixtures/retrieval_quality/queries.json \
+  --profile p2_real_context \
+  --repos-dir .quality/repos/p2-real-context-final \
+  --output .quality/real-projects/p2-real-context-final.json \
+  --markdown .quality/real-projects/p2-real-context-final.md
+```
+
+Preparation validates the catalog URL, 40-character pin and portable checkout
+name, clones to a sibling temporary directory, checks out detached HEAD, and
+records provenance only after verifying exact HEAD/origin and a clean tracked
+worktree. Repeating it is idempotent. It refuses unrelated, symlinked, dirty,
+wrong-remote or wrong-commit state. `quality run --profile p2_real_context`
+accepts only that prepared checkout and never performs implicit network access,
+environment fallback, or a skip on invalid state.
+
+The four required queries are:
+
+1. `owner registration form validation flow`
+2. `OwnerController tests for owner registration validation`
+3. `宠物主人详情页如何加载宠物和就诊记录`
+4. `MySQL PostgreSQL database profile configuration and integration tests`
+
+### P2.1 reconciliation (2026-07-15)
+
+- Checked implementation commit: `9dd8254e30bb4fc2e8348c527fe3642e52366ca5`.
+- `p2-context-pack-v2-final.json`: selected/executed/passed `5/5/5`;
+  `ci-p2-1-final.json`: `8/8/8`; both had zero failures/errors.
+- A brand-new guarded cache prepared the exact PetClinic pin in detached,
+  tracked-clean state. A second prepare left the provenance bytes unchanged.
+- Two real-profile runs each selected/executed/passed `4/4/4`. Pack sizes were
+  40,748, 42,530, 33,977, and 39,650 bytes, all below 65,536. The first two
+  packs were `ready/medium`; the latter two were honestly `partial/low`.
+- The opt-in real acceptance test passed five tests covering four canonical pack
+  repeats plus normalized report repeat and feedback privacy. The ContextPack
+  feedback extension contains no file path, excerpt, need subject, or composed
+  next-query text.
+
+### Dated qualitative CST/fast-context comparison (2026-07-15)
+
+All systems read the exact PetClinic pin above. CST used `final_top_k=12` and
+the default v2 budget. The local candidate used BGE-M3 (1,024 dimensions) plus
+the Ollama planner `qwen3.5:4b-mlx`; Ollama was 0.30.10 with local model IDs
+`790764642607` and `61aa3858e9d3`. Fast-context used `max_turns=3`,
+`max_results=12`, no snippets; it reduced the requested tree depth from 3 to 1
+and reported hotspot depth 3. This is qualitative, model-driven evidence, not a
+deterministic gate.
+
+| query | CST hash v2 | BGE-M3 + planner v2 | fast-context |
+| --- | --- | --- | --- |
+| owner registration | `ready/medium`, 40,748 bytes; controller=entrypoint and Owner=data type; recommended test missing, next query `owner test` | `ready/medium`, 42,935 bytes; same critical controller/entity coverage | 12 files; controller, Owner and owner form template found |
+| owner registration tests | `ready/medium`, 42,530 bytes; controller=entrypoint and OwnerControllerTests=test; recommended implementation missing | `ready/medium`, 46,974 bytes; controller/test roles retained | 6 files; controller, Owner and OwnerControllerTests found |
+| owner details/pets/visits | `partial/low`, 33,977 bytes; controller found, but required scoped entrypoint evidence remained missing; grounded Chinese follow-ups, no `/oups` | `partial/low`, 46,227 bytes; additionally found OwnerRepository and Pet, but not the full critical set | 12 files; controller, repository, Owner, Pet, Visit and owner-details template found |
+| MySQL/PostgreSQL profiles | `partial/low`, 39,650 bytes; both integration tests classified as tests, profile property files absent from Top-12 | `partial/low`, 43,897 bytes; both tests found, both config needs reported missing | 12 files; both application profile files and both integration tests found |
+
+The first fast-context attempt for the registration query returned a truncated
+remote tool response and no parsed files; one same-parameter retry produced the
+12-file result above. Fast-context does not emit ContextPack group/role, byte,
+missing-need, or next-query fields, so those columns are intentionally CST-only.
 
 ## Real Repository Smoke
 
@@ -120,6 +212,12 @@ CST_SMOKE_REPOS_DIR=/absolute/path/to/repos \
 cst quality run tests/fixtures/retrieval_quality/queries.json \
   --profile smoke --output .quality/smoke.json --markdown .quality/smoke.md
 ```
+
+On 2026-07-15 at implementation commit
+`9dd8254e30bb4fc2e8348c527fe3642e52366ca5`, no external smoke repository
+variables were set. The current command selected 22 cases, executed and passed
+the six committed `program_tool` cases, and explicitly skipped 16 missing-repo
+cases. This is a partial dependency result, not a verified 22-case smoke pass.
 
 ## Baseline And Candidate Comparison
 
@@ -212,20 +310,20 @@ required cases from committed repository snapshots. Run both reports and the
 focused pair gate:
 
 ```bash
-conda run -n base cst quality run \
+PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality run \
   tests/fixtures/retrieval_quality/queries.json \
   --profile p1_vector_bge \
-  --output .quality/p1-vector-bge.json \
-  --markdown .quality/p1-vector-bge.md
+  --output .quality/real-projects/p1-vector-bge-p2-1-final.json \
+  --markdown .quality/real-projects/p1-vector-bge-p2-1-final.md
 
-conda run -n base cst quality run \
+PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality run \
   tests/fixtures/retrieval_quality/queries.json \
   --profile p1_hybrid_bge \
-  --output .quality/p1-hybrid-bge.json \
-  --markdown .quality/p1-hybrid-bge.md
+  --output .quality/real-projects/p1-hybrid-bge-p2-1-final.json \
+  --markdown .quality/real-projects/p1-hybrid-bge-p2-1-final.md
 
 CST_RUN_P1_ACCEPTANCE=1 \
-conda run -n base python -m pytest \
+PYTHONPATH="$PWD/src" conda run -n base python -m pytest \
   tests/test_quality_p1.py \
   -m integration \
   -q
@@ -239,13 +337,22 @@ pair test, not the general comparison command alone, enforces the Phase 1
 aggregate delta gate. Both reports record latency `mean`, `p50`, and `p95`
 under `aggregate.metrics.overall.latency_ms`.
 
-### Phase 1 reconciliation (2026-07-14)
+### Phase 1 reconciliation (2026-07-15)
 
 - Status: `unverified_dependency`
-- Checked implementation commit: `d321f5680774b871c87dbd699129eed219b1eb81`
-- Evidence: No fresh Phase 1 pair was accepted. `p1-vector-bge-reconciled.json` and `p1-hybrid-bge-reconciled.json` each selected and executed 7/7 cases but passed 6/7, and the persisted pair gate failed. The last Phase 1 closure commit is `b8527e75e602023aa7e31d360ada4595ffb444f2`; reports from `911add4d20bfcbb3190bc9045478686a87226587` are stale and explicitly rejected as acceptance evidence.
+- Checked implementation commit: `9dd8254e30bb4fc2e8348c527fe3642e52366ca5`.
+- Provider/model: Ollama 0.30.10; BGE profile `bge-m3` (local
+  `bge-m3:latest`, ID `790764642607`); planner `qwen3.5:4b-mlx` (ID
+  `61aa3858e9d3`).
+- Evidence: `p1-vector-bge-p2-1-final.json` and
+  `p1-hybrid-bge-p2-1-final.json` each selected and executed 7/7 required
+  cases but passed 6/7 with zero runtime errors. Both missed
+  `src/main/java/com/example/audit/AuditStatus.java` within Top-3 for
+  `audit-status-literal`; the focused pair command then failed one test.
 - Roadmap closure: pending
-- Reason: `cst quality run ... --profile p1_vector_bge` and `cst quality run ... --profile p1_hybrid_bge` each returned 6/7 because `audit-status-literal` missed its Top-3 `AuditStatus.java` expectation; the persisted pair gate then failed.
+- Reason: an executed-but-failed required case and failed pair gate cannot close
+  the roadmap's independent Phase 1 acceptance dependency. No earlier report is
+  substituted for this fresh result.
 
 ## MCP Feedback Privacy
 

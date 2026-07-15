@@ -128,19 +128,62 @@ Markdown 输出会包含：
 
 JSON 输出会包含同样的信息，字段包括 `results`、`score_parts`、`reasons`、`followup_keywords`。
 
-`query` 是原始排名证据接口，现有的 CLI 和 MCP 请求、响应及错误合约保持不变。
+`query` 是原始排名证据接口：它返回完整的排名结果、命中原因、分数和
+follow-up keywords，适合需要自行处理原始召回的调用方。ContextPack v2
+不会改变这个 CLI/MCP 请求、响应或错误合约。
 
 ### `context`
 
-`context` 只执行一次原始检索，再将同一批返回证据确定性地打包为面向 agent 的阅读集；它不会增加检索或模型调用。默认输出 Markdown，`--json` 输出包含原始查询字段和 `context_pack` 的 JSON：
+`context` 只执行一次原始检索，再将同一批返回证据确定性地打包为面向
+agent 的阅读集；它不会增加检索或模型调用。打包阶段不重新读取仓库，
+只消费已经返回的结果、evidence anchors 和内部 span provenance。默认输出
+Markdown，`--json` 输出原始 `query` 字符串和自包含的 `context_pack`：
 
 ```bash
 cst context /path/to/repo "workspace page flow"
 cst context /path/to/repo "workspace page flow" --json
 cst context "WorkspaceServiceImpl" --context-lines 20
+cst context /path/to/repo "workspace page flow" --max-items 8 --max-context-bytes 32768
 ```
 
-ContextPack schema version 1 固定包含 `entrypoints`、`implementations`、`related_types`、`tests`、`configs_docs` 和 `supporting` 六个分组，以及阅读顺序、缺失证据、下一步查询、结构就绪信心和预算信息。`empty` 表示有效的空结果，仍是成功响应。`context_failed` 仅表示打包合约或构建阶段的内部失败；repo、index 和 query 阶段继续使用现有错误代码。
+ContextPack schema version 2 是相对 v1 的有意破坏性变更。成功 JSON envelope
+的键固定为 `ok`、`repo`、`query`、`retrieval`、`context_pack`；其中
+`retrieval` 只含 `result_count`、`evidence_anchor_count`、`planner_status` 和
+`planner_intent`，不会复制原始 `results` 或 `evidence_anchors`。需要完整排名
+数组时应调用 `query`。
+
+`context_pack` 是 closed schema，顶层键精确为：
+
+```text
+schema_version, status, items, groups, reading_order, evidence_needs,
+missing_evidence, next_queries, omissions, confidence, budget
+```
+
+它的自包含数据形态如下：
+
+- `items` 中每项固定包含 `id`、`file_path`、`group`、`role`、
+  `classification_basis`、`source_kind`、`retrieval_rank`、
+  `relevance_score`、`reasons`、`matched_need_ids`、`excerpts`；源文件内容只在
+  excerpt 的 `start_line`、`end_line`、`content`、`content_bytes`、`truncated`
+  字段中出现一次。
+- `groups` 固定包含 `entrypoints`、`implementations`、`related_types`、
+  `tests`、`configs_docs`、`supporting` 六组，值是 item id；
+  `reading_order` 给出确定性的阅读顺序。
+- `evidence_needs` 记录具体、带 subject scope 的 required/recommended 需求及
+  匹配 item；`missing_evidence`、`status`（`empty`/`partial`/`ready`）和
+  `confidence` 据此如实反映当前证据，而不是把“某组非空”当作完整。
+- `next_queries` 只由原查询或已落地 subject 生成；`omissions` 说明预算下未选
+  证据。两者均有界且顺序稳定。
+
+默认预算是最多 12 个 item、每项 2 个 excerpt、每 excerpt 4,096 UTF-8
+bytes、每 item 8,192 content bytes、总 content 49,152 bytes，以及最多
+65,536 canonical JSON pack bytes。`budget.pack_bytes` 是 compact、UTF-8、
+key 顺序固定且包含自身最终整数位宽的精确字节数；`budget` 同时报告实际
+item/excerpt/content、截断、遗漏和是否耗尽预算。CLI 的 `--max-items` 与
+`--max-context-bytes`、MCP 的 `max_items` 与 `max_context_bytes` 使用同一解析
+规则；非法值在检索前返回固定的 `invalid_context_options`。不可恢复的打包
+或序列化失败统一为脱敏的 `context_failed: Context pack construction failed`；
+repo、index 和 query 阶段继续使用原有错误代码。`empty` 是成功的有效空包。
 
 ### `status`
 
@@ -186,7 +229,7 @@ Available tools:
 
 - `context_search_index(repo)` creates or updates `.context-search/`.
 - `context_search_query(repo, query, context_lines, full_file, final_top_k)` returns summary, ranked results, score parts, reasons, and follow-up keywords.
-- `context_search_context(repo, query, context_lines, full_file, final_top_k)` returns ContextPack schema version 1 from one raw retrieval pass while preserving the raw query fields.
+- `context_search_context(repo, query, context_lines, full_file, final_top_k, max_items, max_context_bytes)` returns a self-contained ContextPack schema version 2 from one raw retrieval pass while preserving the raw query string and bounded retrieval counts.
 - `context_search_stats(repo)` returns index counts and embedding configuration.
 - `context_search_explain(repo, location)` explains the chunk covering a `file:line` location.
 
@@ -235,7 +278,11 @@ For stdio MCP transport, server logs must not be written to stdout. The server r
 
 The log records query text, result count, top score, score parts, summary counts, follow-up keyword count, embedding fingerprint (provider, model, dimensions, and config hash), and error code. It does not record returned source snippets or full file content. When `mcp_calls.jsonl` exceeds 10 MiB, the server rotates it to `mcp_calls.<time_ns>.jsonl` before appending the next event.
 
-`context_search_context` 在现有查询事件基础上只记录有界的结构元数据，例如状态、信心级别、分组/缺失类别计数和预算计数。它不存储源文件路径、返回内容或组合出的下一步查询文本。
+`context_search_context` 在现有查询事件基础上只增加有界的 ContextPack
+结构元数据，例如 schema/status、信心级别、分组/缺失类别计数和预算计数；
+这部分不会增加源文件路径、excerpt 内容、need subject 或组合出的下一步
+查询文本。基础反馈事件仍按上文记录调用的原始 query，因此反馈文件应继续
+按包含查询文本的本地日志管理。
 
 Use this log to decide embedding work:
 
@@ -267,6 +314,14 @@ lexical_top_k = 80
 final_top_k = 12
 context_before_lines = 8
 context_after_lines = 12
+
+[context]
+max_items = 12
+max_excerpts_per_item = 2
+max_excerpt_bytes = 4096
+max_item_content_bytes = 8192
+max_total_content_bytes = 49152
+max_pack_bytes = 65536
 
 [embedding]
 provider = "hash"
