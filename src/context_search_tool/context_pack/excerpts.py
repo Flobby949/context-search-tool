@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import unicodedata
 from dataclasses import dataclass
 from math import isfinite
@@ -16,7 +15,10 @@ from context_search_tool.context_pack.models import (
     EvidenceNeed,
     ExcerptWindow,
 )
-from context_search_tool.context_pack.needs import candidate_matches_need
+from context_search_tool.context_pack.needs import (
+    candidate_matches_need,
+    normalized_subject_match_span,
+)
 from context_search_tool.models import RetrievalSpan
 
 
@@ -419,12 +421,10 @@ def _crop_text(
 
 
 def _normalized_match_span(content: str, subject: str) -> tuple[int, int] | None:
-    normalized_content = unicodedata.normalize("NFKC", content).casefold()
-    normalized_subject = unicodedata.normalize("NFKC", subject).casefold()
-    normalized_start = normalized_content.find(normalized_subject)
-    if not normalized_subject or normalized_start < 0:
+    normalized_span = normalized_subject_match_span(content, subject)
+    if normalized_span is None:
         return None
-    normalized_end = normalized_start + len(normalized_subject)
+    normalized_start, normalized_end = normalized_span
 
     def original_boundary(normalized_offset: int) -> int:
         boundary = 0
@@ -433,7 +433,7 @@ def _normalized_match_span(content: str, subject: str) -> tuple[int, int] | None
         while low <= high:
             index = (low + high) // 2
             prefix_length = len(
-                unicodedata.normalize("NFKC", content[:index]).casefold()
+                unicodedata.normalize("NFC", content[:index]).casefold()
             )
             if prefix_length <= normalized_offset:
                 boundary = index
@@ -538,17 +538,7 @@ def _content_has_any(content: str, terms: tuple[str, ...]) -> bool:
 
 
 def _contains_subject(content: str, subject: str) -> bool:
-    normalized_content = unicodedata.normalize("NFKC", content).casefold()
-    normalized_subject = unicodedata.normalize("NFKC", subject).casefold().strip()
-    if not normalized_subject:
-        return False
-    if any("\u3400" <= character <= "\u9fff" for character in normalized_subject):
-        return normalized_subject in normalized_content
-    escaped = re.escape(normalized_subject).replace(r"\ ", r"\s+")
-    return re.search(
-        rf"(?<![A-Za-z0-9]){escaped}(?![A-Za-z0-9])",
-        normalized_content,
-    ) is not None
+    return normalized_subject_match_span(content, subject) is not None
 
 
 def _fail() -> NoReturn:

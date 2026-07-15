@@ -254,6 +254,41 @@ def candidate_matches_need(
     )
 
 
+def normalized_subject_match_span(
+    content: str,
+    subject: str,
+) -> tuple[int, int] | None:
+    """Return the first candidate-semantic match in NFC-casefolded offsets."""
+    normalized_subject = _normalize_subject(subject)
+    if not normalized_subject:
+        return None
+    normalized_content = unicodedata.normalize("NFC", content)
+    folded_content = normalized_content.casefold()
+
+    if _contains_cjk(normalized_subject) or not normalized_subject.isascii():
+        needle = normalized_subject.casefold()
+        start = folded_content.find(needle)
+        return None if start < 0 else (start, start + len(needle))
+
+    raw_subject = _ascii_tokens(normalized_subject)
+    camel_subject = _camel_tokens(normalized_subject)
+    matches = tuple(
+        span
+        for span in (
+            _token_sequence_span(_ascii_token_spans(normalized_content), raw_subject),
+            _token_sequence_span(_camel_token_spans(normalized_content), camel_subject),
+        )
+        if span is not None
+    )
+    if not matches:
+        return None
+    start, end = min(matches)
+    return (
+        len(normalized_content[:start].casefold()),
+        len(normalized_content[:end].casefold()),
+    )
+
+
 def _derive_explicit_specs(
     query: str,
     inferred_identifiers: tuple[str, ...],
@@ -1000,52 +1035,57 @@ def _comparison_key(value: str) -> str:
 
 
 def _subject_matches_fields(subject: str, fields: tuple[str, ...]) -> bool:
-    normalized_subject = _normalize_subject(subject)
-    if not normalized_subject:
-        return False
-    if _contains_cjk(normalized_subject):
-        needle = unicodedata.normalize("NFC", normalized_subject).casefold()
-        return any(needle in unicodedata.normalize("NFC", field).casefold() for field in fields)
-    if normalized_subject.isascii():
-        raw_subject = _ascii_tokens(normalized_subject)
-        camel_subject = _camel_tokens(normalized_subject)
-        if not raw_subject:
-            return False
-        return any(
-            _contains_token_sequence(_ascii_tokens(field), raw_subject)
-            or (
-                camel_subject
-                and _contains_token_sequence(_camel_tokens(field), camel_subject)
-            )
-            for field in fields
-        )
-    needle = unicodedata.normalize("NFC", normalized_subject).casefold()
-    return any(needle in unicodedata.normalize("NFC", field).casefold() for field in fields)
+    return any(
+        normalized_subject_match_span(field, subject) is not None
+        for field in fields
+    )
 
 
 def _ascii_tokens(value: str) -> tuple[str, ...]:
-    return tuple(match.casefold() for match in _ASCII_WORD_RE.findall(value))
+    return tuple(token for token, _, _ in _ascii_token_spans(value))
+
+
+def _ascii_token_spans(value: str) -> tuple[tuple[str, int, int], ...]:
+    return tuple(
+        (match.group(0).casefold(), match.start(), match.end())
+        for match in _ASCII_WORD_RE.finditer(value)
+    )
 
 
 def _camel_tokens(value: str) -> tuple[str, ...]:
-    parts: list[str] = []
-    for word in _ASCII_WORD_RE.findall(value):
-        split = _CAMEL_PART_RE.findall(word)
-        parts.extend(part.casefold() for part in split or (word,))
+    return tuple(token for token, _, _ in _camel_token_spans(value))
+
+
+def _camel_token_spans(value: str) -> tuple[tuple[str, int, int], ...]:
+    parts: list[tuple[str, int, int]] = []
+    for word_match in _ASCII_WORD_RE.finditer(value):
+        word = word_match.group(0)
+        split = tuple(_CAMEL_PART_RE.finditer(word))
+        if not split:
+            parts.append((word.casefold(), word_match.start(), word_match.end()))
+            continue
+        for part in split:
+            parts.append(
+                (
+                    part.group(0).casefold(),
+                    word_match.start() + part.start(),
+                    word_match.start() + part.end(),
+                )
+            )
     return tuple(parts)
 
 
-def _contains_token_sequence(
-    haystack: tuple[str, ...],
+def _token_sequence_span(
+    haystack: tuple[tuple[str, int, int], ...],
     needle: tuple[str, ...],
-) -> bool:
+) -> tuple[int, int] | None:
     if not needle or len(needle) > len(haystack):
-        return False
+        return None
     width = len(needle)
-    return any(
-        haystack[index : index + width] == needle
-        for index in range(len(haystack) - width + 1)
-    )
+    for index in range(len(haystack) - width + 1):
+        if tuple(token for token, _, _ in haystack[index : index + width]) == needle:
+            return haystack[index][1], haystack[index + width - 1][2]
+    return None
 
 
 def _contains_cjk(value: str) -> bool:
@@ -1058,4 +1098,5 @@ __all__ = (
     "NextQuery",
     "candidate_matches_need",
     "derive_evidence_needs",
+    "normalized_subject_match_span",
 )

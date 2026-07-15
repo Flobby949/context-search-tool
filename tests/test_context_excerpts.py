@@ -327,6 +327,42 @@ def test_required_crop_maps_normalized_match_to_original_offsets(
     assert selected[0].content_bytes <= 20
 
 
+@pytest.mark.parametrize(
+    ("content", "subject", "max_excerpt_bytes", "expected"),
+    [
+        ("bobcat" + "x" * 100 + " cat", "cat", 4, "cat"),
+        ("核心化" + "x" * 100, "核心", 6, "核心"),
+    ],
+)
+def test_required_crop_uses_candidate_subject_matching_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+    content: str,
+    subject: str,
+    max_excerpt_bytes: int,
+    expected: str,
+) -> None:
+    required = _need(subject)
+    monkeypatch.setattr(
+        builder,
+        "derive_evidence_needs",
+        lambda bundle, *, candidates: (required,),
+    )
+
+    pack = builder.build_context_pack(
+        _bundle("fixture", [_result("config/application.properties", content)]),
+        _options(
+            max_excerpt_bytes=max_excerpt_bytes,
+            max_item_content_bytes=max_excerpt_bytes,
+            max_total_content_bytes=max_excerpt_bytes,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    assert pack.items[0].excerpts[0].content == expected
+    assert pack.evidence_needs[0].matched_item_ids == ("item:0",)
+    assert pack.status == "ready"
+
+
 def test_builder_enforces_each_subordinate_budget_and_rechecks_matches() -> None:
     results = [
         _result(
