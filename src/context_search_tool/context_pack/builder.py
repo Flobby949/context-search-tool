@@ -174,10 +174,8 @@ def build_context_pack(
                 item.candidate.file_path: item for item in selected
             }
             pack = _compact_pack(pack, needs, options, compaction_state)
-            pack = _drop_empty_items(pack)
             pack = _relink_retained_matches(pack, candidates, needs)
             pack = _compact_pack(pack, needs, options, compaction_state)
-            pack = _drop_empty_items(pack)
             pack = _relink_retained_matches(pack, candidates, needs)
 
             matched_need_ids = {
@@ -238,6 +236,7 @@ def _select_candidates(
     group_positions = _promoted_group_positions(needs)
     selected: list[ContextCandidate] = []
     selected_keys: set[str] = set()
+    selection_priorities: dict[str, tuple[object, ...]] = {}
     unmatched_required = {need.id for need in needs if need.required}
     unmatched_recommended = {need.id for need in needs if not need.required}
 
@@ -271,29 +270,6 @@ def _select_candidates(
             candidate.file_path,
         )
 
-    def selection_priority(candidate: ContextCandidate) -> tuple[object, ...]:
-        candidate_coverage = coverage(candidate)
-        required_count = sum(
-            need_by_id[need_id].required for need_id in candidate_coverage
-        )
-        recommended_count = sum(
-            not need_by_id[need_id].required for need_id in candidate_coverage
-        )
-        return (
-            required_count == 0,
-            -required_count,
-            recommended_count == 0,
-            -recommended_count,
-            group_positions[candidate.group],
-            0 if candidate.source_kind == "result" else 1,
-            (
-                candidate.retrieval_rank
-                if candidate.source_kind == "result"
-                else candidate.source_order
-            ),
-            candidate.file_path,
-        )
-
     def reserve(unmatched: set[str]) -> None:
         while unmatched and len(selected) < max_items:
             eligible = [
@@ -307,6 +283,7 @@ def _select_candidates(
             winner = min(eligible, key=rank)
             selected.append(winner)
             selected_keys.add(winner.key)
+            selection_priorities[winner.key] = rank(winner)
             winner_coverage = set(coverage(winner))
             unmatched_required.difference_update(winner_coverage)
             unmatched_recommended.difference_update(winner_coverage)
@@ -321,6 +298,7 @@ def _select_candidates(
             break
         selected.append(candidate)
         selected_keys.add(candidate.key)
+        selection_priorities[candidate.key] = rank(candidate)
 
     reading_order = sorted(
         selected,
@@ -343,7 +321,7 @@ def _select_candidates(
                 for need_id in coverage(candidate)
                 if need_id in need_by_id
             ),
-            selection_priority=selection_priority(candidate),
+            selection_priority=selection_priorities[candidate.key],
             preferred_excerpts=(),
             excerpts=(),
         )
@@ -686,32 +664,45 @@ def _compact_pack(
             compaction_state,
         )
         if removable_index is not None:
-            removed_item = compacted.items[removable_index]
-            removed_required = any(
-                need_by_id[need_id].required
-                for need_id in removed_item.matched_need_ids
-            )
-            retained = tuple(
-                item
-                for index, item in enumerate(compacted.items)
-                if index != removable_index
-            )
-            compacted = _replace_items(
+            compacted = _omit_item_and_restore(
                 compacted,
-                retained,
-                omitted_increment=1,
-                force_budget_exhausted=True,
+                removable_index,
+                compaction_state,
+                needs,
+                options,
             )
-            if not removed_required:
-                compacted = _restore_preferred_excerpts(
-                    compacted,
-                    compaction_state,
-                    needs,
-                    options,
-                )
             continue
         _fail()
-    return compacted
+
+    empty_indexes = {
+        index for index, item in enumerate(compacted.items) if not item.excerpts
+    }
+    removable_empty_index = next(
+        (
+            index
+            for index in _lowest_priority_indexes(
+                compacted,
+                compaction_state,
+            )
+            if index in empty_indexes
+        ),
+        None,
+    )
+    if removable_empty_index is None:
+        return compacted
+    compacted = _omit_item_and_restore(
+        compacted,
+        removable_empty_index,
+        compaction_state,
+        needs,
+        options,
+    )
+    return _compact_pack(
+        compacted,
+        needs,
+        options,
+        compaction_state,
+    )
 
 
 def _content_compaction_choice(
@@ -765,14 +756,11 @@ def _minimum_required_content_bytes(
         selected.candidate,
         item,
     )
-    current_content = "".join(
-        excerpt.content for excerpt in item.excerpts
-    )
     if not all(
-        candidate_matches_need(
+        _candidate_matches_retained_item(
             retained_candidate,
+            item,
             need,
-            content=current_content,
         )
         for need in required_needs
     ):
@@ -787,12 +775,12 @@ def _minimum_required_content_bytes(
             target,
             required_subject_terms=required_terms,
         )
-        retained_content = "".join(excerpt.content for excerpt in fitted)
+        fitted_item = replace(item, excerpts=fitted)
         if fitted and all(
-            candidate_matches_need(
+            _candidate_matches_retained_item(
                 retained_candidate,
+                fitted_item,
                 need,
-                content=retained_content,
             )
             for need in required_needs
         ):
@@ -828,6 +816,32 @@ def _restore_preferred_excerpts(
         pack,
         restored,
         force_budget_exhausted=True,
+    )
+
+
+def _omit_item_and_restore(
+    pack: ContextPack,
+    remove_index: int,
+    compaction_state: dict[str, _SelectedCandidate],
+    needs: tuple[EvidenceNeed, ...],
+    options: ContextPackOptions,
+) -> ContextPack:
+    retained = tuple(
+        item
+        for index, item in enumerate(pack.items)
+        if index != remove_index
+    )
+    compacted = _replace_items(
+        pack,
+        retained,
+        omitted_increment=1,
+        force_budget_exhausted=True,
+    )
+    return _restore_preferred_excerpts(
+        compacted,
+        compaction_state,
+        needs,
+        options,
     )
 
 
@@ -873,13 +887,10 @@ def _relink_retained_matches(
             candidate_by_path[item.file_path],
             item,
         )
-        retained_content = "".join(
-            excerpt.content for excerpt in item.excerpts
-        )
         matched_need_ids = tuple(
             need.id
             for need in needs
-            if candidate_matches_need(candidate, need, content=retained_content)
+            if _candidate_matches_retained_item(candidate, item, need)
         )
         items.append(replace(item, matched_need_ids=matched_need_ids))
     return _replace_items(pack, tuple(items))
@@ -898,16 +909,23 @@ def _candidate_with_retained_reasons(
     )
 
 
-def _drop_empty_items(pack: ContextPack) -> ContextPack:
-    retained = tuple(item for item in pack.items if item.excerpts)
-    removed_count = len(pack.items) - len(retained)
-    if removed_count == 0:
-        return pack
-    return _replace_items(
-        pack,
-        retained,
-        omitted_increment=removed_count,
-        force_budget_exhausted=True,
+def _candidate_matches_retained_item(
+    candidate: ContextCandidate,
+    item: ContextItem,
+    need: EvidenceNeed,
+) -> bool:
+    if not need.subject_terms:
+        return candidate.group == need.category
+    return all(
+        any(
+            candidate_matches_need(
+                candidate,
+                replace(need, subject_terms=(subject,)),
+                content=excerpt.content,
+            )
+            for excerpt in item.excerpts
+        )
+        for subject in need.subject_terms
     )
 
 

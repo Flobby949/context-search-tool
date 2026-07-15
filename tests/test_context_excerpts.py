@@ -685,6 +685,93 @@ def test_compaction_uses_candidate_priority_not_reverse_reading_order(
     assert pack.evidence_needs[0].matched_item_ids
 
 
+def test_empty_optional_omission_restores_preferred_recommended_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recommended = models.EvidenceNeed(
+        id="need:tests:owner",
+        category="tests",
+        subject_terms=(),
+        required=False,
+        provenance="structural_recommendation",
+        matched_item_ids=(),
+    )
+    monkeypatch.setattr(
+        builder,
+        "derive_evidence_needs",
+        lambda bundle, *, candidates: (recommended,),
+    )
+    recommended_path = "tests/OwnerTests.java"
+    support_path = f"src/{'x' * 1500}/helper.py"
+    pack = builder.build_context_pack(
+        _bundle(
+            "fixture",
+            [
+                _result(recommended_path, "t" * 1700),
+                _result(support_path, "s" * 100),
+            ],
+        ),
+        _options(
+            max_items=2,
+            max_excerpt_bytes=1800,
+            max_item_content_bytes=1800,
+            max_total_content_bytes=1800,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    assert [item.file_path for item in pack.items] == [recommended_path]
+    assert sum(
+        excerpt.content_bytes for excerpt in pack.items[0].excerpts
+    ) == 1700
+    assert pack.budget.pack_bytes < 4096
+
+
+def test_compaction_preserves_dynamic_unique_required_selection_priority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    needs = tuple(
+        models.EvidenceNeed(
+            id=f"need:configs_docs:{subject.casefold()}",
+            category="configs_docs",
+            subject_terms=(subject,),
+            required=True,
+            provenance="explicit_query",
+            matched_item_ids=(),
+        )
+        for subject in ("Alpha", "Beta", "Gamma")
+    )
+    monkeypatch.setattr(
+        builder,
+        "derive_evidence_needs",
+        lambda bundle, *, candidates: needs,
+    )
+    primary_path = "config/primary.properties"
+    redundant_path = f"config/{'x' * 2000}/redundant.properties"
+    gamma_path = "config/gamma.properties"
+    pack = builder.build_context_pack(
+        _bundle(
+            "fixture",
+            [
+                _result(primary_path, "Alpha Beta"),
+                _result(redundant_path, "Alpha Beta"),
+                _result(gamma_path, "Gamma"),
+            ],
+        ),
+        _options(
+            max_items=3,
+            max_excerpt_bytes=512,
+            max_item_content_bytes=512,
+            max_total_content_bytes=1536,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    assert [item.file_path for item in pack.items] == [primary_path, gamma_path]
+    assert pack.status == "ready"
+    assert all(need.matched_item_ids for need in pack.evidence_needs)
+
+
 def test_retained_rematch_does_not_trust_compacted_away_reason() -> None:
     raw_result = replace(
         _result("config/application.properties", "url=db"),
@@ -702,6 +789,55 @@ def test_retained_rematch_does_not_trust_compacted_away_reason() -> None:
     )
 
     assert pack.items[0].reasons == ()
+    assert pack.items[0].matched_need_ids == ()
+    assert pack.evidence_needs[0].matched_item_ids == ()
+    assert pack.status == "partial"
+
+
+def test_retained_rematch_never_synthesizes_cross_excerpt_adjacency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    required = models.EvidenceNeed(
+        id="need:configs_docs:owner-controller",
+        category="configs_docs",
+        subject_terms=("Owner Controller",),
+        required=True,
+        provenance="explicit_query",
+        matched_item_ids=(),
+    )
+    monkeypatch.setattr(
+        builder,
+        "derive_evidence_needs",
+        lambda bundle, *, candidates: (required,),
+    )
+    raw_result = replace(
+        _result(
+            "config/application.properties",
+            "Owner\nnoise\nController",
+            spans=(
+                RetrievalSpan(1, 1, 2.0, ("lexical",)),
+                RetrievalSpan(3, 3, 1.0, ("semantic",)),
+            ),
+        ),
+        reasons=[f"Owner Controller {'x' * 3000}"],
+    )
+
+    pack = builder.build_context_pack(
+        _bundle("fixture", [raw_result]),
+        _options(
+            max_excerpts_per_item=2,
+            max_excerpt_bytes=128,
+            max_item_content_bytes=256,
+            max_total_content_bytes=256,
+            max_pack_bytes=4096,
+        ),
+    )
+
+    assert pack.items[0].reasons == ()
+    assert [(excerpt.start_line, excerpt.end_line) for excerpt in pack.items[0].excerpts] == [
+        (1, 1),
+        (3, 3),
+    ]
     assert pack.items[0].matched_need_ids == ()
     assert pack.evidence_needs[0].matched_item_ids == ()
     assert pack.status == "partial"
