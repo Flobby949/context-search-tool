@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,28 +49,23 @@ _SPRING_CONFIG_NAME_RE = re.compile(
     r"(?:application|bootstrap)(?:-.+)?\.(?:properties|yaml|yml)"
 )
 _SPRING_LOGGING_CONFIG_RE = re.compile(r"(?:logback|log4j).*\.xml")
-_JAVA_TYPE_DECLARATION_RE = re.compile(
-    r"^[ \t]*(?:(?:public|protected|private|abstract|static|final|sealed|"
-    r"non-sealed|strictfp)\s+)*(?:record|enum)\s+[A-Za-z_$][\w$]*\b",
-    re.MULTILINE,
+_JAVA_LINE_START_RE = re.compile(r"^[ \t]*", re.MULTILINE)
+_JAVA_ANNOTATION_RE = re.compile(
+    r"@(?P<name>[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)"
 )
-_JAVA_INTERFACE_DECLARATION_RE = re.compile(
-    r"^[ \t]*(?:(?:public|protected|private|abstract|static|sealed|"
-    r"non-sealed|strictfp)\s+)*interface\s+[A-Za-z_$][\w$]*\b",
-    re.MULTILINE,
-)
-_JAVA_TYPE_ANNOTATION_RE = re.compile(
-    r"^[ \t]*@(?:Entity|Embeddable|MappedSuperclass|Document)\b",
-    re.MULTILINE,
-)
-_JAVA_ANNOTATION_RE = re.compile(r"@[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*")
 _JAVA_MODIFIER_RE = re.compile(
     r"(?:public|protected|private|abstract|static|final|sealed|non-sealed|"
     r"strictfp)\b"
 )
 _JAVA_NAMED_TYPE_RE = re.compile(
-    r"(?:class|interface|record|enum)\s+[A-Za-z_$][\w$]*\b"
+    r"(?P<kind>class|interface|record|enum)\s+[A-Za-z_$][\w$]*\b"
 )
+_JAVA_DATA_TYPE_ANNOTATIONS = {
+    "Document",
+    "Embeddable",
+    "Entity",
+    "MappedSuperclass",
+}
 _JAVA_DATA_TYPE_STEM_SUFFIXES = (
     "Dto",
     "DTO",
@@ -280,26 +276,35 @@ def _is_spring_runtime_config(
 
 
 def _has_java_interface_declaration(content: str) -> bool:
-    return _JAVA_INTERFACE_DECLARATION_RE.search(
-        _mask_java_comments_and_literals(content)
-    ) is not None
+    return any(
+        kind == "interface"
+        for kind, _ in _iter_java_type_declarations(
+            _mask_java_comments_and_literals(content)
+        )
+    )
 
 
 def _has_java_data_type_declaration(content: str) -> bool:
     masked = _mask_java_comments_and_literals(content)
-    return (
-        _has_annotated_java_type(masked)
-        or _JAVA_TYPE_DECLARATION_RE.search(masked) is not None
+    return any(
+        kind in {"record", "enum"} or has_data_type_annotation
+        for kind, has_data_type_annotation in _iter_java_type_declarations(masked)
     )
 
 
-def _has_annotated_java_type(masked: str) -> bool:
-    for match in _JAVA_TYPE_ANNOTATION_RE.finditer(masked):
-        index = _consume_annotation_arguments(masked, match.end())
+def _iter_java_type_declarations(masked: str) -> Iterator[tuple[str, bool]]:
+    for line_start in _JAVA_LINE_START_RE.finditer(masked):
+        index = line_start.end()
+        has_data_type_annotation = False
         while index < len(masked):
             index = _skip_whitespace(masked, index)
             annotation = _JAVA_ANNOTATION_RE.match(masked, index)
             if annotation is not None:
+                annotation_name = annotation.group("name").rsplit(".", 1)[-1]
+                has_data_type_annotation = (
+                    has_data_type_annotation
+                    or annotation_name in _JAVA_DATA_TYPE_ANNOTATIONS
+                )
                 index = _consume_annotation_arguments(masked, annotation.end())
                 continue
             modifier = _JAVA_MODIFIER_RE.match(masked, index)
@@ -308,9 +313,9 @@ def _has_annotated_java_type(masked: str) -> bool:
                 continue
             break
         index = _skip_whitespace(masked, index)
-        if _JAVA_NAMED_TYPE_RE.match(masked, index) is not None:
-            return True
-    return False
+        declaration = _JAVA_NAMED_TYPE_RE.match(masked, index)
+        if declaration is not None:
+            yield declaration.group("kind"), has_data_type_annotation
 
 
 def _consume_annotation_arguments(content: str, index: int) -> int:

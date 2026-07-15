@@ -299,6 +299,56 @@ def test_path_roles_classify_java_type_declarations_from_content(
 
 
 @pytest.mark.parametrize(
+    ("path", "content", "expected"),
+    [
+        (
+            "src/main/java/com/example/Owner.java",
+            "@Deprecated @Entity public class Owner {}",
+            PathRole("data_type", 45, "content"),
+        ),
+        (
+            "src/main/java/com/example/Visit.java",
+            "@Deprecated public record Visit(long id) {}",
+            PathRole("data_type", 45, "content"),
+        ),
+        (
+            "src/main/java/com/example/Kind.java",
+            "@Deprecated public enum Kind { FIRST }",
+            PathRole("data_type", 45, "content"),
+        ),
+        (
+            "src/main/java/com/example/Aggregate.java",
+            (
+                '@Outer(value = @Inner(name = "owner", '
+                'nested = @Nested(label = "primary"))) '
+                "public enum Aggregate { OWNER }"
+            ),
+            PathRole("data_type", 45, "content"),
+        ),
+        (
+            "src/main/java/com/example/Aggregate.java",
+            (
+                'public @Deprecated(since = "1.0") '
+                '@Entity(name = "owner") final class Aggregate {}'
+            ),
+            PathRole("data_type", 45, "content"),
+        ),
+        (
+            "src/main/java/com/example/service/OwnerService.java",
+            "@FunctionalInterface public interface OwnerService {}",
+            PathRole("service_interface", 35, "content"),
+        ),
+    ],
+)
+def test_java_declarations_accept_arbitrary_annotation_modifiers(
+    path: str,
+    content: str,
+    expected: PathRole,
+) -> None:
+    assert classify_path_role(Path(path), content) == expected
+
+
+@pytest.mark.parametrize(
     "content",
     [
         "import jakarta.persistence.Entity;\npublic class Owner {}",
