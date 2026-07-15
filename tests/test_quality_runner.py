@@ -23,13 +23,10 @@ from context_search_tool.config import (
     ToolConfig,
 )
 from context_search_tool.context_pack import (
-    CONTEXT_GROUPS,
-    CONTEXT_PACK_SCHEMA_VERSION,
-    ContextBudget,
     ContextPack,
-    ContextPackItem,
     ContextPackOptions,
-    ReadinessConfidence,
+    build_context_pack,
+    resolve_context_pack_options,
 )
 from context_search_tool.indexer import IndexSummary
 from context_search_tool.manifest import Manifest
@@ -171,39 +168,15 @@ def _passing_evaluation() -> CaseEvaluation:
 
 
 def _runner_context_pack(
-    items: tuple[ContextPackItem, ...] = (),
-    *,
-    status: str = "ready",
-    confidence: str = "medium",
 ) -> ContextPack:
-    return ContextPack(
-        schema_version=CONTEXT_PACK_SCHEMA_VERSION,
-        status=status,
-        items=items,
-        groups={
-            group: tuple(item.id for item in items if item.group == group)
-            for group in CONTEXT_GROUPS
-        },
-        reading_order=tuple(item.id for item in items),
-        missing_evidence=(),
-        next_queries=(),
-        confidence=ReadinessConfidence(level=confidence, reasons=()),
-        budget=ContextBudget(
-            max_results=DEFAULT_CONFIG.retrieval.final_top_k,
+    return build_context_pack(
+        QueryBundle("context", [], [], []),
+        resolve_context_pack_options(
+            DEFAULT_CONFIG,
+            context_lines=None,
             max_evidence_anchors=evidence_anchor_top_k(
                 DEFAULT_CONFIG.retrieval.final_top_k
             ),
-            max_items=(
-                DEFAULT_CONFIG.retrieval.final_top_k
-                + evidence_anchor_top_k(DEFAULT_CONFIG.retrieval.final_top_k)
-            ),
-            included_results=len(items),
-            included_evidence_anchors=0,
-            content_bytes=0,
-            context_before_lines=DEFAULT_CONFIG.retrieval.context_before_lines,
-            context_after_lines=DEFAULT_CONFIG.retrieval.context_after_lines,
-            full_file=False,
-            max_full_file_bytes=DEFAULT_CONFIG.index.max_full_file_bytes,
         ),
     )
 
@@ -626,7 +599,7 @@ def test_runner_builds_and_evaluates_pack_only_for_context_cases(
     ) -> CaseEvaluation:
         assert actual_pack is pack
         evaluated.append(case.case_id)
-        return evaluation
+        return quality_metrics.evaluate_context_pack(case, actual_pack, evaluation)
 
     monkeypatch.setattr(quality_runner, "query_repository", fake_query)
     monkeypatch.setattr(
@@ -647,21 +620,34 @@ def test_runner_builds_and_evaluates_pack_only_for_context_cases(
     assert queried == ["result query", "context query"]
     assert built == [
         ContextPackOptions(
-            max_results=DEFAULT_CONFIG.retrieval.final_top_k,
-            max_evidence_anchors=evidence_anchor_top_k(
-                DEFAULT_CONFIG.retrieval.final_top_k
-            ),
+            max_items=DEFAULT_CONFIG.context.max_items,
+            max_excerpts_per_item=DEFAULT_CONFIG.context.max_excerpts_per_item,
+            max_excerpt_bytes=DEFAULT_CONFIG.context.max_excerpt_bytes,
+            max_item_content_bytes=DEFAULT_CONFIG.context.max_item_content_bytes,
+            max_total_content_bytes=DEFAULT_CONFIG.context.max_total_content_bytes,
+            max_pack_bytes=DEFAULT_CONFIG.context.max_pack_bytes,
             context_before_lines=DEFAULT_CONFIG.retrieval.context_before_lines,
             context_after_lines=DEFAULT_CONFIG.retrieval.context_after_lines,
-            full_file=False,
-            max_full_file_bytes=DEFAULT_CONFIG.index.max_full_file_bytes,
         )
     ]
     assert evaluated == ["context-case"]
     records = {record["case_id"]: record for record in report["cases"]}
     assert records["context-case"]["context_pack"] == {
-        "status": "ready",
-        "confidence": "medium",
+        "status": "empty",
+        "confidence": "none",
+    }
+    assert set(records["context-case"]["metrics"]) - set(
+        records["result-case"]["metrics"]
+    ) == {
+        "context_completeness",
+        "evidence_need_count",
+        "required_need_count",
+        "matched_required_need_count",
+        "evidence_need_completeness",
+        "pack_bytes",
+        "content_bytes",
+        "truncated_item_count",
+        "omitted_item_count",
     }
     assert "context_pack" not in records["result-case"]
     assert set(records["result-case"]) == {
@@ -871,8 +857,8 @@ def test_runner_real_builder_classifies_anchor_only_readme(
     assert len(packs[0].items) == 1
     item = packs[0].items[0]
     assert (item.role, item.classification_basis, item.group) == (
-        "readme",
-        "anchor_kind",
+        "doc",
+        "path",
         "configs_docs",
     )
 

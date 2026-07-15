@@ -990,7 +990,33 @@
             ]
           },
           "expected_pack_status": "ready",
-          "minimum_context_confidence": "high"
+          "minimum_context_confidence": "high",
+          "expected_need_matches": [
+            {
+              "category": "entrypoints",
+              "subject": "workspace",
+              "required": true,
+              "matched": true
+            },
+            {
+              "category": "implementations",
+              "subject": "workspace",
+              "required": true,
+              "matched": true
+            },
+            {
+              "category": "related_types",
+              "subject": "workspace",
+              "required": true,
+              "matched": true
+            }
+          ],
+          "maximum_pack_bytes": 65536,
+          "maximum_truncated_items": 4,
+          "forbidden_next_query_patterns": [
+            "/oups",
+            "GET /owners dto"
+          ]
         },
         {
           "id": "workspace-test-file",
@@ -1019,8 +1045,22 @@
               }
             ]
           },
-          "expected_pack_status": "ready",
-          "minimum_context_confidence": "high"
+          "expected_pack_status": "partial",
+          "minimum_context_confidence": "low",
+          "expected_need_matches": [
+            {
+              "category": "tests",
+              "subject": "workspace file",
+              "required": true,
+              "matched": false
+            }
+          ],
+          "maximum_pack_bytes": 65536,
+          "maximum_truncated_items": 4,
+          "forbidden_next_query_patterns": [
+            "/oups",
+            "GET /owners dto"
+          ]
         },
         {
           "id": "workspace-service-symbol",
@@ -1050,7 +1090,21 @@
             ]
           },
           "expected_pack_status": "ready",
-          "minimum_context_confidence": "high"
+          "minimum_context_confidence": "medium",
+          "expected_need_matches": [
+            {
+              "category": "implementations",
+              "subject": "WorkspaceServiceImpl",
+              "required": true,
+              "matched": true
+            }
+          ],
+          "maximum_pack_bytes": 65536,
+          "maximum_truncated_items": 4,
+          "forbidden_next_query_patterns": [
+            "/oups",
+            "GET /owners dto"
+          ]
         }
       ]
     },
@@ -1114,7 +1168,33 @@
             ]
           },
           "expected_pack_status": "ready",
-          "minimum_context_confidence": "medium"
+          "minimum_context_confidence": "medium",
+          "expected_need_matches": [
+            {
+              "category": "entrypoints",
+              "subject": "QRCode",
+              "required": true,
+              "matched": true
+            },
+            {
+              "category": "implementations",
+              "subject": "QRCode",
+              "required": true,
+              "matched": true
+            },
+            {
+              "category": "related_types",
+              "subject": "QRCode",
+              "required": true,
+              "matched": true
+            }
+          ],
+          "maximum_pack_bytes": 65536,
+          "maximum_truncated_items": 4,
+          "forbidden_next_query_patterns": [
+            "/oups",
+            "GET /owners dto"
+          ]
         }
       ]
     },
@@ -1146,7 +1226,21 @@
             ]
           },
           "expected_pack_status": "ready",
-          "minimum_context_confidence": "medium"
+          "minimum_context_confidence": "medium",
+          "expected_need_matches": [
+            {
+              "category": "configs_docs",
+              "subject": "Program Tool Developer Setup",
+              "required": true,
+              "matched": true
+            }
+          ],
+          "maximum_pack_bytes": 65536,
+          "maximum_truncated_items": 4,
+          "forbidden_next_query_patterns": [
+            "/oups",
+            "GET /owners dto"
+          ]
         }
       ]
     },

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import context_search_tool.quality as quality
+import context_search_tool.quality.cases as quality_cases
 from context_search_tool.config import (
     EmbeddingConfig,
     QueryPlannerConfig,
@@ -199,6 +200,17 @@ def test_context_pack_case_parses_typed_expectations(tmp_path: Path) -> None:
             },
             "expected_pack_status": "ready",
             "minimum_context_confidence": "medium",
+            "expected_need_matches": [
+                {
+                    "category": "configs_docs",
+                    "subject": "postgresql",
+                    "required": True,
+                    "matched": False,
+                }
+            ],
+            "maximum_pack_bytes": 65536,
+            "maximum_truncated_items": 4,
+            "forbidden_next_query_patterns": ["/oups", "GET /owners dto"],
         },
     )
 
@@ -212,6 +224,20 @@ def test_context_pack_case_parses_typed_expectations(tmp_path: Path) -> None:
     }
     assert case.expected_pack_status == "ready"
     assert case.minimum_context_confidence == "medium"
+    assert case.expected_need_matches == (
+        quality_cases.ExpectedNeedMatch(
+            category="configs_docs",
+            subject="postgresql",
+            required=True,
+            matched=False,
+        ),
+    )
+    assert case.maximum_pack_bytes == 65536
+    assert case.maximum_truncated_items == 4
+    assert case.forbidden_next_query_patterns == (
+        "/oups",
+        "GET /owners dto",
+    )
 
 
 def test_case_without_mode_keeps_results_defaults(tmp_path: Path) -> None:
@@ -221,6 +247,10 @@ def test_case_without_mode_keeps_results_defaults(tmp_path: Path) -> None:
     assert case.expected_context_groups == {}
     assert case.expected_pack_status is None
     assert case.minimum_context_confidence is None
+    assert case.expected_need_matches == ()
+    assert case.maximum_pack_bytes is None
+    assert case.maximum_truncated_items is None
+    assert case.forbidden_next_query_patterns == ()
 
 
 @pytest.mark.parametrize("mode", ["raw", "", None, 1])
@@ -235,6 +265,10 @@ def test_case_rejects_unknown_quality_mode(tmp_path: Path, mode: object) -> None
         {"expected_context_groups": {}},
         {"expected_pack_status": ""},
         {"minimum_context_confidence": ""},
+        {"expected_need_matches": []},
+        {"maximum_pack_bytes": 1},
+        {"maximum_truncated_items": 0},
+        {"forbidden_next_query_patterns": []},
     ],
 )
 def test_results_case_rejects_context_only_fields_even_when_empty(
@@ -312,6 +346,66 @@ def test_minimum_context_confidence_rejects_invalid_and_explicit_null_values(
             {
                 "mode": "context_pack",
                 "minimum_context_confidence": confidence,
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "need",
+    [
+        {"category": "controllers", "subject": "x", "required": True, "matched": True},
+        {"category": "tests", "subject": "", "required": True, "matched": True},
+        {"category": "tests", "subject": "x" * 65, "required": True, "matched": True},
+        {"category": "tests", "subject": "x", "required": 1, "matched": True},
+        {"category": "tests", "subject": "x", "required": True, "matched": 0},
+    ],
+)
+def test_expected_need_matches_reject_invalid_closed_fields(
+    tmp_path: Path,
+    need: dict,
+) -> None:
+    with pytest.raises(ValueError, match="expected_need_matches"):
+        _load_canonical_case(
+            tmp_path,
+            {"mode": "context_pack", "expected_need_matches": [need]},
+        )
+
+
+@pytest.mark.parametrize("value", [None, True, 0, -1])
+def test_maximum_pack_bytes_requires_a_positive_integer(
+    tmp_path: Path,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match="maximum_pack_bytes"):
+        _load_canonical_case(
+            tmp_path,
+            {"mode": "context_pack", "maximum_pack_bytes": value},
+        )
+
+
+@pytest.mark.parametrize("value", [None, True, -1])
+def test_maximum_truncated_items_requires_a_non_negative_integer(
+    tmp_path: Path,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match="maximum_truncated_items"):
+        _load_canonical_case(
+            tmp_path,
+            {"mode": "context_pack", "maximum_truncated_items": value},
+        )
+
+
+@pytest.mark.parametrize("pattern", ["", "   ", "x" * 161, "["])
+def test_forbidden_next_query_patterns_are_bounded_valid_regexes(
+    tmp_path: Path,
+    pattern: str,
+) -> None:
+    with pytest.raises(ValueError, match="forbidden_next_query_patterns"):
+        _load_canonical_case(
+            tmp_path,
+            {
+                "mode": "context_pack",
+                "forbidden_next_query_patterns": [pattern],
             },
         )
 

@@ -55,7 +55,6 @@ def indexed_p2_snapshots(
     pack_options = resolve_context_pack_options(
         config,
         context_lines=None,
-        full_file=False,
         max_evidence_anchors=evidence_anchor_top_k(
             config.retrieval.final_top_k
         ),
@@ -91,7 +90,17 @@ def test_phase_two_context_pack_profile_is_deterministic_offline() -> None:
     }
     overall = report["aggregate"]["metrics"]["overall"]
     assert overall["context_completeness"] == {"count": 5, "mean": 1.0}
-    assert overall["context_expected_count"] == {"count": 5, "mean": 2.0}
+    assert overall["evidence_need_completeness"] == {"count": 5, "mean": 0.8}
+    for metric_name in (
+        "evidence_need_count",
+        "required_need_count",
+        "matched_required_need_count",
+        "pack_bytes",
+        "content_bytes",
+        "truncated_item_count",
+        "omitted_item_count",
+    ):
+        assert overall[metric_name]["count"] == 5
 
     cases = {
         (case["repo_key"], case["case_id"]): case
@@ -104,35 +113,41 @@ def test_phase_two_context_pack_profile_is_deterministic_offline() -> None:
         ("context_pack_frontend", "qrcode-feature-context"),
         ("context_pack_docs", "program-tool-developer-docs"),
     }
-    assert all(
-        case["context_pack"]["status"] == "ready"
-        for case in cases.values()
-    )
+    assert {
+        key: case["context_pack"]["status"]
+        for key, case in cases.items()
+    } == {
+        ("context_pack_java", "workspace-page-flow"): "ready",
+        ("context_pack_java", "workspace-test-file"): "partial",
+        ("context_pack_java", "workspace-service-symbol"): "ready",
+        ("context_pack_frontend", "qrcode-feature-context"): "ready",
+        ("context_pack_docs", "program-tool-developer-docs"): "ready",
+    }
     assert {
         key: case["context_pack"]["confidence"]
         for key, case in cases.items()
     } == {
         ("context_pack_java", "workspace-page-flow"): "high",
-        ("context_pack_java", "workspace-test-file"): "high",
-        ("context_pack_java", "workspace-service-symbol"): "high",
+        ("context_pack_java", "workspace-test-file"): "low",
+        ("context_pack_java", "workspace-service-symbol"): "medium",
         ("context_pack_frontend", "qrcode-feature-context"): "medium",
         ("context_pack_docs", "program-tool-developer-docs"): "medium",
     }
     assert cases[
         ("context_pack_java", "workspace-service-symbol")
-    ]["metrics"]["required_missing_count"] == 0
+    ]["metrics"]["evidence_need_completeness"] == 1.0
     assert cases[
-        ("context_pack_frontend", "qrcode-feature-context")
-    ]["metrics"]["recommended_missing_count"] == 1
+        ("context_pack_java", "workspace-test-file")
+    ]["metrics"]["evidence_need_completeness"] == 0.0
     assert cases[
         ("context_pack_docs", "program-tool-developer-docs")
-    ]["metrics"]["context_content_bytes"] == 93
+    ]["metrics"]["content_bytes"] == 93
     assert cases[
         ("context_pack_docs", "program-tool-developer-docs")
     ]["metrics"]["result_count"] == 0
 
 
-def test_exact_service_symbol_does_not_invent_flow_or_test_requirements(
+def test_exact_service_symbol_does_not_invent_required_flow_or_test_requirements(
     indexed_p2_snapshots: IndexedP2Snapshots,
 ) -> None:
     config, pack_options, workspaces = indexed_p2_snapshots
@@ -159,8 +174,9 @@ def test_exact_service_symbol_does_not_invent_flow_or_test_requirements(
         (item.file_path, item.group) for item in pack.items
     ] == [(JAVA_SERVICE_PATH, "implementations")]
     assert pack.status == "ready"
-    assert pack.confidence.level == "high"
-    assert pack.missing_evidence == ()
+    assert pack.confidence.level == "medium"
+    assert pack.missing_evidence
+    assert all(not missing.required for missing in pack.missing_evidence)
 
 
 def test_explicit_test_query_requires_test_evidence(

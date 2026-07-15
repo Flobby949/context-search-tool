@@ -1,19 +1,26 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+import context_search_tool.quality.cases as quality_cases
 import context_search_tool.quality.metrics as quality_metrics
+from context_search_tool.config import DEFAULT_CONFIG
 from context_search_tool.context_pack import (
     CONTEXT_GROUPS,
     CONTEXT_PACK_SCHEMA_VERSION,
     ContextBudget,
+    ContextExcerpt,
+    ContextItem,
     ContextPack,
-    ContextPackItem,
-    MissingEvidence,
-    NextQuery,
+    Omission,
     ReadinessConfidence,
+    build_context_pack,
+    canonical_context_pack_bytes,
+    resolve_context_pack_options,
 )
 from context_search_tool.models import RetrievalResult, SemanticMatch
+from context_search_tool.quality.aggregate import aggregate_cases
 from context_search_tool.quality.cases import (
     AtLeastTopKGroup,
     ExpectedAnyGroup,
@@ -25,6 +32,7 @@ from context_search_tool.quality.cases import (
     TopKMatcher,
     adapt_legacy_query_case,
 )
+from context_search_tool.retrieval import QueryBundle, evidence_anchor_top_k
 from context_search_tool.quality.metrics import (
     CaseEvaluation,
     evaluate_case,
@@ -57,55 +65,158 @@ def _expected(path: str, top_k: int = 5) -> TopKMatcher:
     return TopKMatcher(Matcher(path=path), top_k)
 
 
-def _context_item(item_id: str, path: str, group: str) -> ContextPackItem:
-    return ContextPackItem(
-        id=item_id,
-        source="result",
-        source_index=int(item_id.rsplit(":", 1)[1]),
+def _context_item(item_id: str, path: str, group: str) -> ContextItem:
+    index = int(item_id.rsplit(":", 1)[1])
+    role = {
+        "entrypoints": "entrypoint",
+        "implementations": "service",
+        "related_types": "data_type",
+        "tests": "test",
+        "configs_docs": "doc",
+        "supporting": "source",
+    }[group]
+    content = f"public fixture for {path}"
+    return ContextItem(
+        id=f"item:{index}",
         file_path=path,
-        start_line=1,
-        end_line=1,
         group=group,
-        role="source",
+        role=role,
         classification_basis="fallback",
+        source_kind="result",
+        retrieval_rank=index,
+        relevance_score=1.0,
+        reasons=(),
+        matched_need_ids=(),
+        excerpts=(
+            ContextExcerpt(
+                start_line=1,
+                end_line=1,
+                content=content,
+                content_bytes=len(content.encode("utf-8")),
+                truncated=False,
+            ),
+        ),
     )
 
 
 def _context_pack(
-    items: tuple[ContextPackItem, ...] = (),
+    items: tuple[ContextItem, ...] = (),
     *,
-    status: str = "ready",
-    confidence: str = "medium",
-    missing_evidence: tuple[MissingEvidence, ...] = (),
-    next_queries: tuple[NextQuery, ...] = (),
-    content_bytes: int = 0,
+    status: str | None = None,
+    confidence: str | None = None,
+    truncated: bool = False,
+    reported_pack_bytes: int | None = None,
 ) -> ContextPack:
+    if not items and confidence in {"medium", "high"}:
+        items = (_context_item("item:0", "src/Fixture.java", "supporting"),)
+    if truncated and items:
+        first = items[0]
+        excerpt = replace(first.excerpts[0], truncated=True)
+        items = (replace(first, excerpts=(excerpt,)), *items[1:])
+    if status is None:
+        status = "ready" if items else "empty"
+    omissions: tuple[Omission, ...] = ()
+    omitted_count = 0
+    budget_exhausted = truncated
+    if confidence == "low" and not items:
+        status = "partial"
+        omissions = (
+            Omission(
+                file_path="src/Omitted.java",
+                group="supporting",
+                reason="lower priority than selected evidence under the context budget",
+                matched_need_ids=(),
+            ),
+        )
+        omitted_count = 1
+        budget_exhausted = True
+    if confidence is None:
+        confidence = "medium" if items else "none"
+    reasons = {
+        "none": ("no usable retrieval evidence",),
+        "low": ("no evidence item fits the context budget",),
+        "medium": (
+            "all required evidence is selected",
+            "protected original-direct evidence is absent",
+        ),
+        "high": (
+            "all required evidence is selected",
+            "protected original-direct evidence is present",
+        ),
+    }[confidence]
+    content_bytes = sum(
+        excerpt.content_bytes for item in items for excerpt in item.excerpts
+    )
     groups = {
         group: tuple(item.id for item in items if item.group == group)
         for group in CONTEXT_GROUPS
     }
-    return ContextPack(
+    pack = ContextPack(
         schema_version=CONTEXT_PACK_SCHEMA_VERSION,
         status=status,
         items=items,
         groups=groups,
         reading_order=tuple(item.id for item in items),
-        missing_evidence=missing_evidence,
-        next_queries=next_queries,
-        confidence=ReadinessConfidence(level=confidence, reasons=()),
+        evidence_needs=(),
+        missing_evidence=(),
+        next_queries=(),
+        omissions=omissions,
+        confidence=ReadinessConfidence(level=confidence, reasons=reasons),
         budget=ContextBudget(
-            max_results=12,
-            max_evidence_anchors=4,
             max_items=16,
-            included_results=len(items),
-            included_evidence_anchors=0,
+            max_excerpts_per_item=2,
+            max_excerpt_bytes=4096,
+            max_item_content_bytes=8192,
+            max_total_content_bytes=49152,
+            max_pack_bytes=65536,
+            included_items=len(items),
+            included_excerpts=sum(len(item.excerpts) for item in items),
             content_bytes=content_bytes,
-            context_before_lines=8,
-            context_after_lines=12,
-            full_file=False,
-            max_full_file_bytes=200_000,
+            pack_bytes=0,
+            truncated_item_count=int(truncated and bool(items)),
+            omitted_item_count=omitted_count,
+            budget_exhausted=budget_exhausted,
         ),
     )
+    canonical_size = len(canonical_context_pack_bytes(pack))
+    return replace(
+        pack,
+        budget=replace(
+            pack.budget,
+            pack_bytes=(
+                canonical_size
+                if reported_pack_bytes is None
+                else reported_pack_bytes
+            ),
+        ),
+    )
+
+
+def _built_context_pack(query: str, *, matched: bool) -> ContextPack:
+    results = (
+        [
+            _result(
+                "config/application-postgresql.properties",
+                reasons=["fixture"],
+            )
+        ]
+        if matched
+        else []
+    )
+    if results:
+        results[0] = replace(
+            results[0],
+            end_line=1,
+            content="postgresql datasource config",
+        )
+    options = resolve_context_pack_options(
+        DEFAULT_CONFIG,
+        context_lines=None,
+        max_evidence_anchors=evidence_anchor_top_k(
+            DEFAULT_CONFIG.retrieval.final_top_k
+        ),
+    )
+    return build_context_pack(QueryBundle(query, [], results, []), options)
 
 
 def _raw_evaluation(
@@ -147,31 +258,31 @@ def test_evaluate_context_pack_adds_metrics_and_deterministic_failures() -> None
             ),
             _context_item("result:2", "docs/README.md", "configs_docs"),
         ),
-        status="ready",
-        confidence="medium",
-        missing_evidence=(
-            MissingEvidence("entrypoints", True, "required"),
-            MissingEvidence("tests", False, "recommended"),
-            MissingEvidence("related_types", False, "recommended"),
-        ),
-        next_queries=(
-            NextQuery("find controller", "find_entrypoints", "missing"),
-            NextQuery("find tests", "find_tests", "missing"),
-        ),
-        content_bytes=321,
     )
     raw = _raw_evaluation()
 
     evaluation = quality_metrics.evaluate_context_pack(case, pack, raw)
 
-    assert evaluation.metrics["context_expected_count"] == 3
-    assert evaluation.metrics["context_matched_count"] == 2
     assert evaluation.metrics["context_completeness"] == pytest.approx(2 / 3)
-    assert evaluation.metrics["context_group_count"] == 3
-    assert evaluation.metrics["required_missing_count"] == 1
-    assert evaluation.metrics["recommended_missing_count"] == 2
-    assert evaluation.metrics["next_query_count"] == 2
-    assert evaluation.metrics["context_content_bytes"] == 321
+    assert set(evaluation.metrics) - set(raw.metrics) == {
+        "context_completeness",
+        "evidence_need_count",
+        "required_need_count",
+        "matched_required_need_count",
+        "evidence_need_completeness",
+        "pack_bytes",
+        "content_bytes",
+        "truncated_item_count",
+        "omitted_item_count",
+    }
+    assert evaluation.metrics["evidence_need_count"] == 0
+    assert evaluation.metrics["required_need_count"] == 0
+    assert evaluation.metrics["matched_required_need_count"] == 0
+    assert evaluation.metrics["evidence_need_completeness"] is None
+    assert evaluation.metrics["pack_bytes"] == len(canonical_context_pack_bytes(pack))
+    assert evaluation.metrics["content_bytes"] == pack.budget.content_bytes
+    assert evaluation.metrics["truncated_item_count"] == 0
+    assert evaluation.metrics["omitted_item_count"] == 0
     assert evaluation.metrics["latency_ms"] == 11
     assert evaluation.metrics["result_count"] == 1
     assert evaluation.top_results == raw.top_results
@@ -198,7 +309,7 @@ def test_context_matchers_use_path_glob_and_contains_in_declared_group() -> None
     )
     pack = _context_pack(
         (
-            _context_item("result:0", "./src\\Exact.py", "implementations"),
+            _context_item("result:0", "src/Exact.py", "implementations"),
             _context_item("result:1", "src/pkg/ServiceImpl.py", "implementations"),
             _context_item("result:2", "src/data/Repository.py", "implementations"),
         )
@@ -210,8 +321,6 @@ def test_context_matchers_use_path_glob_and_contains_in_declared_group() -> None
         _raw_evaluation(),
     )
 
-    assert evaluation.metrics["context_expected_count"] == 3
-    assert evaluation.metrics["context_matched_count"] == 3
     assert evaluation.metrics["context_completeness"] == 1.0
     assert evaluation.failures == []
 
@@ -241,25 +350,25 @@ def test_context_item_in_wrong_group_does_not_satisfy_expected_pair() -> None:
         _raw_evaluation(),
     )
 
-    assert evaluation.metrics["context_matched_count"] == 0
+    assert evaluation.metrics["context_completeness"] == 0.0
     assert evaluation.failures == [
         "expected_context_groups missing in entrypoints: src/AppController.java"
     ]
 
 
-def test_duplicate_pack_paths_do_not_overcount_expected_pair() -> None:
+def test_multiple_matching_pack_paths_do_not_overcount_expected_pair() -> None:
     case = QualityCase(
         case_id="duplicates",
         query="controller",
         mode="context_pack",
         expected_context_groups={
-            "entrypoints": (Matcher(path="src/AppController.java"),)
+            "entrypoints": (Matcher(glob="src/*Controller.java"),)
         },
     )
     pack = _context_pack(
         (
             _context_item("result:0", "src/AppController.java", "entrypoints"),
-            _context_item("result:1", "./src/AppController.java", "entrypoints"),
+            _context_item("result:1", "src/AdminController.java", "entrypoints"),
         )
     )
 
@@ -269,8 +378,6 @@ def test_duplicate_pack_paths_do_not_overcount_expected_pair() -> None:
         _raw_evaluation(),
     )
 
-    assert evaluation.metrics["context_expected_count"] == 1
-    assert evaluation.metrics["context_matched_count"] == 1
     assert evaluation.metrics["context_completeness"] == 1.0
 
 
@@ -287,8 +394,6 @@ def test_no_expected_context_pairs_records_null_completeness() -> None:
         _raw_evaluation(),
     )
 
-    assert evaluation.metrics["context_expected_count"] == 0
-    assert evaluation.metrics["context_matched_count"] == 0
     assert evaluation.metrics["context_completeness"] is None
 
 
@@ -375,6 +480,198 @@ def test_context_evaluation_appends_after_raw_failures() -> None:
     ]
     assert evaluation.metrics["latency_ms"] == raw.metrics["latency_ms"]
     assert evaluation.top_results == raw.top_results
+
+
+@pytest.mark.parametrize(
+    ("matched", "expected_completeness"),
+    [(True, 1.0), (False, 0.0)],
+)
+def test_expected_need_match_uses_public_subject_and_matched_item_ids(
+    matched: bool,
+    expected_completeness: float,
+) -> None:
+    pack = _built_context_pack("postgresql config", matched=matched)
+    case = QualityCase(
+        case_id="need-match",
+        query="postgresql config",
+        mode="context_pack",
+        expected_need_matches=(
+            quality_cases.ExpectedNeedMatch(
+                category="configs_docs",
+                subject="POSTGRESQL",
+                required=True,
+                matched=matched,
+            ),
+        ),
+    )
+
+    evaluation = quality_metrics.evaluate_context_pack(
+        case,
+        pack,
+        _raw_evaluation(),
+    )
+
+    assert evaluation.failures == []
+    assert evaluation.metrics["evidence_need_count"] == 1
+    assert evaluation.metrics["required_need_count"] == 1
+    assert evaluation.metrics["matched_required_need_count"] == int(matched)
+    assert evaluation.metrics["evidence_need_completeness"] == expected_completeness
+
+
+def test_v2_numeric_metrics_aggregate_while_null_context_completeness_is_excluded() -> None:
+    evaluation = quality_metrics.evaluate_context_pack(
+        QualityCase(
+            case_id="aggregate-v2",
+            query="postgresql config",
+            mode="context_pack",
+        ),
+        _built_context_pack("postgresql config", matched=True),
+        _raw_evaluation(),
+    )
+
+    aggregate = aggregate_cases(
+        [
+            {
+                "repo_key": "repo",
+                "case_id": "aggregate-v2",
+                "tags": [],
+                "status": evaluation.status,
+                "attempted": True,
+                "metrics": evaluation.metrics,
+            }
+        ],
+        [{"repo_key": "repo", "config": {}}],
+        "p2_context_pack",
+    )
+    overall = aggregate["metrics"]["overall"]
+
+    assert "context_completeness" not in overall
+    for metric_name in (
+        "evidence_need_count",
+        "required_need_count",
+        "matched_required_need_count",
+        "evidence_need_completeness",
+        "pack_bytes",
+        "content_bytes",
+        "truncated_item_count",
+        "omitted_item_count",
+    ):
+        assert overall[metric_name]["count"] == 1
+
+
+def test_expected_need_mismatch_names_only_bounded_expected_subject() -> None:
+    pack = _built_context_pack("postgresql config", matched=True)
+    case = QualityCase(
+        case_id="need-mismatch",
+        query="postgresql config",
+        mode="context_pack",
+        expected_need_matches=(
+            quality_cases.ExpectedNeedMatch(
+                category="configs_docs",
+                subject="postgresql",
+                required=True,
+                matched=False,
+            ),
+        ),
+    )
+
+    evaluation = quality_metrics.evaluate_context_pack(
+        case,
+        pack,
+        _raw_evaluation(),
+    )
+
+    assert evaluation.status == "fail"
+    assert evaluation.failures == [
+        "expected_need_matches mismatch for configs_docs: postgresql"
+    ]
+    assert "datasource" not in " ".join(evaluation.failures)
+
+
+def test_pack_limits_check_reported_and_fresh_canonical_bytes() -> None:
+    pack = _context_pack(
+        (_context_item("item:0", "src/Fixture.java", "supporting"),)
+    )
+    canonical_size = len(canonical_context_pack_bytes(pack))
+    stale_low = replace(pack, budget=replace(pack.budget, pack_bytes=1))
+    stale_high = replace(
+        pack,
+        budget=replace(pack.budget, pack_bytes=canonical_size + 1),
+    )
+
+    canonical_failure = quality_metrics.evaluate_context_pack(
+        QualityCase(
+            case_id="canonical-size",
+            query="fixture",
+            mode="context_pack",
+            maximum_pack_bytes=canonical_size - 1,
+        ),
+        stale_low,
+        _raw_evaluation(),
+    )
+    reported_failure = quality_metrics.evaluate_context_pack(
+        QualityCase(
+            case_id="reported-size",
+            query="fixture",
+            mode="context_pack",
+            maximum_pack_bytes=canonical_size,
+        ),
+        stale_high,
+        _raw_evaluation(),
+    )
+
+    assert canonical_failure.failures == [
+        f"maximum_pack_bytes exceeded by canonical pack: {canonical_size} > {canonical_size - 1}"
+    ]
+    assert reported_failure.failures == [
+        f"maximum_pack_bytes exceeded by reported pack: {canonical_size + 1} > {canonical_size}"
+    ]
+
+
+def test_truncation_limit_and_forbidden_patterns_gate_only_next_query_text() -> None:
+    truncated = _context_pack(
+        (_context_item("item:0", "src/Fixture.java", "supporting"),),
+        truncated=True,
+    )
+    truncation_evaluation = quality_metrics.evaluate_context_pack(
+        QualityCase(
+            case_id="truncated",
+            query="fixture",
+            mode="context_pack",
+            maximum_truncated_items=0,
+        ),
+        truncated,
+        _raw_evaluation(),
+    )
+    missing = _built_context_pack("postgresql config", matched=False)
+    purpose_only = quality_metrics.evaluate_context_pack(
+        QualityCase(
+            case_id="purpose-only",
+            query="postgresql config",
+            mode="context_pack",
+            forbidden_next_query_patterns=("missing",),
+        ),
+        missing,
+        _raw_evaluation(),
+    )
+    forbidden_query = quality_metrics.evaluate_context_pack(
+        QualityCase(
+            case_id="forbidden-query",
+            query="postgresql config",
+            mode="context_pack",
+            forbidden_next_query_patterns=(r"POSTGRESQL\s+CONFIGURATION",),
+        ),
+        missing,
+        _raw_evaluation(),
+    )
+
+    assert truncation_evaluation.failures == [
+        "maximum_truncated_items exceeded: 1 > 0"
+    ]
+    assert purpose_only.failures == []
+    assert forbidden_query.failures == [
+        r"forbidden_next_query_patterns matched: POSTGRESQL\s+CONFIGURATION"
+    ]
 
 
 def test_normalize_results_deduplicates_paths_and_compacts_ranks() -> None:

@@ -279,7 +279,6 @@ def run_quality_fixture(
                         pack_options = resolve_context_pack_options(
                             repo_config,
                             context_lines=None,
-                            full_file=False,
                             max_evidence_anchors=evidence_anchor_top_k(
                                 repo_config.retrieval.final_top_k
                             ),

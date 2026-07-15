@@ -33,7 +33,12 @@ _CONTEXT_ONLY_FIELDS = {
     "expected_context_groups",
     "expected_pack_status",
     "minimum_context_confidence",
+    "expected_need_matches",
+    "maximum_pack_bytes",
+    "maximum_truncated_items",
+    "forbidden_next_query_patterns",
 }
+_MAX_FORBIDDEN_NEXT_QUERY_PATTERN_CODEPOINTS = 160
 
 
 @dataclass(frozen=True)
@@ -143,6 +148,14 @@ class ProfileExpectation:
 
 
 @dataclass(frozen=True)
+class ExpectedNeedMatch:
+    category: str
+    subject: str
+    required: bool
+    matched: bool
+
+
+@dataclass(frozen=True)
 class QualityCase:
     case_id: str
     query: str
@@ -170,6 +183,10 @@ class QualityCase:
     )
     expected_pack_status: str | None = None
     minimum_context_confidence: str | None = None
+    expected_need_matches: tuple[ExpectedNeedMatch, ...] = ()
+    maximum_pack_bytes: int | None = None
+    maximum_truncated_items: int | None = None
+    forbidden_next_query_patterns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -517,6 +534,10 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         expected_context_groups: dict[str, tuple[Matcher, ...]] = {}
         expected_pack_status = None
         minimum_context_confidence = None
+        expected_need_matches: tuple[ExpectedNeedMatch, ...] = ()
+        maximum_pack_bytes = None
+        maximum_truncated_items = None
+        forbidden_next_query_patterns: tuple[str, ...] = ()
     else:
         expected_context_groups = _parse_context_groups(
             raw.get("expected_context_groups", {})
@@ -530,6 +551,28 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
             raw,
             "minimum_context_confidence",
             _CONFIDENCE_LEVELS,
+        )
+        expected_need_matches = _parse_expected_need_matches(
+            raw.get("expected_need_matches", ())
+        )
+        maximum_pack_bytes = (
+            _require_positive_int(
+                raw["maximum_pack_bytes"],
+                "maximum_pack_bytes",
+            )
+            if "maximum_pack_bytes" in raw
+            else None
+        )
+        maximum_truncated_items = (
+            _require_non_negative_int(
+                raw["maximum_truncated_items"],
+                "maximum_truncated_items",
+            )
+            if "maximum_truncated_items" in raw
+            else None
+        )
+        forbidden_next_query_patterns = _parse_forbidden_next_query_patterns(
+            raw.get("forbidden_next_query_patterns", ())
         )
     gate = _require_str(raw.get("gate", Gate.REQUIRED.value), "gate")
     raw_legacy = raw.get("legacy")
@@ -639,7 +682,67 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         expected_context_groups=expected_context_groups,
         expected_pack_status=expected_pack_status,
         minimum_context_confidence=minimum_context_confidence,
+        expected_need_matches=expected_need_matches,
+        maximum_pack_bytes=maximum_pack_bytes,
+        maximum_truncated_items=maximum_truncated_items,
+        forbidden_next_query_patterns=forbidden_next_query_patterns,
     )
+
+
+def _parse_expected_need_matches(raw: Any) -> tuple[ExpectedNeedMatch, ...]:
+    values = _require_sequence(raw, "expected_need_matches")
+    parsed: list[ExpectedNeedMatch] = []
+    for index, value in enumerate(values):
+        label = f"expected_need_matches[{index}]"
+        item = _require_dict(value, label)
+        unknown = set(item) - {"category", "subject", "required", "matched"}
+        if unknown:
+            raise ValueError(
+                f"{label} has unknown field: {sorted(unknown)[0]}"
+            )
+        category = _require_str(item.get("category"), f"{label}.category")
+        if category not in CONTEXT_GROUPS:
+            raise ValueError(f"{label}.category is invalid")
+        subject_value = _require_str(item.get("subject"), f"{label}.subject")
+        subject = " ".join(subject_value.split())
+        if not subject or len(subject) > 64:
+            raise ValueError(
+                f"{label}.subject must contain 1 to 64 code points"
+            )
+        required = item.get("required")
+        if type(required) is not bool:
+            raise ValueError(f"{label}.required must be a bool")
+        matched = item.get("matched")
+        if type(matched) is not bool:
+            raise ValueError(f"{label}.matched must be a bool")
+        parsed.append(
+            ExpectedNeedMatch(
+                category=category,
+                subject=subject,
+                required=required,
+                matched=matched,
+            )
+        )
+    return tuple(parsed)
+
+
+def _parse_forbidden_next_query_patterns(raw: Any) -> tuple[str, ...]:
+    values = _require_sequence(raw, "forbidden_next_query_patterns")
+    patterns: list[str] = []
+    for index, value in enumerate(values):
+        label = f"forbidden_next_query_patterns[{index}]"
+        pattern = _require_str(value, label)
+        if (
+            not pattern.strip()
+            or len(pattern) > _MAX_FORBIDDEN_NEXT_QUERY_PATTERN_CODEPOINTS
+        ):
+            raise ValueError(f"{label} must contain 1 to 160 code points")
+        try:
+            re.compile(pattern, re.IGNORECASE)
+        except re.error:
+            raise ValueError(f"{label} must be a valid regular expression") from None
+        patterns.append(pattern)
+    return tuple(patterns)
 
 
 def _parse_context_groups(raw: Any) -> dict[str, tuple[Matcher, ...]]:

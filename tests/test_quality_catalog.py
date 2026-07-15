@@ -257,6 +257,10 @@ EXPECTED_AB_CASE_DEFAULTS = {
     "expected_context_groups": {},
     "expected_pack_status": None,
     "minimum_context_confidence": None,
+    "expected_need_matches": (),
+    "maximum_pack_bytes": None,
+    "maximum_truncated_items": None,
+    "forbidden_next_query_patterns": (),
 }
 
 EXPECTED_AB_CASES = {
@@ -338,6 +342,10 @@ EXPECTED_NEW_CASE_DEFAULTS = {
     "expected_context_groups": {},
     "expected_pack_status": None,
     "minimum_context_confidence": None,
+    "expected_need_matches": (),
+    "maximum_pack_bytes": None,
+    "maximum_truncated_items": None,
+    "forbidden_next_query_patterns": (),
     "legacy": None,
 }
 
@@ -465,6 +473,14 @@ EXPECTED_NEW_CASES = {
         },
         "expected_pack_status": "ready",
         "minimum_context_confidence": "high",
+        "expected_need_matches": (
+            {"category": "entrypoints", "subject": "workspace", "required": True, "matched": True},
+            {"category": "implementations", "subject": "workspace", "required": True, "matched": True},
+            {"category": "related_types", "subject": "workspace", "required": True, "matched": True},
+        ),
+        "maximum_pack_bytes": 65536,
+        "maximum_truncated_items": 4,
+        "forbidden_next_query_patterns": ("/oups", "GET /owners dto"),
     },
     "context_pack_java/workspace-test-file": {
         **EXPECTED_NEW_CASE_DEFAULTS,
@@ -490,8 +506,14 @@ EXPECTED_NEW_CASES = {
                 },
             ),
         },
-        "expected_pack_status": "ready",
-        "minimum_context_confidence": "high",
+        "expected_pack_status": "partial",
+        "minimum_context_confidence": "low",
+        "expected_need_matches": (
+            {"category": "tests", "subject": "workspace file", "required": True, "matched": False},
+        ),
+        "maximum_pack_bytes": 65536,
+        "maximum_truncated_items": 4,
+        "forbidden_next_query_patterns": ("/oups", "GET /owners dto"),
     },
     "context_pack_java/workspace-service-symbol": {
         **EXPECTED_NEW_CASE_DEFAULTS,
@@ -518,7 +540,13 @@ EXPECTED_NEW_CASES = {
             ),
         },
         "expected_pack_status": "ready",
-        "minimum_context_confidence": "high",
+        "minimum_context_confidence": "medium",
+        "expected_need_matches": (
+            {"category": "implementations", "subject": "WorkspaceServiceImpl", "required": True, "matched": True},
+        ),
+        "maximum_pack_bytes": 65536,
+        "maximum_truncated_items": 4,
+        "forbidden_next_query_patterns": ("/oups", "GET /owners dto"),
     },
     "context_pack_frontend/qrcode-feature-context": {
         **EXPECTED_NEW_CASE_DEFAULTS,
@@ -551,6 +579,14 @@ EXPECTED_NEW_CASES = {
         },
         "expected_pack_status": "ready",
         "minimum_context_confidence": "medium",
+        "expected_need_matches": (
+            {"category": "entrypoints", "subject": "QRCode", "required": True, "matched": True},
+            {"category": "implementations", "subject": "QRCode", "required": True, "matched": True},
+            {"category": "related_types", "subject": "QRCode", "required": True, "matched": True},
+        ),
+        "maximum_pack_bytes": 65536,
+        "maximum_truncated_items": 4,
+        "forbidden_next_query_patterns": ("/oups", "GET /owners dto"),
     },
     "context_pack_docs/program-tool-developer-docs": {
         **EXPECTED_NEW_CASE_DEFAULTS,
@@ -569,6 +605,12 @@ EXPECTED_NEW_CASES = {
         },
         "expected_pack_status": "ready",
         "minimum_context_confidence": "medium",
+        "expected_need_matches": (
+            {"category": "configs_docs", "subject": "Program Tool Developer Setup", "required": True, "matched": True},
+        ),
+        "maximum_pack_bytes": 65536,
+        "maximum_truncated_items": 4,
+        "forbidden_next_query_patterns": ("/oups", "GET /owners dto"),
     },
     "psf_requests/cookies-between-calls": {
         **EXPECTED_NEW_CASE_DEFAULTS,
@@ -1046,6 +1088,18 @@ def _quality_case_manifest(case: QualityCase) -> dict[str, object]:
         },
         "expected_pack_status": case.expected_pack_status,
         "minimum_context_confidence": case.minimum_context_confidence,
+        "expected_need_matches": tuple(
+            {
+                "category": expected.category,
+                "subject": expected.subject,
+                "required": expected.required,
+                "matched": expected.matched,
+            }
+            for expected in case.expected_need_matches
+        ),
+        "maximum_pack_bytes": case.maximum_pack_bytes,
+        "maximum_truncated_items": case.maximum_truncated_items,
+        "forbidden_next_query_patterns": case.forbidden_next_query_patterns,
         "legacy": (
             {
                 "fixture": case.legacy.fixture,

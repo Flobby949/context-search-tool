@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, replace
 from typing import Any
 
-from context_search_tool.context_pack import CONTEXT_GROUPS, ContextPack
+from context_search_tool.context_pack import (
+    CONTEXT_GROUPS,
+    ContextPack,
+    canonical_context_pack_bytes,
+)
 from context_search_tool.models import RetrievalResult, SemanticMatch
 from context_search_tool.quality.cases import (
     Gate,
@@ -174,12 +180,16 @@ def evaluate_context_pack(
     failures = list(evaluation.failures)
     matched_count = 0
     expected_count = 0
+    canonical_bytes = canonical_context_pack_bytes(
+        replace(pack, budget=replace(pack.budget, pack_bytes=0))
+    )
+    payload = json.loads(canonical_bytes)
 
     paths_by_group = {
         group: tuple(
-            item.file_path
-            for item in pack.items
-            if item.group == group
+            item["file_path"]
+            for item in payload["items"]
+            if item["group"] == group
         )
         for group in CONTEXT_GROUPS
     }
@@ -196,43 +206,104 @@ def evaluate_context_pack(
 
     if (
         case.expected_pack_status is not None
-        and pack.status != case.expected_pack_status
+        and payload["status"] != case.expected_pack_status
     ):
         failures.append(
             f"expected_pack_status expected {case.expected_pack_status}, "
-            f"got {pack.status}"
+            f"got {payload['status']}"
         )
 
     minimum_confidence = case.minimum_context_confidence
     if (
         minimum_confidence is not None
-        and _CONFIDENCE_RANK[pack.confidence.level]
+        and _CONFIDENCE_RANK[payload["confidence"]["level"]]
         < _CONFIDENCE_RANK[minimum_confidence]
     ):
         failures.append(
             "minimum_context_confidence expected "
-            f"{minimum_confidence}, got {pack.confidence.level}"
+            f"{minimum_confidence}, got {payload['confidence']['level']}"
         )
+
+    actual_need_matches = {
+        (
+            need["category"].casefold(),
+            " ".join(" ".join(need["subject_terms"]).split()).casefold(),
+            need["required"],
+            bool(need["matched_item_ids"]),
+        )
+        for need in payload["evidence_needs"]
+    }
+    for expected in case.expected_need_matches:
+        expected_key = (
+            expected.category.casefold(),
+            " ".join(expected.subject.split()).casefold(),
+            expected.required,
+            expected.matched,
+        )
+        if expected_key not in actual_need_matches:
+            failures.append(
+                "expected_need_matches mismatch for "
+                f"{expected.category}: {expected.subject}"
+            )
+
+    budget = payload["budget"]
+    maximum_pack_bytes = case.maximum_pack_bytes
+    if maximum_pack_bytes is not None:
+        if pack.budget.pack_bytes > maximum_pack_bytes:
+            failures.append(
+                "maximum_pack_bytes exceeded by reported pack: "
+                f"{pack.budget.pack_bytes} > {maximum_pack_bytes}"
+            )
+        if len(canonical_bytes) > maximum_pack_bytes:
+            failures.append(
+                "maximum_pack_bytes exceeded by canonical pack: "
+                f"{len(canonical_bytes)} > {maximum_pack_bytes}"
+            )
+
+    maximum_truncated_items = case.maximum_truncated_items
+    if (
+        maximum_truncated_items is not None
+        and budget["truncated_item_count"] > maximum_truncated_items
+    ):
+        failures.append(
+            "maximum_truncated_items exceeded: "
+            f"{budget['truncated_item_count']} > {maximum_truncated_items}"
+        )
+
+    for pattern in case.forbidden_next_query_patterns:
+        if any(
+            re.search(pattern, query["query"], re.IGNORECASE)
+            for query in payload["next_queries"]
+        ):
+            failures.append(
+                f"forbidden_next_query_patterns matched: {pattern}"
+            )
+
+    needs = payload["evidence_needs"]
+    required_need_count = sum(need["required"] for need in needs)
+    matched_required_need_count = sum(
+        need["required"] and bool(need["matched_item_ids"])
+        for need in needs
+    )
 
     metrics = dict(evaluation.metrics)
     metrics.update(
         {
-            "context_expected_count": expected_count,
-            "context_matched_count": matched_count,
             "context_completeness": (
                 matched_count / expected_count if expected_count else None
             ),
-            "context_group_count": sum(
-                bool(items) for items in pack.groups.values()
+            "evidence_need_count": len(needs),
+            "required_need_count": required_need_count,
+            "matched_required_need_count": matched_required_need_count,
+            "evidence_need_completeness": (
+                matched_required_need_count / required_need_count
+                if required_need_count
+                else None
             ),
-            "required_missing_count": sum(
-                missing.required for missing in pack.missing_evidence
-            ),
-            "recommended_missing_count": sum(
-                not missing.required for missing in pack.missing_evidence
-            ),
-            "next_query_count": len(pack.next_queries),
-            "context_content_bytes": pack.budget.content_bytes,
+            "pack_bytes": len(canonical_bytes),
+            "content_bytes": budget["content_bytes"],
+            "truncated_item_count": budget["truncated_item_count"],
+            "omitted_item_count": budget["omitted_item_count"],
         }
     )
     return replace(
