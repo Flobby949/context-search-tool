@@ -81,7 +81,7 @@ FINAL_ALLOWED_EDGES = {
 TRANSITIONAL_ALLOWED_EDGES = {
     **FINAL_ALLOWED_EDGES,
     "retrieval": FINAL_ALLOWED_EDGES["retrieval"]
-    | {"types", "evidence_merge"},
+    | {"types"},
 }
 
 
@@ -212,7 +212,7 @@ def test_retrieval_boundary_rejects_aliased_private_core_reexport(
 def test_retrieval_core_import_adjacency_is_a_transitional_subset() -> None:
     assert TRANSITIONAL_ALLOWED_EDGES["retrieval"] - FINAL_ALLOWED_EDGES[
         "retrieval"
-    ] == {"types", "evidence_merge"}
+    ] == {"types"}
     assert all(
         TRANSITIONAL_ALLOWED_EDGES[owner] == dependencies
         for owner, dependencies in FINAL_ALLOWED_EDGES.items()

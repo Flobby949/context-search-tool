@@ -15,7 +15,12 @@ from context_search_tool.models import (
     DocumentChunk,
     RetrievalCandidate,
 )
-from context_search_tool.retrieval_core import candidates, ranking, types as core_types
+from context_search_tool.retrieval_core import (
+    candidates,
+    context_expansion,
+    ranking,
+    types as core_types,
+)
 from context_search_tool.sqlite_store import SQLiteStore
 
 
@@ -234,7 +239,7 @@ def test_negative_ceiling_tie_prefers_clamped_expanded_result_before_role_priori
 
     ranked = sorted(
         [non_clamped, clamped],
-        key=retrieval._expanded_result_sort_key,
+        key=context_expansion._expanded_result_sort_key,
     )
 
     assert ranked[0].chunk_ids == ["clamped"]
@@ -538,7 +543,11 @@ def test_rerank_second_sort_consistency(tmp_path):
     visible_results order matches rerank order. Reproduces the "pressed back by tier" bug.
     """
     from context_search_tool.models import DocumentChunk
-    from context_search_tool.retrieval import query_repository, _expand_ranked_chunks, _merge_overlapping_results
+    from context_search_tool.retrieval import query_repository
+    from context_search_tool.retrieval_core.context_expansion import (
+        _merge_overlapping_results,
+        expand_ranked_chunks,
+    )
     from context_search_tool.config import ToolConfig
     from pathlib import Path
 
@@ -607,7 +616,9 @@ def test_rerank_merge_field_consistency():
     Test #12: Construct two overlap results where lower rerank_score has higher
     combined_score. Assert merged result's fields come from rerank_score winner.
     """
-    from context_search_tool.retrieval import _merge_expanded_result
+    from context_search_tool.retrieval_core.context_expansion import (
+        _merge_expanded_result,
+    )
     from pathlib import Path
 
     # Create two overlapping results

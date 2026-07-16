@@ -34,6 +34,7 @@ from context_search_tool.paths import index_dir_for
 from context_search_tool.retrieval import evidence_anchor_top_k, query_repository
 from context_search_tool.retrieval_core import (
     candidates,
+    context_expansion,
     evidence_merge,
     expansion,
     ordering,
@@ -418,7 +419,7 @@ def test_merge_expanded_result_unions_matches_in_variant_order() -> None:
         ],
     )
 
-    merged = retrieval._merge_expanded_result(left, right)
+    merged = context_expansion._merge_expanded_result(left, right)
 
     assert merged.semantic_matches == [
         SemanticMatch("original", 0.2),
@@ -450,7 +451,7 @@ def test_merge_overlapping_results_preserves_legacy_raw_and_exact_context() -> N
             evidence_priority=0,
         )
 
-    merged = retrieval._merge_overlapping_results(
+    merged = context_expansion._merge_overlapping_results(
         [
             result("first", 1, 3, "one\ntwo\nthree"),
             result("blank", 3, 5, "three\nfour\n\n"),
@@ -486,7 +487,7 @@ def test_expand_ranked_chunk_preserves_legacy_raw_and_exact_context_content(
         )
     )
 
-    expanded = retrieval._expand_ranked_chunks(
+    expanded = context_expansion.expand_ranked_chunks(
         tmp_path,
         [ranked],
         config,
@@ -7592,7 +7593,7 @@ def test_rerank_sort_uses_role_priority_for_noise_level_score_ties() -> None:
     )
     expanded_near_tie = sorted(
         [expanded_near_tie_detail_role, expanded_near_tie_preferred_role],
-        key=retrieval._expanded_result_sort_key,
+        key=context_expansion._expanded_result_sort_key,
     )
 
     assert near_tie[0].chunk.chunk_id == "settings"
@@ -10803,7 +10804,7 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
     combined_score, the merged result's rerank_score/evidence_class/evidence_priority/
     reasons should all come from the same winner (highest rerank_score side).
     """
-    from context_search_tool.retrieval import (
+    from context_search_tool.retrieval_core.context_expansion import (
         _merge_expanded_result,
     )
 
@@ -10882,7 +10883,7 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
 
 
 def test_rerank_merge_frontend_import_boost_is_winner_scoped() -> None:
-    from context_search_tool.retrieval import (
+    from context_search_tool.retrieval_core.context_expansion import (
         _merge_expanded_result,
     )
 
@@ -10941,7 +10942,7 @@ def test_merge_score_parts_preserves_stronger_penalty() -> None:
 
 
 def test_merge_overlapping_results_uses_role_priority_tiebreak() -> None:
-    from context_search_tool.retrieval import (
+    from context_search_tool.retrieval_core.context_expansion import (
         _merge_overlapping_results,
     )
 
@@ -11108,7 +11109,7 @@ def test_expanded_result_records_ranked_chunk_span_and_ordered_sources(
         "penalty": -1.0,
     }
 
-    expanded = retrieval._expand_ranked_chunks(
+    expanded = context_expansion.expand_ranked_chunks(
         repo,
         [
             _span_ranked_chunk(
@@ -11184,7 +11185,7 @@ def test_span_sources_canonicalize_real_producer_keys_without_mutation(
 ) -> None:
     original = dict(score_parts)
 
-    assert retrieval._span_sources(score_parts) == expected
+    assert context_expansion._span_sources(score_parts) == expected
     assert score_parts == original
 
 
@@ -11217,7 +11218,7 @@ def test_overlapping_results_preserve_distinct_spans_in_normalized_order(
         ),
     ]
 
-    expanded = retrieval._expand_ranked_chunks(
+    expanded = context_expansion.expand_ranked_chunks(
         repo,
         ranked,
         ToolConfig(
@@ -11268,7 +11269,7 @@ def test_disjoint_chunks_from_one_file_keep_separate_spans(tmp_path: Path) -> No
         ),
     ]
 
-    expanded = retrieval._expand_ranked_chunks(
+    expanded = context_expansion.expand_ranked_chunks(
         repo,
         ranked,
         ToolConfig(
@@ -11314,7 +11315,7 @@ def test_duplicate_span_windows_keep_highest_score_and_its_sources(
         ),
     ]
 
-    expanded = retrieval._expand_ranked_chunks(
+    expanded = context_expansion.expand_ranked_chunks(
         repo,
         ranked,
         ToolConfig(
@@ -11347,14 +11348,14 @@ def test_full_and_byte_capped_results_clamp_spans_to_visible_lines(
         score_parts={"lexical": 0.75},
     )
 
-    full = retrieval._expand_ranked_chunks(
+    full = context_expansion.expand_ranked_chunks(
         repo,
         [ranked],
         ToolConfig(index=IndexConfig(max_full_file_bytes=1_000)),
         context_lines=None,
         full_file=True,
     )[0]
-    capped = retrieval._expand_ranked_chunks(
+    capped = context_expansion.expand_ranked_chunks(
         repo,
         [ranked],
         ToolConfig(
@@ -11379,7 +11380,7 @@ def test_non_finite_ranked_score_is_normalized_for_span(tmp_path: Path) -> None:
     path = Path("Finite.java")
     (repo / path).write_text("one\ntwo\n", encoding="utf-8")
 
-    expanded = retrieval._expand_ranked_chunks(
+    expanded = context_expansion.expand_ranked_chunks(
         repo,
         [
             _span_ranked_chunk(
@@ -11455,7 +11456,7 @@ def test_span_recording_reuses_existing_file_reads_and_stops_after_return(
     monkeypatch.setattr(Path, "stat", counted_stat)
     monkeypatch.setattr(Path, "read_text", counted_read_text)
 
-    expanded = retrieval._expand_ranked_chunks(
+    expanded = context_expansion.expand_ranked_chunks(
         repo,
         ranked,
         ToolConfig(
