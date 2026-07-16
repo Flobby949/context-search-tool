@@ -15,8 +15,7 @@ from context_search_tool.models import (
     DocumentChunk,
     RetrievalCandidate,
 )
-from context_search_tool.retrieval import _rank_chunks
-from context_search_tool.retrieval_core import candidates, types as core_types
+from context_search_tool.retrieval_core import candidates, ranking, types as core_types
 from context_search_tool.sqlite_store import SQLiteStore
 
 
@@ -31,7 +30,7 @@ def _setup_test_data(
         chunks_data: List of (chunk_id, score_parts, file_path, start_line) tuples
 
     Returns:
-        (store, candidates_dict) ready for _rank_chunks
+        (store, candidates_dict) ready for ranking.rank_chunks
     """
     # Use a temporary file instead of :memory: to avoid Path issues
     import tempfile
@@ -55,7 +54,7 @@ def _setup_test_data(
 
         candidates[chunk_id] = RetrievalCandidate(
             chunk_id=chunk_id,
-            score=1.0,  # Will be ignored by _rank_chunks
+            score=1.0,  # Will be ignored by ranking.rank_chunks
             source="test",
             score_parts=score_parts,
         )
@@ -64,13 +63,13 @@ def _setup_test_data(
 
 
 def test_effective_semantic_uses_max_without_variant_count_inflation() -> None:
-    score_parts = retrieval._with_effective_semantic({
+    score_parts = ranking._with_effective_semantic({
         "semantic": 0.20,
         "planner_semantic": 0.80,
     })
 
     assert score_parts["effective_semantic"] == pytest.approx(0.68)
-    assert retrieval._combined_score(score_parts) == pytest.approx(0.68 * 0.55)
+    assert ranking._combined_score(score_parts) == pytest.approx(0.68 * 0.55)
 
 
 @pytest.mark.parametrize(
@@ -86,7 +85,7 @@ def test_effective_semantic_preserves_absence_and_non_positive_scores(
     score_parts: dict[str, float],
     expected: float,
 ) -> None:
-    updated = retrieval._with_effective_semantic(score_parts)
+    updated = ranking._with_effective_semantic(score_parts)
 
     assert updated["effective_semantic"] == pytest.approx(expected)
 
@@ -94,11 +93,11 @@ def test_effective_semantic_preserves_absence_and_non_positive_scores(
 def test_planner_semantic_is_direct_planner_evidence_but_not_strong_original() -> None:
     score_parts = {"planner_semantic": 0.99}
 
-    assert retrieval._has_planner_direct_evidence(score_parts)
-    assert not retrieval._has_strong_original_direct_evidence(score_parts)
-    assert retrieval._evidence_class(score_parts) == "planner_direct"
-    assert retrieval._evidence_priority("planner_direct") == 1
-    assert "planner semantic match" in retrieval._reasons(score_parts, "query")
+    assert ranking._has_planner_direct_evidence(score_parts)
+    assert not ranking._has_strong_original_direct_evidence(score_parts)
+    assert ranking._evidence_class(score_parts) == "planner_direct"
+    assert ranking._evidence_priority("planner_direct") == 1
+    assert "planner semantic match" in ranking._reasons(score_parts, "query")
 
 
 def test_ceiling_tie_uses_pre_ceiling_score_before_role_priority() -> None:
@@ -143,7 +142,7 @@ def test_ceiling_tie_uses_pre_ceiling_score_before_role_priority() -> None:
 
     ranked = sorted(
         [low_pre_ceiling, high_pre_ceiling],
-        key=retrieval._ranked_chunk_sort_key,
+        key=ranking._ranked_chunk_sort_key,
     )
 
     assert ranked[0].chunk.chunk_id == "planner"
@@ -191,7 +190,7 @@ def test_negative_ceiling_tie_prefers_clamped_ranked_chunk_before_role_priority(
 
     ranked = sorted(
         [non_clamped, clamped],
-        key=retrieval._ranked_chunk_sort_key,
+        key=ranking._ranked_chunk_sort_key,
     )
 
     assert ranked[0].chunk.chunk_id == "clamped"
@@ -247,10 +246,10 @@ def test_mixed_planner_semantic_and_original_relation_is_planner_direct() -> Non
         "planner_semantic": 0.80,
     }
 
-    evidence_class = retrieval._evidence_class(score_parts)
+    evidence_class = ranking._evidence_class(score_parts)
 
     assert evidence_class == "planner_direct"
-    assert retrieval._evidence_priority(evidence_class) == 1
+    assert ranking._evidence_priority(evidence_class) == 1
 
 
 def test_ceiling_tie_does_not_downgrade_planner_direct_with_original_relation() -> None:
@@ -263,8 +262,8 @@ def test_ceiling_tie_does_not_downgrade_planner_direct_with_original_relation() 
         "planner_semantic": 0.80,
         "role_priority": 5.0,
     }
-    mixed_evidence_class = retrieval._evidence_class(mixed_score_parts)
-    planner_evidence_class = retrieval._evidence_class(planner_score_parts)
+    mixed_evidence_class = ranking._evidence_class(mixed_score_parts)
+    planner_evidence_class = ranking._evidence_class(planner_score_parts)
     mixed = core_types._RankedChunk(
         chunk=DocumentChunk(
             chunk_id="mixed",
@@ -280,7 +279,7 @@ def test_ceiling_tie_does_not_downgrade_planner_direct_with_original_relation() 
         rank_tier=0,
         rerank_score=0.50,
         evidence_class=mixed_evidence_class,
-        evidence_priority=retrieval._evidence_priority(mixed_evidence_class),
+        evidence_priority=ranking._evidence_priority(mixed_evidence_class),
         pre_ceiling_rerank_score=0.90,
         was_ceiling_clamped=True,
     )
@@ -299,12 +298,12 @@ def test_ceiling_tie_does_not_downgrade_planner_direct_with_original_relation() 
         rank_tier=0,
         rerank_score=0.50,
         evidence_class=planner_evidence_class,
-        evidence_priority=retrieval._evidence_priority(planner_evidence_class),
+        evidence_priority=ranking._evidence_priority(planner_evidence_class),
         pre_ceiling_rerank_score=0.60,
         was_ceiling_clamped=True,
     )
 
-    ranked = sorted([planner, mixed], key=retrieval._ranked_chunk_sort_key)
+    ranked = sorted([planner, mixed], key=ranking._ranked_chunk_sort_key)
 
     assert ranked[0].chunk.chunk_id == "mixed"
 
@@ -331,7 +330,7 @@ def test_rerank_high_score_direct_beats_low_score_relation():
         }, "client/WxMiniLoginClient.java", 20),
     ])
 
-    ranked = _rank_chunks(store, candidates, tokens=[], query="sms login")
+    ranked = ranking.rank_chunks(store, candidates, tokens=[], query="sms login")
 
     # High-score direct should rank first
     assert ranked[0].chunk.chunk_id == "sms_utils"
@@ -359,7 +358,7 @@ def test_rerank_planner_only_relation_cannot_beat_strong_original_direct():
         }, "cache/RedisCache.java", 20),
     ])
 
-    ranked = _rank_chunks(store, candidates, tokens=[], query="auth")
+    ranked = ranking.rank_chunks(store, candidates, tokens=[], query="auth")
 
     # Strong direct must rank first despite lower combined_score
     assert ranked[0].chunk.chunk_id == "auth_service"
@@ -387,7 +386,7 @@ def test_rerank_planner_direct_cannot_beat_strong_original_direct():
         }, "controller/StationController.java", 20),
     ])
 
-    ranked = _rank_chunks(store, candidates, tokens=[], query="feedback")
+    ranked = ranking.rank_chunks(store, candidates, tokens=[], query="feedback")
 
     assert ranked[0].chunk.chunk_id == "feedback_service"
     assert ranked[0].evidence_class == "original_direct"
@@ -412,7 +411,7 @@ def test_rerank_weak_direct_does_not_trigger_planner_ceiling():
         }, "service/ServiceImpl.java", 20),
     ])
 
-    ranked = _rank_chunks(store, candidates, tokens=[], query="util")
+    ranked = ranking.rank_chunks(store, candidates, tokens=[], query="util")
 
     # Both should appear (planner not clamped out)
     assert len(ranked) == 2
@@ -438,7 +437,7 @@ def test_rerank_no_strong_direct_means_no_clamp():
         }, "service/PlannerB.java", 20),
     ])
 
-    ranked = _rank_chunks(store, candidates, tokens=[], query="planner")
+    ranked = ranking.rank_chunks(store, candidates, tokens=[], query="planner")
 
     # Both should appear with unclamped scores
     assert len(ranked) == 2
@@ -468,7 +467,7 @@ def test_rerank_endpoint_boost_does_not_override_score():
         }, "controller/PingController.java", 20),
     ])
 
-    ranked = _rank_chunks(store, candidates, tokens=[], query="auth")
+    ranked = ranking.rank_chunks(store, candidates, tokens=[], query="auth")
 
     # High-score service should win despite endpoint boost
     assert ranked[0].chunk.chunk_id == "auth_service_impl"
@@ -492,7 +491,7 @@ def test_rerank_relation_expansion_still_surfaces_impl():
         }, "service/StationServiceImpl.java", 20),
     ])
 
-    ranked = _rank_chunks(store, candidates, tokens=[], query="station")
+    ranked = ranking.rank_chunks(store, candidates, tokens=[], query="station")
 
     # Both should appear
     assert len(ranked) == 2
@@ -524,7 +523,7 @@ def test_rerank_normalization_effectiveness():
         }, "service/Low.java", 30),
     ])
 
-    ranked = _rank_chunks(store, candidates, tokens=[], query="test")
+    ranked = ranking.rank_chunks(store, candidates, tokens=[], query="test")
 
     # Without normalization, outlier would dominate
     # With normalization + boost/penalty, medium might win
@@ -557,7 +556,7 @@ def test_rerank_original_relation_not_misclassified():
     Test #10: Construct candidate with original_relation>0, assert _evidence_class
     returns "original_relation" not "original_direct".
     """
-    from context_search_tool.retrieval import _evidence_class
+    from context_search_tool.retrieval_core.ranking import _evidence_class
 
     # Pure relation evidence
     score_parts = {
@@ -664,30 +663,30 @@ def test_rerank_merge_field_consistency():
 
 # Unit tests for evidence classification helpers
 def test_evidence_class_splits_weak_original_direct() -> None:
-    assert retrieval._evidence_class({"lexical": 0.05}) == "weak_original_direct"
-    assert retrieval._evidence_class({"token_coverage": 0.1}) == "weak_original_direct"
-    assert retrieval._evidence_priority("weak_original_direct") == 1
+    assert ranking._evidence_class({"lexical": 0.05}) == "weak_original_direct"
+    assert ranking._evidence_class({"token_coverage": 0.1}) == "weak_original_direct"
+    assert ranking._evidence_priority("weak_original_direct") == 1
 
 
 def test_evidence_class_keeps_strong_original_direct() -> None:
-    assert retrieval._evidence_class({"lexical": 0.25}) == "weak_original_direct"
-    assert retrieval._evidence_class({"semantic": 0.35}) == "weak_original_direct"
-    assert retrieval._evidence_class({
+    assert ranking._evidence_class({"lexical": 0.25}) == "weak_original_direct"
+    assert ranking._evidence_class({"semantic": 0.35}) == "weak_original_direct"
+    assert ranking._evidence_class({
         "lexical": 0.25,
         "token_coverage": 0.2,
     }) == "original_direct"
-    assert retrieval._evidence_class({
+    assert ranking._evidence_class({
         "semantic": 0.35,
         "token_coverage": 0.2,
     }) == "original_direct"
-    assert retrieval._evidence_class({"path_symbol": 1.0}) == "original_direct"
-    assert retrieval._evidence_class({"signal": 0.5}) == "original_direct"
-    assert retrieval._evidence_class({"token_coverage": 0.5}) == "original_direct"
+    assert ranking._evidence_class({"path_symbol": 1.0}) == "original_direct"
+    assert ranking._evidence_class({"signal": 0.5}) == "original_direct"
+    assert ranking._evidence_class({"token_coverage": 0.5}) == "original_direct"
 
 
 def test_evidence_class_priority_order():
     """Test that _evidence_class follows priority order correctly."""
-    from context_search_tool.retrieval import _evidence_class
+    from context_search_tool.retrieval_core.ranking import _evidence_class
 
     # Priority 0: original_direct
     assert _evidence_class({"semantic": 0.5}) == "weak_original_direct"
@@ -718,7 +717,7 @@ def test_evidence_class_priority_order():
 
 def test_evidence_class_mixed_evidence():
     """Test that direct evidence takes priority over relation."""
-    from context_search_tool.retrieval import _evidence_class
+    from context_search_tool.retrieval_core.ranking import _evidence_class
 
     # Direct + relation = direct
     assert _evidence_class({
@@ -749,7 +748,7 @@ def test_evidence_class_mixed_evidence():
 
 def test_has_strong_original_direct_evidence():
     """Test strong evidence threshold detection."""
-    from context_search_tool.retrieval import _has_strong_original_direct_evidence
+    from context_search_tool.retrieval_core.ranking import _has_strong_original_direct_evidence
 
     # Semantic/lexical evidence needs query-token corroboration to be strong.
     assert _has_strong_original_direct_evidence({"semantic": 0.35}) == False
@@ -844,7 +843,7 @@ def test_normalize_score_edge_cases():
 
 def test_evidence_priority_mapping():
     """Test evidence priority numeric mapping."""
-    from context_search_tool.retrieval import _evidence_priority
+    from context_search_tool.retrieval_core.ranking import _evidence_priority
 
     assert _evidence_priority("original_direct") == 0
     assert _evidence_priority("weak_original_direct") == 1
@@ -857,7 +856,7 @@ def test_evidence_priority_mapping():
 
 def test_generic_hint_penalty():
     """Test generic symbol penalty detection."""
-    from context_search_tool.retrieval import _generic_hint_penalty
+    from context_search_tool.retrieval_core.ranking import _generic_hint_penalty
     from context_search_tool.models import DocumentChunk
     from pathlib import Path
 
@@ -897,7 +896,7 @@ def test_generic_hint_penalty():
 
 def test_has_planner_direct_evidence():
     """Test planner direct evidence detection (excluding planner_relation)."""
-    from context_search_tool.retrieval import _has_planner_direct_evidence
+    from context_search_tool.retrieval_core.ranking import _has_planner_direct_evidence
 
     assert _has_planner_direct_evidence({"planner_lexical": 0.5}) == True
     assert _has_planner_direct_evidence({"planner_signal": 0.3}) == True
@@ -915,7 +914,7 @@ def test_has_planner_direct_evidence():
 
 def test_has_original_direct_evidence():
     """Test original direct evidence detection (excluding original_relation)."""
-    from context_search_tool.retrieval import _has_original_direct_evidence
+    from context_search_tool.retrieval_core.ranking import _has_original_direct_evidence
 
     assert _has_original_direct_evidence({"semantic": 0.3}) == True
     assert _has_original_direct_evidence({"lexical": 0.2}) == True
@@ -934,9 +933,9 @@ def test_has_original_direct_evidence():
 
 
 def test_direct_text_counts_as_original_direct_evidence() -> None:
-    assert retrieval._has_original_direct_evidence({"direct_text": 0.4}) is True
-    assert retrieval._evidence_class({"direct_text": 0.4}) == "weak_original_direct"
-    assert retrieval._evidence_class({"direct_text": 0.6}) == "original_direct"
+    assert ranking._has_original_direct_evidence({"direct_text": 0.4}) is True
+    assert ranking._evidence_class({"direct_text": 0.4}) == "weak_original_direct"
+    assert ranking._evidence_class({"direct_text": 0.6}) == "original_direct"
 
 
 def test_direct_text_strong_anchor_beats_anchor_relation_candidate() -> None:
@@ -961,7 +960,7 @@ def test_direct_text_strong_anchor_beats_anchor_relation_candidate() -> None:
         ]
     )
 
-    ranked = _rank_chunks(store, candidates, tokens=[], query="当前审批人查询接口")
+    ranked = ranking.rank_chunks(store, candidates, tokens=[], query="当前审批人查询接口")
 
     assert ranked[0].chunk.chunk_id == "direct_anchor"
     assert ranked[0].evidence_class == "original_direct"

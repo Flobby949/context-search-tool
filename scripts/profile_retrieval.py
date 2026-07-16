@@ -16,7 +16,7 @@ if SRC_DIR.exists():
 import context_search_tool.retrieval as retrieval
 from context_search_tool.config import load_config
 from context_search_tool.paths import index_dir_for
-from context_search_tool.retrieval_core import candidates, expansion
+from context_search_tool.retrieval_core import candidates, expansion, ranking
 from context_search_tool.sqlite_store import SQLiteStore
 
 
@@ -32,7 +32,7 @@ RETRIEVAL_FUNCTIONS = [
         expansion,
         "relation_candidates",
     ),
-    ("_rank_chunks", retrieval, "_rank_chunks"),
+    ("_rank_chunks", ranking, "rank_chunks"),
     ("_expand_ranked_chunks", retrieval, "_expand_ranked_chunks"),
     (
         "_split_code_results_and_evidence_anchors",

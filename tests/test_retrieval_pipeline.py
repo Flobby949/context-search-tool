@@ -37,6 +37,7 @@ from context_search_tool.retrieval_core import (
     evidence_merge,
     expansion,
     ordering,
+    ranking,
     types as core_types,
 )
 from context_search_tool.sqlite_store import SQLiteStore
@@ -1456,7 +1457,7 @@ def test_project_scope_score_parts_affect_rerank_score() -> None:
         deleted_at=None,
         metadata={"language": "typescript"},
     )
-    role = retrieval._ChunkRole("generic", 5, 0.0)
+    role = ranking._ChunkRole("generic", 5, 0.0)
     flags = {
         "has_endpoint_signal": False,
         "is_controller": False,
@@ -1470,7 +1471,7 @@ def test_project_scope_score_parts_affect_rerank_score() -> None:
         "project_language_boost": 0.04,
     }
 
-    base_score = retrieval._rerank_score(
+    base_score = ranking._rerank_score(
         0.5,
         base_parts,
         chunk,
@@ -1478,7 +1479,7 @@ def test_project_scope_score_parts_affect_rerank_score() -> None:
         role,
         planner_ceiling=None,
     )
-    scoped_score = retrieval._rerank_score(
+    scoped_score = ranking._rerank_score(
         0.5,
         scoped_parts,
         chunk,
@@ -1504,7 +1505,7 @@ def test_frontend_entrypoint_score_part_affects_rerank_score() -> None:
         deleted_at=None,
         metadata={"language": "vue"},
     )
-    role = retrieval._ChunkRole("generic", 5, 0.0)
+    role = ranking._ChunkRole("generic", 5, 0.0)
     flags = {
         "has_endpoint_signal": False,
         "is_controller": False,
@@ -1517,7 +1518,7 @@ def test_frontend_entrypoint_score_part_affects_rerank_score() -> None:
         "frontend_entrypoint_boost": 0.35,
     }
 
-    base_score = retrieval._rerank_score(
+    base_score = ranking._rerank_score(
         0.5,
         base_parts,
         chunk,
@@ -1525,7 +1526,7 @@ def test_frontend_entrypoint_score_part_affects_rerank_score() -> None:
         role,
         planner_ceiling=None,
     )
-    frontend_score = retrieval._rerank_score(
+    frontend_score = ranking._rerank_score(
         0.5,
         frontend_parts,
         chunk,
@@ -1551,7 +1552,7 @@ def test_frontend_entrypoint_rerank_requires_targeted_direct_evidence() -> None:
         deleted_at=None,
         metadata={"language": "vue"},
     )
-    role = retrieval._ChunkRole("generic", 5, 0.0)
+    role = ranking._ChunkRole("generic", 5, 0.0)
     flags = {
         "has_endpoint_signal": False,
         "is_controller": False,
@@ -1565,7 +1566,7 @@ def test_frontend_entrypoint_rerank_requires_targeted_direct_evidence() -> None:
         "frontend_entrypoint_boost": 0.35,
     }
 
-    base_score = retrieval._rerank_score(
+    base_score = ranking._rerank_score(
         0.5,
         base_parts,
         chunk,
@@ -1573,7 +1574,7 @@ def test_frontend_entrypoint_rerank_requires_targeted_direct_evidence() -> None:
         role,
         planner_ceiling=None,
     )
-    frontend_score = retrieval._rerank_score(
+    frontend_score = ranking._rerank_score(
         0.5,
         frontend_parts,
         chunk,
@@ -1599,7 +1600,7 @@ def test_frontend_support_name_score_part_affects_rerank_score() -> None:
         deleted_at=None,
         metadata={"language": "typescript"},
     )
-    role = retrieval._ChunkRole("generic", 5, 0.0)
+    role = ranking._ChunkRole("generic", 5, 0.0)
     flags = {
         "has_endpoint_signal": False,
         "is_controller": False,
@@ -1612,7 +1613,7 @@ def test_frontend_support_name_score_part_affects_rerank_score() -> None:
         "frontend_support_name_match_boost": 0.18,
     }
 
-    base_score = retrieval._rerank_score(
+    base_score = ranking._rerank_score(
         0.5,
         base_parts,
         chunk,
@@ -1620,7 +1621,7 @@ def test_frontend_support_name_score_part_affects_rerank_score() -> None:
         role,
         planner_ceiling=None,
     )
-    frontend_score = retrieval._rerank_score(
+    frontend_score = ranking._rerank_score(
         0.5,
         frontend_parts,
         chunk,
@@ -1646,7 +1647,7 @@ def test_frontend_support_name_rerank_requires_targeted_direct_evidence() -> Non
         deleted_at=None,
         metadata={"language": "typescript"},
     )
-    role = retrieval._ChunkRole("generic", 5, 0.0)
+    role = ranking._ChunkRole("generic", 5, 0.0)
     flags = {
         "has_endpoint_signal": False,
         "is_controller": False,
@@ -1660,7 +1661,7 @@ def test_frontend_support_name_rerank_requires_targeted_direct_evidence() -> Non
         "frontend_support_name_match_boost": 0.18,
     }
 
-    base_score = retrieval._rerank_score(
+    base_score = ranking._rerank_score(
         0.5,
         base_parts,
         chunk,
@@ -1668,7 +1669,7 @@ def test_frontend_support_name_rerank_requires_targeted_direct_evidence() -> Non
         role,
         planner_ceiling=None,
     )
-    frontend_score = retrieval._rerank_score(
+    frontend_score = ranking._rerank_score(
         0.5,
         frontend_parts,
         chunk,
@@ -1681,7 +1682,7 @@ def test_frontend_support_name_rerank_requires_targeted_direct_evidence() -> Non
 
 
 def test_reasons_include_project_scope_diagnostics() -> None:
-    reasons = retrieval._reasons(
+    reasons = ranking._reasons(
         {
             "project_scope_boost": 0.10,
             "project_kind_boost": 0.06,
@@ -3123,7 +3124,7 @@ def test_relation_expansion_ignores_high_path_symbol_seed_without_signal(
         [direct_signal, high_path_symbol_seed, weak_dto],
         _expansion_config(),
     )
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         candidates.merge_candidates(
             [direct_signal, high_path_symbol_seed, weak_dto, *relation_candidates]
@@ -3166,7 +3167,7 @@ def test_relation_expansion_preserves_mixed_original_and_planner_provenance(
     assert target.score_parts["planner_relation"] == target.score
     assert target.score_parts["original_relation"] == target.score
     assert "planner_signal" not in target.score_parts
-    assert retrieval._is_planner_hint_only(target.score_parts) is False
+    assert ranking._is_planner_hint_only(target.score_parts) is False
 
 
 def test_relation_expansion_uses_anchor_only_seed_as_original_evidence(
@@ -3311,7 +3312,7 @@ def test_relation_expansion_keeps_planner_only_seed_provenance_when_seed_has_lex
     assert target.score_parts["relation"] == target.score
     assert target.score_parts["planner_relation"] == target.score
     assert "original_relation" not in target.score_parts
-    assert retrieval._is_planner_hint_only(target.score_parts) is True
+    assert ranking._is_planner_hint_only(target.score_parts) is True
 
 
 def test_route_score_parts_prefers_exact_route_over_sibling_route() -> None:
@@ -3352,9 +3353,9 @@ def test_route_score_parts_prefers_exact_route_over_sibling_route() -> None:
         metadata={"path": "/megaCatalog/page"},
     )
 
-    exact_parts = retrieval._route_score_parts([exact_signal], "/appCatalog/page canApply")
-    sibling_parts = retrieval._route_score_parts([sibling_signal], "/appCatalog/page canApply")
-    false_sibling_parts = retrieval._route_score_parts([false_sibling_signal], "/catalog/page canApply")
+    exact_parts = ranking._route_score_parts([exact_signal], "/appCatalog/page canApply")
+    sibling_parts = ranking._route_score_parts([sibling_signal], "/appCatalog/page canApply")
+    false_sibling_parts = ranking._route_score_parts([false_sibling_signal], "/catalog/page canApply")
 
     assert exact_parts["route_exact_match"] == 0.35
     assert sibling_parts["route_sibling_penalty"] == -0.18
@@ -3425,7 +3426,7 @@ def test_route_rerank_prefers_exact_controller_over_noisy_sibling(
         ],
     )
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "exact": RetrievalCandidate(
@@ -3726,7 +3727,7 @@ def test_spring_path_graph_scores_exact_controller_service_and_executor(
 ) -> None:
     store, candidates = _spring_path_graph_case(tmp_path)
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         candidates,
         ["app", "catalog", "page", "can", "apply"],
@@ -3748,7 +3749,7 @@ def test_spring_path_graph_scores_service_interface_below_implementation(
 ) -> None:
     store, candidates = _spring_path_graph_case(tmp_path)
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         candidates,
         ["app", "catalog", "page", "can", "apply"],
@@ -4013,7 +4014,7 @@ def test_spring_path_graph_bridges_interface_method_to_implementation(
         ],
     )
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "controller": RetrievalCandidate(
@@ -4285,7 +4286,7 @@ def test_spring_path_graph_follows_only_matching_implementation_method(
         ],
     )
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "controller": RetrievalCandidate(
@@ -4509,7 +4510,7 @@ def test_spring_path_graph_does_not_bridge_ambiguous_qualified_interfaces(
         ],
     )
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "controller": RetrievalCandidate(
@@ -4648,7 +4649,7 @@ def test_spring_path_graph_qualified_target_ignores_wrong_qualified_implementor(
         ],
     )
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "controller": RetrievalCandidate(
@@ -4777,7 +4778,7 @@ def test_spring_path_graph_skips_ambiguous_direct_impl_fallback(
         ],
     )
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "controller": RetrievalCandidate(
@@ -5531,7 +5532,7 @@ def test_rank_chunks_skips_signal_lookup_for_non_route_non_signal_candidates(
     store, candidates = _rank_chunks_signal_lookup_case(tmp_path)
     signal_lookup_count = _count_signal_lookups(store, monkeypatch)
 
-    retrieval._rank_chunks(store, candidates, ["target", "token"], "targetToken")
+    ranking.rank_chunks(store, candidates, ["target", "token"], "targetToken")
 
     assert signal_lookup_count() == 0
 
@@ -5543,7 +5544,7 @@ def test_rank_chunks_skips_signal_lookup_for_slash_file_path_query(
     store, candidates = _rank_chunks_signal_lookup_case(tmp_path)
     signal_lookup_count = _count_signal_lookups(store, monkeypatch)
 
-    retrieval._rank_chunks(store, candidates, ["src", "main", "java", "foo"], "src/main/java Foo")
+    ranking.rank_chunks(store, candidates, ["src", "main", "java", "foo"], "src/main/java Foo")
 
     assert signal_lookup_count() == 0
 
@@ -5560,7 +5561,7 @@ def test_rank_chunks_only_fetches_route_signals_for_route_relevant_candidates(
     )
     signal_lookup_count = _count_signal_lookups(store, monkeypatch)
 
-    retrieval._rank_chunks(store, candidates, ["target", "token"], "/target/token")
+    ranking.rank_chunks(store, candidates, ["target", "token"], "/target/token")
 
     assert signal_lookup_count() == len(route_relevant_indices)
 
@@ -5573,7 +5574,7 @@ def test_rank_chunks_uses_signal_lookup_for_signal_candidates_without_route(
     store, candidates = _rank_chunks_signal_lookup_case(tmp_path, signal_indices)
     signal_lookup_count = _count_signal_lookups(store, monkeypatch)
 
-    retrieval._rank_chunks(store, candidates, ["target", "token"], "targetToken")
+    ranking.rank_chunks(store, candidates, ["target", "token"], "targetToken")
 
     assert signal_lookup_count() == len(signal_indices)
 
@@ -5650,7 +5651,7 @@ def test_rerank_high_score_direct_beats_low_score_relation(tmp_path: Path) -> No
         ),
     }
 
-    ranked = retrieval._rank_chunks(store, candidates, ["sms", "send"], "send sms")
+    ranked = ranking.rank_chunks(store, candidates, ["sms", "send"], "send sms")
 
     # High-score direct should rank first
     assert ranked[0].chunk.chunk_id == "high-direct"
@@ -5680,7 +5681,7 @@ def test_rank_chunks_exposes_numeric_diagnostic_score_parts(tmp_path: Path) -> N
         )
     }
 
-    ranked = retrieval._rank_chunks(store, candidates, ["auth", "login"], "auth login")
+    ranked = ranking.rank_chunks(store, candidates, ["auth", "login"], "auth login")
 
     parts = ranked[0].score_parts
     assert isinstance(parts["combined_score"], float)
@@ -5702,7 +5703,7 @@ def test_chunk_role_prefers_service_impl_over_service_interface_content() -> Non
         metadata={"language": "java"},
     )
 
-    assert retrieval._chunk_role(chunk).name == "service_impl"
+    assert ranking._chunk_role(chunk).name == "service_impl"
 
 
 def test_chunk_role_prefers_executor_over_generic_service_directory() -> None:
@@ -5717,7 +5718,7 @@ def test_chunk_role_prefers_executor_over_generic_service_directory() -> None:
         metadata={"language": "java"},
     )
 
-    assert retrieval._chunk_role(chunk).name == "executor"
+    assert ranking._chunk_role(chunk).name == "executor"
 
 
 def test_identifier_role_boosts_preserve_java_executor_over_service_directory_label(
@@ -5748,7 +5749,7 @@ def test_identifier_role_boosts_preserve_java_executor_over_service_directory_la
     for chunk in (executor, service):
         store.replace_chunks(chunk.file_path, [chunk])
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "executor": RetrievalCandidate(
@@ -5806,7 +5807,7 @@ def test_path_role_service_hint_treats_java_impl_as_service_without_mismatch(
     for chunk in (service_impl, service_interface):
         store.replace_chunks(chunk.file_path, [chunk])
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "service-impl": RetrievalCandidate(
@@ -5866,7 +5867,7 @@ def test_path_role_mismatch_penalty_does_not_hide_strong_identifier_match(
     for chunk in (view, store_chunk):
         store.replace_chunks(chunk.file_path, [chunk])
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "view": RetrievalCandidate(
@@ -5910,7 +5911,7 @@ def test_chunk_role_prefers_data_type_over_generic_service_directory() -> None:
         metadata={"language": "java"},
     )
 
-    assert retrieval._chunk_role(chunk).name == "data_type"
+    assert ranking._chunk_role(chunk).name == "data_type"
 
 
 def _generic_noise_chunk(
@@ -5952,7 +5953,7 @@ def _rank_generic_noise_chunks(
         )
         for chunk in chunks
     }
-    return retrieval._rank_chunks(store, candidates, tokens, query)
+    return ranking.rank_chunks(store, candidates, tokens, query)
 
 
 def test_generic_intent_rerank_prefers_config_save_logic_over_yaml_artifacts(
@@ -6113,7 +6114,7 @@ def test_behavior_query_demotes_non_source_artifacts_below_source(
         ),
     }
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         candidates,
         ["where", "requests", "cookies", "client", "session"],
@@ -6157,7 +6158,7 @@ def test_explicit_file_hint_does_not_apply_artifact_display_penalty(
     for chunk in (history, source):
         store.replace_chunks(chunk.file_path, [chunk])
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "history": RetrievalCandidate(
@@ -6281,7 +6282,7 @@ def test_doc_query_does_not_apply_doc_artifact_display_penalty(
     for chunk in (docs, source):
         store.replace_chunks(chunk.file_path, [chunk])
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "docs-advanced": RetrievalCandidate(
@@ -6345,7 +6346,7 @@ def test_config_artifact_query_does_not_apply_config_display_penalty(
     for chunk in (config, source):
         store.replace_chunks(chunk.file_path, [chunk])
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "provider-config": RetrievalCandidate(
@@ -6408,7 +6409,7 @@ def test_test_artifact_query_does_not_apply_test_display_penalty(
     for chunk in (test, source):
         store.replace_chunks(chunk.file_path, [chunk])
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "sessions-test": RetrievalCandidate(
@@ -6832,7 +6833,7 @@ def test_frontend_score_parts_are_absent_in_python_like_view_service_pool(
 
 
 def test_reasons_include_frontend_score_part_diagnostics() -> None:
-    reasons = retrieval._reasons(
+    reasons = ranking._reasons(
         {
             "frontend_entrypoint_boost": 0.35,
             "frontend_support_boost": 0.18,
@@ -7449,8 +7450,8 @@ def test_generic_noise_metadata_test_flag_demotes_test_chunk(
 
 
 def test_generic_noise_combined_score_ignores_diagnostic_penalties() -> None:
-    aggregate_only = retrieval._combined_score({"lexical": 1.0, "penalty": -0.20})
-    with_diagnostic = retrieval._combined_score(
+    aggregate_only = ranking._combined_score({"lexical": 1.0, "penalty": -0.20})
+    with_diagnostic = ranking._combined_score(
         {"lexical": 1.0, "penalty": -0.20, "lockfile_penalty": -0.20}
     )
 
@@ -7497,7 +7498,7 @@ def test_role_rerank_prefers_service_impl_over_handler_for_business_query(tmp_pa
         ),
     }
 
-    ranked = retrieval._rank_chunks(store, candidates, ["开门", "控制"], "开门控制")
+    ranked = ranking.rank_chunks(store, candidates, ["开门", "控制"], "开门控制")
 
     assert ranked[0].chunk.chunk_id == "access-service-impl"
     assert ranked[0].score_parts["role_priority"] < ranked[1].score_parts["role_priority"]
@@ -7553,11 +7554,11 @@ def test_rerank_sort_uses_role_priority_for_noise_level_score_ties() -> None:
 
     near_tie = sorted(
         [near_tie_detail_role, near_tie_preferred_role],
-        key=retrieval._ranked_chunk_sort_key,
+        key=ranking._ranked_chunk_sort_key,
     )
     clear_gap = sorted(
         [clear_winner, near_tie_preferred_role],
-        key=retrieval._ranked_chunk_sort_key,
+        key=ranking._ranked_chunk_sort_key,
     )
     expanded_near_tie_preferred_role = core_types._ExpandedResult(
         chunk_ids=["settings"],
@@ -7637,7 +7638,7 @@ def test_identifier_intent_ranks_state_store_above_related_frontend_files(
     for chunk in (auth_store, auth_service, register_view):
         store.replace_chunks(chunk.file_path, [chunk])
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "auth-store": RetrievalCandidate(
@@ -7711,7 +7712,7 @@ def test_identifier_intent_ranks_composable_above_chat_types_and_views(
     for chunk in (composable, types, view):
         store.replace_chunks(chunk.file_path, [chunk])
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "sse-composable": RetrievalCandidate(
@@ -7775,7 +7776,7 @@ def test_identifier_intent_ranks_storage_source_above_unrelated_cli_entrypoint(
     for chunk in (storage, typora):
         store.replace_chunks(chunk.file_path, [chunk])
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "local-storage": RetrievalCandidate(
@@ -7856,7 +7857,7 @@ def test_identifier_intent_ranks_rust_frontend_entry_when_query_names_frontend(
     for chunk in (frontend, commands):
         store.replace_chunks(chunk.file_path, [chunk])
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "frontend-main": RetrievalCandidate(
@@ -8030,7 +8031,7 @@ def test_role_rerank_exact_handler_file_hint_beats_same_subproject_noise(
     }
     query = "collector CollectHandler collect_handler.go CollectNav BatchCollectNav gin"
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         candidates,
         tokenizer.tokenize_query(query),
@@ -8174,7 +8175,7 @@ def test_role_rerank_go_service_file_hint_beats_same_subproject_repository_noise
     }
     query = "collector FundService fund_service.go CollectNav BatchCollectNav fund service"
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         candidates,
         tokenizer.tokenize_query(query),
@@ -8318,7 +8319,7 @@ def test_role_rerank_explicit_source_file_path_hint_beats_service_noise(
     }
     query = "collector eastmoney nav.go fetch fund nav"
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         candidates,
         tokenizer.tokenize_query(query),
@@ -8384,7 +8385,7 @@ def test_service_impl_exact_match_boost_keeps_impl_near_entrypoints(tmp_path: Pa
         ),
     }
 
-    ranked = retrieval._rank_chunks(store, candidates, ["开门", "控制"], "开门控制")
+    ranked = ranking.rank_chunks(store, candidates, ["开门", "控制"], "开门控制")
 
     assert ranked[0].chunk.chunk_id == "access-service-impl"
     assert ranked[0].score_parts["impl_match_boost"] == 0.18
@@ -8405,7 +8406,7 @@ def test_service_impl_high_path_match_gets_role_exact_boost(tmp_path: Path) -> N
     )
     store.replace_chunks(service_impl.file_path, [service_impl])
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "app-info-service-impl": RetrievalCandidate(
@@ -8478,7 +8479,7 @@ def test_data_type_exact_match_beats_low_coverage_entrypoint_noise(tmp_path: Pat
         ),
     }
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         candidates,
         ["account", "password", "login", "register", "auth", "user"],
@@ -8540,7 +8541,7 @@ def test_entrypoint_exact_match_beats_related_service_for_list_query(tmp_path: P
         ),
     }
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         candidates,
         ["device", "equipment", "list", "page"],
@@ -8591,7 +8592,7 @@ def test_role_rerank_prefers_alarm_service_over_mqtt_constant(tmp_path: Path) ->
         ),
     }
 
-    ranked = retrieval._rank_chunks(store, candidates, ["设备", "告警"], "设备告警")
+    ranked = ranking.rank_chunks(store, candidates, ["设备", "告警"], "设备告警")
 
     assert ranked[0].chunk.chunk_id == "alarm-service-impl"
 
@@ -8668,7 +8669,7 @@ def test_relation_chain_service_interface_stays_near_impl(tmp_path: Path) -> Non
         ),
     }
 
-    ranked = retrieval._rank_chunks(store, candidates, ["设备", "列表"], "设备列表")
+    ranked = ranking.rank_chunks(store, candidates, ["设备", "列表"], "设备列表")
     top3 = [item.chunk.chunk_id for item in ranked[:3]]
 
     assert "equipment-service" in top3
@@ -8701,7 +8702,7 @@ def test_relation_role_boost_applies_to_service_interface_with_relation_support(
         )
     }
 
-    ranked = retrieval._rank_chunks(store, candidates, ["equipment", "page"], "equipment page")
+    ranked = ranking.rank_chunks(store, candidates, ["equipment", "page"], "equipment page")
 
     assert ranked[0].score_parts["relation_role_boost"] == 0.08
 
@@ -8747,7 +8748,7 @@ def test_detail_only_strong_direct_still_sets_planner_ceiling(tmp_path: Path) ->
         ),
     }
 
-    ranked = retrieval._rank_chunks(store, candidates, ["handler"], "handler")
+    ranked = ranking.rank_chunks(store, candidates, ["handler"], "handler")
 
     assert ranked[0].chunk.chunk_id == "access-handler"
     assert ranked[1].chunk.chunk_id == "access-service-impl"
@@ -9402,7 +9403,7 @@ def test_chunk_role_classification(
         metadata={"language": "java"},
     )
 
-    role = retrieval._chunk_role(chunk)
+    role = ranking._chunk_role(chunk)
 
     assert role.name == expected_role
     assert role.priority == expected_priority
@@ -9423,7 +9424,7 @@ def test_chunk_role_classifies_query_executor_before_generic() -> None:
         metadata={"language": "java"},
     )
 
-    role = retrieval._chunk_role(chunk)
+    role = ranking._chunk_role(chunk)
 
     assert role.name == "executor"
     assert role.priority == 2
@@ -9449,10 +9450,10 @@ def test_java_context_score_parts_boosts_field_related_executor_method() -> None
         },
     )
 
-    parts = retrieval._java_context_score_parts(
+    parts = ranking._java_context_score_parts(
         [method_signal],
         ["app", "catalog", "page", "can", "apply"],
-        retrieval._ChunkRole("executor", 2, 0.12),
+        ranking._ChunkRole("executor", 2, 0.12),
     )
 
     assert parts["java_method_context_match"] == 0.14
@@ -9476,10 +9477,10 @@ def test_java_context_score_parts_boosts_field_signal() -> None:
         },
     )
 
-    parts = retrieval._java_context_score_parts(
+    parts = ranking._java_context_score_parts(
         [field_signal],
         ["app", "catalog", "page", "can", "apply"],
-        retrieval._ChunkRole("data_type", 3, 0.04),
+        ranking._ChunkRole("data_type", 3, 0.04),
     )
 
     assert parts["java_field_context_match"] == 0.12
@@ -9548,7 +9549,7 @@ def test_rank_chunks_route_java_context_uses_non_route_business_tokens(
         ],
     )
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "catalog-executor": RetrievalCandidate(
@@ -9739,7 +9740,7 @@ def test_rank_chunks_route_java_context_preserves_matching_business_tokens(
         ],
     )
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "es-executor": RetrievalCandidate(
@@ -9851,7 +9852,7 @@ def test_rank_chunks_applies_java_context_without_generic_signal_lookups(
         ),
     }
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         candidates,
         ["app", "catalog", "page", "can", "apply"],
@@ -9911,7 +9912,7 @@ def test_rank_chunks_applies_java_context_for_matching_generic_helper_only(
     )
     signal_lookup_count = _count_signal_lookups(store, monkeypatch)
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "helper": RetrievalCandidate(
@@ -9980,7 +9981,7 @@ def test_rank_chunks_skips_java_context_for_test_executor(
         )
     }
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         candidates,
         ["app", "catalog", "page", "can", "apply"],
@@ -10064,7 +10065,7 @@ def test_rank_chunks_bounds_java_context_signal_lookups_by_local_overlap(
     )
     signal_lookup_count = _count_signal_lookups(store, monkeypatch)
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         candidates,
         ["app", "catalog", "page", "can", "apply"],
@@ -10111,13 +10112,13 @@ def test_route_boost_ignores_side_routes_when_query_has_leading_route() -> None:
 
     tokens = ["app", "catalog", "page", "can", "apply"]
 
-    assert retrieval._route_boost(exact, "/appCatalog/page canApply", tokens) == 0.12
-    assert retrieval._route_boost(sibling, "/appCatalog/page canApply", tokens) == 0.0
-    assert retrieval._route_boost(side_route, "/appCatalog/page canApply", tokens) == 0.0
+    assert ranking._route_boost(exact, "/appCatalog/page canApply", tokens) == 0.12
+    assert ranking._route_boost(sibling, "/appCatalog/page canApply", tokens) == 0.0
+    assert ranking._route_boost(side_route, "/appCatalog/page canApply", tokens) == 0.0
 
 
 def test_reasons_include_role_diagnostics() -> None:
-    reasons = retrieval._reasons(
+    reasons = ranking._reasons(
         {"role_boost": 0.2, "role_penalty": -0.1},
         "auth login",
     )
@@ -10127,7 +10128,7 @@ def test_reasons_include_role_diagnostics() -> None:
 
 
 def test_reasons_include_identifier_path_role_public_labels() -> None:
-    reasons = retrieval._reasons(
+    reasons = ranking._reasons(
         {
             "identifier_exact_match_boost": 0.4,
             "path_role_hint_boost": 0.14,
@@ -10206,7 +10207,7 @@ def test_rerank_planner_only_relation_cannot_beat_strong_original_direct(
         ),
     }
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store, candidates, ["login", "auth"], "user login"
     )
 
@@ -10278,7 +10279,7 @@ def test_rerank_planner_direct_cannot_beat_strong_original_direct(
         ),
     }
 
-    ranked = retrieval._rank_chunks(store, candidates, ["user"], "user query")
+    ranked = ranking.rank_chunks(store, candidates, ["user"], "user query")
 
     assert ranked[0].chunk.chunk_id == "strong-original"
     assert ranked[1].chunk.chunk_id == "planner-direct"
@@ -10344,7 +10345,7 @@ def test_rerank_weak_direct_does_not_trigger_planner_ceiling(tmp_path: Path) -> 
         ),
     }
 
-    ranked = retrieval._rank_chunks(store, candidates, ["dashboard"], "dashboard")
+    ranked = ranking.rank_chunks(store, candidates, ["dashboard"], "dashboard")
 
     # Planner-only should still appear (not clamped to below weak direct)
     assert any(r.chunk.chunk_id == "planner-only" for r in ranked)
@@ -10416,7 +10417,7 @@ def test_rerank_no_strong_original_direct_no_clamp(tmp_path: Path) -> None:
         ),
     }
 
-    ranked = retrieval._rank_chunks(store, candidates, ["service"], "service query")
+    ranked = ranking.rank_chunks(store, candidates, ["service"], "service query")
 
     # Both should appear in results (not killed by clamp)
     assert len(ranked) == 2
@@ -10498,7 +10499,7 @@ def test_rerank_endpoint_boost_does_not_override_score(tmp_path: Path) -> None:
         ),
     }
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store, candidates, ["business", "process"], "business process"
     )
 
@@ -10567,7 +10568,7 @@ def test_rerank_relation_expansion_preserved(tmp_path: Path) -> None:
         ),
     }
 
-    ranked = retrieval._rank_chunks(store, candidates, ["order"], "order flow")
+    ranked = ranking.rank_chunks(store, candidates, ["order"], "order flow")
 
     # Both should appear in results
     assert len(ranked) == 2
@@ -10658,7 +10659,7 @@ def test_rerank_normalization_effectiveness_with_outlier(tmp_path: Path) -> None
         ),
     }
 
-    ranked = retrieval._rank_chunks(store, candidates, ["test"], "test query")
+    ranked = ranking.rank_chunks(store, candidates, ["test"], "test query")
 
     # After normalization and rerank, ordering should still be sensible
     # (outlier should rank first due to highest combined_score)
@@ -10737,7 +10738,7 @@ def test_rerank_original_relation_not_misclassified(tmp_path: Path) -> None:
     "original_relation", not "original_direct". Guards against the P1 bug where
     _has_original_query_evidence includes "original_relation" key.
     """
-    from context_search_tool.retrieval import _evidence_class
+    from context_search_tool.retrieval_core.ranking import _evidence_class
 
     score_parts_relation_only = {
         "original_relation": 0.8,
@@ -11044,7 +11045,7 @@ def test_cohort_rerank_demotes_cross_project_unit_candidates_against_top1_anchor
     for chunk in (fund_service, fund_data_client, nav_service):
         store.replace_chunks(chunk.file_path, [chunk])
 
-    ranked = retrieval._rank_chunks(
+    ranked = ranking.rank_chunks(
         store,
         {
             "fund-service": RetrievalCandidate(
@@ -11076,7 +11077,7 @@ def test_cohort_rerank_demotes_cross_project_unit_candidates_against_top1_anchor
     assert "cohort_mismatch_penalty" not in score_parts_by_chunk["nav-service"]
     assert (
         score_parts_by_chunk["fund-data-client"]["cohort_mismatch_penalty"]
-        == pytest.approx(-retrieval._COHORT_MISMATCH_PENALTY)
+        == pytest.approx(-ranking._COHORT_MISMATCH_PENALTY)
     )
     reasons_by_chunk = {item.chunk.chunk_id: item.reasons for item in ranked}
     assert "cross-project cohort mismatch penalty" in reasons_by_chunk["fund-data-client"]

@@ -32,7 +32,12 @@ from context_search_tool.retrieval_trace import (
     RetrievalTraceCollector,
     TraceLimits,
 )
-from context_search_tool.retrieval_core import candidates, expansion, types as core_types
+from context_search_tool.retrieval_core import (
+    candidates,
+    expansion,
+    ranking,
+    types as core_types,
+)
 from context_search_tool.sqlite_store import SQLiteStore
 
 
@@ -199,7 +204,7 @@ def test_trace_repository_reports_no_candidates_after_candidate_merge(
     def forbidden(*args, **kwargs):
         raise AssertionError("no-candidate retrieval performed downstream work")
 
-    monkeypatch.setattr(retrieval, "_rank_chunks", forbidden)
+    monkeypatch.setattr(ranking, "rank_chunks", forbidden)
     monkeypatch.setattr(retrieval, "_expand_ranked_chunks", forbidden)
     monkeypatch.setattr(retrieval, "_summarize_results", forbidden)
     original_read_text = Path.read_text
@@ -702,12 +707,15 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
 
     for name in (
         "build_query_variants",
-        "_rank_chunks",
-        "_apply_frontend_import_cohort_rerank",
         "_expand_ranked_chunks",
         "_split_code_results_and_evidence_anchors",
     ):
         mark_operation(retrieval, name)
+    for name in (
+        "rank_chunks",
+        "apply_frontend_import_cohort_rerank",
+    ):
+        mark_operation(ranking, name)
     for name in (
         "anchor_candidates",
         "relation_candidates",

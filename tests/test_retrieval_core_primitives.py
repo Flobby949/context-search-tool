@@ -12,6 +12,7 @@ from context_search_tool.retrieval_core import (
     evidence_merge,
     file_roles,
     ordering,
+    ranking,
     relation_policy,
     types as core_types,
 )
@@ -316,5 +317,24 @@ def test_file_role_predicates_are_exact_and_readme_helper_is_uncalled() -> None:
         and isinstance(node.func, ast.Name)
         and node.func.id == "_is_readme_document"
     ]
+    assert len(definitions) == 1
+    assert calls == []
+
+
+def test_candidate_base_score_remains_present_and_uncalled() -> None:
+    tree = ast.parse(inspect.getsource(ranking))
+    definitions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_candidate_base_score"
+    ]
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_candidate_base_score"
+    ]
+
     assert len(definitions) == 1
     assert calls == []
