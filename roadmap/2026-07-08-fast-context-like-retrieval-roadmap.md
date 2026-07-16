@@ -2,8 +2,8 @@
 
 Date: 2026-07-08
 Status: Long-term roadmap
-Repository: `/Users/flobby/Documents/context-seatch-tool`
-Next-stage review: Phase 1 Query Understanding acceptance review
+Repository: `/Users/flobby/vibe_coding/context-search-tool`
+Next-stage review: P3.1 RetrievalTrace v1 written design and implementation-plan review
 
 ## Summary
 
@@ -162,6 +162,13 @@ Success signal:
 
 ### Phase 1: Query Understanding
 
+Status: Implementation complete; model acceptance pending
+
+Latest acceptance check (2026-07-16): both required model profiles selected and
+executed seven cases but passed 6/7. `audit-status-literal` still misses
+`AuditStatus.java` within Top-3, so the focused pair gate and Phase 1 roadmap
+closure remain pending.
+
 Goal: reduce the gap on natural-language and cross-language queries while preserving exact search.
 
 Work:
@@ -179,6 +186,19 @@ Success signal:
 
 ### Phase 2: Context Pack Output
 
+Status: Complete (2026-07-16)
+
+Acceptance evidence at `be03fa73437cd897d112377d80dda5c83370def5`:
+
+- full suite: 1,832 passed and 9 skipped;
+- focused P2/P2.1 deterministic suite: 1,278 passed and 6 skipped;
+- deterministic ContextPack v2 profile: 5/5 passed;
+- raw-result CI profile: 8/8 passed;
+- pinned real-project ContextPack v2 profile: 4/4 passed.
+
+Phase statuses are recorded independently: the open Phase 1 model-quality gate
+remains pending and is not weakened or reclassified by Phase 2 completion.
+
 Goal: return a reading set, not only a ranked list.
 
 Work:
@@ -195,6 +215,14 @@ Success signal:
 - The output explains when the retrieved context is incomplete instead of pretending every search is sufficient.
 
 ### Phase 3: Retrieval Trace And Core Decomposition
+
+Status: Split into separately reviewed milestones
+
+- P3.1 RetrievalTrace v1: approved direction; written review pending.
+  Design: `docs/superpowers/specs/2026-07-16-p3-1-retrieval-trace-v1-design.md`.
+  Plan: `docs/superpowers/plans/2026-07-16-p3-1-retrieval-trace-v1.md`.
+- P3.2 retrieval-core decomposition: separate future design and plan after P3.1
+  acceptance.
 
 Goal: make the retrieval engine easier to improve.
 
@@ -349,7 +377,9 @@ The next implementation work should be split into separate specs and plans:
 1. Quality loop consolidation: define benchmark commands and metrics from existing fixtures, A/B tests, and MCP feedback.
 2. ContextPack v1: add an additive CLI JSON and MCP response shape using current retrieval results.
 3. RetrievalTrace v1: expose candidate source counts, query variants, score changes, and final provenance.
-4. Controlled exploration v1: add a budgeted second pass for entrypoint-to-supporting-code expansion.
-5. Retrieval core decomposition: split the large retrieval module after trace and tests protect behavior.
+4. Retrieval core decomposition: split the large retrieval module after trace and tests protect behavior.
+5. Controlled exploration v1: add a budgeted second pass for entrypoint-to-supporting-code expansion.
 
-This order keeps the project grounded: measure first, expose better context second, then make the retrieval engine more exploratory and easier to evolve.
+This order keeps the project grounded: measure first, expose better context and
+traceability second, decompose the protected retrieval core third, and only then
+add multi-round exploration.
