@@ -3,7 +3,7 @@
 Date: 2026-07-08
 Status: Long-term roadmap
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
-Next-stage review: P3.2 retrieval-core decomposition implementation review
+Next-stage review: Phase 4 controlled multi-round exploration design review
 
 ## Summary
 
@@ -216,7 +216,7 @@ Success signal:
 
 ### Phase 3: Retrieval Trace And Core Decomposition
 
-Status: Split into separately reviewed milestones
+Status: Complete (2026-07-16)
 
 - P3.1 RetrievalTrace v1: complete (2026-07-16).
   Design: `docs/superpowers/specs/2026-07-16-p3-1-retrieval-trace-v1-design.md`.
@@ -234,10 +234,12 @@ Status: Split into separately reviewed milestones
 
   Phase 1 remains pending at its independent 6/7 baseline; P3.1 does not weaken
   or reclassify that gate.
-- P3.2 retrieval-core decomposition: design and implementation-plan reviews
-  complete; implementation pending.
+- P3.2 retrieval-core decomposition: complete (2026-07-16).
   Design: `docs/superpowers/specs/2026-07-16-p3-2-retrieval-core-decomposition-design.md`.
   Plan: `docs/superpowers/plans/2026-07-16-p3-2-retrieval-core-decomposition.md`.
+  Acceptance: full suite `1,938` passed with the exact baseline `9` skips and
+  no xfails; focused P3.1/P3.2 gate `76` passed; 13 cases and four full-stage
+  ledgers matched; TraceCoverage `1.0`; P2 `5/5`; raw CI `8/8`.
 
 Goal: make the retrieval engine easier to improve.
 

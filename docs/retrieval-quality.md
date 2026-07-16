@@ -389,6 +389,59 @@ informational in end-to-end tests; collector unit tests use an injected clock. P
 does not add a quality-catalog mode. Phase 1 model acceptance remains independent
 and pending until its own required 7/7 gate passes.
 
+## Phase 3.2 Retrieval Core Decomposition Acceptance
+
+P3.2 was verified on 2026-07-16 at Task 9 commit
+`b21f0a350b3f132f8befebf87f5e211092fe7ad1`. The Task 10 documentation commit
+is intentionally not self-recorded here.
+
+Final acceptance evidence:
+
+- With all five optional CST acceptance/repository variables unset, the full
+  suite passed `1,938` tests, skipped `9`, and xfailed `0`. The JUnit evidence at
+  `/tmp/cst-p3-2-final.xml` matched the immutable Slice 1 manifest exactly for
+  every skip/xfail node ID and reason; there were no failures or errors.
+- The six-file P3.1/P3.2 focused gate passed `76` tests. Reprojection matched
+  all 13 characterization cases, both complete 13-case operation ledgers, and
+  all four full-stage ledgers byte-for-byte. TraceCoverage remained `1.0` for
+  every committed non-empty P3.1 case and every full-stage ledger case.
+- `p2_context_pack` selected/executed/passed `5/5/5`; raw `ci` passed `8/8/8`.
+  Both had zero failures and errors. Reports are
+  `/tmp/cst-p3-2-p2.{json,md}` and `/tmp/cst-p3-2-ci.{json,md}`.
+- The strict AST gate matched the exact acyclic 12-node facade/core import
+  adjacency and exact module ownership. All 72 migrated rows have
+  `remaining: 0` and a resolved task; all eight supported-facade rows retain
+  their contracts. The protected-source diff and source worktree status were
+  clean.
+- Phase 1 remains independently pending at `6/7`; P3.2 does not reclassify it.
+
+The immutable Slice 1 baseline is commit
+`680b252b5c863fce9b236771b1a54c28e3f9839e`, and its `baseline.json` blob is
+`a0011178b2671af25cb0853260c8fdcf586acee0`. Final frozen-input identity was
+clean for tracked, staged, unstaged, and untracked state:
+
+| input | Git OID | working-tree SHA-256 |
+| --- | --- | --- |
+| catalog `queries.json` | `8bbe4d560fec1499aa1f436af929b8a6bb6f3eac` | `ac7a9789098d088a22b8ddc78fed3128695cbb257923de8686c41fbcfa5824c5` |
+| `program_tool` snapshot | `a8c0ace36cf82e2c743f06726944f20ce740000f` | `d67190cda56426f21bbc26e19fd16ef9b83b6eb1de62dec865c3040b59a7c663` |
+| `java-spring-mini` snapshot | `f005cb94bac1fd2e81705d0f9454803ea9ab7030` | `11708de34709f1a8a71c781bd0d2f4a987c879dff0fc4517e4c149b6c9f9aadf` |
+| `context-pack-java` snapshot | `e65c04eb4b2eda11b4814d5b183f4297a6f6050b` | `71435f6c894d7bb7326f9197e97672af14485eae1bad134dc1f1f8a51b029bce` |
+| `context-pack-docs` snapshot | `18d9167866632df391fdbc7b356a427dec0ab9f2` | `991f9f83dd86717005e650e6effa3084ac09fee63da76e09ff278676d124fc17` |
+
+Implementation and closure commits:
+
+| task | commit |
+| --- | --- |
+| Task 1: immutable baseline | `680b252b5c863fce9b236771b1a54c28e3f9839e` |
+| Task 2: primitives | `fafea37b89190bdeed0a7baea972d01889570b46` |
+| Task 3: candidates | `70d41a745b0c1c5f65f8516d8b6f2c4ad1f87db9` |
+| Task 4: expansion | `c1fad40c631eefec84a2057ff18a800c2c3cc6cf` |
+| Task 5: ranking | `2dba63e52d20a2afa3dc347df8b21217448fd7a1` |
+| Task 6: context expansion | `17ca0a527864630c5420de1ed7237fa5c0f12ee6` |
+| Task 7: selection | `fd2340ac91e21099b44d82fbd7ee62b797bc4d09` |
+| Task 8: trace adapters | `d0a65a5af560e8eeff46000be0cf88490e6c4bca` |
+| Task 9: strict boundary closure | `b21f0a350b3f132f8befebf87f5e211092fe7ad1` |
+
 ## MCP Feedback Privacy
 
 ```bash

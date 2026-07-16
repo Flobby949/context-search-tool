@@ -1,7 +1,7 @@
 # P3.2 Retrieval Core Decomposition Implementation Plan
 
 Date: 2026-07-16
-Status: Agent-reviewed; implementation pending
+Status: Implemented and verified (2026-07-16)
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
 Design: `docs/superpowers/specs/2026-07-16-p3-2-retrieval-core-decomposition-design.md`
 Implementation baseline: `34c5b5bd2189fbba4ead3902342706266c399b41`
@@ -1911,6 +1911,50 @@ and full suite before commit.
   git commit -m "docs: verify retrieval core decomposition"
   ```
 
+## Implementation And Acceptance Record
+
+Tasks 1-9 were completed in the reviewed order:
+
+| task | commit |
+| --- | --- |
+| Task 1 | `680b252b5c863fce9b236771b1a54c28e3f9839e` |
+| Task 2 | `fafea37b89190bdeed0a7baea972d01889570b46` |
+| Task 3 | `70d41a745b0c1c5f65f8516d8b6f2c4ad1f87db9` |
+| Task 4 | `c1fad40c631eefec84a2057ff18a800c2c3cc6cf` |
+| Task 5 | `2dba63e52d20a2afa3dc347df8b21217448fd7a1` |
+| Task 6 | `17ca0a527864630c5420de1ed7237fa5c0f12ee6` |
+| Task 7 | `fd2340ac91e21099b44d82fbd7ee62b797bc4d09` |
+| Task 8 | `d0a65a5af560e8eeff46000be0cf88490e6c4bca` |
+| Task 9 | `b21f0a350b3f132f8befebf87f5e211092fe7ad1` |
+
+Final acceptance on 2026-07-16 passed `1,938` full-suite tests with the exact
+Slice 1 set of `9` skips and `0` xfails, plus `76` focused tests. All 13
+characterization cases and four full-stage ledgers matched, TraceCoverage was
+`1.0`, P2 was `5/5`, and raw CI was `8/8`. Frozen-input identity,
+protected-source, exact ownership, and exact acyclic import-adjacency gates all
+passed. The Slice 1 commit is Task 1 above and its immutable baseline blob is
+`a0011178b2671af25cb0853260c8fdcf586acee0`; detailed input OIDs, content
+hashes, skip comparison, and report paths are in `docs/retrieval-quality.md`.
+Phase 1 remains independently pending at `6/7`. The Task 10 documentation
+commit is intentionally reported only after creation in the handoff.
+
+### Recorded Plan/Execution Deviations
+
+- Task 0 Step 5 displayed a three-file focused command but paired it with the
+  `125 passed` expectation. The correct pre-Slice 1 P3.1 command had six files:
+  the three shown files plus `tests/test_cli_commands.py`,
+  `tests/test_mcp_tools.py`, and `tests/test_mcp_server.py`; that six-file run
+  produced `125 passed`.
+- The Tech Stack section says Python 3.11. The mandated `conda run -n base`
+  execution environment was Python `3.13.12` with SQLite `3.51.2`, matching the
+  immutable manifest's Python 3.13/SQLite 3.51.2 runtime identity.
+- Task 9's supplemental regex matched
+  `profile_retrieval._wrap_retrieval_functions` and
+  `profile_retrieval._restore` in `tests/test_profile_retrieval.py` because the
+  variable name contains the substring `retrieval._`. These were false
+  positives, not stale facade access; the authoritative AST plus dynamic-target
+  inventory was exact and passed.
+
 ## Stop Conditions
 
 Stop the implementation and request review if any of these occurs:
@@ -2008,5 +2052,5 @@ design, plan, roadmap, implementation baseline, tests, and profiler:
 - contract preservation: PASS; blocker/major/minor: none;
 - migration feasibility: PASS; blocker/major/minor: none.
 
-This review approves the implementation plan and its task/commit boundaries. It
-does not claim that P3.2 implementation or acceptance has begun.
+At review time, this record approved the implementation plan and its task/commit
+boundaries; it did not claim that P3.2 implementation or acceptance had begun.

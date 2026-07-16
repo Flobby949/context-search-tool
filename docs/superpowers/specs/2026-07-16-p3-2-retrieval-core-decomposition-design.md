@@ -1,7 +1,7 @@
 # P3.2 Retrieval Core Decomposition Design
 
 Date: 2026-07-16
-Status: Agent-reviewed; implementation plan reviewed; implementation pending
+Status: Implemented and verified (2026-07-16)
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
 Roadmap: `roadmap/2026-07-08-fast-context-like-retrieval-roadmap.md`
 Predecessor: `docs/superpowers/specs/2026-07-16-p3-1-retrieval-trace-v1-design.md`
@@ -42,9 +42,10 @@ The verified baseline is:
 - raw `ci`: selected/executed/passed 8/8/8;
 - Phase 1 model acceptance: independently pending at 6/7.
 
-P3.1 is complete and supplies the protected observable stage contract. Phase 3
-as a whole remains open. P3.2 may begin because its acceptance is structural and
-behavior-preserving; it does not depend on closing the Phase 1 ranking gap.
+At that reviewed baseline, P3.1 was complete and supplied the protected
+observable stage contract, while Phase 3 as a whole remained open. P3.2 could
+begin because its acceptance was structural and behavior-preserving; it did not
+depend on closing the Phase 1 ranking gap.
 
 ## Motivation
 
@@ -1188,6 +1189,35 @@ P3.2 is complete only when all of the following are true:
 20. Documentation records exact commits and verification evidence before the
     roadmap marks P3.2 implementation complete.
 
+## Implementation Verification Record
+
+All acceptance criteria passed on 2026-07-16 at Task 9 commit
+`b21f0a350b3f132f8befebf87f5e211092fe7ad1`. The full suite passed
+`1,938` tests with the exact baseline set of `9` skips and no xfails; the
+six-file focused gate passed `76` tests; all 13 cases and four full-stage
+ledgers matched; TraceCoverage remained `1.0`; and P2/raw-CI passed `5/5` and
+`8/8`. Frozen-input identity, protected-source, exact ownership, and acyclic
+import-adjacency gates were clean. Detailed OIDs, content hashes, and report
+paths are recorded in `docs/retrieval-quality.md`.
+
+The reviewed implementation and closure commits are:
+
+| task | commit |
+| --- | --- |
+| Task 1 | `680b252b5c863fce9b236771b1a54c28e3f9839e` |
+| Task 2 | `fafea37b89190bdeed0a7baea972d01889570b46` |
+| Task 3 | `70d41a745b0c1c5f65f8516d8b6f2c4ad1f87db9` |
+| Task 4 | `c1fad40c631eefec84a2057ff18a800c2c3cc6cf` |
+| Task 5 | `2dba63e52d20a2afa3dc347df8b21217448fd7a1` |
+| Task 6 | `17ca0a527864630c5420de1ed7237fa5c0f12ee6` |
+| Task 7 | `fd2340ac91e21099b44d82fbd7ee62b797bc4d09` |
+| Task 8 | `d0a65a5af560e8eeff46000be0cf88490e6c4bca` |
+| Task 9 | `b21f0a350b3f132f8befebf87f5e211092fe7ad1` |
+
+The Task 10 documentation commit is reported in the implementation handoff and
+is intentionally not embedded in that same commit. Phase 1 remains pending at
+its independent `6/7` gate, and Phase 4 work has not begun.
+
 ## Agent Review Rubric
 
 The design review must independently check:
@@ -1227,10 +1257,9 @@ All three reviewers then performed a targeted second pass:
   `_context_content` plus integer trace-duration normalization;
 - migration feasibility: PASS, with all seven slices capable of remaining green.
 
-No blocker or major finding remains. This review approves the design boundary.
-The separate implementation plan has now also passed its own three-agent,
-two-round review; implementation and acceptance still require their own work
-and verification.
+No blocker or major finding remains. This review approved the design boundary.
+The separate implementation plan passed its own three-agent, two-round review,
+and the implementation and acceptance evidence above now verify that boundary.
 
 ## Stop Point
 
