@@ -16,7 +16,7 @@ from xml.etree import ElementTree
 
 import numpy as np
 
-from context_search_tool import retrieval, tokenizer
+from context_search_tool import query_planner, retrieval, tokenizer
 from context_search_tool.config import DEFAULT_CONFIG, ToolConfig
 from context_search_tool.context_pack import (
     build_context_pack,
@@ -45,6 +45,7 @@ from context_search_tool.quality.cases import (
     load_quality_fixture,
 )
 from context_search_tool.retrieval_trace import CANONICAL_TRACE_STAGES
+from context_search_tool.retrieval_core import tracing
 from context_search_tool.sqlite_store import SQLiteStore
 from context_search_tool.vector_store import NumpyVectorStore
 
@@ -642,7 +643,7 @@ class OperationRecorder:
             yield
 
     def _patch_planner(self, stack: ExitStack) -> None:
-        original_factory = retrieval.planner_from_config
+        original_factory = query_planner.planner_from_config
         recorder = self
 
         class PlannerProxy:
@@ -666,7 +667,9 @@ class OperationRecorder:
         def factory(config: Any) -> PlannerProxy:
             return PlannerProxy(original_factory(config))
 
-        stack.enter_context(patch.object(retrieval, "planner_from_config", factory))
+        stack.enter_context(
+            patch.object(query_planner, "planner_from_config", factory)
+        )
 
     def _patch_embedding(self, stack: ExitStack) -> None:
         original = HashEmbeddingProvider.embed_texts
@@ -903,9 +906,9 @@ class StageLedgerRecorder:
 
     def _patch_query_understanding(self, stack: ExitStack) -> None:
         original_tokenize = tokenizer.tokenize_query
-        original_variants = retrieval.build_query_variants
-        original_expand = retrieval.expand_query_plan_tokens
-        original_hints = retrieval.planner_hint_tokens
+        original_variants = query_planner.build_query_variants
+        original_expand = query_planner.expand_query_plan_tokens
+        original_hints = query_planner.planner_hint_tokens
         recorder = self
 
         def tokenize(value: str) -> Any:
@@ -940,12 +943,18 @@ class StageLedgerRecorder:
             return result
 
         stack.enter_context(patch.object(tokenizer, "tokenize_query", tokenize))
-        stack.enter_context(patch.object(retrieval, "build_query_variants", variants))
-        stack.enter_context(patch.object(retrieval, "expand_query_plan_tokens", expand))
-        stack.enter_context(patch.object(retrieval, "planner_hint_tokens", hints))
+        stack.enter_context(
+            patch.object(query_planner, "build_query_variants", variants)
+        )
+        stack.enter_context(
+            patch.object(query_planner, "expand_query_plan_tokens", expand)
+        )
+        stack.enter_context(
+            patch.object(query_planner, "planner_hint_tokens", hints)
+        )
 
     def _patch_candidate_stages(self, stack: ExitStack) -> None:
-        original = retrieval._finish_candidate_stage
+        original = tracing.finish_candidate_stage
         recorder = self
 
         def wrapped(collector: Any, token: Any, **kwargs: Any) -> Any:
@@ -958,11 +967,11 @@ class StageLedgerRecorder:
             return result
 
         stack.enter_context(
-            patch.object(retrieval, "_finish_candidate_stage", wrapped)
+            patch.object(tracing, "finish_candidate_stage", wrapped)
         )
 
     def _patch_ranked_stages(self, stack: ExitStack) -> None:
-        original = retrieval._trace_ranked_observations
+        original = tracing._ranked_observations
         recorder = self
 
         def wrapped(ranked: list[Any], *args: Any, **kwargs: Any) -> Any:
@@ -974,11 +983,11 @@ class StageLedgerRecorder:
             return original(ranked, *args, **kwargs)
 
         stack.enter_context(
-            patch.object(retrieval, "_trace_ranked_observations", wrapped)
+            patch.object(tracing, "_ranked_observations", wrapped)
         )
 
     def _patch_expanded_stage(self, stack: ExitStack) -> None:
-        original = retrieval._trace_expanded_observations
+        original = tracing._expanded_observations
         recorder = self
 
         def wrapped(expanded: list[Any], *args: Any, **kwargs: Any) -> Any:
@@ -988,7 +997,7 @@ class StageLedgerRecorder:
             return original(expanded, *args, **kwargs)
 
         stack.enter_context(
-            patch.object(retrieval, "_trace_expanded_observations", wrapped)
+            patch.object(tracing, "_expanded_observations", wrapped)
         )
 
     def _patch_selection(self, stack: ExitStack) -> None:
@@ -999,7 +1008,7 @@ class StageLedgerRecorder:
             "_split_code_results_and_evidence_anchors",
         )
         original_split = getattr(owner, name)
-        original_trace = retrieval._trace_final_selections
+        original_trace = tracing._final_selections
         recorder = self
 
         def split(expanded: list[Any], **kwargs: Any) -> Any:
@@ -1031,7 +1040,7 @@ class StageLedgerRecorder:
 
         stack.enter_context(patch.object(owner, name, split))
         stack.enter_context(
-            patch.object(retrieval, "_trace_final_selections", trace)
+            patch.object(tracing, "_final_selections", trace)
         )
 
     def finalize(self, traced: retrieval.TracedQueryBundle) -> dict[str, object]:

@@ -3,26 +3,19 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from context_search_tool import sqlite_store, tokenizer
+import context_search_tool.retrieval_trace as retrieval_trace
+from context_search_tool import manifest, query_planner, sqlite_store, tokenizer
 from context_search_tool.config import ToolConfig
-from context_search_tool.manifest import assert_manifest_compatible
 from context_search_tool.models import (
     EvidenceAnchor,
     QueryPlan,
     QueryVariant,
-    RetrievalCandidate,
     RetrievalResult,
     RetrievalSummary,
 )
 from context_search_tool.paths import index_dir_for
-from context_search_tool.query_planner import (
-    QueryPlanner,
-    build_query_variants,
-    expand_query_plan_tokens,
-    planner_from_config,
-    planner_hint_tokens,
-)
 from context_search_tool.repo_profile import build_repo_profile
 from context_search_tool.retrieval_core import (
     candidates,
@@ -32,21 +25,13 @@ from context_search_tool.retrieval_core import (
     ranking,
     relation_policy,
     selection,
-    types as core_types,
+    tracing,
 )
-from context_search_tool.retrieval_trace import (
-    RetrievalTrace,
-    RetrievalTraceCollector,
-    StageToken,
-    TraceAdjustment,
-    TraceCandidate,
-    TraceOutcome,
-    TraceQuery,
-    TraceQueryVariant,
-    TraceRank,
-    TraceSelection,
-    TraceTerminationReason,
-)
+from context_search_tool.retrieval_trace import RetrievalTrace
+
+if TYPE_CHECKING:
+    from context_search_tool.query_planner import QueryPlanner
+    from context_search_tool.retrieval_trace import RetrievalTraceCollector
 
 
 MAX_EXPANSION_DEPTH = relation_policy.MAX_EXPANSION_DEPTH
@@ -71,325 +56,6 @@ class TracedQueryBundle:
     trace: RetrievalTrace
 
 
-def _trace_query(
-    *,
-    original_tokens: list[str],
-    expanded_tokens: list[str],
-    variants: list[QueryVariant],
-    variant_retrieval_status: str,
-    plan: QueryPlan,
-) -> TraceQuery:
-    return TraceQuery(
-        original_token_count=len(original_tokens),
-        expanded_token_count=len(expanded_tokens),
-        variant_retrieval_status=variant_retrieval_status,
-        variants=tuple(
-            TraceQueryVariant(item.variant_id, item.text, item.source)
-            for item in variants
-        ),
-        planner_status=plan.status,
-        planner_provider=plan.provider,
-        planner_model=plan.model,
-        planner_intent=plan.intent if plan.status == "ok" else "unknown",
-        planner_latency_ms=plan.latency_ms,
-        discarded_hint_count=len(plan.discarded_hints),
-    )
-
-
-def _finish_trace(
-    collector: RetrievalTraceCollector | None,
-    *,
-    original_tokens: list[str],
-    expanded_tokens: list[str],
-    variants: list[QueryVariant],
-    variant_retrieval_status: str,
-    plan: QueryPlan,
-    outcome: TraceOutcome,
-    termination_reason: TraceTerminationReason,
-    final_selections: tuple[TraceSelection, ...] = (),
-) -> None:
-    if collector is None:
-        return
-    collector.record_query(
-        _trace_query(
-            original_tokens=original_tokens,
-            expanded_tokens=expanded_tokens,
-            variants=variants,
-            variant_retrieval_status=variant_retrieval_status,
-            plan=plan,
-        )
-    )
-    trace = collector.finish(
-        outcome=outcome,
-        termination_reason=termination_reason,
-        final_selections=final_selections,
-    )
-    collector.set_finished_trace(trace)
-
-
-def _trace_stage_start(
-    collector: RetrievalTraceCollector | None,
-    name: str,
-    *,
-    input_count: int,
-) -> StageToken | None:
-    if collector is None:
-        return None
-    return collector.start_stage(name, input_count=input_count)
-
-
-def _trace_sources(candidate: RetrievalCandidate) -> tuple[str, ...]:
-    seen: set[str] = set()
-    values: list[str] = []
-    for raw in candidate.source.split(","):
-        source = raw.strip()
-        if source and source not in seen:
-            seen.add(source)
-            values.append(source)
-    return tuple(values)
-
-
-def _trace_candidate_observations(
-    store: sqlite_store.SQLiteStore,
-    candidates: list[RetrievalCandidate],
-    limit: int,
-) -> tuple[TraceCandidate, ...]:
-    preview = candidates[:limit]
-    chunks = store.chunks_for_ids([item.chunk_id for item in preview])
-    observations: list[TraceCandidate] = []
-    for candidate in preview:
-        chunk = chunks.get(candidate.chunk_id)
-        if chunk is None:
-            continue
-        observations.append(
-            TraceCandidate(
-                rank=len(observations) + 1,
-                chunk_id=candidate.chunk_id,
-                file_path=chunk.file_path.as_posix(),
-                start_line=chunk.start_line,
-                end_line=chunk.end_line,
-                score=float(candidate.score),
-                sources=_trace_sources(candidate),
-                variant_ids=tuple(
-                    match.variant_id
-                    for match in candidate.semantic_matches
-                ),
-            )
-        )
-    return tuple(observations)
-
-
-_TRACE_PUBLIC_SOURCE_FAMILY = {
-    "anchor_expansion": "anchor_expansion",
-    "anchored_relation": "anchor_expansion",
-    "same_file_anchor": "anchor_expansion",
-    "directory_anchor": "anchor_expansion",
-}
-
-
-def _trace_source_counts(
-    candidates: list[RetrievalCandidate],
-    allowed: tuple[str, ...],
-) -> tuple[tuple[str, int], ...]:
-    counts = {key: 0 for key in allowed}
-    for candidate in candidates:
-        for source in _trace_sources(candidate):
-            public_source = _TRACE_PUBLIC_SOURCE_FAMILY.get(source, source)
-            if public_source in counts:
-                counts[public_source] += 1
-    return tuple(counts.items())
-
-
-def _finish_candidate_stage(
-    collector: RetrievalTraceCollector | None,
-    token: StageToken | None,
-    *,
-    store: sqlite_store.SQLiteStore,
-    candidates: list[RetrievalCandidate],
-    source_keys: tuple[str, ...] = (),
-) -> None:
-    if collector is None or token is None:
-        return
-    stopped = collector.stop_stage(token)
-    observations = _trace_candidate_observations(
-        store,
-        candidates,
-        collector.limits.stage_top_k,
-    )
-    collector.finish_stage(
-        stopped,
-        output_count=len(candidates),
-        unique_output_count=len({item.chunk_id for item in candidates}),
-        candidates=observations,
-        source_counts=_trace_source_counts(candidates, source_keys),
-    )
-
-
-def _trace_ranked_observations(
-    ranked: list[core_types._RankedChunk],
-    candidates: dict[str, RetrievalCandidate],
-    limit: int,
-) -> tuple[TraceCandidate, ...]:
-    observations: list[TraceCandidate] = []
-    for rank, item in enumerate(ranked[:limit], start=1):
-        candidate = candidates[item.chunk.chunk_id]
-        observations.append(
-            TraceCandidate(
-                rank=rank,
-                chunk_id=item.chunk.chunk_id,
-                file_path=item.chunk.file_path.as_posix(),
-                start_line=item.chunk.start_line,
-                end_line=item.chunk.end_line,
-                score=float(item.rerank_score),
-                sources=_trace_sources(candidate),
-                variant_ids=tuple(
-                    match.variant_id
-                    for match in candidate.semantic_matches
-                ),
-            )
-        )
-    return tuple(observations)
-
-
-def _trace_expanded_observations(
-    expanded: list[core_types._ExpandedResult],
-    candidates: dict[str, RetrievalCandidate],
-    limit: int,
-) -> tuple[TraceCandidate, ...]:
-    observations: list[TraceCandidate] = []
-    for rank, item in enumerate(expanded[:limit], start=1):
-        source_candidates = [
-            candidates[chunk_id]
-            for chunk_id in item.chunk_ids
-            if chunk_id in candidates
-        ]
-        sources = ordering.ordered_unique_preserving_case(
-            [
-                source
-                for candidate in source_candidates
-                for source in _trace_sources(candidate)
-            ]
-        )
-        variant_ids = ordering.ordered_unique_preserving_case(
-            [
-                match.variant_id
-                for candidate in source_candidates
-                for match in candidate.semantic_matches
-            ]
-        )
-        observations.append(
-            TraceCandidate(
-                rank=rank,
-                chunk_id=item.chunk_ids[0],
-                file_path=item.file_path.as_posix(),
-                start_line=item.start_line,
-                end_line=item.end_line,
-                score=float(item.rerank_score),
-                sources=tuple(sources),
-                variant_ids=tuple(variant_ids),
-            )
-        )
-    return tuple(observations)
-
-
-_TRACE_ADJUSTMENT_SUFFIXES = ("_boost", "_penalty", "_match")
-
-
-def _is_trace_adjustment(name: str) -> bool:
-    return name.endswith(_TRACE_ADJUSTMENT_SUFFIXES)
-
-
-def _trace_adjustments(
-    item: core_types._ExpandedResult,
-    limit: int,
-) -> tuple[tuple[TraceAdjustment, ...], int]:
-    values = [
-        TraceAdjustment(name, float(value))
-        for name, value in item.score_parts.items()
-        if _is_trace_adjustment(name) and float(value) != 0.0
-    ]
-    if item.was_ceiling_clamped:
-        clamp = item.rerank_score - item.pre_ceiling_rerank_score
-        if clamp:
-            values.append(
-                TraceAdjustment("planner_ceiling_clamp", float(clamp))
-            )
-    values.sort(key=lambda adjustment: (-abs(adjustment.value), adjustment.name))
-    return tuple(values[:limit]), max(0, len(values) - limit)
-
-
-def _trace_final_selections(
-    decisions: selection._FinalTraceDecisions,
-    candidates: dict[str, RetrievalCandidate],
-    collector: RetrievalTraceCollector,
-) -> tuple[TraceSelection, ...]:
-    history = collector.rank_history
-    selections: list[TraceSelection] = []
-    for rank, selected in enumerate(decisions.selected, start=1):
-        item = selected.item
-        source_candidates = [
-            candidates[chunk_id]
-            for chunk_id in item.chunk_ids
-            if chunk_id in candidates
-        ]
-        sources = tuple(
-            ordering.ordered_unique_preserving_case(
-                [
-                    source
-                    for candidate in source_candidates
-                    for source in _trace_sources(candidate)
-                ]
-            )
-        )
-        variant_ids = tuple(
-            ordering.ordered_unique_preserving_case(
-                [
-                    match.variant_id
-                    for candidate in source_candidates
-                    for match in candidate.semantic_matches
-                ]
-            )
-        )
-        ranks: list[TraceRank] = []
-        for stage in ("ranking", "cohort_rerank", "context_expansion"):
-            positions = [
-                value
-                for chunk_id in item.chunk_ids
-                for value in history.get(chunk_id, ())
-                if value[0] == stage
-            ]
-            if positions:
-                _, prior_rank, prior_score = min(
-                    positions,
-                    key=lambda value: (value[1], -value[2]),
-                )
-                ranks.append(TraceRank(stage, prior_rank, prior_score))
-        ranks.append(TraceRank("final_selection", rank, item.rerank_score))
-        adjustments, omitted = _trace_adjustments(
-            item,
-            collector.limits.adjustment_top_k,
-        )
-        selections.append(
-            TraceSelection(
-                rank=rank,
-                selection_kind=selected.kind,
-                selection_reason=selected.reason,
-                file_path=item.file_path.as_posix(),
-                start_line=item.start_line,
-                end_line=item.end_line,
-                score=float(item.rerank_score),
-                origin_chunk_ids=tuple(item.chunk_ids),
-                sources=sources,
-                variant_ids=variant_ids,
-                rank_history=tuple(ranks),
-                adjustments=adjustments,
-                adjustment_omitted_count=omitted,
-                reasons=tuple(item.reasons),
-            )
-        )
-    return tuple(selections)
-
-
 def trace_repository(
     repo: Path,
     query: str,
@@ -401,7 +67,7 @@ def trace_repository(
     clock_ns=None,
 ) -> TracedQueryBundle:
     collector_kwargs = {} if clock_ns is None else {"clock_ns": clock_ns}
-    collector = RetrievalTraceCollector(**collector_kwargs)
+    collector = retrieval_trace.RetrievalTraceCollector(**collector_kwargs)
     bundle = query_repository(
         repo,
         query,
@@ -445,7 +111,7 @@ def query_repository(
             query_variants=query_variants,
             variant_retrieval_status=variant_retrieval_status,
         )
-        _finish_trace(
+        tracing.finish_trace(
             trace_collector,
             original_tokens=original_tokens,
             expanded_tokens=tokens,
@@ -457,7 +123,7 @@ def query_repository(
         )
         return bundle
 
-    assert_manifest_compatible(repo, config)
+    manifest.assert_manifest_compatible(repo, config)
 
     store = sqlite_store.SQLiteStore(db_path)
     try:
@@ -472,7 +138,7 @@ def query_repository(
             query_variants=query_variants,
             variant_retrieval_status=variant_retrieval_status,
         )
-        _finish_trace(
+        tracing.finish_trace(
             trace_collector,
             original_tokens=original_tokens,
             expanded_tokens=tokens,
@@ -484,15 +150,17 @@ def query_repository(
         )
         return bundle
 
-    query_stage = _trace_stage_start(
+    query_stage = tracing.start_stage(
         trace_collector,
         "query_understanding",
         input_count=len(original_tokens),
     )
-    query_planner = planner or planner_from_config(config.query_planner)
+    planner_instance = planner or query_planner.planner_from_config(
+        config.query_planner
+    )
     repo_profile = build_repo_profile(store)
-    plan = query_planner.plan(query, repo_profile=repo_profile)
-    query_variants, discarded_variants = build_query_variants(
+    plan = planner_instance.plan(query, repo_profile=repo_profile)
+    query_variants, discarded_variants = query_planner.build_query_variants(
         query,
         plan,
         config.query_planner.max_rewritten_queries,
@@ -504,18 +172,20 @@ def query_repository(
                 [*plan.discarded_hints, *discarded_variants]
             ),
         )
-    tokens = expand_query_plan_tokens(query, plan)
+    tokens = query_planner.expand_query_plan_tokens(query, plan)
     hint_tokens = (
-        planner_hint_tokens(original_tokens, tokens) if plan.status == "ok" else []
+        query_planner.planner_hint_tokens(original_tokens, tokens)
+        if plan.status == "ok"
+        else []
     )
-    if trace_collector is not None and query_stage is not None:
-        stopped = trace_collector.stop_stage(query_stage)
-        trace_collector.finish_stage(
-            stopped,
-            output_count=len(tokens),
-            unique_output_count=len(set(tokens)),
-        )
-    token = _trace_stage_start(
+    stopped = tracing.stop_stage(trace_collector, query_stage)
+    tracing.finish_count_stage(
+        trace_collector,
+        stopped,
+        output_count=len(tokens),
+        unique_output_count=len(set(tokens)),
+    )
+    token = tracing.start_stage(
         trace_collector,
         "semantic_recall",
         input_count=len(query_variants),
@@ -528,15 +198,16 @@ def query_repository(
             deleted_ids,
         )
     )
-    _finish_candidate_stage(
+    stopped = tracing.stop_stage(trace_collector, token)
+    tracing.finish_candidate_stage(
         trace_collector,
-        token,
+        stopped,
         store=store,
         candidates=semantic_candidates,
         source_keys=("semantic", "planner_semantic"),
     )
 
-    token = _trace_stage_start(
+    token = tracing.start_stage(
         trace_collector,
         "lexical_recall",
         input_count=len(original_tokens),
@@ -546,15 +217,16 @@ def query_repository(
         original_tokens,
         config.retrieval.lexical_top_k,
     )
-    _finish_candidate_stage(
+    stopped = tracing.stop_stage(trace_collector, token)
+    tracing.finish_candidate_stage(
         trace_collector,
-        token,
+        stopped,
         store=store,
         candidates=lexical_candidates,
         source_keys=("lexical",),
     )
 
-    token = _trace_stage_start(
+    token = tracing.start_stage(
         trace_collector,
         "path_symbol_recall",
         input_count=len(original_tokens),
@@ -564,16 +236,17 @@ def query_repository(
         original_tokens,
         config.retrieval.lexical_top_k,
     )
-    _finish_candidate_stage(
+    stopped = tracing.stop_stage(trace_collector, token)
+    tracing.finish_candidate_stage(
         trace_collector,
-        token,
+        stopped,
         store=store,
         candidates=path_symbol_candidates,
         source_keys=("path_symbol",),
     )
 
     probes = candidates.direct_text_probes(query, original_tokens)
-    token = _trace_stage_start(
+    token = tracing.start_stage(
         trace_collector,
         "direct_text_recall",
         input_count=len(probes),
@@ -583,9 +256,10 @@ def query_repository(
         probes,
         config,
     )
-    _finish_candidate_stage(
+    stopped = tracing.stop_stage(trace_collector, token)
+    tracing.finish_candidate_stage(
         trace_collector,
-        token,
+        stopped,
         store=store,
         candidates=direct_text_candidates,
         source_keys=("direct_text",),
@@ -598,29 +272,31 @@ def query_repository(
         *direct_text_candidates,
     ]
 
-    token = _trace_stage_start(
+    token = tracing.start_stage(
         trace_collector,
         "signal_recall",
         input_count=len(original_tokens),
     )
     signal_candidates = candidates.signal_candidates(store, original_tokens, config)
-    _finish_candidate_stage(
+    stopped = tracing.stop_stage(trace_collector, token)
+    tracing.finish_candidate_stage(
         trace_collector,
-        token,
+        stopped,
         store=store,
         candidates=signal_candidates,
         source_keys=("signal",),
     )
 
-    token = _trace_stage_start(
+    token = tracing.start_stage(
         trace_collector,
         "planner_hint_recall",
         input_count=len(hint_tokens),
     )
     planner_candidates = candidates.planner_hint_candidates(store, hint_tokens, config)
-    _finish_candidate_stage(
+    stopped = tracing.stop_stage(trace_collector, token)
+    tracing.finish_candidate_stage(
         trace_collector,
-        token,
+        stopped,
         store=store,
         candidates=planner_candidates,
         source_keys=(
@@ -631,20 +307,21 @@ def query_repository(
     )
 
     raw_direct = [*initial_candidates, *signal_candidates, *planner_candidates]
-    token = _trace_stage_start(
+    token = tracing.start_stage(
         trace_collector,
         "direct_merge",
         input_count=len(raw_direct),
     )
     direct_candidates = candidates.merge_candidates(raw_direct)
-    _finish_candidate_stage(
+    stopped = tracing.stop_stage(trace_collector, token)
+    tracing.finish_candidate_stage(
         trace_collector,
-        token,
+        stopped,
         store=store,
         candidates=list(direct_candidates.values()),
     )
 
-    token = _trace_stage_start(
+    token = tracing.start_stage(
         trace_collector,
         "anchor_expansion",
         input_count=len(direct_candidates),
@@ -656,9 +333,10 @@ def query_repository(
         query=query,
         tokens=original_tokens,
     )
-    _finish_candidate_stage(
+    stopped = tracing.stop_stage(trace_collector, token)
+    tracing.finish_candidate_stage(
         trace_collector,
-        token,
+        stopped,
         store=store,
         candidates=anchor_candidates,
         source_keys=("anchor_expansion",),
@@ -670,7 +348,7 @@ def query_repository(
             *anchor_candidates,
         ]
     )
-    token = _trace_stage_start(
+    token = tracing.start_stage(
         trace_collector,
         "relation_expansion",
         input_count=len(relation_seed_candidates),
@@ -680,9 +358,10 @@ def query_repository(
         list(relation_seed_candidates.values()),
         config,
     )
-    _finish_candidate_stage(
+    stopped = tracing.stop_stage(trace_collector, token)
+    tracing.finish_candidate_stage(
         trace_collector,
-        token,
+        stopped,
         store=store,
         candidates=relation_candidates,
         source_keys=("relation",),
@@ -693,15 +372,16 @@ def query_repository(
         *anchor_candidates,
         *relation_candidates,
     ]
-    token = _trace_stage_start(
+    token = tracing.start_stage(
         trace_collector,
         "candidate_merge",
         input_count=len(all_candidates),
     )
     merged_candidates = candidates.merge_candidates(all_candidates)
-    _finish_candidate_stage(
+    stopped = tracing.stop_stage(trace_collector, token)
+    tracing.finish_candidate_stage(
         trace_collector,
-        token,
+        stopped,
         store=store,
         candidates=list(merged_candidates.values()),
     )
@@ -715,7 +395,7 @@ def query_repository(
             query_variants=query_variants,
             variant_retrieval_status=variant_retrieval_status,
         )
-        _finish_trace(
+        tracing.finish_trace(
             trace_collector,
             original_tokens=original_tokens,
             expanded_tokens=tokens,
@@ -727,7 +407,7 @@ def query_repository(
         )
         return bundle
 
-    token = _trace_stage_start(
+    token = tracing.start_stage(
         trace_collector,
         "ranking",
         input_count=len(merged_candidates),
@@ -735,25 +415,15 @@ def query_repository(
     ranked_chunks = ranking.rank_chunks(
         store, merged_candidates, original_tokens, query
     )
-    if trace_collector is not None and token is not None:
-        stopped = trace_collector.stop_stage(token)
-        observations = _trace_ranked_observations(
-            ranked_chunks,
-            merged_candidates,
-            trace_collector.limits.stage_top_k,
-        )
-        trace_collector.finish_stage(
-            stopped,
-            output_count=len(ranked_chunks),
-            unique_output_count=len(ranked_chunks),
-            candidates=observations,
-            rank_positions=(
-                (item.chunk.chunk_id, rank, float(item.rerank_score))
-                for rank, item in enumerate(ranked_chunks, start=1)
-            ),
-        )
+    stopped = tracing.stop_stage(trace_collector, token)
+    tracing.finish_ranked_stage(
+        trace_collector,
+        stopped,
+        ranked=ranked_chunks,
+        candidates=merged_candidates,
+    )
 
-    token = _trace_stage_start(
+    token = tracing.start_stage(
         trace_collector,
         "cohort_rerank",
         input_count=len(ranked_chunks),
@@ -761,25 +431,15 @@ def query_repository(
     ranked_chunks = ranking.apply_frontend_import_cohort_rerank(
         repo, ranked_chunks, query
     )
-    if trace_collector is not None and token is not None:
-        stopped = trace_collector.stop_stage(token)
-        observations = _trace_ranked_observations(
-            ranked_chunks,
-            merged_candidates,
-            trace_collector.limits.stage_top_k,
-        )
-        trace_collector.finish_stage(
-            stopped,
-            output_count=len(ranked_chunks),
-            unique_output_count=len(ranked_chunks),
-            candidates=observations,
-            rank_positions=(
-                (item.chunk.chunk_id, rank, float(item.rerank_score))
-                for rank, item in enumerate(ranked_chunks, start=1)
-            ),
-        )
+    stopped = tracing.stop_stage(trace_collector, token)
+    tracing.finish_ranked_stage(
+        trace_collector,
+        stopped,
+        ranked=ranked_chunks,
+        candidates=merged_candidates,
+    )
 
-    token = _trace_stage_start(
+    token = tracing.start_stage(
         trace_collector,
         "context_expansion",
         input_count=len(ranked_chunks),
@@ -791,26 +451,15 @@ def query_repository(
         context_lines,
         full_file,
     )
-    if trace_collector is not None and token is not None:
-        stopped = trace_collector.stop_stage(token)
-        observations = _trace_expanded_observations(
-            expanded,
-            merged_candidates,
-            trace_collector.limits.stage_top_k,
-        )
-        trace_collector.finish_stage(
-            stopped,
-            output_count=sum(len(item.chunk_ids) for item in expanded),
-            unique_output_count=len(expanded),
-            candidates=observations,
-            rank_positions=(
-                (chunk_id, rank, float(item.rerank_score))
-                for rank, item in enumerate(expanded, start=1)
-                for chunk_id in item.chunk_ids
-            ),
-        )
+    stopped = tracing.stop_stage(trace_collector, token)
+    tracing.finish_expanded_stage(
+        trace_collector,
+        stopped,
+        expanded=expanded,
+        candidates=merged_candidates,
+    )
 
-    token = _trace_stage_start(
+    token = tracing.start_stage(
         trace_collector,
         "final_selection",
         input_count=len(expanded),
@@ -833,22 +482,13 @@ def query_repository(
                 collect_trace=True,
             )
         )
-    final_selections: tuple[TraceSelection, ...] = ()
-    if trace_collector is not None and token is not None:
-        stopped = trace_collector.stop_stage(token)
-        assert trace_decisions is not None
-        final_selections = _trace_final_selections(
-            trace_decisions,
-            merged_candidates,
-            trace_collector,
-        )
-        trace_collector.finish_stage(
-            stopped,
-            output_count=len(trace_decisions.selected),
-            unique_output_count=len(trace_decisions.selected),
-            candidates=(),
-            decision_counts=trace_decisions.counts,
-        )
+    stopped = tracing.stop_stage(trace_collector, token)
+    final_selections = tracing.finish_selection_stage(
+        trace_collector,
+        stopped,
+        decisions=trace_decisions,
+        candidates=merged_candidates,
+    )
 
     summary, results, followup_keywords = selection.assemble_query_output(
         store,
@@ -865,7 +505,7 @@ def query_repository(
         query_variants=query_variants,
         variant_retrieval_status=variant_retrieval_status,
     )
-    _finish_trace(
+    tracing.finish_trace(
         trace_collector,
         original_tokens=original_tokens,
         expanded_tokens=tokens,
@@ -874,7 +514,7 @@ def query_repository(
         plan=plan,
         outcome="complete",
         termination_reason="completed",
-        final_selections=final_selections,
+        selections=final_selections,
     )
     return bundle
 

@@ -9,7 +9,13 @@ import numpy as np
 import pytest
 
 import context_search_tool.mcp_tools as mcp_tools
-from context_search_tool import retrieval, sqlite_store
+from context_search_tool import (
+    manifest,
+    query_planner,
+    retrieval,
+    retrieval_trace,
+    sqlite_store,
+)
 from context_search_tool.config import RetrievalConfig, ToolConfig
 from context_search_tool.context_pack import (
     build_context_pack,
@@ -29,7 +35,6 @@ from context_search_tool.models import (
 )
 from context_search_tool.retrieval_trace import (
     CANONICAL_TRACE_STAGES,
-    RetrievalTraceCollector,
     TraceLimits,
 )
 from context_search_tool.retrieval_core import (
@@ -38,6 +43,7 @@ from context_search_tool.retrieval_core import (
     expansion,
     ranking,
     selection,
+    tracing,
     types as core_types,
 )
 from context_search_tool.sqlite_store import SQLiteStore
@@ -96,6 +102,28 @@ def test_trace_repository_runs_query_once_and_preserves_raw_and_pack_payloads(
     )
 
 
+def test_trace_repository_constructs_collector_through_canonical_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, config = _indexed_repo(tmp_path)
+    original = retrieval_trace.RetrievalTraceCollector
+    constructions = 0
+
+    def construct(**kwargs):
+        nonlocal constructions
+        constructions += 1
+        return original(**kwargs)
+
+    monkeypatch.setattr(retrieval_trace, "RetrievalTraceCollector", construct)
+
+    traced = retrieval.trace_repository(repo, "audit", config)
+
+    assert traced.trace.outcome == "complete"
+    assert constructions == 1
+    assert "RetrievalTraceCollector" not in vars(retrieval)
+
+
 def test_plain_query_does_not_construct_or_touch_trace_observations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -105,16 +133,21 @@ def test_plain_query_does_not_construct_or_touch_trace_observations(
     def forbidden(*args, **kwargs):
         raise AssertionError("ordinary query touched trace code")
 
+    monkeypatch.setattr(retrieval_trace, "RetrievalTraceCollector", forbidden)
     for name in (
-        "RetrievalTraceCollector",
-        "_trace_candidate_observations",
-        "_trace_ranked_observations",
-        "_trace_expanded_observations",
-        "_trace_adjustments",
-        "_trace_final_selections",
+        "_sources",
+        "_candidate_observations",
+        "_source_counts",
+        "_ranked_observations",
+        "_expanded_observations",
+        "_ranked_positions",
+        "_expanded_positions",
+        "_is_adjustment",
+        "_adjustments",
+        "_final_selections",
         "_trace_query",
     ):
-        monkeypatch.setattr(retrieval, name, forbidden)
+        monkeypatch.setattr(tracing, name, forbidden)
     for name in ("_FinalTraceInput", "_FinalTraceDecisions"):
         monkeypatch.setattr(selection, name, forbidden)
 
@@ -132,7 +165,7 @@ def test_trace_repository_reports_missing_index_without_changing_bundle(
     def forbidden(*args, **kwargs):
         raise AssertionError("missing-index retrieval crossed the preflight boundary")
 
-    monkeypatch.setattr(retrieval, "planner_from_config", forbidden)
+    monkeypatch.setattr(query_planner, "planner_from_config", forbidden)
     monkeypatch.setattr(sqlite_store, "SQLiteStore", forbidden)
     monkeypatch.setattr(candidates, "NumpyVectorStore", forbidden)
     monkeypatch.setattr(Path, "read_text", forbidden)
@@ -182,7 +215,7 @@ def test_trace_repository_reports_store_read_error_before_stages(
         raise AssertionError("store-read early return crossed into planning")
 
     monkeypatch.setattr(sqlite_store.SQLiteStore, "deleted_chunk_ids", fail_store_read)
-    monkeypatch.setattr(retrieval, "planner_from_config", forbidden)
+    monkeypatch.setattr(query_planner, "planner_from_config", forbidden)
     plain = retrieval.query_repository(repo, "audit", config)
     traced = retrieval.trace_repository(repo, "audit", config)
 
@@ -479,7 +512,7 @@ def test_merged_final_selection_keeps_origins_best_ranks_and_clamp() -> None:
         ),
     }
 
-    trace_selection = retrieval._trace_final_selections(
+    trace_selection = tracing._final_selections(
         decisions,
         candidates,
         FinalSelectionCollector(),  # type: ignore[arg-type]
@@ -543,7 +576,7 @@ def test_manifest_planner_and_provider_failures_propagate_without_partial_trace(
 
     if failure == "manifest":
         monkeypatch.setattr(
-            retrieval,
+            manifest,
             "assert_manifest_compatible",
             lambda *args, **kwargs: (_ for _ in ()).throw(
                 ValueError("MANIFEST_FAILURE_SENTINEL")
@@ -605,7 +638,7 @@ def test_direct_text_probes_are_computed_once_before_stage_timer(
     repo, config = _indexed_repo(tmp_path)
     events: list[str] = []
     original_probes = candidates.direct_text_probes
-    original_start = retrieval._trace_stage_start
+    original_start = tracing.start_stage
 
     def probes(*args, **kwargs):
         events.append("probes")
@@ -616,7 +649,7 @@ def test_direct_text_probes_are_computed_once_before_stage_timer(
         return original_start(collector, name, **kwargs)
 
     monkeypatch.setattr(candidates, "direct_text_probes", probes)
-    monkeypatch.setattr(retrieval, "_trace_stage_start", start)
+    monkeypatch.setattr(tracing, "start_stage", start)
 
     retrieval.trace_repository(repo, "INVOLVED_BY_ME", config)
 
@@ -641,10 +674,10 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
         events.append(f"clock:{active['stage'] or 'total'}")
         return ticks
 
-    original_start = RetrievalTraceCollector.start_stage
-    original_stop = RetrievalTraceCollector.stop_stage
-    original_finish_stage = RetrievalTraceCollector.finish_stage
-    original_finish = RetrievalTraceCollector.finish
+    original_start = retrieval_trace.RetrievalTraceCollector.start_stage
+    original_stop = retrieval_trace.RetrievalTraceCollector.stop_stage
+    original_finish_stage = retrieval_trace.RetrievalTraceCollector.finish_stage
+    original_finish = retrieval_trace.RetrievalTraceCollector.finish
 
     def start(collector, name, **kwargs):
         token = original_start(collector, name, **kwargs)
@@ -672,10 +705,14 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
         events.append("total_finish")
         return original_finish(collector, **kwargs)
 
-    monkeypatch.setattr(RetrievalTraceCollector, "start_stage", start)
-    monkeypatch.setattr(RetrievalTraceCollector, "stop_stage", stop)
-    monkeypatch.setattr(RetrievalTraceCollector, "finish_stage", finish_stage)
-    monkeypatch.setattr(RetrievalTraceCollector, "finish", finish)
+    monkeypatch.setattr(retrieval_trace.RetrievalTraceCollector, "start_stage", start)
+    monkeypatch.setattr(retrieval_trace.RetrievalTraceCollector, "stop_stage", stop)
+    monkeypatch.setattr(
+        retrieval_trace.RetrievalTraceCollector,
+        "finish_stage",
+        finish_stage,
+    )
+    monkeypatch.setattr(retrieval_trace.RetrievalTraceCollector, "finish", finish)
 
     for method_name in (
         "chunk_for_id",
@@ -700,12 +737,12 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
         )
 
     for adapter_name in (
-        "_trace_candidate_observations",
-        "_trace_ranked_observations",
-        "_trace_expanded_observations",
-        "_trace_final_selections",
+        "_candidate_observations",
+        "_ranked_observations",
+        "_expanded_observations",
+        "_final_selections",
     ):
-        original_adapter = getattr(retrieval, adapter_name)
+        original_adapter = getattr(tracing, adapter_name)
 
         def make_adapter(name, adapter):
             def wrapped(*args, **kwargs):
@@ -717,7 +754,7 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
             return wrapped
 
         monkeypatch.setattr(
-            retrieval,
+            tracing,
             adapter_name,
             make_adapter(adapter_name, original_adapter),
         )
@@ -733,7 +770,7 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
 
         monkeypatch.setattr(target, name, wrapped)
 
-    mark_operation(retrieval, "build_query_variants")
+    mark_operation(query_planner, "build_query_variants")
     mark_operation(context_expansion, "expand_ranked_chunks")
     mark_operation(selection, "split_results_and_anchors")
     for name in (
@@ -883,10 +920,10 @@ def test_trace_adapters_never_read_content_or_private_context_content() -> None:
         ),
     )
 
-    assert retrieval._trace_candidate_observations(Store(), [candidate], 5)
-    assert retrieval._trace_ranked_observations([ranked], candidates, 5)
-    assert retrieval._trace_expanded_observations([expanded], candidates, 5)
-    assert retrieval._trace_final_selections(
+    assert tracing._candidate_observations(Store(), [candidate], 5)
+    assert tracing._ranked_observations([ranked], candidates, 5)
+    assert tracing._expanded_observations([expanded], candidates, 5)
+    assert tracing._final_selections(
         decisions,
         candidates,
         FinalSelectionCollector(),  # type: ignore[arg-type]
@@ -932,6 +969,20 @@ def test_mcp_trace_success_early_return_and_error_never_write_feedback(
 
     success = mcp_tools.context_search_trace_tool(str(repo), "audit")
     assert success["ok"] is True
+
+    with monkeypatch.context() as store_error_patch:
+        store_error_patch.setattr(
+            sqlite_store.SQLiteStore,
+            "deleted_chunk_ids",
+            lambda self: (_ for _ in ()).throw(sqlite3.Error("STORE_ERROR")),
+        )
+        store_error = mcp_tools.context_search_trace_tool(str(repo), "audit")
+    assert store_error["trace"]["termination_reason"] == "store_read_error"
+
+    with monkeypatch.context() as no_candidate_patch:
+        no_candidate_patch.setattr(candidates, "merge_candidates", lambda values: {})
+        no_candidates = mcp_tools.context_search_trace_tool(str(repo), "audit")
+    assert no_candidates["trace"]["termination_reason"] == "no_candidates"
 
     missing = tmp_path / "missing-index"
     missing.mkdir()

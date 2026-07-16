@@ -10,7 +10,10 @@ from pathlib import Path
 import pytest
 
 from context_search_tool import retrieval
-from generate_retrieval_core_baseline import build_migration_ledger
+from generate_retrieval_core_baseline import (
+    _runtime_name_load_lines,
+    build_migration_ledger,
+)
 from retrieval_core_characterization import (
     IMPLEMENTATION_COMMIT,
     MIGRATION_LEDGER_PATH,
@@ -80,8 +83,6 @@ FINAL_ALLOWED_EDGES = {
 
 TRANSITIONAL_ALLOWED_EDGES = {
     **FINAL_ALLOWED_EDGES,
-    "retrieval": FINAL_ALLOWED_EDGES["retrieval"]
-    | {"types"},
 }
 
 
@@ -210,14 +211,7 @@ def test_retrieval_boundary_rejects_aliased_private_core_reexport(
 
 
 def test_retrieval_core_import_adjacency_is_a_transitional_subset() -> None:
-    assert TRANSITIONAL_ALLOWED_EDGES["retrieval"] - FINAL_ALLOWED_EDGES[
-        "retrieval"
-    ] == {"types"}
-    assert all(
-        TRANSITIONAL_ALLOWED_EDGES[owner] == dependencies
-        for owner, dependencies in FINAL_ALLOWED_EDGES.items()
-        if owner != "retrieval"
-    )
+    assert TRANSITIONAL_ALLOWED_EDGES == FINAL_ALLOWED_EDGES
 
     paths = {"retrieval": ROOT / "src" / "context_search_tool" / "retrieval.py"}
     core = ROOT / "src" / "context_search_tool" / "retrieval_core"
@@ -282,6 +276,16 @@ def test_migration_ledger_matches_complete_ast_and_dynamic_inventory() -> None:
         else:
             assert row["remaining"] == 0
             assert row["resolved_task"] == row["design_task"]
+
+
+def test_runtime_inventory_excludes_annotations_but_keeps_live_loads() -> None:
+    tree = ast.parse(
+        "def build(value: Owner) -> Owner:\n"
+        "    local: Owner = Owner()\n"
+        "    return Owner.factory(local)\n"
+    )
+
+    assert _runtime_name_load_lines(tree, "Owner") == [2, 3]
 
 
 def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:

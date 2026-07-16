@@ -429,16 +429,39 @@ def _profile_targets(
     return references
 
 
-def _production_call_sites(symbol: str) -> list[int]:
-    source = ROOT / "src" / "context_search_tool" / "retrieval.py"
-    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+def _runtime_name_load_lines(tree: ast.Module, symbol: str) -> list[int]:
+    annotation_nodes: set[ast.AST] = set()
+    type_alias = getattr(ast, "TypeAlias", ())
+    for node in ast.walk(tree):
+        annotations: list[ast.AST] = []
+        if isinstance(node, ast.arg) and node.annotation is not None:
+            annotations.append(node.annotation)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.returns is not None:
+                annotations.append(node.returns)
+            annotations.extend(getattr(node, "type_params", ()))
+        elif isinstance(node, ast.AnnAssign):
+            annotations.append(node.annotation)
+        elif type_alias and isinstance(node, type_alias):
+            annotations.append(node.value)
+            annotations.extend(getattr(node, "type_params", ()))
+        for annotation in annotations:
+            annotation_nodes.update(ast.walk(annotation))
+
     return sorted(
         node.lineno
         for node in ast.walk(tree)
         if isinstance(node, ast.Name)
         and isinstance(node.ctx, ast.Load)
         and node.id == symbol
+        and node not in annotation_nodes
     )
+
+
+def _production_call_sites(symbol: str) -> list[int]:
+    source = ROOT / "src" / "context_search_tool" / "retrieval.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    return _runtime_name_load_lines(tree, symbol)
 
 
 def _group_references(references: list[Reference]) -> list[dict[str, object]]:
