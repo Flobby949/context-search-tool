@@ -21,6 +21,7 @@ from context_search_tool.context_pack import (
 )
 from context_search_tool.models import RetrievalResult
 from context_search_tool.retrieval import QueryBundle
+from context_search_tool.retrieval_trace import RetrievalTraceError
 from context_search_tool.sqlite_store import SQLiteStore
 
 
@@ -84,6 +85,16 @@ class ApplyAuditController {
     parsed = json.loads(query_result.output)
     assert parsed["results"]
 
+    trace_result = runner.invoke(
+        app,
+        ["trace", str(repo), "/apply/audit/pageEs", "--json"],
+    )
+    assert trace_result.exit_code == 0
+    trace_data = json.loads(trace_result.output)
+    assert tuple(trace_data) == ("ok", "repo", "query", "trace")
+    assert trace_data["trace"]["schema_version"] == 1
+    assert "results" not in trace_data
+
     context_result = runner.invoke(
         app,
         ["context", str(repo), "/apply/audit/pageEs", "--json"],
@@ -124,6 +135,78 @@ class ApplyAuditController {
     clean_result = runner.invoke(app, ["clean", str(repo)])
     assert clean_result.exit_code == 0
     assert not (repo / ".context-search").exists()
+
+
+def test_cli_trace_returns_schema_v1_without_changing_query_output(
+    tmp_path: Path,
+) -> None:
+    repo, runner = _indexed_repo(tmp_path)
+    raw_before = runner.invoke(
+        app,
+        ["query", str(repo), "AppController", "--json"],
+    )
+    traced = runner.invoke(
+        app,
+        ["trace", str(repo), "AppController", "--json"],
+    )
+    raw_after = runner.invoke(
+        app,
+        ["query", str(repo), "AppController", "--json"],
+    )
+
+    assert traced.exit_code == 0
+    payload = json.loads(traced.output)
+    assert tuple(payload) == ("ok", "repo", "query", "trace")
+    assert payload["trace"]["schema_version"] == 1
+    assert "content" not in json.dumps(payload["trace"])
+    assert json.loads(raw_after.output) == json.loads(raw_before.output)
+
+
+def test_cli_trace_markdown_and_planner_flags_match_query(
+    tmp_path: Path,
+) -> None:
+    repo, runner = _indexed_repo(tmp_path)
+    result = runner.invoke(app, ["trace", str(repo), "AppController"])
+    assert result.exit_code == 0
+    assert "# Retrieval Trace" in result.output
+
+    invalid = runner.invoke(
+        app,
+        [
+            "trace",
+            str(repo),
+            "AppController",
+            "--planner",
+            "--no-planner",
+        ],
+    )
+    assert invalid.exit_code != 0
+    assert "cannot be used together" in invalid.output
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RetrievalTraceError("PRIVATE_TRACE_CONTRACT"),
+        RuntimeError("PRIVATE_TRACE_INTERNAL"),
+    ],
+)
+def test_cli_trace_hides_trace_and_unexpected_internal_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+) -> None:
+    repo, runner = _indexed_repo(tmp_path)
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(cli, "trace_repository", fail)
+    result = runner.invoke(app, ["trace", str(repo), "AppController"])
+
+    assert result.exit_code != 0
+    assert "Retrieval trace failed" in result.output
+    assert "PRIVATE_TRACE" not in result.output
 
 
 def test_query_json_preserves_complete_pre_refactor_payload(
@@ -194,8 +277,8 @@ def test_query_json_preserves_complete_pre_refactor_payload(
     }
 
 
-@pytest.mark.parametrize("command", ["query", "context"])
-def test_query_and_context_missing_index_do_not_create_artifacts(
+@pytest.mark.parametrize("command", ["query", "trace", "context"])
+def test_retrieval_commands_missing_index_do_not_create_artifacts(
     tmp_path: Path,
     command: str,
 ) -> None:
@@ -224,8 +307,8 @@ def test_query_warns_when_signal_schema_is_stale(tmp_path: Path) -> None:
     assert "Warning: index signal schema is older than this version" in result.output
 
 
-@pytest.mark.parametrize("command", ["query", "context"])
-def test_query_and_context_reject_conflicting_planner_flags(
+@pytest.mark.parametrize("command", ["query", "trace", "context"])
+def test_retrieval_commands_reject_conflicting_planner_flags(
     tmp_path: Path,
     command: str,
 ) -> None:

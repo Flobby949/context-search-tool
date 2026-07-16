@@ -17,7 +17,7 @@ from context_search_tool.context_pack import (
     canonical_context_pack_bytes,
     resolve_context_pack_options,
 )
-from context_search_tool.formatters import context_payload
+from context_search_tool.formatters import context_payload, trace_payload
 from context_search_tool.indexer import (
     IncompatibleIndexError,
     index_repository,
@@ -41,7 +41,9 @@ from context_search_tool.retrieval import (
     QueryBundle,
     evidence_anchor_top_k,
     query_repository,
+    trace_repository,
 )
+from context_search_tool.retrieval_trace import RetrievalTraceError
 from context_search_tool.sqlite_store import SQLiteStore
 
 _FEEDBACK_LOG_MAX_BYTES = 10 * 1024 * 1024
@@ -126,6 +128,43 @@ def context_search_query_tool(
             final_top_k=final_top_k,
         )
         return error_payload
+
+
+def context_search_trace_tool(
+    repo: str,
+    query: str,
+    context_lines: int | None = None,
+    full_file: bool = False,
+    final_top_k: int | None = None,
+) -> dict[str, Any]:
+    try:
+        resolved_repo = find_repo_root(Path(repo))
+    except RepositoryNotFoundError as exc:
+        return _error("repo_not_found", str(exc))
+
+    index_dir = index_dir_for(resolved_repo)
+    if not (index_dir / "index.sqlite").exists():
+        return _error(
+            "missing_index",
+            f"Missing index for {resolved_repo}. Run context_search_index first.",
+        )
+
+    try:
+        config = _load_query_config(resolved_repo, final_top_k)
+        traced = trace_repository(
+            resolved_repo,
+            query,
+            config,
+            context_lines=context_lines,
+            full_file=full_file,
+        )
+        return trace_payload(resolved_repo, query, traced.trace)
+    except RetrievalTraceError:
+        return _error("trace_failed", "Retrieval trace failed")
+    except (ValueError, requests.HTTPError) as exc:
+        return _error("query_failed", str(exc))
+    except Exception:
+        return _error("trace_failed", "Retrieval trace failed")
 
 
 def context_search_context_tool(

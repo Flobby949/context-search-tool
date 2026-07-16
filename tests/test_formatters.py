@@ -17,7 +17,156 @@ from context_search_tool.models import (
     SemanticMatch,
 )
 from context_search_tool.retrieval import QueryBundle
-from context_search_tool.formatters import format_json, format_markdown
+from context_search_tool.formatters import (
+    TraceFormatError,
+    format_json,
+    format_markdown,
+    format_trace_json,
+    format_trace_markdown,
+    trace_payload,
+)
+from context_search_tool.retrieval_trace import (
+    RetrievalTrace,
+    TraceAdjustment,
+    TraceCandidate,
+    TraceLimits,
+    TraceQuery,
+    TraceQueryVariant,
+    TraceRank,
+    TraceSelection,
+    TraceStage,
+)
+
+
+def _trace() -> RetrievalTrace:
+    candidate = TraceCandidate(
+        rank=1,
+        chunk_id="chunk-audit",
+        file_path="src/AuditStatus.java",
+        start_line=1,
+        end_line=20,
+        score=1.1,
+        sources=("semantic",),
+        variant_ids=("original",),
+    )
+    selection = TraceSelection(
+        rank=1,
+        selection_kind="result",
+        selection_reason="selected_within_result_limit",
+        file_path="src/AuditStatus.java",
+        start_line=1,
+        end_line=20,
+        score=1.1,
+        origin_chunk_ids=("chunk-audit",),
+        sources=("semantic",),
+        variant_ids=("original",),
+        rank_history=(
+            TraceRank("ranking", 1, 1.0),
+            TraceRank("cohort_rerank", 1, 1.1),
+            TraceRank("context_expansion", 1, 1.1),
+            TraceRank("final_selection", 1, 1.1),
+        ),
+        adjustments=(TraceAdjustment("role_boost", 0.2),),
+        adjustment_omitted_count=0,
+        reasons=("semantic match",),
+    )
+    return RetrievalTrace(
+        schema_version=1,
+        outcome="complete",
+        termination_reason="completed",
+        duration_ms=8,
+        limits=TraceLimits(),
+        query=TraceQuery(
+            original_token_count=2,
+            expanded_token_count=2,
+            variant_retrieval_status="original_only",
+            variants=(
+                TraceQueryVariant(
+                    "original",
+                    "audit status",
+                    "original",
+                ),
+            ),
+        ),
+        source_counts=(
+            ("semantic", 1),
+            ("planner_semantic", 0),
+            ("lexical", 0),
+            ("path_symbol", 0),
+            ("direct_text", 0),
+            ("signal", 0),
+            ("planner_lexical", 0),
+            ("planner_path_symbol", 0),
+            ("planner_signal", 0),
+            ("anchor_expansion", 0),
+            ("relation", 0),
+        ),
+        stages=(
+            TraceStage(
+                name="semantic_recall",
+                input_count=1,
+                output_count=1,
+                unique_output_count=1,
+                duration_ms=2,
+                source_counts=(
+                    ("semantic", 1),
+                    ("planner_semantic", 0),
+                ),
+                top_candidates=(candidate,),
+            ),
+            TraceStage(
+                name="final_selection",
+                input_count=1,
+                output_count=1,
+                unique_output_count=1,
+                duration_ms=1,
+                decision_counts=(
+                    ("selected_result", 1),
+                    ("selected_anchor", 0),
+                    ("duplicate_anchor", 0),
+                    ("result_limit", 0),
+                    ("anchor_limit", 0),
+                ),
+            ),
+        ),
+        final_selection_count=1,
+        final_selection_omitted_count=0,
+        final_selections=(selection,),
+    )
+
+
+def test_trace_formatters_share_exact_envelope_and_omit_source_content() -> None:
+    envelope = trace_payload(Path("/repo"), "audit status", _trace())
+    encoded = format_trace_json(envelope)
+    parsed = json.loads(encoded)
+
+    assert tuple(parsed) == ("ok", "repo", "query", "trace")
+    assert parsed["trace"]["schema_version"] == 1
+    assert "content" not in encoded
+
+    markdown = format_trace_markdown(envelope)
+    assert "# Retrieval Trace" in markdown
+    assert "## Query Understanding" in markdown
+    assert "## Source Counts" in markdown
+    assert "## Stages" in markdown
+    assert "## Final Selections" in markdown
+    assert "semantic_recall" in markdown
+    assert "src/AuditStatus.java" in markdown
+    assert "Origin chunks: chunk-audit" in markdown
+    assert "SOURCE_CONTENT_SENTINEL" not in markdown
+
+
+def test_trace_markdown_rejects_malformed_envelope_without_leaking_details() -> None:
+    malformed = trace_payload(Path("/repo"), "audit", _trace())
+    malformed["trace"]["source_counts"]["content"] = (
+        "SOURCE_CONTENT_SENTINEL"
+    )
+    with pytest.raises(
+        TraceFormatError,
+        match="Retrieval trace formatting failed",
+    ) as raised:
+        format_trace_markdown(malformed)
+    assert "SOURCE_CONTENT_SENTINEL" not in str(raised.value)
 
 
 def sample_bundle() -> QueryBundle:

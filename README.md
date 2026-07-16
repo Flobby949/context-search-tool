@@ -132,6 +132,21 @@ JSON 输出会包含同样的信息，字段包括 `results`、`score_parts`、`
 follow-up keywords，适合需要自行处理原始召回的调用方。ContextPack v2
 不会改变这个 CLI/MCP 请求、响应或错误合约。
 
+### `trace`
+
+`trace` 是显式请求的检索诊断入口。它只运行一次现有检索流水线，默认输出
+Markdown，也可以输出 RetrievalTrace schema version 1 JSON；响应不包含源代码
+内容：
+
+```bash
+cst trace /path/to/repo "owner registration validation"
+cst trace /path/to/repo "数据看板统计图表功能" --planner --json
+```
+
+每个阶段最多预览 5 个候选，最终选择最多预览 20 项，同时保留未截断的计数。
+trace 只存在于当前请求中，不会持久化或写入 MCP feedback；现有 `query` 和
+ContextPack 的请求、响应及错误合约保持不变。
+
 ### `context`
 
 `context` 只执行一次原始检索，再将同一批返回证据确定性地打包为面向
@@ -229,6 +244,7 @@ Available tools:
 
 - `context_search_index(repo)` creates or updates `.context-search/`.
 - `context_search_query(repo, query, context_lines, full_file, final_top_k)` returns summary, ranked results, score parts, reasons, and follow-up keywords.
+- `context_search_trace(repo, query, context_lines, full_file, final_top_k)` returns bounded RetrievalTrace schema version 1 diagnostics without source content.
 - `context_search_context(repo, query, context_lines, full_file, final_top_k, max_items, max_context_bytes)` returns a self-contained ContextPack schema version 2 from one raw retrieval pass while preserving the raw query string and bounded retrieval counts.
 - `context_search_stats(repo)` returns index counts and embedding configuration.
 - `context_search_explain(repo, location)` explains the chunk covering a `file:line` location.
@@ -283,6 +299,8 @@ The log records query text, result count, top score, score parts, summary counts
 这部分不会增加源文件路径、excerpt 内容、need subject 或组合出的下一步
 查询文本。基础反馈事件仍按上文记录调用的原始 query，因此反馈文件应继续
 按包含查询文本的本地日志管理。
+
+`context_search_trace` 不会创建或修改反馈日志；trace 数据始终是请求本地数据。
 
 Use this log to decide embedding work:
 
@@ -614,6 +632,7 @@ src/context_search_tool/
   vector_store.py   NumPy 向量持久化和搜索
   manifest.py       索引兼容性 manifest
   retrieval.py      混合召回和 rerank
+  retrieval_trace/  RetrievalTrace 契约、采集和序列化
   formatters.py     Markdown/JSON 输出
 ```
 

@@ -17,6 +17,12 @@ from context_search_tool.models import (
     SemanticMatch,
 )
 from context_search_tool.retrieval import QueryBundle
+from context_search_tool.retrieval_trace import (
+    SOURCE_COUNT_KEYS,
+    RetrievalTrace,
+    RetrievalTraceError,
+    retrieval_trace_payload,
+)
 
 
 def format_markdown(bundle: QueryBundle) -> str:
@@ -152,6 +158,329 @@ def query_payload(bundle: QueryBundle) -> dict[str, Any]:
 
 def format_json(bundle: QueryBundle) -> str:
     return json.dumps(query_payload(bundle), ensure_ascii=True, indent=2, sort_keys=True)
+
+
+class TraceFormatError(RetrievalTraceError):
+    pass
+
+
+def trace_payload(
+    repo: Path,
+    query: str,
+    trace: RetrievalTrace,
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "repo": str(repo.resolve()),
+        "query": query,
+        "trace": retrieval_trace_payload(trace),
+    }
+
+
+def format_trace_json(envelope: dict[str, Any]) -> str:
+    try:
+        return json.dumps(
+            envelope,
+            ensure_ascii=True,
+            indent=2,
+            sort_keys=False,
+            allow_nan=False,
+        )
+    except Exception as exc:
+        raise TraceFormatError("Retrieval trace formatting failed") from exc
+
+
+_TRACE_KEYS = {
+    "schema_version",
+    "outcome",
+    "termination_reason",
+    "duration_ms",
+    "limits",
+    "query",
+    "source_counts",
+    "stages",
+    "final_selection_count",
+    "final_selection_omitted_count",
+    "final_selections",
+}
+_TRACE_LIMIT_KEYS = {
+    "max_stages",
+    "stage_top_k",
+    "final_selection_top_k",
+    "adjustment_top_k",
+}
+_TRACE_QUERY_KEYS = {
+    "original_token_count",
+    "expanded_token_count",
+    "variant_retrieval_status",
+    "variants",
+    "planner",
+}
+_TRACE_VARIANT_KEYS = {"variant_id", "text", "source"}
+_TRACE_PLANNER_KEYS = {
+    "status",
+    "provider",
+    "model",
+    "intent",
+    "latency_ms",
+    "discarded_hint_count",
+}
+_TRACE_DECISION_KEYS = (
+    "selected_result",
+    "selected_anchor",
+    "duplicate_anchor",
+    "result_limit",
+    "anchor_limit",
+)
+_TRACE_STAGE_KEYS = {
+    "name",
+    "input_count",
+    "output_count",
+    "unique_output_count",
+    "duration_ms",
+    "source_counts",
+    "decision_counts",
+    "top_candidates",
+}
+_TRACE_CANDIDATE_KEYS = {
+    "rank",
+    "chunk_id",
+    "file_path",
+    "start_line",
+    "end_line",
+    "score",
+    "sources",
+    "variant_ids",
+}
+_TRACE_SELECTION_KEYS = {
+    "rank",
+    "selection_kind",
+    "selection_reason",
+    "file_path",
+    "start_line",
+    "end_line",
+    "score",
+    "origin_chunk_ids",
+    "sources",
+    "variant_ids",
+    "rank_history",
+    "adjustments",
+    "adjustment_omitted_count",
+    "reasons",
+}
+
+
+def _validated_trace(envelope: dict[str, Any]) -> dict[str, Any]:
+    if type(envelope) is not dict or set(envelope) != {
+        "ok",
+        "repo",
+        "query",
+        "trace",
+    }:
+        raise ValueError("invalid trace envelope")
+    trace = envelope["trace"]
+    if type(trace) is not dict or set(trace) != _TRACE_KEYS:
+        raise ValueError("invalid trace payload")
+    if trace["schema_version"] != 1:
+        raise ValueError("invalid trace schema")
+    if (
+        type(trace["limits"]) is not dict
+        or set(trace["limits"]) != _TRACE_LIMIT_KEYS
+    ):
+        raise ValueError("invalid trace limits")
+    query = trace["query"]
+    if type(query) is not dict or set(query) != _TRACE_QUERY_KEYS:
+        raise ValueError("invalid trace query")
+    if type(query["variants"]) is not list or any(
+        type(item) is not dict or set(item) != _TRACE_VARIANT_KEYS
+        for item in query["variants"]
+    ):
+        raise ValueError("invalid trace variants")
+    if (
+        type(query["planner"]) is not dict
+        or set(query["planner"]) != _TRACE_PLANNER_KEYS
+    ):
+        raise ValueError("invalid trace planner")
+    if (
+        type(trace["source_counts"]) is not dict
+        or tuple(trace["source_counts"]) != SOURCE_COUNT_KEYS
+    ):
+        raise ValueError("invalid trace source counts")
+    if type(trace["stages"]) is not list:
+        raise ValueError("invalid trace stages")
+    for stage in trace["stages"]:
+        if type(stage) is not dict or set(stage) != _TRACE_STAGE_KEYS:
+            raise ValueError("invalid trace stage")
+        if (
+            type(stage["source_counts"]) is not dict
+            or type(stage["decision_counts"]) is not dict
+            or type(stage["top_candidates"]) is not list
+        ):
+            raise ValueError("invalid trace stage details")
+        stage_source_keys = tuple(stage["source_counts"])
+        if stage_source_keys != tuple(
+            key for key in SOURCE_COUNT_KEYS if key in stage["source_counts"]
+        ):
+            raise ValueError("invalid trace stage source counts")
+        if tuple(stage["decision_counts"]) not in (
+            (),
+            _TRACE_DECISION_KEYS,
+        ):
+            raise ValueError("invalid trace decision counts")
+        for candidate in stage["top_candidates"]:
+            if (
+                type(candidate) is not dict
+                or set(candidate) != _TRACE_CANDIDATE_KEYS
+            ):
+                raise ValueError("invalid trace candidate")
+    if type(trace["final_selections"]) is not list:
+        raise ValueError("invalid trace selections")
+    for selection in trace["final_selections"]:
+        if type(selection) is not dict or set(selection) != _TRACE_SELECTION_KEYS:
+            raise ValueError("invalid trace selection")
+        if any(
+            type(item) is not dict or set(item) != {"stage", "rank", "score"}
+            for item in selection["rank_history"]
+        ):
+            raise ValueError("invalid trace rank history")
+        if any(
+            type(item) is not dict or set(item) != {"name", "value"}
+            for item in selection["adjustments"]
+        ):
+            raise ValueError("invalid trace adjustments")
+    json.dumps(trace, allow_nan=False)
+    return trace
+
+
+def format_trace_markdown(envelope: dict[str, Any]) -> str:
+    try:
+        trace = _validated_trace(envelope)
+        query = trace["query"]
+        planner = query["planner"]
+        lines = [
+            "# Retrieval Trace",
+            "",
+            f"Repository: {envelope['repo']}",
+            f"Query: {envelope['query']}",
+            f"Outcome: {trace['outcome']}",
+            f"Termination: {trace['termination_reason']}",
+            f"Duration: {trace['duration_ms']} ms",
+            "",
+            "## Query Understanding",
+            "",
+            (
+                "Tokens: "
+                f"{query['original_token_count']} original, "
+                f"{query['expanded_token_count']} expanded"
+            ),
+            f"Variant retrieval: {query['variant_retrieval_status']}",
+            (
+                "Planner: "
+                f"status={planner['status']}; "
+                f"provider={planner['provider'] or '(none)'}; "
+                f"model={planner['model'] or '(none)'}; "
+                f"intent={planner['intent']}; "
+                f"latency_ms={planner['latency_ms']}"
+            ),
+            "Variants:",
+        ]
+        lines.extend(
+            (
+                f"- {variant['variant_id']} ({variant['source']}): "
+                f"{variant['text']}"
+            )
+            for variant in query["variants"]
+        )
+        lines.extend(["", "## Source Counts", ""])
+        lines.extend(
+            f"- {name}: {count}"
+            for name, count in trace["source_counts"].items()
+        )
+        lines.extend(
+            [
+                "",
+                "## Stages",
+                "",
+                "| stage | input | output | unique | duration ms |",
+                "| --- | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for stage in trace["stages"]:
+            lines.append(
+                f"| {stage['name']} | {stage['input_count']} | "
+                f"{stage['output_count']} | {stage['unique_output_count']} | "
+                f"{stage['duration_ms']} |"
+            )
+        for stage in trace["stages"]:
+            lines.extend(["", f"### {stage['name']}"])
+            source_counts = ", ".join(
+                f"{name}={count}"
+                for name, count in stage["source_counts"].items()
+            )
+            decision_counts = ", ".join(
+                f"{name}={count}"
+                for name, count in stage["decision_counts"].items()
+            )
+            lines.append(f"- Source counts: {source_counts or '(none)'}")
+            lines.append(f"- Decisions: {decision_counts or '(none)'}")
+            for candidate in stage["top_candidates"]:
+                sources = ", ".join(candidate["sources"]) or "(none)"
+                variants = ", ".join(candidate["variant_ids"]) or "(none)"
+                lines.append(
+                    f"- {candidate['rank']}. {candidate['file_path']}:"
+                    f"{candidate['start_line']}-{candidate['end_line']}; "
+                    f"score={candidate['score']}; sources={sources}; "
+                    f"variants={variants}"
+                )
+        lines.extend(
+            [
+                "",
+                "## Final Selections",
+                "",
+                f"Selected: {trace['final_selection_count']}",
+                f"Omitted from preview: {trace['final_selection_omitted_count']}",
+            ]
+        )
+        for selection in trace["final_selections"]:
+            lines.extend(
+                [
+                    "",
+                    (
+                        f"### {selection['rank']}. {selection['file_path']}:"
+                        f"{selection['start_line']}-{selection['end_line']}"
+                    ),
+                    f"- Kind: {selection['selection_kind']}",
+                    f"- Selection: {selection['selection_reason']}",
+                    f"- Score: {selection['score']}",
+                    "- Origin chunks: " + ", ".join(selection["origin_chunk_ids"]),
+                    f"- Sources: {', '.join(selection['sources'])}",
+                    f"- Variants: {', '.join(selection['variant_ids']) or '(none)'}",
+                    "- Rank history: "
+                    + ", ".join(
+                        f"{item['stage']}#{item['rank']}={item['score']}"
+                        for item in selection["rank_history"]
+                    ),
+                    (
+                        "- Adjustments omitted from preview: "
+                        f"{selection['adjustment_omitted_count']}"
+                    ),
+                    "- Adjustments: "
+                    + (
+                        ", ".join(
+                            f"{item['name']}={item['value']}"
+                            for item in selection["adjustments"]
+                        )
+                        or "(none)"
+                    ),
+                    "- Reasons: "
+                    + (", ".join(selection["reasons"]) or "(none)"),
+                ]
+            )
+        return "\n".join(lines) + "\n"
+    except TraceFormatError:
+        raise
+    except Exception as exc:
+        raise TraceFormatError("Retrieval trace formatting failed") from exc
 
 
 def context_payload(

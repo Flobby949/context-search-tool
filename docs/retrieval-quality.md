@@ -367,6 +367,28 @@ under `aggregate.metrics.overall.latency_ms`.
   the roadmap's independent Phase 1 acceptance dependency. No earlier report is
   substituted for this fresh result.
 
+## Phase 3.1 Retrieval Trace Acceptance
+
+```bash
+PYTHONPATH="$PWD/src" conda run -n base python -m pytest \
+  tests/test_retrieval_trace.py \
+  tests/test_retrieval_trace_pipeline.py \
+  tests/test_quality_p3.py \
+  tests/test_cli_commands.py \
+  tests/test_mcp_tools.py \
+  tests/test_mcp_server.py \
+  -q
+```
+
+TraceCoverage is the number of serialized final selections with non-empty source
+provenance, rank history, and a selection reason divided by all serialized final
+selections. Every non-empty committed P3.1 case requires TraceCoverage 1.0.
+
+Stage and selection counts describe uncapped work, not preview length. Timings are
+informational in end-to-end tests; collector unit tests use an injected clock. P3.1
+does not add a quality-catalog mode. Phase 1 model acceptance remains independent
+and pending until its own required 7/7 gate passes.
+
 ## MCP Feedback Privacy
 
 ```bash

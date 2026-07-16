@@ -20,6 +20,9 @@ from context_search_tool.formatters import (
     format_context_markdown,
     format_json,
     format_markdown,
+    format_trace_json,
+    format_trace_markdown,
+    trace_payload,
 )
 from context_search_tool.indexer import (
     IncompatibleIndexError,
@@ -33,7 +36,12 @@ from context_search_tool.paths import (
     find_repo_root,
     index_dir_for,
 )
-from context_search_tool.retrieval import evidence_anchor_top_k, query_repository
+from context_search_tool.retrieval import (
+    evidence_anchor_top_k,
+    query_repository,
+    trace_repository,
+)
+from context_search_tool.retrieval_trace import RetrievalTraceError
 from context_search_tool.sqlite_store import SQLiteStore
 
 app = typer.Typer(
@@ -114,6 +122,60 @@ def query(
         typer.echo(format_json(bundle))
         return
     typer.echo(format_markdown(bundle))
+
+
+@app.command()
+def trace(
+    repo_or_question: str,
+    question: Optional[str] = typer.Argument(None),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+    context_lines: Optional[int] = typer.Option(
+        None,
+        "--context-lines",
+        help="Override context lines around each result.",
+    ),
+    full_file: bool = typer.Option(
+        False,
+        "--full-file",
+        help="Trace full-file result expansion when configured limits allow it.",
+    ),
+    planner: bool = typer.Option(False, "--planner", help="Force query planner on."),
+    no_planner: bool = typer.Option(
+        False,
+        "--no-planner",
+        help="Force query planner off.",
+    ),
+) -> None:
+    """Return a bounded RetrievalTrace v1 diagnostic response."""
+    repo, query_text, config = _prepare_query_command(
+        repo_or_question,
+        question,
+        planner=planner,
+        no_planner=no_planner,
+    )
+    try:
+        traced = trace_repository(
+            repo,
+            query_text,
+            config,
+            context_lines=context_lines,
+            full_file=full_file,
+        )
+        envelope = trace_payload(repo, query_text, traced.trace)
+        output = (
+            format_trace_json(envelope)
+            if json_output
+            else format_trace_markdown(envelope)
+        )
+    except RetrievalTraceError:
+        typer.echo("Retrieval trace failed", err=True)
+        raise typer.Exit(code=1)
+    except (ValueError, requests.HTTPError) as exc:
+        _exit_with_error(exc)
+    except Exception:
+        typer.echo("Retrieval trace failed", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(output)
 
 
 @app.command()

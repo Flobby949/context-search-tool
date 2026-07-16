@@ -12,6 +12,7 @@ from context_search_tool.mcp_tools import (
     context_search_index_tool,
     context_search_query_tool,
     context_search_stats_tool,
+    context_search_trace_tool,
 )
 
 SERVER_NAME = "context-search-tool"
@@ -36,6 +37,24 @@ def context_search_query(
 ) -> dict[str, Any]:
     """Return raw ranked search results from a local repository index."""
     return context_search_query_tool(
+        repo=repo,
+        query=query,
+        context_lines=context_lines,
+        full_file=full_file,
+        final_top_k=final_top_k,
+    )
+
+
+@mcp.tool()
+def context_search_trace(
+    repo: str,
+    query: str,
+    context_lines: int | None = None,
+    full_file: bool = False,
+    final_top_k: int | None = None,
+) -> dict[str, Any]:
+    """Return bounded retrieval diagnostics without source content."""
+    return context_search_trace_tool(
         repo=repo,
         query=query,
         context_lines=context_lines,

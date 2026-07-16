@@ -25,6 +25,7 @@ from context_search_tool.mcp_tools import (
     context_search_index_tool,
     context_search_query_tool,
     context_search_stats_tool,
+    context_search_trace_tool,
 )
 from context_search_tool.models import (
     EvidenceAnchor,
@@ -34,7 +35,16 @@ from context_search_tool.models import (
     RetrievalSummary,
     SemanticMatch,
 )
-from context_search_tool.retrieval import QueryBundle, evidence_anchor_top_k
+from context_search_tool.retrieval import (
+    QueryBundle,
+    TracedQueryBundle,
+    evidence_anchor_top_k,
+)
+from context_search_tool.retrieval_trace import (
+    RetrievalTraceCollector,
+    RetrievalTraceError,
+    TraceQuery,
+)
 
 
 def _write_java_repo(repo: Path) -> None:
@@ -148,6 +158,19 @@ def test_mcp_tools_index_query_stats_and_explain(tmp_path: Path) -> None:
     assert "content" in queried["results"][0]
     assert queried["summary"]["entry_points"]
 
+    traced = context_search_trace_tool(
+        repo=str(repo),
+        query="/apply/audit/pageEs",
+        context_lines=0,
+        full_file=False,
+        final_top_k=1,
+    )
+    assert traced["ok"] is True
+    assert tuple(traced) == ("ok", "repo", "query", "trace")
+    assert traced["trace"]["schema_version"] == 1
+    assert traced["trace"]["source_counts"]
+    assert "results" not in traced
+
     context = context_search_context_tool(
         repo=str(repo),
         query="/apply/audit/pageEs",
@@ -176,11 +199,147 @@ def test_mcp_tools_index_query_stats_and_explain(tmp_path: Path) -> None:
     assert explained["chunk"]["start_line"] <= 4 <= explained["chunk"]["end_line"]
 
 
+def test_mcp_trace_returns_shared_schema_without_source_content(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    assert context_search_index_tool(str(repo))["ok"] is True
+
+    payload = context_search_trace_tool(
+        repo=str(repo),
+        query="/apply/audit/pageEs",
+        context_lines=0,
+        full_file=False,
+        final_top_k=1,
+    )
+
+    assert tuple(payload) == ("ok", "repo", "query", "trace")
+    assert payload["ok"] is True
+    assert payload["trace"]["schema_version"] == 1
+    assert payload["trace"]["final_selection_count"] >= 1
+    assert "content" not in json.dumps(payload["trace"])
+
+
+def test_mcp_trace_executes_one_retrieval_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    assert context_search_index_tool(str(repo))["ok"] is True
+    calls = 0
+    original = mcp_tools.trace_repository
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(mcp_tools, "trace_repository", counted)
+    result = context_search_trace_tool(
+        repo=str(repo),
+        query="audit",
+    )
+
+    assert result["ok"] is True
+    assert calls == 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RetrievalTraceError("PRIVATE_TRACE_CONTRACT"),
+        RuntimeError("PRIVATE_TRACE_INTERNAL"),
+    ],
+)
+def test_mcp_trace_hides_trace_and_unexpected_internal_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(mcp_tools, "trace_repository", fail)
+    payload = context_search_trace_tool(repo=str(repo), query="audit")
+
+    assert payload == {
+        "ok": False,
+        "error": {
+            "code": "trace_failed",
+            "message": "Retrieval trace failed",
+        },
+    }
+    assert "PRIVATE_TRACE" not in repr(payload)
+
+
+def test_cli_and_mcp_trace_success_envelopes_are_identical(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_index_marker(repo)
+    ticks = iter((0, 1_000_000))
+    collector = RetrievalTraceCollector(clock_ns=lambda: next(ticks))
+    collector.record_query(
+        TraceQuery(
+            original_token_count=1,
+            expanded_token_count=1,
+            variant_retrieval_status="original_only",
+        )
+    )
+    trace = collector.finish(
+        outcome="empty",
+        termination_reason="no_candidates",
+        final_selections=(),
+    )
+    traced = TracedQueryBundle(
+        bundle=_deterministic_bundle(query="audit"),
+        trace=trace,
+    )
+    monkeypatch.setattr(cli, "trace_repository", lambda *args, **kwargs: traced)
+    monkeypatch.setattr(
+        mcp_tools,
+        "trace_repository",
+        lambda *args, **kwargs: traced,
+    )
+    monkeypatch.setattr(cli, "_warn_if_signal_schema_stale", lambda repo: None)
+
+    cli_result = CliRunner().invoke(
+        app,
+        ["trace", str(repo), "audit", "--json"],
+    )
+    mcp_result = context_search_trace_tool(repo=str(repo), query="audit")
+
+    assert cli_result.exit_code == 0
+    assert json.loads(cli_result.output) == mcp_result
+
+
 def test_mcp_query_missing_index_does_not_create_artifacts(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
 
     result = context_search_query_tool(str(repo), "anything")
+
+    assert result == {
+        "ok": False,
+        "error": {
+            "code": "missing_index",
+            "message": f"Missing index for {repo}. Run context_search_index first.",
+        },
+    }
+    assert not (repo / ".context-search").exists()
+
+
+def test_mcp_trace_missing_index_does_not_create_artifacts(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    result = context_search_trace_tool(str(repo), "anything")
 
     assert result == {
         "ok": False,
@@ -198,6 +357,22 @@ def test_mcp_query_rejects_invalid_final_top_k(tmp_path: Path) -> None:
     context_search_index_tool(str(repo))
 
     result = context_search_query_tool(str(repo), "audit", final_top_k=0)
+
+    assert result == {
+        "ok": False,
+        "error": {
+            "code": "query_failed",
+            "message": "final_top_k must be greater than zero",
+        },
+    }
+
+
+def test_mcp_trace_rejects_invalid_final_top_k(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    context_search_index_tool(str(repo))
+
+    result = context_search_trace_tool(str(repo), "audit", final_top_k=0)
 
     assert result == {
         "ok": False,
@@ -303,6 +478,19 @@ def test_mcp_query_writes_feedback_without_source_content(tmp_path: Path) -> Non
     assert event["embedding"]["provider"] == "hash"
     assert "ApplyAuditController" not in json.dumps(event)
     assert "class ApplyAuditController" not in json.dumps(event)
+
+
+def test_mcp_trace_never_creates_or_modifies_feedback_log(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    context_search_index_tool(str(repo))
+    log_path = repo / ".context-search" / "mcp_calls.jsonl"
+    log_path.write_text("PREEXISTING_FEEDBACK\n", encoding="utf-8")
+
+    result = context_search_trace_tool(str(repo), "TRACE_QUERY_SECRET")
+
+    assert result["ok"] is True
+    assert log_path.read_text(encoding="utf-8") == "PREEXISTING_FEEDBACK\n"
 
 
 def test_mcp_query_payload_includes_planner_status(tmp_path: Path) -> None:
