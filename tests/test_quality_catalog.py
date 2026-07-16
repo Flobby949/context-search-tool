@@ -13,7 +13,7 @@ from context_search_tool.config import DEFAULT_CONFIG
 from context_search_tool.indexer import index_repository
 from context_search_tool.models import QueryVariant
 from context_search_tool.paths import index_dir_for
-from context_search_tool.retrieval_core import ordering
+from context_search_tool.retrieval_core import candidates, ordering
 from context_search_tool.quality.cases import (
     Gate,
     LegacyProvenance,
@@ -1191,17 +1191,32 @@ def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
     store = SQLiteStore(index_dir / "index.sqlite")
     original_tokens = ordering.dedupe_lowered(tokenizer.tokenize_query(query))
     deleted_ids = store.deleted_chunk_ids()
-    initial_candidates, _, _ = retrieval._initial_candidates(
+    semantic_candidates, _, _ = candidates.semantic_candidates(
         index_dir,
-        store,
-        query,
-        original_tokens,
         [QueryVariant("original", " ".join(query.split()), "original")],
         config,
         deleted_ids,
     )
-    signal_candidates = retrieval._signal_candidates(store, original_tokens, config)
-    direct_candidates = retrieval._merge_candidates(
+    lexical_candidates = candidates.lexical_candidates(
+        store,
+        original_tokens,
+        config.retrieval.lexical_top_k,
+    )
+    path_symbol_candidates = candidates.path_symbol_candidates(
+        store,
+        original_tokens,
+        config.retrieval.lexical_top_k,
+    )
+    probes = candidates.direct_text_probes(query, original_tokens)
+    direct_text_candidates = candidates.direct_text_candidates(store, probes, config)
+    initial_candidates = [
+        *semantic_candidates,
+        *lexical_candidates,
+        *path_symbol_candidates,
+        *direct_text_candidates,
+    ]
+    signal_candidates = candidates.signal_candidates(store, original_tokens, config)
+    direct_candidates = candidates.merge_candidates(
         [
             *initial_candidates,
             *signal_candidates,
@@ -1214,7 +1229,7 @@ def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
         query=query,
         tokens=original_tokens,
     )
-    relation_seed_candidates = retrieval._merge_candidates(
+    relation_seed_candidates = candidates.merge_candidates(
         [
             *direct_candidates.values(),
             *anchor_candidates,
@@ -1225,14 +1240,14 @@ def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
         list(relation_seed_candidates.values()),
         config,
     )
-    candidates = retrieval._merge_candidates(
+    merged_candidates = candidates.merge_candidates(
         [
             *direct_candidates.values(),
             *anchor_candidates,
             *relation_candidates,
         ]
     )
-    chunks = store.chunks_for_ids(list(candidates))
+    chunks = store.chunks_for_ids(list(merged_candidates))
     return {chunk.file_path.as_posix() for chunk in chunks.values()}
 
 

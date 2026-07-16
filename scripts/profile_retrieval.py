@@ -16,21 +16,30 @@ if SRC_DIR.exists():
 import context_search_tool.retrieval as retrieval
 from context_search_tool.config import load_config
 from context_search_tool.paths import index_dir_for
+from context_search_tool.retrieval_core import candidates
 from context_search_tool.sqlite_store import SQLiteStore
 
 
 RETRIEVAL_FUNCTIONS = [
-    "_semantic_candidates",
-    "_lexical_candidates",
-    "_direct_text_candidates",
-    "_signal_candidates",
-    "_planner_hint_candidates",
-    "_anchor_expansion_candidates",
-    "_relation_expansion_candidates",
-    "_rank_chunks",
-    "_expand_ranked_chunks",
-    "_split_code_results_and_evidence_anchors",
-    "_summarize_results",
+    ("_semantic_candidates", candidates, "semantic_candidates"),
+    ("_lexical_candidates", candidates, "lexical_candidates"),
+    ("_direct_text_candidates", candidates, "direct_text_candidates"),
+    ("_signal_candidates", candidates, "signal_candidates"),
+    ("_planner_hint_candidates", candidates, "planner_hint_candidates"),
+    ("_anchor_expansion_candidates", retrieval, "_anchor_expansion_candidates"),
+    (
+        "_relation_expansion_candidates",
+        retrieval,
+        "_relation_expansion_candidates",
+    ),
+    ("_rank_chunks", retrieval, "_rank_chunks"),
+    ("_expand_ranked_chunks", retrieval, "_expand_ranked_chunks"),
+    (
+        "_split_code_results_and_evidence_anchors",
+        retrieval,
+        "_split_code_results_and_evidence_anchors",
+    ),
+    ("_summarize_results", retrieval, "_summarize_results"),
 ]
 
 STORE_METHODS = [
@@ -109,13 +118,15 @@ def _collect_grouped_chunk_details(
 
 def _wrap_retrieval_functions(timings: dict[str, Timing]) -> list[Original]:
     originals: list[Original] = []
-    for name in RETRIEVAL_FUNCTIONS:
-        original = getattr(retrieval, name, None)
-        if original is None:
-            continue
-        timings[name] = Timing()
-        setattr(retrieval, name, _timed(name, original, timings))
-        originals.append((retrieval, name, original))
+    for display_name, owner_module, attribute_name in RETRIEVAL_FUNCTIONS:
+        original = getattr(owner_module, attribute_name)
+        timings[display_name] = Timing()
+        setattr(
+            owner_module,
+            attribute_name,
+            _timed(display_name, original, timings),
+        )
+        originals.append((owner_module, attribute_name, original))
     return originals
 
 

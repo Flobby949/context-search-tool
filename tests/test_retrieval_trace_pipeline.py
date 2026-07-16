@@ -32,7 +32,7 @@ from context_search_tool.retrieval_trace import (
     RetrievalTraceCollector,
     TraceLimits,
 )
-from context_search_tool.retrieval_core import types as core_types
+from context_search_tool.retrieval_core import candidates, types as core_types
 from context_search_tool.sqlite_store import SQLiteStore
 
 
@@ -63,14 +63,14 @@ def test_trace_repository_runs_query_once_and_preserves_raw_and_pack_payloads(
     repo, config = _indexed_repo(tmp_path)
     plain = retrieval.query_repository(repo, "INVOLVED_BY_ME", config)
     calls = 0
-    original = retrieval._semantic_candidates
+    original = candidates.semantic_candidates
 
     def counted(*args, **kwargs):
         nonlocal calls
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(retrieval, "_semantic_candidates", counted)
+    monkeypatch.setattr(candidates, "semantic_candidates", counted)
     traced = retrieval.trace_repository(repo, "INVOLVED_BY_ME", config)
 
     assert calls == 1
@@ -127,7 +127,7 @@ def test_trace_repository_reports_missing_index_without_changing_bundle(
 
     monkeypatch.setattr(retrieval, "planner_from_config", forbidden)
     monkeypatch.setattr(sqlite_store, "SQLiteStore", forbidden)
-    monkeypatch.setattr(retrieval, "NumpyVectorStore", forbidden)
+    monkeypatch.setattr(candidates, "NumpyVectorStore", forbidden)
     monkeypatch.setattr(Path, "read_text", forbidden)
     original_stat = Path.stat
     stat_paths: list[Path] = []
@@ -194,7 +194,7 @@ def test_trace_repository_reports_no_candidates_after_candidate_merge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo, config = _indexed_repo(tmp_path)
-    monkeypatch.setattr(retrieval, "_merge_candidates", lambda candidates: {})
+    monkeypatch.setattr(candidates, "merge_candidates", lambda values: {})
 
     def forbidden(*args, **kwargs):
         raise AssertionError("no-candidate retrieval performed downstream work")
@@ -549,7 +549,7 @@ def test_manifest_planner_and_provider_failures_propagate_without_partial_trace(
         kwargs = {"planner": FailingPlanner()}
     else:
         monkeypatch.setattr(
-            retrieval,
+            candidates,
             "provider_from_config",
             lambda config: FailingProvider(),
         )
@@ -576,7 +576,7 @@ def test_embedding_batches_are_single_primary_plus_only_existing_fallback(
             return delegate.embed_texts(texts)
 
     monkeypatch.setattr(
-        retrieval,
+        candidates,
         "provider_from_config",
         lambda embedding_config: FallbackProvider(),
     )
@@ -597,7 +597,7 @@ def test_direct_text_probes_are_computed_once_before_stage_timer(
 ) -> None:
     repo, config = _indexed_repo(tmp_path)
     events: list[str] = []
-    original_probes = retrieval._direct_text_probes
+    original_probes = candidates.direct_text_probes
     original_start = retrieval._trace_stage_start
 
     def probes(*args, **kwargs):
@@ -608,7 +608,7 @@ def test_direct_text_probes_are_computed_once_before_stage_timer(
         events.append(f"start:{name}")
         return original_start(collector, name, **kwargs)
 
-    monkeypatch.setattr(retrieval, "_direct_text_probes", probes)
+    monkeypatch.setattr(candidates, "direct_text_probes", probes)
     monkeypatch.setattr(retrieval, "_trace_stage_start", start)
 
     retrieval.trace_repository(repo, "INVOLVED_BY_ME", config)
@@ -702,11 +702,6 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
 
     for name in (
         "build_query_variants",
-        "_semantic_candidates",
-        "_lexical_candidates",
-        "_signal_candidates",
-        "_planner_hint_candidates",
-        "_merge_candidates",
         "_anchor_expansion_candidates",
         "_relation_expansion_candidates",
         "_rank_chunks",
@@ -715,8 +710,16 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
         "_split_code_results_and_evidence_anchors",
     ):
         mark_operation(retrieval, name)
-    mark_operation(SQLiteStore, "path_symbol_search")
-    mark_operation(SQLiteStore, "direct_text_search")
+    for name in (
+        "semantic_candidates",
+        "lexical_candidates",
+        "path_symbol_candidates",
+        "direct_text_candidates",
+        "signal_candidates",
+        "planner_hint_candidates",
+        "merge_candidates",
+    ):
+        mark_operation(candidates, name)
 
     original_summary = retrieval._summarize_results
 

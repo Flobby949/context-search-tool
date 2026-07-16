@@ -16,7 +16,7 @@ from context_search_tool.models import (
     RetrievalCandidate,
 )
 from context_search_tool.retrieval import _rank_chunks
-from context_search_tool.retrieval_core import types as core_types
+from context_search_tool.retrieval_core import candidates, types as core_types
 from context_search_tool.sqlite_store import SQLiteStore
 
 
@@ -970,16 +970,16 @@ def test_direct_text_strong_anchor_beats_anchor_relation_candidate() -> None:
 
 def test_direct_text_boundary_empty_query() -> None:
     """Ensure empty/whitespace queries don't crash direct text probe generation."""
-    probes = retrieval._direct_text_probes("", [])
+    probes = candidates.direct_text_probes("", [])
     assert probes == []
 
-    probes = retrieval._direct_text_probes("   ", [])
+    probes = candidates.direct_text_probes("   ", [])
     assert probes == []
 
 
 def test_direct_text_boundary_special_characters() -> None:
     """Ensure special characters in annotations/decorators are captured."""
-    probes = retrieval._direct_text_probes('@GetMapping("/api/users")', [])
+    probes = candidates.direct_text_probes('@GetMapping("/api/users")', [])
     # Verify that the decorator name and path are both captured
     assert "@getmapping" in probes
     assert "/api/users" in probes

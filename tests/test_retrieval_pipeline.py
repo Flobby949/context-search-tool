@@ -33,6 +33,7 @@ from context_search_tool.models import (
 from context_search_tool.paths import index_dir_for
 from context_search_tool.retrieval import evidence_anchor_top_k, query_repository
 from context_search_tool.retrieval_core import (
+    candidates,
     evidence_merge,
     ordering,
     types as core_types,
@@ -171,7 +172,7 @@ def _controlled_semantic_repo(
             Path("PlannerTarget.java"), 1
         ).chunk_id,
     }
-    vector_store = retrieval.NumpyVectorStore(index_dir)
+    vector_store = candidates.NumpyVectorStore(index_dir)
     vector_store.upsert_many(
         [
             (
@@ -205,16 +206,16 @@ def test_semantic_candidates_embeds_once_searches_each_variant_and_merges_proven
             (-1.0, 0.0): [VectorSearchResult("shared", 0.60)],
         }
     )
-    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
-    monkeypatch.setattr(retrieval, "NumpyVectorStore", lambda _index_dir: vector_store)
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(candidates, "NumpyVectorStore", lambda _index_dir: vector_store)
 
-    candidates, executed, status = retrieval._semantic_candidates(
+    semantic, executed, status = candidates.semantic_candidates(
         tmp_path,
         variants,
         DEFAULT_CONFIG,
         set(),
     )
-    merged = retrieval._merge_candidates(candidates)["shared"]
+    merged = candidates.merge_candidates(semantic)["shared"]
 
     assert provider.calls == [
         ["原始查询", "dashboard statistics", "chart service"]
@@ -246,10 +247,10 @@ def test_semantic_candidates_retries_original_after_variant_batch_count_mismatch
     vector_store = CapturingVectorStore(
         {(1.0, 0.0): [VectorSearchResult("original-hit", 0.75)]}
     )
-    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
-    monkeypatch.setattr(retrieval, "NumpyVectorStore", lambda _index_dir: vector_store)
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(candidates, "NumpyVectorStore", lambda _index_dir: vector_store)
 
-    candidates, executed, status = retrieval._semantic_candidates(
+    semantic, executed, status = candidates.semantic_candidates(
         tmp_path,
         variants,
         DEFAULT_CONFIG,
@@ -262,8 +263,8 @@ def test_semantic_candidates_retries_original_after_variant_batch_count_mismatch
     ]
     assert executed == variants[:1]
     assert status == "embedding_fallback"
-    assert [candidate.chunk_id for candidate in candidates] == ["original-hit"]
-    assert candidates[0].semantic_matches == [SemanticMatch("original", 0.75)]
+    assert [candidate.chunk_id for candidate in semantic] == ["original-hit"]
+    assert semantic[0].semantic_matches == [SemanticMatch("original", 0.75)]
 
 
 def test_semantic_candidates_retries_original_once_after_variant_batch_failure(
@@ -278,10 +279,10 @@ def test_semantic_candidates_retries_original_once_after_variant_batch_failure(
     vector_store = CapturingVectorStore(
         {(1.0, 0.0): [VectorSearchResult("original-hit", 0.75)]}
     )
-    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
-    monkeypatch.setattr(retrieval, "NumpyVectorStore", lambda _index_dir: vector_store)
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(candidates, "NumpyVectorStore", lambda _index_dir: vector_store)
 
-    candidates, executed, status = retrieval._semantic_candidates(
+    semantic, executed, status = candidates.semantic_candidates(
         tmp_path,
         variants,
         DEFAULT_CONFIG,
@@ -291,8 +292,8 @@ def test_semantic_candidates_retries_original_once_after_variant_batch_failure(
     assert provider.calls == [["query", "rewrite"], ["query"]]
     assert executed == variants[:1]
     assert status == "embedding_fallback"
-    assert [candidate.chunk_id for candidate in candidates] == ["original-hit"]
-    assert candidates[0].semantic_matches == [SemanticMatch("original", 0.75)]
+    assert [candidate.chunk_id for candidate in semantic] == ["original-hit"]
+    assert semantic[0].semantic_matches == [SemanticMatch("original", 0.75)]
 
 
 def test_semantic_candidates_propagates_original_retry_count_mismatch(
@@ -305,14 +306,14 @@ def test_semantic_candidates_propagates_original_retry_count_mismatch(
     ]
     provider = CapturingEmbeddingProvider([])
     vector_store = CapturingVectorStore({})
-    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
-    monkeypatch.setattr(retrieval, "NumpyVectorStore", lambda _index_dir: vector_store)
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(candidates, "NumpyVectorStore", lambda _index_dir: vector_store)
 
     with pytest.raises(
         ValueError,
         match="embedding response count does not match original query",
     ):
-        retrieval._semantic_candidates(
+        candidates.semantic_candidates(
             tmp_path,
             variants,
             DEFAULT_CONFIG,
@@ -339,11 +340,11 @@ def test_semantic_candidates_propagates_original_retry_failure(
         raise RuntimeError(f"failed for {len(texts)}")
 
     monkeypatch.setattr(provider, "embed_texts", fail)
-    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
-    monkeypatch.setattr(retrieval, "NumpyVectorStore", lambda _index_dir: vector_store)
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(candidates, "NumpyVectorStore", lambda _index_dir: vector_store)
 
     with pytest.raises(RuntimeError, match="failed for 1"):
-        retrieval._semantic_candidates(
+        candidates.semantic_candidates(
             tmp_path,
             variants,
             DEFAULT_CONFIG,
@@ -354,7 +355,7 @@ def test_semantic_candidates_propagates_original_retry_failure(
 
 
 def test_merge_candidates_preserves_semantic_matches_when_lexical_evidence_merges() -> None:
-    merged = retrieval._merge_candidates(
+    merged = candidates.merge_candidates(
         [
             RetrievalCandidate(
                 chunk_id="chunk",
@@ -577,7 +578,7 @@ def test_planner_rewrite_recalls_target_by_vector_and_outranks_weak_original(
             status="ok",
         )
     )
-    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
 
     bundle = query_repository(repo, "原始问题", config, planner=planner)
 
@@ -647,8 +648,8 @@ def test_query_repository_evidence_anchor_preserves_retrieval_semantic_matches(
         anchor_top_k_calls.append(max_results)
         return 1
 
-    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
-    monkeypatch.setattr(retrieval, "NumpyVectorStore", lambda _index_dir: vector_store)
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(candidates, "NumpyVectorStore", lambda _index_dir: vector_store)
     monkeypatch.setattr(retrieval, "evidence_anchor_top_k", evidence_anchor_top_k)
 
     bundle = query_repository(repo, "opaque query", config, planner=planner)
@@ -680,7 +681,7 @@ def test_disabled_failure_and_empty_plans_use_identical_original_vector_results(
 ) -> None:
     repo, config, _ids = _controlled_semantic_repo(tmp_path)
     provider = CapturingEmbeddingProvider([[1, 0, 0]])
-    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
     query = "query"
     plans = [
         QueryPlan(original_query=query, status="disabled"),
@@ -739,7 +740,7 @@ def test_variant_embedding_fallback_reports_only_executed_original_variant(
             status="ok",
         )
     )
-    monkeypatch.setattr(retrieval, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
 
     bundle = query_repository(repo, "query", config, planner=planner)
 
@@ -753,7 +754,7 @@ def test_duplicate_rewrites_do_not_change_score_or_search_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo, config, _ids = _controlled_semantic_repo(tmp_path)
-    vector_store = retrieval.NumpyVectorStore(index_dir_for(repo))
+    vector_store = candidates.NumpyVectorStore(index_dir_for(repo))
     search_calls: list[tuple[tuple[float, ...], int]] = []
     real_search = vector_store.search
 
@@ -767,11 +768,11 @@ def test_duplicate_rewrites_do_not_change_score_or_search_count(
         )
         return real_search(query_vector, top_k, deleted_ids)
 
-    monkeypatch.setattr(retrieval, "NumpyVectorStore", lambda _index_dir: vector_store)
+    monkeypatch.setattr(candidates, "NumpyVectorStore", lambda _index_dir: vector_store)
     monkeypatch.setattr(vector_store, "search", recording_search)
     baseline_provider = CapturingEmbeddingProvider([[1, 0, 0], [0, 1, 0]])
     monkeypatch.setattr(
-        retrieval,
+        candidates,
         "provider_from_config",
         lambda _config: baseline_provider,
     )
@@ -789,7 +790,7 @@ def test_duplicate_rewrites_do_not_change_score_or_search_count(
 
     duplicate_provider = CapturingEmbeddingProvider([[1, 0, 0], [0, 1, 0]])
     monkeypatch.setattr(
-        retrieval,
+        candidates,
         "provider_from_config",
         lambda _config: duplicate_provider,
     )
@@ -1128,17 +1129,32 @@ def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
     store = SQLiteStore(index_dir / "index.sqlite")
     original_tokens = ordering.dedupe_lowered(tokenizer.tokenize_query(query))
     deleted_ids = store.deleted_chunk_ids()
-    initial_candidates, _, _ = retrieval._initial_candidates(
+    semantic_candidates, _, _ = candidates.semantic_candidates(
         index_dir,
-        store,
-        query,
-        original_tokens,
         [QueryVariant("original", " ".join(query.split()), "original")],
         config,
         deleted_ids,
     )
-    signal_candidates = retrieval._signal_candidates(store, original_tokens, config)
-    direct_candidates = retrieval._merge_candidates(
+    lexical_candidates = candidates.lexical_candidates(
+        store,
+        original_tokens,
+        config.retrieval.lexical_top_k,
+    )
+    path_symbol_candidates = candidates.path_symbol_candidates(
+        store,
+        original_tokens,
+        config.retrieval.lexical_top_k,
+    )
+    probes = candidates.direct_text_probes(query, original_tokens)
+    direct_text_candidates = candidates.direct_text_candidates(store, probes, config)
+    initial_candidates = [
+        *semantic_candidates,
+        *lexical_candidates,
+        *path_symbol_candidates,
+        *direct_text_candidates,
+    ]
+    signal_candidates = candidates.signal_candidates(store, original_tokens, config)
+    direct_candidates = candidates.merge_candidates(
         [
             *initial_candidates,
             *signal_candidates,
@@ -1151,7 +1167,7 @@ def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
         query=query,
         tokens=original_tokens,
     )
-    relation_seed_candidates = retrieval._merge_candidates(
+    relation_seed_candidates = candidates.merge_candidates(
         [
             *direct_candidates.values(),
             *anchor_candidates,
@@ -1162,14 +1178,14 @@ def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
         list(relation_seed_candidates.values()),
         config,
     )
-    candidates = retrieval._merge_candidates(
+    merged_candidates = candidates.merge_candidates(
         [
             *direct_candidates.values(),
             *anchor_candidates,
             *relation_candidates,
         ]
     )
-    chunks = store.chunks_for_ids(list(candidates))
+    chunks = store.chunks_for_ids(list(merged_candidates))
     return {chunk.file_path.as_posix() for chunk in chunks.values()}
 
 
@@ -3108,7 +3124,7 @@ def test_relation_expansion_ignores_high_path_symbol_seed_without_signal(
     )
     ranked = retrieval._rank_chunks(
         store,
-        retrieval._merge_candidates(
+        candidates.merge_candidates(
             [direct_signal, high_path_symbol_seed, weak_dto, *relation_candidates]
         ),
         [],
