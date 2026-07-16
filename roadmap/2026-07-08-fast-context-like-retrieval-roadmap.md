@@ -3,7 +3,7 @@
 Date: 2026-07-08
 Status: Long-term roadmap
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
-Next-stage review: P3.2 retrieval-core decomposition design review
+Next-stage review: P3.2 retrieval-core decomposition implementation review
 
 ## Summary
 
@@ -234,8 +234,10 @@ Status: Split into separately reviewed milestones
 
   Phase 1 remains pending at its independent 6/7 baseline; P3.1 does not weaken
   or reclassify that gate.
-- P3.2 retrieval-core decomposition: separate future design and plan after P3.1
-  acceptance.
+- P3.2 retrieval-core decomposition: design and implementation-plan reviews
+  complete; implementation pending.
+  Design: `docs/superpowers/specs/2026-07-16-p3-2-retrieval-core-decomposition-design.md`.
+  Plan: `docs/superpowers/plans/2026-07-16-p3-2-retrieval-core-decomposition.md`.
 
 Goal: make the retrieval engine easier to improve.
 
