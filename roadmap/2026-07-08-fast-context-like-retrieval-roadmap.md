@@ -3,7 +3,7 @@
 Date: 2026-07-08
 Status: Long-term roadmap
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
-Next-stage review: P3.1 RetrievalTrace v1 written design and implementation-plan review
+Next-stage review: P3.2 retrieval-core decomposition design review
 
 ## Summary
 
@@ -218,9 +218,22 @@ Success signal:
 
 Status: Split into separately reviewed milestones
 
-- P3.1 RetrievalTrace v1: approved direction; written review pending.
+- P3.1 RetrievalTrace v1: complete (2026-07-16).
   Design: `docs/superpowers/specs/2026-07-16-p3-1-retrieval-trace-v1-design.md`.
   Plan: `docs/superpowers/plans/2026-07-16-p3-1-retrieval-trace-v1.md`.
+  Implementation commit: `34c5b5bd2189fbba4ead3902342706266c399b41`.
+  Verification evidence:
+
+  - full suite: 1,884 passed and 9 skipped;
+  - focused P3.1 suite: 125 passed;
+  - three committed Java, frontend, and documentation cases: TraceCoverage 1.0;
+  - `cst-p3-1-p2.json`: `p2_context_pack` selected/executed/passed 5/5/5,
+    failed 0, errors 0;
+  - `cst-p3-1-ci.json`: raw `ci` selected/executed/passed 8/8/8,
+    failed 0, errors 0.
+
+  Phase 1 remains pending at its independent 6/7 baseline; P3.1 does not weaken
+  or reclassify that gate.
 - P3.2 retrieval-core decomposition: separate future design and plan after P3.1
   acceptance.
 
