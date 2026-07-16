@@ -35,6 +35,7 @@ from context_search_tool.retrieval import evidence_anchor_top_k, query_repositor
 from context_search_tool.retrieval_core import (
     candidates,
     evidence_merge,
+    expansion,
     ordering,
     types as core_types,
 )
@@ -1160,7 +1161,7 @@ def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
             *signal_candidates,
         ]
     )
-    anchor_candidates = retrieval._anchor_expansion_candidates(
+    anchor_candidates = expansion.anchor_candidates(
         store,
         list(direct_candidates.values()),
         config,
@@ -1173,7 +1174,7 @@ def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
             *anchor_candidates,
         ]
     )
-    relation_candidates = retrieval._relation_expansion_candidates(
+    relation_candidates = expansion.relation_candidates(
         store,
         list(relation_seed_candidates.values()),
         config,
@@ -2030,7 +2031,7 @@ def test_relation_expansion_scores_from_signal_strength(tmp_path: Path) -> None:
         ],
     )
 
-    expanded = retrieval._relation_expansion_candidates(
+    expanded = expansion.relation_candidates(
         store,
         [
             RetrievalCandidate(
@@ -2126,7 +2127,7 @@ def test_relation_expansion_ignores_candidates_without_signal_or_relation_score(
         ],
     )
 
-    expanded = retrieval._relation_expansion_candidates(
+    expanded = expansion.relation_candidates(
         store,
         [
             RetrievalCandidate(
@@ -2215,7 +2216,7 @@ def test_relation_expansion_adds_relation_score_to_existing_direct_candidate(
         ],
     )
 
-    expanded = retrieval._relation_expansion_candidates(
+    expanded = expansion.relation_candidates(
         store,
         [
             RetrievalCandidate(
@@ -2458,7 +2459,7 @@ def test_relation_expansion_uses_batched_store_reads(
         counting_chunks_matching_signal_or_symbol,
     )
 
-    expanded = retrieval._relation_expansion_candidates(
+    expanded = expansion.relation_candidates(
         store,
         [
             RetrievalCandidate(
@@ -2973,7 +2974,7 @@ def test_relation_expansion_terminates_cyclic_relations(tmp_path: Path) -> None:
         [("A", "B", 0.9), ("B", "C", 0.9), ("C", "A", 0.9)],
     )
 
-    candidates = retrieval._relation_expansion_candidates(
+    candidates = expansion.relation_candidates(
         store,
         [_seed_candidate("A")],
         _expansion_config(),
@@ -2989,7 +2990,7 @@ def test_relation_expansion_stops_at_depth_three(tmp_path: Path) -> None:
         [("A", "B", 0.9), ("B", "C", 0.9), ("C", "D", 0.9), ("D", "E", 0.9)],
     )
 
-    candidates = retrieval._relation_expansion_candidates(
+    candidates = expansion.relation_candidates(
         store,
         [_seed_candidate("A")],
         _expansion_config(),
@@ -3011,7 +3012,7 @@ def test_relation_expansion_propagates_stronger_same_layer_arrival(
         [("A_low", "B", 0.5), ("A_high", "B", 0.9), ("B", "C", 0.9)],
     )
 
-    candidates = retrieval._relation_expansion_candidates(
+    candidates = expansion.relation_candidates(
         store,
         [
             RetrievalCandidate(
@@ -3031,8 +3032,8 @@ def test_relation_expansion_propagates_stronger_same_layer_arrival(
     )
 
     candidates_by_chunk = {candidate.chunk_id: candidate for candidate in candidates}
-    b_score = 0.65 * 0.9 * retrieval._RELATION_SCORE_DECAY
-    c_score = b_score * 0.9 * retrieval._RELATION_SCORE_DECAY
+    b_score = 0.65 * 0.9 * expansion._RELATION_SCORE_DECAY
+    c_score = b_score * 0.9 * expansion._RELATION_SCORE_DECAY
 
     assert candidates_by_chunk["chunk-B"].score_parts["relation"] == pytest.approx(
         b_score
@@ -3057,7 +3058,7 @@ def test_relation_expansion_filters_low_confidence_relations(tmp_path: Path) -> 
         [("A", "B", 0.49), ("A", "C", 0.5)],
     )
 
-    candidates = retrieval._relation_expansion_candidates(
+    candidates = expansion.relation_candidates(
         store,
         [_seed_candidate("A")],
         _expansion_config(),
@@ -3079,8 +3080,8 @@ def test_relation_expansion_logs_when_candidate_limit_is_hit(
         [("A", target, 0.9) for target in target_names],
     )
 
-    caplog.set_level(logging.WARNING, logger=retrieval.__name__)
-    candidates = retrieval._relation_expansion_candidates(
+    caplog.set_level(logging.WARNING, logger=expansion.logger.name)
+    candidates = expansion.relation_candidates(
         store,
         [_seed_candidate("A")],
         _expansion_config(),
@@ -3117,7 +3118,7 @@ def test_relation_expansion_ignores_high_path_symbol_seed_without_signal(
         score_parts={"lexical": 0.05},
     )
 
-    relation_candidates = retrieval._relation_expansion_candidates(
+    relation_candidates = expansion.relation_candidates(
         store,
         [direct_signal, high_path_symbol_seed, weak_dto],
         _expansion_config(),
@@ -3147,7 +3148,7 @@ def test_relation_expansion_preserves_mixed_original_and_planner_provenance(
         [("Source", "Target", 0.9)],
     )
 
-    relation_candidates = retrieval._relation_expansion_candidates(
+    relation_candidates = expansion.relation_candidates(
         store,
         [
             RetrievalCandidate(
@@ -3177,7 +3178,7 @@ def test_relation_expansion_uses_anchor_only_seed_as_original_evidence(
         [("Source", "Target", 0.9)],
     )
 
-    relation_candidates = retrieval._relation_expansion_candidates(
+    relation_candidates = expansion.relation_candidates(
         store,
         [
             RetrievalCandidate(
@@ -3211,7 +3212,7 @@ def test_relation_expansion_prefers_signal_seed_over_weaker_anchor(
         [("Source", "Target", 0.9)],
     )
 
-    relation_candidates = retrieval._relation_expansion_candidates(
+    relation_candidates = expansion.relation_candidates(
         store,
         [
             RetrievalCandidate(
@@ -3254,7 +3255,7 @@ def test_relation_expansion_keeps_direct_text_seed_when_anchor_seed_has_higher_s
         )
     )
 
-    relation_candidates = retrieval._relation_expansion_candidates(
+    relation_candidates = expansion.relation_candidates(
         store,
         [
             RetrievalCandidate(
@@ -3293,7 +3294,7 @@ def test_relation_expansion_keeps_planner_only_seed_provenance_when_seed_has_lex
         [("Source", "Target", 0.9)],
     )
 
-    relation_candidates = retrieval._relation_expansion_candidates(
+    relation_candidates = expansion.relation_candidates(
         store,
         [
             RetrievalCandidate(
@@ -9210,7 +9211,7 @@ def test_evidence_anchors_still_seed_directory_expansion(tmp_path: Path) -> None
     for chunk in (readme, controller):
         store.replace_chunks(chunk.file_path, [chunk])
 
-    expanded = retrieval._anchor_expansion_candidates(
+    expanded = expansion.anchor_candidates(
         store,
         [
             RetrievalCandidate(
@@ -9254,7 +9255,7 @@ def test_anchor_expansion_skips_generated_schema_same_file_noise(
     )
     store.replace_chunks(seed.file_path, [seed, same_file_noise])
 
-    expanded = retrieval._anchor_expansion_candidates(
+    expanded = expansion.anchor_candidates(
         store,
         [
             RetrievalCandidate(
@@ -9297,7 +9298,7 @@ def test_anchor_expansion_skips_template_same_file_noise_for_implementation_quer
     )
     store.replace_chunks(seed.file_path, [seed, same_file_noise])
 
-    expanded = retrieval._anchor_expansion_candidates(
+    expanded = expansion.anchor_candidates(
         store,
         [
             RetrievalCandidate(
@@ -9340,7 +9341,7 @@ def test_anchor_expansion_keeps_template_same_file_anchor_for_content_query(
     )
     store.replace_chunks(seed.file_path, [seed, same_file_content])
 
-    expanded = retrieval._anchor_expansion_candidates(
+    expanded = expansion.anchor_candidates(
         store,
         [
             RetrievalCandidate(

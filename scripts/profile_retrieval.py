@@ -16,7 +16,7 @@ if SRC_DIR.exists():
 import context_search_tool.retrieval as retrieval
 from context_search_tool.config import load_config
 from context_search_tool.paths import index_dir_for
-from context_search_tool.retrieval_core import candidates
+from context_search_tool.retrieval_core import candidates, expansion
 from context_search_tool.sqlite_store import SQLiteStore
 
 
@@ -26,11 +26,11 @@ RETRIEVAL_FUNCTIONS = [
     ("_direct_text_candidates", candidates, "direct_text_candidates"),
     ("_signal_candidates", candidates, "signal_candidates"),
     ("_planner_hint_candidates", candidates, "planner_hint_candidates"),
-    ("_anchor_expansion_candidates", retrieval, "_anchor_expansion_candidates"),
+    ("_anchor_expansion_candidates", expansion, "anchor_candidates"),
     (
         "_relation_expansion_candidates",
-        retrieval,
-        "_relation_expansion_candidates",
+        expansion,
+        "relation_candidates",
     ),
     ("_rank_chunks", retrieval, "_rank_chunks"),
     ("_expand_ranked_chunks", retrieval, "_expand_ranked_chunks"),

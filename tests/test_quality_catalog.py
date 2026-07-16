@@ -13,7 +13,7 @@ from context_search_tool.config import DEFAULT_CONFIG
 from context_search_tool.indexer import index_repository
 from context_search_tool.models import QueryVariant
 from context_search_tool.paths import index_dir_for
-from context_search_tool.retrieval_core import candidates, ordering
+from context_search_tool.retrieval_core import candidates, expansion, ordering
 from context_search_tool.quality.cases import (
     Gate,
     LegacyProvenance,
@@ -1222,7 +1222,7 @@ def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
             *signal_candidates,
         ]
     )
-    anchor_candidates = retrieval._anchor_expansion_candidates(
+    anchor_candidates = expansion.anchor_candidates(
         store,
         list(direct_candidates.values()),
         config,
@@ -1235,7 +1235,7 @@ def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
             *anchor_candidates,
         ]
     )
-    relation_candidates = retrieval._relation_expansion_candidates(
+    relation_candidates = expansion.relation_candidates(
         store,
         list(relation_seed_candidates.values()),
         config,
