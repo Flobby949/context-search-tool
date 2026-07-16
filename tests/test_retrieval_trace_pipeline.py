@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 import context_search_tool.mcp_tools as mcp_tools
-from context_search_tool import retrieval
+from context_search_tool import retrieval, sqlite_store
 from context_search_tool.config import RetrievalConfig, ToolConfig
 from context_search_tool.context_pack import (
     build_context_pack,
@@ -32,6 +32,7 @@ from context_search_tool.retrieval_trace import (
     RetrievalTraceCollector,
     TraceLimits,
 )
+from context_search_tool.retrieval_core import types as core_types
 from context_search_tool.sqlite_store import SQLiteStore
 
 
@@ -125,7 +126,7 @@ def test_trace_repository_reports_missing_index_without_changing_bundle(
         raise AssertionError("missing-index retrieval crossed the preflight boundary")
 
     monkeypatch.setattr(retrieval, "planner_from_config", forbidden)
-    monkeypatch.setattr(retrieval, "SQLiteStore", forbidden)
+    monkeypatch.setattr(sqlite_store, "SQLiteStore", forbidden)
     monkeypatch.setattr(retrieval, "NumpyVectorStore", forbidden)
     monkeypatch.setattr(Path, "read_text", forbidden)
     original_stat = Path.stat
@@ -173,7 +174,7 @@ def test_trace_repository_reports_store_read_error_before_stages(
     def forbidden(*args, **kwargs):
         raise AssertionError("store-read early return crossed into planning")
 
-    monkeypatch.setattr(retrieval.SQLiteStore, "deleted_chunk_ids", fail_store_read)
+    monkeypatch.setattr(sqlite_store.SQLiteStore, "deleted_chunk_ids", fail_store_read)
     monkeypatch.setattr(retrieval, "planner_from_config", forbidden)
     plain = retrieval.query_repository(repo, "audit", config)
     traced = retrieval.trace_repository(repo, "audit", config)
@@ -416,7 +417,7 @@ class FinalSelectionCollector:
 
 
 def test_merged_final_selection_keeps_origins_best_ranks_and_clamp() -> None:
-    item = retrieval._ExpandedResult(
+    item = core_types._ExpandedResult(
         chunk_ids=["chunk-a", "chunk-b"],
         file_path=Path("src/AuditStatus.java"),
         start_line=1,
@@ -506,7 +507,7 @@ def test_deleted_id_handler_does_not_catch_broader_exceptions(
     def fail(self):
         raise RuntimeError("BROAD_ERROR_SENTINEL")
 
-    monkeypatch.setattr(retrieval.SQLiteStore, "deleted_chunk_ids", fail)
+    monkeypatch.setattr(sqlite_store.SQLiteStore, "deleted_chunk_ids", fail)
     target = (
         retrieval.query_repository
         if entrypoint == "plain"
@@ -788,7 +789,7 @@ def test_trace_adapters_never_read_content_or_private_context_content() -> None:
         score_parts={"semantic": 0.8},
         semantic_matches=[SemanticMatch("original", 0.8)],
     )
-    ranked = retrieval._RankedChunk(
+    ranked = core_types._RankedChunk(
         chunk=ContentTrap(),  # type: ignore[arg-type]
         score=0.8,
         score_parts={"semantic": 0.8},

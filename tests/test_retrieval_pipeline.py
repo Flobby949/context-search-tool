@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from context_search_tool import retrieval
+from context_search_tool import chunker, retrieval, tokenizer
 from context_search_tool.config import (
     DEFAULT_CONFIG,
     EmbeddingConfig,
@@ -32,6 +32,11 @@ from context_search_tool.models import (
 )
 from context_search_tool.paths import index_dir_for
 from context_search_tool.retrieval import evidence_anchor_top_k, query_repository
+from context_search_tool.retrieval_core import (
+    evidence_merge,
+    ordering,
+    types as core_types,
+)
 from context_search_tool.sqlite_store import SQLiteStore
 from context_search_tool.vector_store import VectorSearchResult
 
@@ -44,8 +49,8 @@ def _span_ranked_chunk(
     end_line: int,
     rerank_score: float,
     score_parts: dict[str, float],
-) -> retrieval._RankedChunk:
-    return retrieval._RankedChunk(
+) -> core_types._RankedChunk:
+    return core_types._RankedChunk(
         chunk=DocumentChunk(
             chunk_id=chunk_id,
             file_path=file_path,
@@ -371,7 +376,7 @@ def test_merge_candidates_preserves_semantic_matches_when_lexical_evidence_merge
 
 
 def test_merge_expanded_result_unions_matches_in_variant_order() -> None:
-    left = retrieval._ExpandedResult(
+    left = core_types._ExpandedResult(
         chunk_ids=["left"],
         file_path=Path("App.java"),
         start_line=1,
@@ -390,7 +395,7 @@ def test_merge_expanded_result_unions_matches_in_variant_order() -> None:
             SemanticMatch("original", 0.2),
         ],
     )
-    right = retrieval._ExpandedResult(
+    right = core_types._ExpandedResult(
         chunk_ids=["right"],
         file_path=Path("App.java"),
         start_line=3,
@@ -425,8 +430,8 @@ def test_merge_overlapping_results_preserves_legacy_raw_and_exact_context() -> N
         start_line: int,
         end_line: int,
         content: str,
-    ) -> retrieval._ExpandedResult:
-        return retrieval._ExpandedResult(
+    ) -> core_types._ExpandedResult:
+        return core_types._ExpandedResult(
             chunk_ids=[chunk_id],
             file_path=Path("App.java"),
             start_line=start_line,
@@ -488,7 +493,7 @@ def test_expand_ranked_chunk_preserves_legacy_raw_and_exact_context_content(
 
     source_lines = source.splitlines()
     assert source_lines[2:5] == ["three", "four", ""]
-    assert retrieval.expand_lines(source_lines, 3, 4, 0, 1) == (
+    assert chunker.expand_lines(source_lines, 3, 4, 0, 1) == (
         3,
         5,
         "three\nfour\n",
@@ -1121,7 +1126,7 @@ def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
     config = DEFAULT_CONFIG
     index_dir = index_dir_for(repo)
     store = SQLiteStore(index_dir / "index.sqlite")
-    original_tokens = retrieval._dedupe(retrieval.tokenize_query(query))
+    original_tokens = ordering.dedupe_lowered(tokenizer.tokenize_query(query))
     deleted_ids = store.deleted_chunk_ids()
     initial_candidates, _, _ = retrieval._initial_candidates(
         index_dir,
@@ -5742,7 +5747,7 @@ def test_identifier_role_boosts_preserve_java_executor_over_service_directory_la
                 score_parts={"semantic": 0.70, "path_symbol": 5.0, "direct_text": 0.9},
             ),
         },
-        retrieval.tokenize_query("PageAppCatalogQueryExe fillCanApplyFilter"),
+        tokenizer.tokenize_query("PageAppCatalogQueryExe fillCanApplyFilter"),
         "PageAppCatalogQueryExe fillCanApplyFilter",
     )
 
@@ -5800,7 +5805,7 @@ def test_path_role_service_hint_treats_java_impl_as_service_without_mismatch(
                 score_parts={"semantic": 0.65, "path_symbol": 5.0, "direct_text": 0.7},
             ),
         },
-        retrieval.tokenize_query("auth service current user"),
+        tokenizer.tokenize_query("auth service current user"),
         "auth service current user",
     )
 
@@ -5860,7 +5865,7 @@ def test_path_role_mismatch_penalty_does_not_hide_strong_identifier_match(
                 score_parts={"semantic": 0.55, "path_symbol": 2.5, "direct_text": 0.85},
             ),
         },
-        retrieval.tokenize_query("useAuthStore register"),
+        tokenizer.tokenize_query("useAuthStore register"),
         "useAuthStore register",
     )
 
@@ -5916,7 +5921,7 @@ def _rank_generic_noise_chunks(
     score_parts: dict[str, dict[str, float]],
     tokens: list[str],
     query: str,
-) -> list[retrieval._RankedChunk]:
+) -> list[core_types._RankedChunk]:
     store = SQLiteStore(tmp_path / "index.sqlite")
     store.initialize()
     for chunk in chunks:
@@ -5967,7 +5972,7 @@ def test_generic_intent_rerank_prefers_config_save_logic_over_yaml_artifacts(
             "settings-form": {"semantic": 0.42, "lexical": 0.42, "path_symbol": 2.0, "direct_text": 0.55},
             "docker-yaml": {"semantic": 0.80, "lexical": 0.80, "path_symbol": 3.0, "direct_text": 0.90},
         },
-        retrieval.tokenize_query(query),
+        tokenizer.tokenize_query(query),
         query,
     )
     by_id = {item.chunk.chunk_id: item for item in ranked}
@@ -6004,7 +6009,7 @@ def test_generic_intent_rerank_preserves_deployment_config_queries(
             "compose": {"semantic": 0.55, "lexical": 0.55, "path_symbol": 2.5, "direct_text": 0.70},
             "service": {"semantic": 0.60, "lexical": 0.60, "path_symbol": 2.0, "direct_text": 0.70},
         },
-        retrieval.tokenize_query(query),
+        tokenizer.tokenize_query(query),
         query,
     )
 
@@ -6502,7 +6507,7 @@ def test_frontend_score_parts_rank_feature_entrypoint_over_broad_utility(
                 "direct_text": 0.60,
             },
         },
-        retrieval.tokenize_query(query),
+        tokenizer.tokenize_query(query),
         query,
     )
     by_id = {item.chunk.chunk_id: item for item in ranked}
@@ -6548,7 +6553,7 @@ def test_frontend_score_parts_keep_implementation_utility_above_view(
                 "direct_text": 0.50,
             },
         },
-        retrieval.tokenize_query(query),
+        tokenizer.tokenize_query(query),
         query,
     )
     by_id = {item.chunk.chunk_id: item for item in ranked}
@@ -6606,7 +6611,7 @@ def test_frontend_direct_entrypoint_name_match_lifts_target_view_over_sibling(
                 "direct_text": 0.20,
             },
         },
-        retrieval.tokenize_query(query),
+        tokenizer.tokenize_query(query),
         query,
     )
     by_id = {item.chunk.chunk_id: item for item in ranked}
@@ -6657,7 +6662,7 @@ def test_frontend_score_parts_demote_temp_and_lockfiles_for_feature_queries(
             "scratch": {"semantic": 0.75, "lexical": 0.75, "path_symbol": 2.0, "direct_text": 0.90},
             "lockfile": {"semantic": 0.65, "lexical": 0.65, "path_symbol": 2.0, "direct_text": 0.85},
         },
-        retrieval.tokenize_query(query),
+        tokenizer.tokenize_query(query),
         query,
     )
     by_id = {item.chunk.chunk_id: item for item in ranked}
@@ -6726,7 +6731,7 @@ def test_frontend_score_parts_push_strong_lockfile_out_of_feature_top_neighborho
             "image-store": {"semantic": 0.32, "lexical": 0.32, "path_symbol": 1.5, "direct_text": 0.40},
             "lockfile": {"semantic": 0.95, "lexical": 0.95, "path_symbol": 2.0, "direct_text": 1.0},
         },
-        retrieval.tokenize_query(query),
+        tokenizer.tokenize_query(query),
         query,
     )
     ranked_ids = [item.chunk.chunk_id for item in ranked]
@@ -6799,7 +6804,7 @@ def test_frontend_score_parts_are_absent_in_python_like_view_service_pool(
             "python-view": {"semantic": 0.60, "lexical": 0.60, "path_symbol": 2.0},
             "python-service": {"semantic": 0.55, "lexical": 0.55, "path_symbol": 2.0},
         },
-        retrieval.tokenize_query("image scan reader generate decode camera"),
+        tokenizer.tokenize_query("image scan reader generate decode camera"),
         "image scan reader generate decode camera",
     )
 
@@ -7095,7 +7100,7 @@ def test_generic_noise_explicit_dependency_query_does_not_penalize_lockfile(
         tmp_path,
         [lockfile],
         {"lockfile": {"lexical": 0.8, "direct_text": 0.7}},
-        retrieval.tokenize_query("package dependency lock versions"),
+        tokenizer.tokenize_query("package dependency lock versions"),
         "package dependency lock versions",
     )
 
@@ -7121,7 +7126,7 @@ def test_generic_noise_explicit_go_sum_query_does_not_penalize_lockfile(
         tmp_path,
         [lockfile],
         {"lockfile": {"lexical": 0.8, "direct_text": 0.7}},
-        retrieval.tokenize_query(query),
+        tokenizer.tokenize_query(query),
         query,
     )
 
@@ -7235,7 +7240,7 @@ def test_generic_intent_demotes_generated_history_for_scan_logic(
             "history-service": {"semantic": 0.45, "lexical": 0.45, "path_symbol": 2.0, "direct_text": 0.65},
             "history-output": {"semantic": 0.75, "lexical": 0.75, "path_symbol": 2.5, "direct_text": 0.85},
         },
-        retrieval.tokenize_query(query),
+        tokenizer.tokenize_query(query),
         query,
     )
     by_id = {item.chunk.chunk_id: item for item in ranked}
@@ -7270,7 +7275,7 @@ def test_generic_intent_download_logic_prefers_route_over_stored_images(
             "download-route": {"semantic": 0.40, "lexical": 0.40, "path_symbol": 2.0, "direct_text": 0.70},
             "image-artifact": {"semantic": 0.72, "lexical": 0.72, "path_symbol": 2.5, "direct_text": 0.85},
         },
-        retrieval.tokenize_query(query),
+        tokenizer.tokenize_query(query),
         query,
     )
 
@@ -7313,7 +7318,7 @@ def test_generic_intent_does_not_lift_command_over_config_source(
                 "direct_text": 1.0,
             },
         },
-        retrieval.tokenize_query(query),
+        tokenizer.tokenize_query(query),
         query,
     )
     by_id = {item.chunk.chunk_id: item for item in ranked}
@@ -7360,7 +7365,7 @@ def test_generic_intent_artifact_only_query_does_not_lift_view_over_utility(
                 "direct_text": 1.0,
             },
         },
-        retrieval.tokenize_query(query),
+        tokenizer.tokenize_query(query),
         query,
     )
     by_id = {item.chunk.chunk_id: item for item in ranked}
@@ -7384,7 +7389,7 @@ def test_generic_noise_does_not_treat_frontend_view_as_template_noise(
         tmp_path,
         [view],
         {"entity-view": {"lexical": 0.8, "direct_text": 0.7}},
-        retrieval.tokenize_query("entity generate TypeScript class interface"),
+        tokenizer.tokenize_query("entity generate TypeScript class interface"),
         "entity generate TypeScript class interface",
     )
 
@@ -7498,7 +7503,7 @@ def test_rerank_sort_uses_role_priority_for_noise_level_score_ties() -> None:
         content="commands settings persistence save load project config app settings",
         chunk_type="generic",
     )
-    near_tie_preferred_role = retrieval._RankedChunk(
+    near_tie_preferred_role = core_types._RankedChunk(
         chunk=generic,
         score=0.92,
         score_parts={"role_priority": 5.0, "rerank_score": 1.07985},
@@ -7508,7 +7513,7 @@ def test_rerank_sort_uses_role_priority_for_noise_level_score_ties() -> None:
         evidence_class="original_direct",
         evidence_priority=0,
     )
-    near_tie_detail_role = retrieval._RankedChunk(
+    near_tie_detail_role = core_types._RankedChunk(
         chunk=detail,
         score=1.05,
         score_parts={"role_priority": 6.0, "rerank_score": 1.08},
@@ -7518,7 +7523,7 @@ def test_rerank_sort_uses_role_priority_for_noise_level_score_ties() -> None:
         evidence_class="original_direct",
         evidence_priority=0,
     )
-    clear_winner = retrieval._RankedChunk(
+    clear_winner = core_types._RankedChunk(
         chunk=detail,
         score=1.05,
         score_parts={"role_priority": 6.0, "rerank_score": 1.09},
@@ -7537,7 +7542,7 @@ def test_rerank_sort_uses_role_priority_for_noise_level_score_ties() -> None:
         [clear_winner, near_tie_preferred_role],
         key=retrieval._ranked_chunk_sort_key,
     )
-    expanded_near_tie_preferred_role = retrieval._ExpandedResult(
+    expanded_near_tie_preferred_role = core_types._ExpandedResult(
         chunk_ids=["settings"],
         file_path=Path("src-tauri/src/settings.rs"),
         start_line=1,
@@ -7552,7 +7557,7 @@ def test_rerank_sort_uses_role_priority_for_noise_level_score_ties() -> None:
         evidence_class="original_direct",
         evidence_priority=0,
     )
-    expanded_near_tie_detail_role = retrieval._ExpandedResult(
+    expanded_near_tie_detail_role = core_types._ExpandedResult(
         chunk_ids=["commands"],
         file_path=Path("src-tauri/src/commands.rs"),
         start_line=1,
@@ -7637,7 +7642,7 @@ def test_identifier_intent_ranks_state_store_above_related_frontend_files(
                 score_parts={"semantic": 0.60, "path_symbol": 2.5, "direct_text": 0.8},
             ),
         },
-        retrieval.tokenize_query("frontend useAuthStore login register fetchCurrentUser Pinia"),
+        tokenizer.tokenize_query("frontend useAuthStore login register fetchCurrentUser Pinia"),
         "frontend useAuthStore login register fetchCurrentUser Pinia",
     )
 
@@ -7711,7 +7716,7 @@ def test_identifier_intent_ranks_composable_above_chat_types_and_views(
                 score_parts={"semantic": 0.60, "path_symbol": 3.0, "direct_text": 0.8},
             ),
         },
-        retrieval.tokenize_query("frontend useSseConnection EventSource chat composable"),
+        tokenizer.tokenize_query("frontend useSseConnection EventSource chat composable"),
         "frontend useSseConnection EventSource chat composable",
     )
 
@@ -7769,7 +7774,7 @@ def test_identifier_intent_ranks_storage_source_above_unrelated_cli_entrypoint(
                 score_parts={"semantic": 0.50, "path_symbol": 2.0, "direct_text": 0.8},
             ),
         },
-        retrieval.tokenize_query("UploadHandler MultiUpload multipart file storage Save"),
+        tokenizer.tokenize_query("UploadHandler MultiUpload multipart file storage Save"),
         "UploadHandler MultiUpload multipart file storage Save",
     )
 
@@ -7859,7 +7864,7 @@ def test_identifier_intent_ranks_rust_frontend_entry_when_query_names_frontend(
                 },
             ),
         },
-        retrieval.tokenize_query("invoke apply_dev restore_clean frontend ProjectSwitcher"),
+        tokenizer.tokenize_query("invoke apply_dev restore_clean frontend ProjectSwitcher"),
         "invoke apply_dev restore_clean frontend ProjectSwitcher",
     )
 
@@ -8011,7 +8016,7 @@ def test_role_rerank_exact_handler_file_hint_beats_same_subproject_noise(
     ranked = retrieval._rank_chunks(
         store,
         candidates,
-        retrieval.tokenize_query(query),
+        tokenizer.tokenize_query(query),
         query,
     )
 
@@ -8155,7 +8160,7 @@ def test_role_rerank_go_service_file_hint_beats_same_subproject_repository_noise
     ranked = retrieval._rank_chunks(
         store,
         candidates,
-        retrieval.tokenize_query(query),
+        tokenizer.tokenize_query(query),
         query,
     )
 
@@ -8299,7 +8304,7 @@ def test_role_rerank_explicit_source_file_path_hint_beats_service_noise(
     ranked = retrieval._rank_chunks(
         store,
         candidates,
-        retrieval.tokenize_query(query),
+        tokenizer.tokenize_query(query),
         query,
     )
 
@@ -8737,7 +8742,7 @@ def test_non_readme_markdown_display_priority_is_lower_than_code(
 ) -> None:
     code_results, evidence_anchors = retrieval._split_code_results_and_evidence_anchors(
         [
-            retrieval._ExpandedResult(
+            core_types._ExpandedResult(
                 chunk_ids=["readme"],
                 file_path=Path("README.md"),
                 start_line=1,
@@ -8755,7 +8760,7 @@ def test_non_readme_markdown_display_priority_is_lower_than_code(
                 evidence_class="original_direct",
                 evidence_priority=0,
             ),
-            retrieval._ExpandedResult(
+            core_types._ExpandedResult(
                 chunk_ids=["risks"],
                 file_path=Path("RISKS.md"),
                 start_line=1,
@@ -8773,7 +8778,7 @@ def test_non_readme_markdown_display_priority_is_lower_than_code(
                 evidence_class="original_direct",
                 evidence_priority=0,
             ),
-            retrieval._ExpandedResult(
+            core_types._ExpandedResult(
                 chunk_ids=["controller"],
                 file_path=Path("src/main/java/com/example/ApprovalController.java"),
                 start_line=1,
@@ -8816,7 +8821,7 @@ def test_evidence_anchor_kind_classifies_supported_paths() -> None:
 
 
 def test_evidence_anchors_do_not_consume_code_result_slots() -> None:
-    readme = retrieval._ExpandedResult(
+    readme = core_types._ExpandedResult(
         chunk_ids=["readme"],
         file_path=Path("README.md"),
         start_line=1,
@@ -8831,7 +8836,7 @@ def test_evidence_anchors_do_not_consume_code_result_slots() -> None:
         evidence_class="original_direct",
         evidence_priority=0,
     )
-    risks = retrieval._ExpandedResult(
+    risks = core_types._ExpandedResult(
         chunk_ids=["risks"],
         file_path=Path("RISKS.md"),
         start_line=1,
@@ -8846,7 +8851,7 @@ def test_evidence_anchors_do_not_consume_code_result_slots() -> None:
         evidence_class="original_direct",
         evidence_priority=0,
     )
-    pom = retrieval._ExpandedResult(
+    pom = core_types._ExpandedResult(
         chunk_ids=["pom"],
         file_path=Path("pom.xml"),
         start_line=1,
@@ -8861,7 +8866,7 @@ def test_evidence_anchors_do_not_consume_code_result_slots() -> None:
         evidence_class="original_direct",
         evidence_priority=0,
     )
-    controller = retrieval._ExpandedResult(
+    controller = core_types._ExpandedResult(
         chunk_ids=["controller"],
         file_path=Path("src/main/java/com/example/ApprovalController.java"),
         start_line=1,
@@ -8890,7 +8895,7 @@ def test_evidence_anchors_do_not_consume_code_result_slots() -> None:
 
 
 def test_evidence_anchors_do_not_steal_when_many_code_results_exist() -> None:
-    anchor = retrieval._ExpandedResult(
+    anchor = core_types._ExpandedResult(
         chunk_ids=["readme"],
         file_path=Path("README.md"),
         start_line=1,
@@ -8906,7 +8911,7 @@ def test_evidence_anchors_do_not_steal_when_many_code_results_exist() -> None:
         evidence_priority=0,
     )
     code_items = [
-        retrieval._ExpandedResult(
+        core_types._ExpandedResult(
             chunk_ids=[f"code-{index}"],
             file_path=Path(f"src/main/java/com/example/Service{index}.java"),
             start_line=1,
@@ -8941,7 +8946,7 @@ def test_evidence_anchors_do_not_steal_when_many_code_results_exist() -> None:
 
 
 def test_only_evidence_anchors_leave_code_results_empty() -> None:
-    readme = retrieval._ExpandedResult(
+    readme = core_types._ExpandedResult(
         chunk_ids=["readme"],
         file_path=Path("README.md"),
         start_line=1,
@@ -8956,7 +8961,7 @@ def test_only_evidence_anchors_leave_code_results_empty() -> None:
         evidence_class="original_direct",
         evidence_priority=0,
     )
-    risks = retrieval._ExpandedResult(
+    risks = core_types._ExpandedResult(
         chunk_ids=["risks"],
         file_path=Path("RISKS.md"),
         start_line=1,
@@ -8996,7 +9001,7 @@ def test_evidence_anchor_top_k_preserves_existing_formula(
 def test_evidence_anchors_dedupe_by_kind_and_file_path() -> None:
     split_code, split_anchors = retrieval._split_code_results_and_evidence_anchors(
         [
-            retrieval._ExpandedResult(
+            core_types._ExpandedResult(
                 chunk_ids=["readme-0"],
                 file_path=Path("README.md"),
                 start_line=1,
@@ -9011,7 +9016,7 @@ def test_evidence_anchors_dedupe_by_kind_and_file_path() -> None:
                 evidence_class="original_direct",
                 evidence_priority=0,
             ),
-            retrieval._ExpandedResult(
+            core_types._ExpandedResult(
                 chunk_ids=["readme-1"],
                 file_path=Path("README.md"),
                 start_line=20,
@@ -9026,7 +9031,7 @@ def test_evidence_anchors_dedupe_by_kind_and_file_path() -> None:
                 evidence_class="original_direct",
                 evidence_priority=0,
             ),
-            retrieval._ExpandedResult(
+            core_types._ExpandedResult(
                 chunk_ids=["controller"],
                 file_path=Path("src/main/java/com/example/ApprovalController.java"),
                 start_line=1,
@@ -9079,7 +9084,7 @@ def test_evidence_anchors_do_not_contribute_to_summary(tmp_path: Path) -> None:
 
     code_results, evidence_anchors = retrieval._split_code_results_and_evidence_anchors(
         [
-            retrieval._ExpandedResult(
+            core_types._ExpandedResult(
                 chunk_ids=["readme"],
                 file_path=Path("README.md"),
                 start_line=1,
@@ -9094,7 +9099,7 @@ def test_evidence_anchors_do_not_contribute_to_summary(tmp_path: Path) -> None:
                 evidence_class="original_direct",
                 evidence_priority=0,
             ),
-            retrieval._ExpandedResult(
+            core_types._ExpandedResult(
                 chunk_ids=["risks"],
                 file_path=Path("RISKS.md"),
                 start_line=1,
@@ -9109,7 +9114,7 @@ def test_evidence_anchors_do_not_contribute_to_summary(tmp_path: Path) -> None:
                 evidence_class="original_direct",
                 evidence_priority=0,
             ),
-            retrieval._ExpandedResult(
+            core_types._ExpandedResult(
                 chunk_ids=["pom"],
                 file_path=Path("pom.xml"),
                 start_line=1,
@@ -9124,7 +9129,7 @@ def test_evidence_anchors_do_not_contribute_to_summary(tmp_path: Path) -> None:
                 evidence_class="original_direct",
                 evidence_priority=0,
             ),
-            retrieval._ExpandedResult(
+            core_types._ExpandedResult(
                 chunk_ids=["controller"],
                 file_path=controller.file_path,
                 start_line=1,
@@ -10781,12 +10786,11 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
     reasons should all come from the same winner (highest rerank_score side).
     """
     from context_search_tool.retrieval import (
-        _ExpandedResult,
         _merge_expanded_result,
     )
 
     # Create two overlapping results
-    left = _ExpandedResult(
+    left = core_types._ExpandedResult(
         chunk_ids=["chunk-1"],
         file_path=Path("Test.java"),
         start_line=1,
@@ -10815,7 +10819,7 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
         evidence_priority=4,
     )
 
-    right = _ExpandedResult(
+    right = core_types._ExpandedResult(
         chunk_ids=["chunk-2"],
         file_path=Path("Test.java"),
         start_line=8,
@@ -10861,11 +10865,10 @@ def test_rerank_merge_field_consistency(tmp_path: Path) -> None:
 
 def test_rerank_merge_frontend_import_boost_is_winner_scoped() -> None:
     from context_search_tool.retrieval import (
-        _ExpandedResult,
         _merge_expanded_result,
     )
 
-    left = _ExpandedResult(
+    left = core_types._ExpandedResult(
         chunk_ids=["support"],
         file_path=Path("src/services/imageDetection.ts"),
         start_line=1,
@@ -10884,7 +10887,7 @@ def test_rerank_merge_frontend_import_boost_is_winner_scoped() -> None:
         evidence_class="planner_relation",
         evidence_priority=4,
     )
-    right = _ExpandedResult(
+    right = core_types._ExpandedResult(
         chunk_ids=["winner"],
         file_path=Path("src/services/imageDetection.ts"),
         start_line=4,
@@ -10910,9 +10913,7 @@ def test_rerank_merge_frontend_import_boost_is_winner_scoped() -> None:
 
 
 def test_merge_score_parts_preserves_stronger_penalty() -> None:
-    from context_search_tool.retrieval import _merge_score_parts
-
-    merged = _merge_score_parts(
+    merged = evidence_merge.merge_score_parts(
         {"route_sibling_penalty": -0.18, "role_boost": 0.12},
         {"route_sibling_penalty": -0.12, "role_boost": 0.18},
     )
@@ -10923,11 +10924,10 @@ def test_merge_score_parts_preserves_stronger_penalty() -> None:
 
 def test_merge_overlapping_results_uses_role_priority_tiebreak() -> None:
     from context_search_tool.retrieval import (
-        _ExpandedResult,
         _merge_overlapping_results,
     )
 
-    service = _ExpandedResult(
+    service = core_types._ExpandedResult(
         chunk_ids=["service"],
         file_path=Path("ZService.java"),
         start_line=1,
@@ -10947,7 +10947,7 @@ def test_merge_overlapping_results_uses_role_priority_tiebreak() -> None:
         evidence_class="original_direct",
         evidence_priority=0,
     )
-    handler = _ExpandedResult(
+    handler = core_types._ExpandedResult(
         chunk_ids=["handler"],
         file_path=Path("AHandler.java"),
         start_line=1,
@@ -11049,7 +11049,7 @@ def test_cohort_rerank_demotes_cross_project_unit_candidates_against_top1_anchor
                 score_parts={"semantic": 0.45, "path_symbol": 4.0, "direct_text": 0.8},
             ),
         },
-        retrieval.tokenize_query("FundService CollectNav BatchCollectNav fund service"),
+        tokenizer.tokenize_query("FundService CollectNav BatchCollectNav fund service"),
         "FundService CollectNav BatchCollectNav fund service",
     )
 

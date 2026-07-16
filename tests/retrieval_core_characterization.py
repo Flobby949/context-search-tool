@@ -16,7 +16,7 @@ from xml.etree import ElementTree
 
 import numpy as np
 
-from context_search_tool import retrieval
+from context_search_tool import retrieval, tokenizer
 from context_search_tool.config import DEFAULT_CONFIG, ToolConfig
 from context_search_tool.context_pack import (
     build_context_pack,
@@ -902,7 +902,7 @@ class StageLedgerRecorder:
             yield
 
     def _patch_query_understanding(self, stack: ExitStack) -> None:
-        original_tokenize = retrieval.tokenize_query
+        original_tokenize = tokenizer.tokenize_query
         original_variants = retrieval.build_query_variants
         original_expand = retrieval.expand_query_plan_tokens
         original_hints = retrieval.planner_hint_tokens
@@ -939,7 +939,7 @@ class StageLedgerRecorder:
             recorder.query_understanding["hint_tokens"] = list(result)
             return result
 
-        stack.enter_context(patch.object(retrieval, "tokenize_query", tokenize))
+        stack.enter_context(patch.object(tokenizer, "tokenize_query", tokenize))
         stack.enter_context(patch.object(retrieval, "build_query_variants", variants))
         stack.enter_context(patch.object(retrieval, "expand_query_plan_tokens", expand))
         stack.enter_context(patch.object(retrieval, "planner_hint_tokens", hints))

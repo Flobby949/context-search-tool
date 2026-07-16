@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, overload
 
-from context_search_tool.chunker import expand_lines
+from context_search_tool import chunker, sqlite_store, tokenizer
 from context_search_tool.config import ToolConfig
 from context_search_tool.embeddings import provider_from_config
 from context_search_tool.frontend_roles import (
@@ -51,6 +51,13 @@ from context_search_tool.query_planner import (
     planner_hint_tokens,
 )
 from context_search_tool.repo_profile import build_repo_profile
+from context_search_tool.retrieval_core import (
+    evidence_merge,
+    file_roles,
+    ordering,
+    relation_policy,
+    types as core_types,
+)
 from context_search_tool.retrieval_trace import (
     RetrievalTrace,
     RetrievalTraceCollector,
@@ -66,16 +73,13 @@ from context_search_tool.retrieval_trace import (
     TraceSelectionReason,
     TraceTerminationReason,
 )
-from context_search_tool.sqlite_store import SQLiteStore
-from context_search_tool.tokenizer import tokenize_query
 from context_search_tool.vector_store import NumpyVectorStore
 
 
 logger = logging.getLogger(__name__)
 
-MAX_EXPANSION_DEPTH = 3
-MAX_EXPANSION_CANDIDATES = 1000
-_MIN_RELATION_CONFIDENCE = 0.5
+MAX_EXPANSION_DEPTH = relation_policy.MAX_EXPANSION_DEPTH
+MAX_EXPANSION_CANDIDATES = relation_policy.MAX_EXPANSION_CANDIDATES
 _RELATION_SCORE_DECAY = 0.8
 
 _CJK_SEQUENCE_RE = re.compile(r"[㐀-鿿]{2,}")
@@ -114,46 +118,14 @@ _JAVA_CONTEXT_STRUCTURAL_TOKENS = {
     "org",
     "net",
 }
-_SOURCE_SUFFIXES = {
-    ".go", ".rs", ".java", ".kt", ".kts", ".scala", ".py", ".pyw",
-    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".c", ".h",
-    ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx", ".cs", ".swift",
-    ".php", ".rb", ".lua", ".dart", ".sh", ".bash", ".zsh", ".fish",
-}
 _FRONTEND_ENTRYPOINT_NAMES = {"main.ts", "main.tsx", "main.js", "main.jsx"}
-_TEMPLATE_SUFFIXES = {".html", ".vue", ".svelte"}
-_DOC_SUFFIXES = {".md", ".mdx", ".rst"}
-_CONFIG_SUFFIXES = {
-    ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".conf",
-    ".properties", ".env", ".xml",
-}
 _SEMANTIC_SCORE_WEIGHT = 0.55
 _PLANNER_SEMANTIC_WEIGHT = 0.85
-_RERANK_SORT_DECIMALS = 3
-_INDEXED_LOCKFILE_NAMES = {
-    "cargo.lock",
-    "go.sum",
-    "package-lock.json",
-    "pnpm-lock.yaml",
-    "pnpm-lock.yml",
-    "yarn.lock",
-}
-_LOCKFILE_QUERY_TOKENS = {
-    "dependencies",
-    "dependency",
-    "lock",
-    "lockfile",
-    "lockfiles",
-    "package",
-    "packages",
-    "version",
-    "versions",
-}
 _FRONTEND_IMPORT_SCAN_TOP_K = 10
 _FRONTEND_IMPORT_SCAN_FILE_LIMIT = 3
 _FRONTEND_IMPORT_MAX_FILE_BYTES = 50_000
 _FRONTEND_IMPORT_SUPPORT_BOOST = 0.30
-_FRONTEND_IMPORT_ANCHOR_EPSILON = 10 ** -_RERANK_SORT_DECIMALS
+_FRONTEND_IMPORT_ANCHOR_EPSILON = 10 ** -ordering.RERANK_SORT_DECIMALS
 _FRONTEND_IMPORT_ANCHOR_ROLES = {
     "view_page",
     "layout_component",
@@ -218,35 +190,11 @@ class TracedQueryBundle:
 
 
 @dataclass(frozen=True)
-class _RankedChunk:
-    chunk: DocumentChunk
-    score: float
-    score_parts: dict[str, float]
-    reasons: list[str]
-    rank_tier: int
-    rerank_score: float
-    evidence_class: str
-    evidence_priority: int
-    semantic_matches: list[SemanticMatch] = field(default_factory=list)
-    pre_ceiling_rerank_score: float = 0.0
-    was_ceiling_clamped: bool = False
-
-
-@dataclass(frozen=True)
 class _ChunkRole:
     name: str
     priority: int
     boost: float
     penalty: float = 0.0
-
-
-@dataclass(frozen=True)
-class _GenericFileRole:
-    name: str
-    noise_level: str
-    source_boost: float = 0.0
-    penalty: float = 0.0
-    penalty_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -265,32 +213,10 @@ class _SpringPathImplementor:
 
 
 @dataclass(frozen=True)
-class _ExpandedResult:
-    chunk_ids: list[str]
-    file_path: Path
-    start_line: int
-    end_line: int
-    content: str
-    score: float
-    score_parts: dict[str, float]
-    reasons: list[str]
-    followup_keywords: list[str]
-    rank_tier: int
-    rerank_score: float
-    evidence_class: str
-    evidence_priority: int
-    semantic_matches: list[SemanticMatch] = field(default_factory=list)
-    pre_ceiling_rerank_score: float = 0.0
-    was_ceiling_clamped: bool = False
-    spans: tuple[RetrievalSpan, ...] = ()
-    _context_content: str | None = field(default=None, repr=False, compare=False)
-
-
-@dataclass(frozen=True)
 class _FinalTraceInput:
     kind: TraceSelectionKind
     reason: TraceSelectionReason
-    item: _ExpandedResult
+    item: core_types._ExpandedResult
 
 
 @dataclass(frozen=True)
@@ -387,7 +313,7 @@ def _trace_sources(candidate: RetrievalCandidate) -> tuple[str, ...]:
 
 
 def _trace_candidate_observations(
-    store: SQLiteStore,
+    store: sqlite_store.SQLiteStore,
     candidates: list[RetrievalCandidate],
     limit: int,
 ) -> tuple[TraceCandidate, ...]:
@@ -441,7 +367,7 @@ def _finish_candidate_stage(
     collector: RetrievalTraceCollector | None,
     token: StageToken | None,
     *,
-    store: SQLiteStore,
+    store: sqlite_store.SQLiteStore,
     candidates: list[RetrievalCandidate],
     source_keys: tuple[str, ...] = (),
 ) -> None:
@@ -463,7 +389,7 @@ def _finish_candidate_stage(
 
 
 def _trace_ranked_observations(
-    ranked: list[_RankedChunk],
+    ranked: list[core_types._RankedChunk],
     candidates: dict[str, RetrievalCandidate],
     limit: int,
 ) -> tuple[TraceCandidate, ...]:
@@ -489,7 +415,7 @@ def _trace_ranked_observations(
 
 
 def _trace_expanded_observations(
-    expanded: list[_ExpandedResult],
+    expanded: list[core_types._ExpandedResult],
     candidates: dict[str, RetrievalCandidate],
     limit: int,
 ) -> tuple[TraceCandidate, ...]:
@@ -500,14 +426,14 @@ def _trace_expanded_observations(
             for chunk_id in item.chunk_ids
             if chunk_id in candidates
         ]
-        sources = _ordered_unique(
+        sources = ordering.ordered_unique_preserving_case(
             [
                 source
                 for candidate in source_candidates
                 for source in _trace_sources(candidate)
             ]
         )
-        variant_ids = _ordered_unique(
+        variant_ids = ordering.ordered_unique_preserving_case(
             [
                 match.variant_id
                 for candidate in source_candidates
@@ -537,7 +463,7 @@ def _is_trace_adjustment(name: str) -> bool:
 
 
 def _trace_adjustments(
-    item: _ExpandedResult,
+    item: core_types._ExpandedResult,
     limit: int,
 ) -> tuple[tuple[TraceAdjustment, ...], int]:
     values = [
@@ -570,7 +496,7 @@ def _trace_final_selections(
             if chunk_id in candidates
         ]
         sources = tuple(
-            _ordered_unique(
+            ordering.ordered_unique_preserving_case(
                 [
                     source
                     for candidate in source_candidates
@@ -579,7 +505,7 @@ def _trace_final_selections(
             )
         )
         variant_ids = tuple(
-            _ordered_unique(
+            ordering.ordered_unique_preserving_case(
                 [
                     match.variant_id
                     for candidate in source_candidates
@@ -665,7 +591,7 @@ def query_repository(
     trace_collector: RetrievalTraceCollector | None = None,
 ) -> QueryBundle:
     repo = repo.resolve()
-    original_tokens = _dedupe(tokenize_query(query))
+    original_tokens = ordering.dedupe_lowered(tokenizer.tokenize_query(query))
     tokens = original_tokens
     plan = QueryPlan(original_query=query)
     query_variants = [QueryVariant("original", " ".join(query.split()), "original")]
@@ -696,7 +622,7 @@ def query_repository(
 
     assert_manifest_compatible(repo, config)
 
-    store = SQLiteStore(db_path)
+    store = sqlite_store.SQLiteStore(db_path)
     try:
         deleted_ids = store.deleted_chunk_ids()
     except sqlite3.Error:
@@ -737,7 +663,7 @@ def query_repository(
     if discarded_variants:
         plan = replace(
             plan,
-            discarded_hints=_ordered_unique(
+            discarded_hints=ordering.ordered_unique_preserving_case(
                 [*plan.discarded_hints, *discarded_variants]
             ),
         )
@@ -1025,7 +951,7 @@ def query_repository(
                 "rerank_score": item.rerank_score,
                 "evidence_priority": float(item.evidence_priority),
             },
-            reasons=_dedupe(item.reasons + result_reasons[index]),
+            reasons=ordering.dedupe_lowered(item.reasons + result_reasons[index]),
             followup_keywords=item.followup_keywords,
             semantic_matches=item.semantic_matches,
             spans=item.spans,
@@ -1060,38 +986,38 @@ def query_repository(
 
 @overload
 def _split_code_results_and_evidence_anchors(
-    expanded: list[_ExpandedResult],
+    expanded: list[core_types._ExpandedResult],
     *,
     final_top_k: int,
     anchor_top_k: int,
     collect_trace: Literal[False] = False,
-) -> tuple[list[_ExpandedResult], list[EvidenceAnchor]]: ...
+) -> tuple[list[core_types._ExpandedResult], list[EvidenceAnchor]]: ...
 
 
 @overload
 def _split_code_results_and_evidence_anchors(
-    expanded: list[_ExpandedResult],
+    expanded: list[core_types._ExpandedResult],
     *,
     final_top_k: int,
     anchor_top_k: int,
     collect_trace: Literal[True],
 ) -> tuple[
-    list[_ExpandedResult],
+    list[core_types._ExpandedResult],
     list[EvidenceAnchor],
     _FinalTraceDecisions,
 ]: ...
 
 
 def _split_code_results_and_evidence_anchors(
-    expanded: list[_ExpandedResult],
+    expanded: list[core_types._ExpandedResult],
     *,
     final_top_k: int,
     anchor_top_k: int,
     collect_trace: bool = False,
 ) -> (
-    tuple[list[_ExpandedResult], list[EvidenceAnchor]]
+    tuple[list[core_types._ExpandedResult], list[EvidenceAnchor]]
     | tuple[
-        list[_ExpandedResult],
+        list[core_types._ExpandedResult],
         list[EvidenceAnchor],
         _FinalTraceDecisions,
     ]
@@ -1104,7 +1030,7 @@ def _split_code_results_and_evidence_anchors(
         if collect_trace
         else None
     )
-    code_results: list[_ExpandedResult] = []
+    code_results: list[core_types._ExpandedResult] = []
     evidence_anchors: list[EvidenceAnchor] = []
     seen_anchor_keys: set[tuple[str, Path]] = set()
 
@@ -1164,7 +1090,7 @@ def _split_code_results_and_evidence_anchors(
 
 
 def _evidence_anchor_from_expanded(
-    item: _ExpandedResult,
+    item: core_types._ExpandedResult,
     anchor_kind: str,
 ) -> EvidenceAnchor:
     return EvidenceAnchor(
@@ -1193,8 +1119,8 @@ def evidence_anchor_top_k(max_results: int) -> int:
 
 
 def _summarize_results(
-    store: SQLiteStore,
-    visible_results: list[_ExpandedResult],
+    store: sqlite_store.SQLiteStore,
+    visible_results: list[core_types._ExpandedResult],
 ) -> tuple[RetrievalSummary, list[list[str]]]:
     summary = RetrievalSummary()
     result_reasons: list[list[str]] = []
@@ -1249,16 +1175,16 @@ def _summarize_results(
                 )
             )
 
-        result_reasons.append(_dedupe(chunk_reasons))
+        result_reasons.append(ordering.dedupe_lowered(chunk_reasons))
         summary.entry_points.extend(entry_points)
         summary.implementation.extend(impl)
         summary.related_types.extend(related)
         summary.possibly_legacy.extend(legacy)
 
-    summary.entry_points = _ordered_unique(summary.entry_points)
-    summary.implementation = _ordered_unique(summary.implementation)
-    summary.related_types = _ordered_unique(summary.related_types)
-    summary.possibly_legacy = _ordered_unique(summary.possibly_legacy)
+    summary.entry_points = ordering.ordered_unique_preserving_case(summary.entry_points)
+    summary.implementation = ordering.ordered_unique_preserving_case(summary.implementation)
+    summary.related_types = ordering.ordered_unique_preserving_case(summary.related_types)
+    summary.possibly_legacy = ordering.ordered_unique_preserving_case(summary.possibly_legacy)
     summary.entry_points.sort()
     summary.implementation.sort()
     summary.related_types.sort()
@@ -1279,13 +1205,13 @@ def _summarize_chunk(
 
     endpoint_signals = [signal.name for signal in signals if signal.kind == "endpoint"]
     if endpoint_signals:
-        endpoint.extend(_ordered_unique(endpoint_signals))
+        endpoint.extend(ordering.ordered_unique_preserving_case(endpoint_signals))
     elif _is_controller_name(chunk.file_path.stem) or any(
         _is_controller_name(name) for name in symbol_names
     ):
         endpoint.append(_primary_chunk_name(chunk))
 
-    names = _ordered_unique(
+    names = ordering.ordered_unique_preserving_case(
         [signal.name for signal in signals] + symbol_names + [_primary_chunk_name(chunk)]
     )
     method_impl_names = [
@@ -1307,10 +1233,10 @@ def _summarize_chunk(
         implementation.extend([_primary_chunk_name(chunk)])
 
     return (
-        _ordered_unique(endpoint),
-        _ordered_unique(implementation),
-        _ordered_unique(related_types),
-        _ordered_unique(legacy),
+        ordering.ordered_unique_preserving_case(endpoint),
+        ordering.ordered_unique_preserving_case(implementation),
+        ordering.ordered_unique_preserving_case(related_types),
+        ordering.ordered_unique_preserving_case(legacy),
     )
 
 
@@ -1335,7 +1261,7 @@ def _reasons_for_chunk(
 
 
 def _chunk_has_relation_support(
-    store: SQLiteStore,
+    store: sqlite_store.SQLiteStore,
     chunk: DocumentChunk,
     signals: list[CodeSignal],
 ) -> bool:
@@ -1347,7 +1273,7 @@ def _chunk_has_relation_support(
         except sqlite3.Error:
             continue
 
-    relation_targets = _ordered_unique(
+    relation_targets = ordering.ordered_unique_preserving_case(
         [chunk.file_path.stem] + [signal.name for signal in signals]
     )
     for target_name in relation_targets:
@@ -1358,18 +1284,6 @@ def _chunk_has_relation_support(
             continue
 
     return False
-
-
-def _ordered_unique(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for value in values:
-        normalized = value.lower()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        ordered.append(value)
-    return ordered
 
 
 def _primary_chunk_name(chunk: DocumentChunk) -> str:
@@ -1431,11 +1345,11 @@ def _direct_text_probes(query: str, original_tokens: list[str]) -> list[str]:
         if len(token) >= 3 or _CJK_SEQUENCE_RE.search(token):
             probes.append(token)
 
-    return _dedupe(probes)
+    return ordering.dedupe_lowered(probes)
 
 
 def _direct_text_candidates(
-    store: SQLiteStore,
+    store: sqlite_store.SQLiteStore,
     query: str,
     original_tokens: list[str],
     config: ToolConfig,
@@ -1473,7 +1387,7 @@ def _is_related_type_name(value: str) -> bool:
 
 def _initial_candidates(
     index_dir: Path,
-    store: SQLiteStore,
+    store: sqlite_store.SQLiteStore,
     query: str,
     original_tokens: list[str],
     query_variants: list[QueryVariant],
@@ -1611,7 +1525,7 @@ def _semantic_candidates(
 
 
 def _signal_candidates(
-    store: SQLiteStore,
+    store: sqlite_store.SQLiteStore,
     tokens: list[str],
     config: ToolConfig,
     planner_hint: bool = False,
@@ -1640,7 +1554,7 @@ def _signal_candidates(
 
 
 def _planner_hint_candidates(
-    store: SQLiteStore,
+    store: sqlite_store.SQLiteStore,
     hint_tokens: list[str],
     config: ToolConfig,
 ) -> list[RetrievalCandidate]:
@@ -1676,7 +1590,7 @@ def _planner_hint_candidates(
 
 
 def _anchor_expansion_candidates(
-    store: SQLiteStore,
+    store: sqlite_store.SQLiteStore,
     seed_candidates: list[RetrievalCandidate],
     config: ToolConfig,
     query: str = "",
@@ -1706,7 +1620,7 @@ def _anchor_expansion_candidates(
             anchor_chunk = store.chunk_for_id(candidate.chunk_id)
         except KeyError:
             continue
-        anchor_score = _bounded_score(
+        anchor_score = evidence_merge.bounded_score(
             candidate.score_parts.get("direct_text", candidate.score)
         )
         _add_same_file_anchor_candidates(
@@ -1735,7 +1649,7 @@ def _anchor_expansion_candidates(
 
 
 def _add_same_file_anchor_candidates(
-    store: SQLiteStore,
+    store: sqlite_store.SQLiteStore,
     expanded: dict[str, RetrievalCandidate],
     seed_ids: set[str],
     anchor_chunk: DocumentChunk,
@@ -1765,14 +1679,14 @@ def _should_skip_same_file_anchor_candidate(
     query: str,
     tokens: list[str],
 ) -> bool:
-    role = _generic_file_role(chunk, query, tokens)
+    role = file_roles._generic_file_role(chunk, query, tokens)
     return role.name == "generated_schema" or (
         role.name == "template" and role.penalty > 0
     )
 
 
 def _add_directory_anchor_candidates(
-    store: SQLiteStore,
+    store: sqlite_store.SQLiteStore,
     expanded: dict[str, RetrievalCandidate],
     seed_ids: set[str],
     anchor_chunk: DocumentChunk,
@@ -1834,12 +1748,8 @@ def _evidence_anchor_kind(path: Path) -> str:
     return ""
 
 
-def _is_readme_document(path: Path) -> bool:
-    return path.suffix.lower() == ".md" and path.stem.lower().startswith("readme")
-
-
 def _relation_expansion_candidates(
-    store: SQLiteStore,
+    store: sqlite_store.SQLiteStore,
     seed_candidates: list[RetrievalCandidate],
     config: ToolConfig,
 ) -> list[RetrievalCandidate]:
@@ -1898,7 +1808,9 @@ def _relation_expansion_candidates(
 
     while frontier:
         active_frontier = [
-            source for source in frontier if source[2] < MAX_EXPANSION_DEPTH
+            source
+            for source in frontier
+            if source[2] < relation_policy.MAX_EXPANSION_DEPTH
         ]
         if not active_frontier:
             break
@@ -1917,7 +1829,7 @@ def _relation_expansion_candidates(
         ) in active_frontier:
             next_depth = depth + 1
             for relation in relations_by_source.get(source_signal_id, []):
-                if relation.confidence < _MIN_RELATION_CONFIDENCE:
+                if relation.confidence < relation_policy._MIN_RELATION_CONFIDENCE:
                     continue
                 next_score = (
                     current_score * relation.confidence * _RELATION_SCORE_DECAY
@@ -1936,7 +1848,7 @@ def _relation_expansion_candidates(
         if not relation_steps:
             break
 
-        remaining = MAX_EXPANSION_CANDIDATES - len(expanded_by_chunk)
+        remaining = relation_policy.MAX_EXPANSION_CANDIDATES - len(expanded_by_chunk)
         if remaining <= 0:
             _log_expansion_limit()
             return sorted(
@@ -1956,7 +1868,9 @@ def _relation_expansion_candidates(
             planner_seeded,
             original_seeded,
         ) in relation_steps:
-            remaining = MAX_EXPANSION_CANDIDATES - len(expanded_by_chunk)
+            remaining = (
+                relation_policy.MAX_EXPANSION_CANDIDATES - len(expanded_by_chunk)
+            )
             if remaining <= 0:
                 _log_expansion_limit()
                 return sorted(
@@ -1990,7 +1904,10 @@ def _relation_expansion_candidates(
 
                 if chunk.chunk_id not in seen_chunks:
                     seen_chunks.add(chunk.chunk_id)
-                    if len(expanded_by_chunk) >= MAX_EXPANSION_CANDIDATES:
+                    if (
+                        len(expanded_by_chunk)
+                        >= relation_policy.MAX_EXPANSION_CANDIDATES
+                    ):
                         _log_expansion_limit()
                         return sorted(
                             expanded_by_chunk.values(),
@@ -2045,7 +1962,7 @@ def _relation_expansion_candidates(
 
 
 def _candidate_base_score(candidate: RetrievalCandidate) -> float:
-    return _bounded_score(max(candidate.score, *candidate.score_parts.values(), 0.0))
+    return evidence_merge.bounded_score(max(candidate.score, *candidate.score_parts.values(), 0.0))
 
 
 def _relation_seed_source_priority(score_parts: dict[str, float]) -> int:
@@ -2074,7 +1991,7 @@ def _candidate_relation_seed(candidate: RetrievalCandidate) -> _RelationSeed:
         if not planner_seeded and not original_seeded:
             original_seeded = True
         return _RelationSeed(
-            _bounded_score(relation_score),
+            evidence_merge.bounded_score(relation_score),
             planner_seeded,
             original_seeded,
         )
@@ -2083,7 +2000,7 @@ def _candidate_relation_seed(candidate: RetrievalCandidate) -> _RelationSeed:
     planner_signal_score = candidate.score_parts.get("planner_signal", 0.0)
     if signal_score > 0:
         return _RelationSeed(
-            _bounded_score(signal_score),
+            evidence_merge.bounded_score(signal_score),
             planner_signal_score > 0,
             True,
         )
@@ -2091,7 +2008,7 @@ def _candidate_relation_seed(candidate: RetrievalCandidate) -> _RelationSeed:
     direct_text_score = candidate.score_parts.get("direct_text", 0.0)
     if direct_text_score > 0:
         return _RelationSeed(
-            _bounded_score(direct_text_score),
+            evidence_merge.bounded_score(direct_text_score),
             False,
             True,
         )
@@ -2103,14 +2020,14 @@ def _candidate_relation_seed(candidate: RetrievalCandidate) -> _RelationSeed:
     )
     if anchored_score > 0:
         return _RelationSeed(
-            _bounded_score(anchored_score),
+            evidence_merge.bounded_score(anchored_score),
             False,
             True,
         )
 
     if planner_signal_score > 0:
         return _RelationSeed(
-            _bounded_score(planner_signal_score) * 0.65,
+            evidence_merge.bounded_score(planner_signal_score) * 0.65,
             True,
             False,
         )
@@ -2121,7 +2038,7 @@ def _candidate_relation_seed(candidate: RetrievalCandidate) -> _RelationSeed:
 def _log_expansion_limit() -> None:
     logger.warning(
         "relation expansion hit candidate limit (%s); returning partial candidates",
-        MAX_EXPANSION_CANDIDATES,
+        relation_policy.MAX_EXPANSION_CANDIDATES,
     )
 
 
@@ -2146,8 +2063,8 @@ def _merge_candidates(
             chunk_id=candidate.chunk_id,
             score=max(existing.score, candidate.score),
             source=f"{existing.source},{candidate.source}",
-            score_parts=_merge_score_parts(existing.score_parts, score_parts),
-            semantic_matches=_merge_semantic_matches(
+            score_parts=evidence_merge.merge_score_parts(existing.score_parts, score_parts),
+            semantic_matches=evidence_merge.merge_semantic_matches(
                 existing.semantic_matches,
                 candidate.semantic_matches,
             ),
@@ -2155,35 +2072,14 @@ def _merge_candidates(
     return merged
 
 
-def _merge_semantic_matches(
-    left: list[SemanticMatch],
-    right: list[SemanticMatch],
-) -> list[SemanticMatch]:
-    by_variant: dict[str, SemanticMatch] = {}
-    for match in [*left, *right]:
-        existing = by_variant.get(match.variant_id)
-        if existing is None or match.score > existing.score:
-            by_variant[match.variant_id] = match
-    return sorted(by_variant.values(), key=_semantic_match_sort_key)
-
-
-def _semantic_match_sort_key(match: SemanticMatch) -> tuple[int, int, str]:
-    if match.variant_id == "original":
-        return (0, 0, "")
-    prefix, separator, raw_index = match.variant_id.partition(":")
-    if prefix == "planner" and separator and raw_index.isdigit():
-        return (1, int(raw_index), "")
-    return (2, 0, match.variant_id)
-
-
 def _rank_chunks(
-    store: SQLiteStore,
+    store: sqlite_store.SQLiteStore,
     candidates: dict[str, RetrievalCandidate],
     tokens: list[str],
     query: str,
-) -> list[_RankedChunk]:
+) -> list[core_types._RankedChunk]:
     # First pass: compute scores and build ranked list
-    ranked: list[_RankedChunk] = []
+    ranked: list[core_types._RankedChunk] = []
     all_combined_scores: list[float] = []
     signal_cache: dict[str, list[CodeSignal]] = {}
     query_route = _query_route(query)
@@ -2222,7 +2118,7 @@ def _rank_chunks(
                 signals = signals_for_ranked_chunk(candidate.chunk_id)
             return signals
 
-        score_parts = _merge_score_parts(
+        score_parts = evidence_merge.merge_score_parts(
             dict(candidate.score_parts),
             spring_path_parts.get(candidate.chunk_id, {}),
         )
@@ -2238,12 +2134,12 @@ def _rank_chunks(
         if route_boost:
             score_parts["route_boost"] = route_boost
 
-        score_parts = _merge_score_parts(
+        score_parts = evidence_merge.merge_score_parts(
             score_parts,
             _generic_noise_score_parts(chunk, query, tokens),
         )
         path_role = classify_path_role(chunk.file_path, chunk.content)
-        score_parts = _merge_score_parts(
+        score_parts = evidence_merge.merge_score_parts(
             score_parts,
             _query_intent_score_parts(path_role, query_intent),
         )
@@ -2270,7 +2166,7 @@ def _rank_chunks(
                 _java_context_score_parts(get_signals(), java_context_tokens, role)
             )
 
-        score_parts = _merge_score_parts(
+        score_parts = evidence_merge.merge_score_parts(
             score_parts,
             project_scope_score_parts(
                 chunk,
@@ -2278,15 +2174,15 @@ def _rank_chunks(
                 project_unit_count=len(project_units),
             ),
         )
-        score_parts = _merge_score_parts(
+        score_parts = evidence_merge.merge_score_parts(
             score_parts,
             _frontend_entrypoint_scope_score_parts(chunk, query_scope, score_parts),
         )
-        score_parts = _merge_score_parts(
+        score_parts = evidence_merge.merge_score_parts(
             score_parts,
             _identifier_intent_score_parts(chunk, identifier_intent, path_role),
         )
-        score_parts = _merge_score_parts(
+        score_parts = evidence_merge.merge_score_parts(
             score_parts,
             frontend_score_parts(chunk.file_path, query, enabled=frontend_enabled),
         )
@@ -2404,7 +2300,7 @@ def _rank_chunks(
 
     # Build final _RankedChunk objects
     final_ranked = [
-        _RankedChunk(
+        core_types._RankedChunk(
             chunk=item['chunk'],
             score=item['score'],
             score_parts=item['score_parts'],
@@ -2427,10 +2323,10 @@ def _rank_chunks(
 
 
 def _ranked_chunk_sort_key(
-    item: _RankedChunk,
+    item: core_types._RankedChunk,
 ) -> tuple[float, int, int, float, float, float, float, str, int, str]:
     return (
-        -round(item.rerank_score, _RERANK_SORT_DECIMALS),
+        -round(item.rerank_score, ordering.RERANK_SORT_DECIMALS),
         item.evidence_priority,
         0 if item.was_ceiling_clamped else 1,
         -(item.pre_ceiling_rerank_score if item.was_ceiling_clamped else 0.0),
@@ -2445,9 +2341,9 @@ def _ranked_chunk_sort_key(
 
 def _apply_frontend_import_cohort_rerank(
     repo: Path,
-    ranked_chunks: list[_RankedChunk],
+    ranked_chunks: list[core_types._RankedChunk],
     query: str,
-) -> list[_RankedChunk]:
+) -> list[core_types._RankedChunk]:
     import_anchor_scores: dict[str, float] = {}
     files_read = 0
 
@@ -2476,7 +2372,7 @@ def _apply_frontend_import_cohort_rerank(
     if not import_anchor_scores:
         return ranked_chunks
 
-    adjusted: list[_RankedChunk] = []
+    adjusted: list[core_types._RankedChunk] = []
     for ranked in ranked_chunks:
         path = ranked.chunk.file_path.as_posix()
         role = classify_frontend_role(ranked.chunk.file_path).name
@@ -2501,7 +2397,7 @@ def _apply_frontend_import_cohort_rerank(
         score_parts["frontend_import_support_boost"] = applied_boost
         score_parts["rerank_score"] = rerank_score
         adjusted.append(
-            _RankedChunk(
+            core_types._RankedChunk(
                 chunk=ranked.chunk,
                 score=ranked.score,
                 score_parts=score_parts,
@@ -2529,12 +2425,12 @@ def _read_frontend_import_anchor(path: Path) -> str:
 
 def _expand_ranked_chunks(
     repo: Path,
-    ranked_chunks: list[_RankedChunk],
+    ranked_chunks: list[core_types._RankedChunk],
     config: ToolConfig,
     context_lines: int | None,
     full_file: bool,
-) -> list[_ExpandedResult]:
-    expanded: list[_ExpandedResult] = []
+) -> list[core_types._ExpandedResult]:
+    expanded: list[core_types._ExpandedResult] = []
     for ranked in ranked_chunks:
         source_path = repo / ranked.chunk.file_path
         try:
@@ -2552,7 +2448,7 @@ def _expand_ranked_chunks(
             context_content = file_content
         else:
             before, after = _context_window(config, context_lines)
-            start_line, end_line, content = expand_lines(
+            start_line, end_line, content = chunker.expand_lines(
                 lines,
                 ranked.chunk.start_line,
                 ranked.chunk.end_line,
@@ -2580,7 +2476,7 @@ def _expand_ranked_chunks(
             )
 
         expanded.append(
-            _ExpandedResult(
+            core_types._ExpandedResult(
                 chunk_ids=[ranked.chunk.chunk_id],
                 file_path=ranked.chunk.file_path,
                 start_line=start_line,
@@ -2627,7 +2523,7 @@ def _expand_ranked_chunks(
 
 
 def _lexical_candidates(
-    store: SQLiteStore,
+    store: sqlite_store.SQLiteStore,
     tokens: list[str],
     limit: int,
 ) -> list[RetrievalCandidate]:
@@ -2670,7 +2566,7 @@ def _signal_score(
     path_tokens: set[str] = set()
     path_value = metadata.get("path")
     if isinstance(path_value, str):
-        path_tokens = set(tokenize_query(path_value))
+        path_tokens = set(tokenizer.tokenize_query(path_value))
         path_text = path_value.lower()
     else:
         path_text = ""
@@ -2719,9 +2615,9 @@ def _cap_content_bytes(
 
 
 def _cap_expanded_result(
-    result: _ExpandedResult,
+    result: core_types._ExpandedResult,
     max_bytes: int,
-) -> _ExpandedResult:
+) -> core_types._ExpandedResult:
     end_line, content = _cap_content_bytes(
         result.content,
         result.start_line,
@@ -2740,7 +2636,7 @@ def _cap_expanded_result(
         result.start_line,
         end_line,
     )
-    return _ExpandedResult(
+    return core_types._ExpandedResult(
         chunk_ids=result.chunk_ids,
         file_path=result.file_path,
         start_line=result.start_line,
@@ -2768,18 +2664,18 @@ def _end_line_for_content(start_line: int, content: str) -> int:
     return start_line + max(0, len(content.splitlines()) - 1)
 
 
-def _merge_overlapping_results(results: list[_ExpandedResult]) -> list[_ExpandedResult]:
-    by_file: dict[Path, list[_ExpandedResult]] = {}
+def _merge_overlapping_results(results: list[core_types._ExpandedResult]) -> list[core_types._ExpandedResult]:
+    by_file: dict[Path, list[core_types._ExpandedResult]] = {}
     for result in results:
         by_file.setdefault(result.file_path, []).append(result)
 
-    merged: list[_ExpandedResult] = []
+    merged: list[core_types._ExpandedResult] = []
     for file_path, file_results in by_file.items():
         sorted_results = sorted(
             file_results,
             key=lambda item: (item.start_line, item.end_line, -item.score),
         )
-        current: _ExpandedResult | None = None
+        current: core_types._ExpandedResult | None = None
         for result in sorted_results:
             if current is None:
                 current = result
@@ -2799,10 +2695,10 @@ def _merge_overlapping_results(results: list[_ExpandedResult]) -> list[_Expanded
 
 
 def _expanded_result_sort_key(
-    item: _ExpandedResult,
+    item: core_types._ExpandedResult,
 ) -> tuple[float, int, int, float, float, float, float, str, int]:
     return (
-        -round(item.rerank_score, _RERANK_SORT_DECIMALS),
+        -round(item.rerank_score, ordering.RERANK_SORT_DECIMALS),
         item.evidence_priority,
         0 if item.was_ceiling_clamped else 1,
         -(item.pre_ceiling_rerank_score if item.was_ceiling_clamped else 0.0),
@@ -2815,9 +2711,9 @@ def _expanded_result_sort_key(
 
 
 def _merge_expanded_result(
-    left: _ExpandedResult,
-    right: _ExpandedResult,
-) -> _ExpandedResult:
+    left: core_types._ExpandedResult,
+    right: core_types._ExpandedResult,
+) -> core_types._ExpandedResult:
     left_lines = left.content.splitlines()
     right_lines = right.content.splitlines()
     overlap = max(0, left.end_line - right.start_line + 1)
@@ -2829,7 +2725,7 @@ def _merge_expanded_result(
     winner = min(left, right, key=_expanded_result_sort_key)
 
     # Merge score_parts: max for most fields, winner value for rerank-related fields
-    merged_score_parts = _merge_score_parts(left.score_parts, right.score_parts)
+    merged_score_parts = evidence_merge.merge_score_parts(left.score_parts, right.score_parts)
     merged_score_parts["rerank_score"] = winner.rerank_score
     # evidence_priority is smaller-is-better, so use winner's value
     merged_score_parts["evidence_priority"] = float(winner.evidence_priority)
@@ -2854,8 +2750,8 @@ def _merge_expanded_result(
 
     start_line = min(left.start_line, right.start_line)
     end_line = max(left.end_line, right.end_line)
-    return _ExpandedResult(
-        chunk_ids=_dedupe([*left.chunk_ids, *right.chunk_ids]),
+    return core_types._ExpandedResult(
+        chunk_ids=ordering.dedupe_lowered([*left.chunk_ids, *right.chunk_ids]),
         file_path=left.file_path,
         start_line=start_line,
         end_line=end_line,
@@ -2863,12 +2759,12 @@ def _merge_expanded_result(
         score=max(left.score, right.score),
         score_parts=merged_score_parts,
         reasons=winner.reasons,
-        followup_keywords=_dedupe([*left.followup_keywords, *right.followup_keywords]),
+        followup_keywords=ordering.dedupe_lowered([*left.followup_keywords, *right.followup_keywords]),
         rank_tier=min(left.rank_tier, right.rank_tier),
         rerank_score=winner.rerank_score,
         evidence_class=winner.evidence_class,
         evidence_priority=winner.evidence_priority,
-        semantic_matches=_merge_semantic_matches(
+        semantic_matches=evidence_merge.merge_semantic_matches(
             left.semantic_matches,
             right.semantic_matches,
         ),
@@ -2883,7 +2779,7 @@ def _merge_expanded_result(
     )
 
 
-def _expanded_result_lines(result: _ExpandedResult) -> list[str]:
+def _expanded_result_lines(result: core_types._ExpandedResult) -> list[str]:
     expected_count = result.end_line - result.start_line + 1
     content = result._context_content
     if content is None:
@@ -2987,19 +2883,6 @@ def _normalized_score_parts(candidate: RetrievalCandidate) -> dict[str, float]:
     return dict(candidate.score_parts)
 
 
-def _merge_score_parts(
-    left: dict[str, float],
-    right: dict[str, float],
-) -> dict[str, float]:
-    merged = dict(left)
-    for key, value in right.items():
-        if key == "penalty" or key.endswith("_penalty"):
-            merged[key] = min(merged.get(key, value), value)
-        else:
-            merged[key] = max(merged.get(key, value), value)
-    return merged
-
-
 def _chunk_role(chunk: DocumentChunk) -> _ChunkRole:
     path = chunk.file_path.as_posix().lower()
     names = " ".join(symbol.name for symbol in chunk.symbols).lower()
@@ -3007,7 +2890,7 @@ def _chunk_role(chunk: DocumentChunk) -> _ChunkRole:
     haystack = f"{path} {names} {content}"
     path_and_names = f"{path} {names}"
 
-    if _is_test_path(path):
+    if file_roles._is_test_path(path):
         return _ChunkRole("generic", 5, 0.0)
     if "controller" in path or "controller" in names:
         return _ChunkRole("entrypoint", 0, 0.18)
@@ -3066,14 +2949,14 @@ def _combined_score(score_parts: dict[str, float]) -> float:
             / 5.0
             * 0.07
         )
-        + _bounded_score(score_parts.get("signal", 0.0))
-        + (_bounded_score(score_parts.get("planner_signal", 0.0)) * 0.65)
-        + _bounded_score(score_parts.get("relation", 0.0))
-        + _bounded_score(score_parts.get("original_relation", 0.0))
-        + _bounded_score(score_parts.get("planner_relation", 0.0))
-        + (_bounded_score(score_parts.get("anchored_relation", 0.0)) * 0.75)
+        + evidence_merge.bounded_score(score_parts.get("signal", 0.0))
+        + (evidence_merge.bounded_score(score_parts.get("planner_signal", 0.0)) * 0.65)
+        + evidence_merge.bounded_score(score_parts.get("relation", 0.0))
+        + evidence_merge.bounded_score(score_parts.get("original_relation", 0.0))
+        + evidence_merge.bounded_score(score_parts.get("planner_relation", 0.0))
+        + (evidence_merge.bounded_score(score_parts.get("anchored_relation", 0.0)) * 0.75)
         + (score_parts.get("token_coverage", 0.0) * 0.20)
-        + (_bounded_score(score_parts.get("direct_text", 0.0)) * 0.45)  # High weight for literal text matches in comments/strings
+        + (evidence_merge.bounded_score(score_parts.get("direct_text", 0.0)) * 0.45)  # High weight for literal text matches in comments/strings
         + score_parts.get("plugin_boost", 0.0)
         + score_parts.get("route_exact_match", 0.0)
         + score_parts.get("route_prefix_match", 0.0)
@@ -3093,10 +2976,6 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         + score_parts.get("frontend_support_name_match_boost", 0.0)
         + score_parts.get("penalty", 0.0)
     )
-
-
-def _bounded_score(score: float) -> float:
-    return min(max(score, 0.0), 1.0)
 
 
 # Thresholds for strong evidence classification
@@ -3948,7 +3827,7 @@ def _spring_path_rerank_adjustment(score_parts: dict[str, float]) -> float:
 
 
 def _rank_tier(
-    store: SQLiteStore,
+    store: sqlite_store.SQLiteStore,
     chunk: DocumentChunk,
     score_parts: dict[str, float],
     signals: list[CodeSignal] | None = None,
@@ -4012,7 +3891,7 @@ def _is_planner_hint_only(score_parts: dict[str, float]) -> bool:
     )
 
 
-def _chunk_has_signal_kind(store: SQLiteStore, chunk_id: str, kind: str) -> bool:
+def _chunk_has_signal_kind(store: sqlite_store.SQLiteStore, chunk_id: str, kind: str) -> bool:
     try:
         return any(signal.kind == kind for signal in store.signals_for_chunk(chunk_id))
     except sqlite3.Error:
@@ -4024,7 +3903,7 @@ def _token_coverage(tokens: list[str], chunk: DocumentChunk) -> float:
         return 0.0
 
     haystack = set(chunk.lexical_tokens)
-    haystack.update(tokenize_query(chunk.content))
+    haystack.update(tokenizer.tokenize_query(chunk.content))
     matches = sum(1 for token in tokens if token.lower() in haystack)
     return matches / len(tokens)
 
@@ -4067,7 +3946,7 @@ def _route_token_overlap(route: str, query_tokens: set[str]) -> int:
     route_tokens = {
         token.lower()
         for segment in _route_segments(route)
-        for token in tokenize_query(segment)
+        for token in tokenizer.tokenize_query(segment)
         if token
     }
     return len(route_tokens.intersection(query_tokens))
@@ -4082,10 +3961,10 @@ def _chunk_local_tokens(chunk: DocumentChunk) -> set[str]:
 def _chunk_symbolic_tokens(chunk: DocumentChunk) -> set[str]:
     tokens: set[str] = set()
     for part in chunk.file_path.parts:
-        tokens.update(token.lower() for token in tokenize_query(part) if token)
+        tokens.update(token.lower() for token in tokenizer.tokenize_query(part) if token)
     for symbol in chunk.symbols:
-        tokens.update(token.lower() for token in tokenize_query(symbol.name) if token)
-    tokens.update(token.lower() for token in tokenize_query(chunk.content) if token)
+        tokens.update(token.lower() for token in tokenizer.tokenize_query(symbol.name) if token)
+    tokens.update(token.lower() for token in tokenizer.tokenize_query(chunk.content) if token)
     return tokens
 
 
@@ -4093,12 +3972,12 @@ def _chunk_declared_name_has_tokens(
     chunk: DocumentChunk,
     required_tokens: set[str],
 ) -> bool:
-    name_tokens = {token.lower() for token in tokenize_query(chunk.file_path.stem) if token}
+    name_tokens = {token.lower() for token in tokenizer.tokenize_query(chunk.file_path.stem) if token}
     if required_tokens.issubset(name_tokens):
         return True
     for symbol in chunk.symbols:
         name_tokens = {
-            token.lower() for token in tokenize_query(symbol.name) if token
+            token.lower() for token in tokenizer.tokenize_query(symbol.name) if token
         }
         if required_tokens.issubset(name_tokens):
             return True
@@ -4197,7 +4076,7 @@ def _route_score_parts(
 
 
 def _spring_path_score_parts(
-    store: SQLiteStore,
+    store: sqlite_store.SQLiteStore,
     candidate_chunks: dict[str, DocumentChunk],
     query_route: str,
 ) -> dict[str, dict[str, float]]:
@@ -4225,7 +4104,7 @@ def _spring_path_score_parts(
             path = signal.metadata.get("path")
             if not isinstance(path, str) or _normalize_route(path) != query_route:
                 continue
-            parts_by_chunk[chunk_id] = _merge_score_parts(
+            parts_by_chunk[chunk_id] = evidence_merge.merge_score_parts(
                 parts_by_chunk.get(chunk_id, {}),
                 {"spring_path_endpoint_match": _SPRING_PATH_ENDPOINT_BOOST},
             )
@@ -4256,7 +4135,7 @@ def _spring_path_score_parts(
         for source_signal_id, depth in active_frontier:
             next_depth = depth + 1
             for relation in relations_by_source.get(source_signal_id, []):
-                if relation.confidence < _MIN_RELATION_CONFIDENCE:
+                if relation.confidence < relation_policy._MIN_RELATION_CONFIDENCE:
                     continue
                 relation_steps.append((relation.target_name, next_depth))
                 target_names.append(relation.target_name)
@@ -4267,7 +4146,7 @@ def _spring_path_score_parts(
         try:
             chunks_by_target = store.chunks_matching_signal_or_symbols(
                 target_names,
-                MAX_EXPANSION_CANDIDATES,
+                relation_policy.MAX_EXPANSION_CANDIDATES,
             )
         except sqlite3.Error:
             break
@@ -4327,7 +4206,7 @@ def _spring_path_score_parts(
 
 
 def _spring_path_candidate_implementors_by_interface(
-    store: SQLiteStore,
+    store: sqlite_store.SQLiteStore,
     candidate_chunks: dict[str, DocumentChunk],
     signals_by_chunk: dict[str, list[CodeSignal]],
 ) -> list[_SpringPathImplementor]:
@@ -4357,7 +4236,7 @@ def _spring_path_candidate_implementors_by_interface(
         for relation in relations:
             if (
                 relation.kind != "implements"
-                or relation.confidence < _MIN_RELATION_CONFIDENCE
+                or relation.confidence < relation_policy._MIN_RELATION_CONFIDENCE
             ):
                 continue
             interface_name = relation.target_name.strip()
@@ -4440,7 +4319,7 @@ def _add_spring_path_reached_chunk(
 ) -> None:
     role_parts = _spring_path_role_score_parts(_chunk_role(chunk), depth)
     if role_parts:
-        parts_by_chunk[chunk.chunk_id] = _merge_score_parts(
+        parts_by_chunk[chunk.chunk_id] = evidence_merge.merge_score_parts(
             parts_by_chunk.get(chunk.chunk_id, {}),
             role_parts,
         )
@@ -4462,7 +4341,7 @@ def _spring_path_implementor_chunk_ids(
             if implementor.is_qualified and implementor.interface_name == owner_name
         ]
         if exact_matches:
-            return _dedupe(exact_matches)
+            return ordering.dedupe_lowered(exact_matches)
 
     simple_name = _spring_path_simple_name(owner_name)
     simple_matches = [
@@ -4471,7 +4350,7 @@ def _spring_path_implementor_chunk_ids(
         if implementor.simple_name == simple_name
         and (not owner_is_qualified or not implementor.is_qualified)
     ]
-    chunk_ids = _dedupe(simple_matches)
+    chunk_ids = ordering.dedupe_lowered(simple_matches)
     if len(chunk_ids) == 1:
         return chunk_ids
     return []
@@ -4506,7 +4385,7 @@ def _spring_path_matching_signal_ids(
             allow_impl_owner=allow_impl_owner,
         ):
             matching_signal_ids.append(signal.signal_id)
-    return _dedupe(matching_signal_ids)
+    return ordering.dedupe_lowered(matching_signal_ids)
 
 
 def _spring_path_member_target(name: str) -> tuple[str, str] | None:
@@ -4589,7 +4468,7 @@ def _route_tail_context_score_parts(
         return {}
     tail_tokens = {
         token.lower()
-        for token in tokenize_query(segments[-1])
+        for token in tokenizer.tokenize_query(segments[-1])
         if token and token.lower() not in _JAVA_CONTEXT_STRUCTURAL_TOKENS
     }
     if len(tail_tokens) < _JAVA_CONTEXT_MIN_TOKEN_OVERLAP:
@@ -4606,7 +4485,7 @@ def _java_context_query_tokens(query_tokens: list[str], query_route: str) -> lis
     route_tokens = {
         token.lower()
         for segment in _route_segments(query_route)
-        for token in tokenize_query(segment)
+        for token in tokenizer.tokenize_query(segment)
         if token
     }
     if not route_tokens:
@@ -4708,100 +4587,9 @@ def _route_boost(chunk: DocumentChunk, query: str, tokens: list[str]) -> float:
             if route == query_route or query_route.startswith(route + "/"):
                 return 0.12
             continue
-        if query_tokens.intersection(tokenize_query(token)):
+        if query_tokens.intersection(tokenizer.tokenize_query(token)):
             return 0.12
     return 0.0
-
-
-def _looks_implementation_query(query: str, tokens: list[str]) -> bool:
-    if "/" in query:
-        return True
-    implementation_terms = {
-        "handler", "middleware", "command", "engine", "service", "controller",
-        "storage", "upload", "delete", "apply", "restore", "invoke", "route",
-        "function", "class", "method",
-    }
-    return bool({token.lower() for token in tokens}.intersection(implementation_terms))
-
-
-def _has_explicit_lockfile_query(tokens: list[str], name: str) -> bool:
-    token_set = {token.lower() for token in tokens}
-    if token_set & _LOCKFILE_QUERY_TOKENS:
-        return True
-    return name == "go.sum" and (
-        "gosum" in token_set or {"go", "sum"}.issubset(token_set)
-    )
-
-
-def _is_generated_schema_path(path: str, suffix: str) -> bool:
-    parts = [part for part in path.split("/") if part]
-    if "generated" in parts:
-        return True
-    if "gen" not in parts:
-        return False
-    return suffix in {".json", ".yml", ".yaml"} or "schema" in path
-
-
-def _generic_file_role(
-    chunk: DocumentChunk,
-    query: str,
-    tokens: list[str],
-) -> _GenericFileRole:
-    path = chunk.file_path.as_posix().lower()
-    suffix = chunk.file_path.suffix.lower()
-    name = chunk.file_path.name.lower()
-    is_implementation_query = _looks_implementation_query(query, tokens)
-
-    if _is_test_path(path) or chunk.metadata.get("is_test"):
-        return _GenericFileRole("test", "high", penalty=0.10, penalty_key="test_penalty")
-    if chunk.metadata.get("is_generated") or _is_generated_schema_path(path, suffix):
-        return _GenericFileRole(
-            "generated_schema",
-            "high",
-            penalty=0.20,
-            penalty_key="generated_schema_penalty",
-        )
-    if name in _INDEXED_LOCKFILE_NAMES:
-        penalty = 0.0 if _has_explicit_lockfile_query(tokens, name) else 0.20
-        return _GenericFileRole(
-            "lockfile",
-            "high",
-            penalty=penalty,
-            penalty_key="lockfile_penalty" if penalty else "",
-        )
-    if suffix in _TEMPLATE_SUFFIXES:
-        if classify_frontend_role(chunk.file_path).name in {
-            "view_page",
-            "layout_component",
-            "shared_component",
-        }:
-            return _GenericFileRole("source", "none", source_boost=0.03)
-        penalty = 0.08 if is_implementation_query else 0.0
-        return _GenericFileRole(
-            "template",
-            "medium" if penalty else "low",
-            penalty=penalty,
-            penalty_key="template_penalty" if penalty else "",
-        )
-    if suffix in _DOC_SUFFIXES:
-        penalty = 0.03 if is_implementation_query else 0.0
-        return _GenericFileRole(
-            "doc",
-            "low",
-            penalty=penalty,
-            penalty_key="doc_penalty" if penalty else "",
-        )
-    if suffix in _CONFIG_SUFFIXES:
-        penalty = 0.03 if is_implementation_query else 0.0
-        return _GenericFileRole(
-            "config",
-            "low",
-            penalty=penalty,
-            penalty_key="config_penalty" if penalty else "",
-        )
-    if suffix in _SOURCE_SUFFIXES:
-        return _GenericFileRole("source", "none", source_boost=0.03)
-    return _GenericFileRole("unknown", "none")
 
 
 def _generic_noise_score_parts(
@@ -4817,33 +4605,33 @@ def _generic_noise_score_parts(
     legacy_penalty = _generated_or_test_penalty(chunk)
     if legacy_penalty:
         parts["penalty"] = -legacy_penalty
-    if _is_test_path(path) or chunk.metadata.get("is_test"):
-        parts = _merge_score_parts(
+    if file_roles._is_test_path(path) or chunk.metadata.get("is_test"):
+        parts = evidence_merge.merge_score_parts(
             parts,
             {"penalty": -0.10, "test_penalty": -0.10},
         )
-    if chunk.metadata.get("is_generated") or _is_generated_schema_path(path, suffix):
-        parts = _merge_score_parts(
+    if chunk.metadata.get("is_generated") or file_roles._is_generated_schema_path(path, suffix):
+        parts = evidence_merge.merge_score_parts(
             parts,
             {"penalty": -0.20, "generated_schema_penalty": -0.20},
         )
-    if name in _INDEXED_LOCKFILE_NAMES:
-        if _has_explicit_lockfile_query(tokens, name):
+    if name in file_roles._INDEXED_LOCKFILE_NAMES:
+        if file_roles._has_explicit_lockfile_query(tokens, name):
             parts["explicit_lockfile_query"] = 1.0
         else:
-            parts = _merge_score_parts(
+            parts = evidence_merge.merge_score_parts(
                 parts,
                 {"penalty": -0.20, "lockfile_penalty": -0.20},
             )
 
-    role = _generic_file_role(chunk, query, tokens)
+    role = file_roles._generic_file_role(chunk, query, tokens)
     role_parts: dict[str, float] = {}
     if role.penalty and role.penalty_key:
         role_parts["penalty"] = -role.penalty
         role_parts[role.penalty_key] = -role.penalty
     if role.source_boost:
         role_parts["file_role_source_boost"] = role.source_boost
-    return _merge_score_parts(parts, role_parts)
+    return evidence_merge.merge_score_parts(parts, role_parts)
 
 
 def _generated_or_test_penalty(chunk: DocumentChunk) -> float:
@@ -4854,10 +4642,6 @@ def _generated_or_test_penalty(chunk: DocumentChunk) -> float:
     if chunk.metadata.get("is_test") or "/test/" in path or path.endswith("test.java"):
         penalties.append(0.10)
     return max(penalties, default=0.0)
-
-
-def _is_test_path(path: str) -> bool:
-    return "/test/" in path or path.endswith("test.java")
 
 
 def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
@@ -5022,14 +4806,3 @@ def _followup_keywords(results: list[RetrievalResult]) -> list[str]:
             key=lambda item: (-item[1], item[0]),
         )[:12]
     ]
-
-
-def _dedupe(tokens: list[str]) -> list[str]:
-    seen: set[str] = set()
-    deduped: list[str] = []
-    for token in tokens:
-        normalized = token.lower()
-        if normalized and normalized not in seen:
-            seen.add(normalized)
-            deduped.append(normalized)
-    return deduped

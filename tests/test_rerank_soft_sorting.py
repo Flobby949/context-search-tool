@@ -15,8 +15,9 @@ from context_search_tool.models import (
     DocumentChunk,
     RetrievalCandidate,
 )
-from context_search_tool.sqlite_store import SQLiteStore
 from context_search_tool.retrieval import _rank_chunks
+from context_search_tool.retrieval_core import types as core_types
+from context_search_tool.sqlite_store import SQLiteStore
 
 
 # Test helper to setup store with chunks and return candidates
@@ -101,7 +102,7 @@ def test_planner_semantic_is_direct_planner_evidence_but_not_strong_original() -
 
 
 def test_ceiling_tie_uses_pre_ceiling_score_before_role_priority() -> None:
-    high_pre_ceiling = retrieval._RankedChunk(
+    high_pre_ceiling = core_types._RankedChunk(
         chunk=DocumentChunk(
             chunk_id="planner",
             file_path=Path("z/Planner.java"),
@@ -120,7 +121,7 @@ def test_ceiling_tie_uses_pre_ceiling_score_before_role_priority() -> None:
         pre_ceiling_rerank_score=0.90,
         was_ceiling_clamped=True,
     )
-    low_pre_ceiling = retrieval._RankedChunk(
+    low_pre_ceiling = core_types._RankedChunk(
         chunk=DocumentChunk(
             chunk_id="weak",
             file_path=Path("a/Weak.java"),
@@ -149,7 +150,7 @@ def test_ceiling_tie_uses_pre_ceiling_score_before_role_priority() -> None:
 
 
 def test_negative_ceiling_tie_prefers_clamped_ranked_chunk_before_role_priority() -> None:
-    clamped = retrieval._RankedChunk(
+    clamped = core_types._RankedChunk(
         chunk=DocumentChunk(
             chunk_id="clamped",
             file_path=Path("z/Planner.java"),
@@ -168,7 +169,7 @@ def test_negative_ceiling_tie_prefers_clamped_ranked_chunk_before_role_priority(
         pre_ceiling_rerank_score=-0.33,
         was_ceiling_clamped=True,
     )
-    non_clamped = retrieval._RankedChunk(
+    non_clamped = core_types._RankedChunk(
         chunk=DocumentChunk(
             chunk_id="non_clamped",
             file_path=Path("a/Weak.java"),
@@ -197,7 +198,7 @@ def test_negative_ceiling_tie_prefers_clamped_ranked_chunk_before_role_priority(
 
 
 def test_negative_ceiling_tie_prefers_clamped_expanded_result_before_role_priority() -> None:
-    clamped = retrieval._ExpandedResult(
+    clamped = core_types._ExpandedResult(
         chunk_ids=["clamped"],
         file_path=Path("z/Planner.java"),
         start_line=10,
@@ -214,7 +215,7 @@ def test_negative_ceiling_tie_prefers_clamped_expanded_result_before_role_priori
         pre_ceiling_rerank_score=-0.33,
         was_ceiling_clamped=True,
     )
-    non_clamped = retrieval._ExpandedResult(
+    non_clamped = core_types._ExpandedResult(
         chunk_ids=["non_clamped"],
         file_path=Path("a/Weak.java"),
         start_line=10,
@@ -264,7 +265,7 @@ def test_ceiling_tie_does_not_downgrade_planner_direct_with_original_relation() 
     }
     mixed_evidence_class = retrieval._evidence_class(mixed_score_parts)
     planner_evidence_class = retrieval._evidence_class(planner_score_parts)
-    mixed = retrieval._RankedChunk(
+    mixed = core_types._RankedChunk(
         chunk=DocumentChunk(
             chunk_id="mixed",
             file_path=Path("z/Mixed.java"),
@@ -283,7 +284,7 @@ def test_ceiling_tie_does_not_downgrade_planner_direct_with_original_relation() 
         pre_ceiling_rerank_score=0.90,
         was_ceiling_clamped=True,
     )
-    planner = retrieval._RankedChunk(
+    planner = core_types._RankedChunk(
         chunk=DocumentChunk(
             chunk_id="planner",
             file_path=Path("a/Planner.java"),
@@ -607,12 +608,12 @@ def test_rerank_merge_field_consistency():
     Test #12: Construct two overlap results where lower rerank_score has higher
     combined_score. Assert merged result's fields come from rerank_score winner.
     """
-    from context_search_tool.retrieval import _ExpandedResult, _merge_expanded_result
+    from context_search_tool.retrieval import _merge_expanded_result
     from pathlib import Path
 
     # Create two overlapping results
     # Left: higher combined_score (0.8) but lower rerank_score (0.6)
-    left = _ExpandedResult(
+    left = core_types._ExpandedResult(
         chunk_ids=["chunk_a"],
         file_path=Path("test.py"),
         start_line=10,
@@ -629,7 +630,7 @@ def test_rerank_merge_field_consistency():
     )
 
     # Right: lower combined_score (0.5) but higher rerank_score (0.9)
-    right = _ExpandedResult(
+    right = core_types._ExpandedResult(
         chunk_ids=["chunk_b"],
         file_path=Path("test.py"),
         start_line=12,

@@ -78,6 +78,12 @@ FINAL_ALLOWED_EDGES = {
     "tracing": {"types", "ordering", "selection", "retrieval_trace"},
 }
 
+TRANSITIONAL_ALLOWED_EDGES = {
+    **FINAL_ALLOWED_EDGES,
+    "retrieval": FINAL_ALLOWED_EDGES["retrieval"]
+    | {"types", "evidence_merge", "file_roles"},
+}
+
 
 def _field_contract(cls: type[object]) -> list[tuple[str, str]]:
     values = []
@@ -204,6 +210,15 @@ def test_retrieval_boundary_rejects_aliased_private_core_reexport(
 
 
 def test_retrieval_core_import_adjacency_is_a_transitional_subset() -> None:
+    assert TRANSITIONAL_ALLOWED_EDGES["retrieval"] - FINAL_ALLOWED_EDGES[
+        "retrieval"
+    ] == {"types", "evidence_merge", "file_roles"}
+    assert all(
+        TRANSITIONAL_ALLOWED_EDGES[owner] == dependencies
+        for owner, dependencies in FINAL_ALLOWED_EDGES.items()
+        if owner != "retrieval"
+    )
+
     paths = {"retrieval": ROOT / "src" / "context_search_tool" / "retrieval.py"}
     core = ROOT / "src" / "context_search_tool" / "retrieval_core"
     if core.exists():
@@ -224,9 +239,9 @@ def test_retrieval_core_import_adjacency_is_a_transitional_subset() -> None:
 
     graph: dict[str, set[str]] = {}
     for importer, path in paths.items():
-        assert importer in FINAL_ALLOWED_EDGES
+        assert importer in TRANSITIONAL_ALLOWED_EDGES
         edges = _internal_edges(path, importer)
-        assert edges <= FINAL_ALLOWED_EDGES[importer]
+        assert edges <= TRANSITIONAL_ALLOWED_EDGES[importer]
         graph[importer] = edges - {"retrieval_trace"}
 
     visiting: set[str] = set()

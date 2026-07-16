@@ -8,11 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from context_search_tool import retrieval
+from context_search_tool import retrieval, tokenizer
 from context_search_tool.config import DEFAULT_CONFIG
 from context_search_tool.indexer import index_repository
 from context_search_tool.models import QueryVariant
 from context_search_tool.paths import index_dir_for
+from context_search_tool.retrieval_core import ordering
 from context_search_tool.quality.cases import (
     Gate,
     LegacyProvenance,
@@ -1188,7 +1189,7 @@ def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
     config = DEFAULT_CONFIG
     index_dir = index_dir_for(repo)
     store = SQLiteStore(index_dir / "index.sqlite")
-    original_tokens = retrieval._dedupe(retrieval.tokenize_query(query))
+    original_tokens = ordering.dedupe_lowered(tokenizer.tokenize_query(query))
     deleted_ids = store.deleted_chunk_ids()
     initial_candidates, _, _ = retrieval._initial_candidates(
         index_dir,

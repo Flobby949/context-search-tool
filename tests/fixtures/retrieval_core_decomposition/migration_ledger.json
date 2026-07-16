@@ -11,7 +11,7 @@
           "file": "tests/test_retrieval_core_boundaries.py",
           "count": 1,
           "lines": [
-            154
+            160
           ],
           "syntax_kinds": [
             "attribute"
@@ -21,8 +21,8 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 2,
           "lines": [
-            3053,
-            3068
+            3058,
+            3073
           ],
           "syntax_kinds": [
             "attribute"
@@ -33,14 +33,8 @@
       "profiler_targets": [],
       "production_call_sites": {
         "file": "src/context_search_tool/retrieval.py",
-        "count": 5,
-        "lines": [
-          1939,
-          1959,
-          1993,
-          2124,
-          4270
-        ]
+        "count": 0,
+        "lines": []
       },
       "syntax_kinds": [
         "attribute"
@@ -58,7 +52,7 @@
           "file": "tests/test_retrieval_core_boundaries.py",
           "count": 1,
           "lines": [
-            153
+            159
           ],
           "syntax_kinds": [
             "attribute"
@@ -68,9 +62,9 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 3,
           "lines": [
-            2480,
-            2483,
-            2485
+            2485,
+            2488,
+            2490
           ],
           "syntax_kinds": [
             "attribute"
@@ -81,10 +75,8 @@
       "profiler_targets": [],
       "production_call_sites": {
         "file": "src/context_search_tool/retrieval.py",
-        "count": 1,
-        "lines": [
-          1901
-        ]
+        "count": 0,
+        "lines": []
       },
       "syntax_kinds": [
         "attribute"
@@ -102,8 +94,8 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 2,
           "lines": [
-            169,
-            751
+            174,
+            756
           ],
           "syntax_kinds": [
             "attribute"
@@ -115,13 +107,13 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 7,
           "lines": [
-            204,
-            245,
-            277,
-            304,
-            338,
-            646,
-            765
+            209,
+            250,
+            282,
+            309,
+            343,
+            651,
+            770
           ],
           "syntax_kinds": [
             "setattr"
@@ -131,7 +123,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            129
+            130
           ],
           "syntax_kinds": [
             "setattr"
@@ -143,7 +135,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          1573
+          1487
         ]
       },
       "syntax_kinds": [
@@ -243,12 +235,12 @@
           "file": "tests/test_retrieval_core_boundaries.py",
           "count": 6,
           "lines": [
-            96,
-            97,
-            100,
+            102,
+            103,
             106,
-            122,
-            123
+            112,
+            128,
+            129
           ],
           "syntax_kinds": [
             "attribute"
@@ -258,8 +250,8 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 2,
           "lines": [
-            2929,
-            2938
+            2934,
+            2943
           ],
           "syntax_kinds": [
             "attribute"
@@ -269,10 +261,10 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 4,
           "lines": [
-            140,
-            222,
-            232,
-            726
+            141,
+            223,
+            233,
+            727
           ],
           "syntax_kinds": [
             "attribute"
@@ -284,7 +276,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            733
+            734
           ],
           "syntax_kinds": [
             "setattr"
@@ -296,12 +288,12 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 6,
         "lines": [
-          216,
-          666,
-          676,
-          703,
-          874,
-          1036
+          188,
+          592,
+          602,
+          629,
+          800,
+          962
         ]
       },
       "syntax_kinds": [
@@ -324,13 +316,13 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 7,
         "lines": [
-          337,
-          368,
-          441,
-          561,
-          641,
-          665,
-          1482
+          263,
+          294,
+          367,
+          487,
+          567,
+          591,
+          1396
         ]
       },
       "syntax_kinds": [],
@@ -342,64 +334,18 @@
       "old_symbol": "SQLiteStore",
       "final_owner": "context_search_tool.sqlite_store.SQLiteStore",
       "design_task": 2,
-      "direct_references": [
-        {
-          "file": "tests/test_retrieval_trace_pipeline.py",
-          "count": 2,
-          "lines": [
-            176,
-            509
-          ],
-          "syntax_kinds": [
-            "attribute"
-          ]
-        }
-      ],
-      "monkeypatch_references": [
-        {
-          "file": "tests/test_retrieval_trace_pipeline.py",
-          "count": 1,
-          "lines": [
-            128
-          ],
-          "syntax_kinds": [
-            "setattr"
-          ]
-        }
-      ],
+      "direct_references": [],
+      "monkeypatch_references": [],
       "profiler_targets": [],
       "production_call_sites": {
         "file": "src/context_search_tool/retrieval.py",
-        "count": 19,
-        "lines": [
-          390,
-          444,
-          699,
-          1196,
-          1338,
-          1438,
-          1476,
-          1614,
-          1643,
-          1679,
-          1738,
-          1775,
-          1842,
-          2180,
-          2630,
-          3951,
-          4015,
-          4200,
-          4330
-        ]
+        "count": 0,
+        "lines": []
       },
-      "syntax_kinds": [
-        "attribute",
-        "setattr"
-      ],
+      "syntax_kinds": [],
       "disposition": "migrate",
-      "remaining": 22,
-      "resolved_task": null
+      "remaining": 0,
+      "resolved_task": 2
     },
     {
       "old_symbol": "TracedQueryBundle",
@@ -431,11 +377,11 @@
           "file": "tests/test_retrieval_core_boundaries.py",
           "count": 5,
           "lines": [
-            98,
-            99,
-            100,
-            117,
-            126
+            104,
+            105,
+            106,
+            123,
+            132
           ],
           "syntax_kinds": [
             "attribute"
@@ -448,8 +394,8 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 2,
         "lines": [
-          639,
-          651
+          565,
+          577
         ]
       },
       "syntax_kinds": [
@@ -482,8 +428,8 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 2,
         "lines": [
-          2400,
-          2402
+          2296,
+          2298
         ]
       },
       "syntax_kinds": [
@@ -502,13 +448,13 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 7,
           "lines": [
-            1437,
-            1485,
-            1532,
-            1580,
-            1627,
-            9433,
-            9460
+            1442,
+            1490,
+            1537,
+            1585,
+            1632,
+            9438,
+            9465
           ],
           "syntax_kinds": [
             "attribute"
@@ -521,25 +467,25 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 19,
         "lines": [
-          3003,
-          3011,
-          3013,
-          3015,
-          3018,
-          3020,
-          3022,
-          3024,
-          3026,
-          3028,
-          3030,
-          3031,
-          3319,
-          3536,
-          3917,
-          4564,
-          4583,
-          4626,
-          4660
+          2886,
+          2894,
+          2896,
+          2898,
+          2901,
+          2903,
+          2905,
+          2907,
+          2909,
+          2911,
+          2913,
+          2914,
+          3198,
+          3415,
+          3796,
+          4443,
+          4462,
+          4505,
+          4539
         ]
       },
       "syntax_kinds": [
@@ -553,113 +499,18 @@
       "old_symbol": "_ExpandedResult",
       "final_owner": "context_search_tool.retrieval_core.types._ExpandedResult",
       "design_task": 2,
-      "direct_references": [
-        {
-          "file": "tests/test_rerank_soft_sorting.py",
-          "count": 3,
-          "lines": [
-            200,
-            217,
-            610
-          ],
-          "syntax_kinds": [
-            "attribute",
-            "import_from"
-          ]
-        },
-        {
-          "file": "tests/test_retrieval_pipeline.py",
-          "count": 27,
-          "lines": [
-            374,
-            393,
-            428,
-            429,
-            7540,
-            7555,
-            8740,
-            8758,
-            8776,
-            8819,
-            8834,
-            8849,
-            8864,
-            8893,
-            8909,
-            8944,
-            8959,
-            8999,
-            9014,
-            9029,
-            9082,
-            9097,
-            9112,
-            9127,
-            10783,
-            10863,
-            10925
-          ],
-          "syntax_kinds": [
-            "attribute",
-            "import_from"
-          ]
-        },
-        {
-          "file": "tests/test_retrieval_trace_pipeline.py",
-          "count": 1,
-          "lines": [
-            419
-          ],
-          "syntax_kinds": [
-            "attribute"
-          ]
-        }
-      ],
+      "direct_references": [],
       "monkeypatch_references": [],
       "profiler_targets": [],
       "production_call_sites": {
         "file": "src/context_search_tool/retrieval.py",
-        "count": 30,
-        "lines": [
-          293,
-          492,
-          540,
-          1063,
-          1068,
-          1073,
-          1079,
-          1086,
-          1092,
-          1094,
-          1107,
-          1167,
-          1197,
-          2536,
-          2537,
-          2583,
-          2722,
-          2724,
-          2743,
-          2771,
-          2771,
-          2772,
-          2776,
-          2782,
-          2802,
-          2818,
-          2819,
-          2820,
-          2857,
-          2886
-        ]
+        "count": 0,
+        "lines": []
       },
-      "syntax_kinds": [
-        "attribute",
-        "import_from"
-      ],
+      "syntax_kinds": [],
       "disposition": "migrate",
-      "remaining": 61,
-      "resolved_task": null
+      "remaining": 0,
+      "resolved_task": 2
     },
     {
       "old_symbol": "_FinalTraceDecisions",
@@ -670,8 +521,8 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 2,
           "lines": [
-            442,
-            820
+            443,
+            821
           ],
           "syntax_kinds": [
             "attribute"
@@ -684,10 +535,10 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 4,
         "lines": [
-          559,
-          1081,
-          1096,
-          1155
+          485,
+          1007,
+          1022,
+          1081
         ]
       },
       "syntax_kinds": [
@@ -706,8 +557,8 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 2,
           "lines": [
-            444,
-            822
+            445,
+            823
           ],
           "syntax_kinds": [
             "attribute"
@@ -720,10 +571,10 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 4,
         "lines": [
-          298,
-          1099,
-          1126,
-          1141
+          224,
+          1025,
+          1052,
+          1067
         ]
       },
       "syntax_kinds": [
@@ -742,24 +593,13 @@
       "profiler_targets": [],
       "production_call_sites": {
         "file": "src/context_search_tool/retrieval.py",
-        "count": 10,
-        "lines": [
-          4749,
-          4756,
-          4758,
-          4766,
-          4778,
-          4780,
-          4788,
-          4796,
-          4803,
-          4804
-        ]
+        "count": 0,
+        "lines": []
       },
       "syntax_kinds": [],
       "disposition": "migrate",
-      "remaining": 10,
-      "resolved_task": null
+      "remaining": 0,
+      "resolved_task": 2
     },
     {
       "old_symbol": "_RELATION_SCORE_DECAY",
@@ -770,8 +610,8 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 2,
           "lines": [
-            3013,
-            3014
+            3018,
+            3019
           ],
           "syntax_kinds": [
             "attribute"
@@ -784,7 +624,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          1923
+          1835
         ]
       },
       "syntax_kinds": [
@@ -803,88 +643,30 @@
       "profiler_targets": [],
       "production_call_sites": {
         "file": "src/context_search_tool/retrieval.py",
-        "count": 3,
-        "lines": [
-          156,
-          2433,
-          2805
-        ]
+        "count": 0,
+        "lines": []
       },
       "syntax_kinds": [],
       "disposition": "migrate",
-      "remaining": 3,
-      "resolved_task": null
+      "remaining": 0,
+      "resolved_task": 2
     },
     {
       "old_symbol": "_RankedChunk",
       "final_owner": "context_search_tool.retrieval_core.types._RankedChunk",
       "design_task": 2,
-      "direct_references": [
-        {
-          "file": "tests/test_rerank_soft_sorting.py",
-          "count": 6,
-          "lines": [
-            104,
-            123,
-            152,
-            171,
-            267,
-            286
-          ],
-          "syntax_kinds": [
-            "attribute"
-          ]
-        },
-        {
-          "file": "tests/test_retrieval_pipeline.py",
-          "count": 6,
-          "lines": [
-            47,
-            48,
-            5919,
-            7501,
-            7511,
-            7521
-          ],
-          "syntax_kinds": [
-            "attribute"
-          ]
-        },
-        {
-          "file": "tests/test_retrieval_trace_pipeline.py",
-          "count": 1,
-          "lines": [
-            791
-          ],
-          "syntax_kinds": [
-            "attribute"
-          ]
-        }
-      ],
+      "direct_references": [],
       "monkeypatch_references": [],
       "profiler_targets": [],
       "production_call_sites": {
         "file": "src/context_search_tool/retrieval.py",
-        "count": 10,
-        "lines": [
-          466,
-          2184,
-          2186,
-          2407,
-          2430,
-          2448,
-          2450,
-          2479,
-          2504,
-          2532
-        ]
+        "count": 0,
+        "lines": []
       },
-      "syntax_kinds": [
-        "attribute"
-      ],
+      "syntax_kinds": [],
       "disposition": "migrate",
-      "remaining": 23,
-      "resolved_task": null
+      "remaining": 0,
+      "resolved_task": 2
     },
     {
       "old_symbol": "_SpringPathImplementor",
@@ -897,10 +679,10 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 4,
         "lines": [
-          4333,
-          4351,
-          4371,
-          4450
+          4212,
+          4230,
+          4250,
+          4329
         ]
       },
       "syntax_kinds": [],
@@ -917,7 +699,7 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 1,
           "lines": [
-            3061
+            3066
           ],
           "syntax_kinds": [
             "attribute"
@@ -930,7 +712,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          74
+          79
         ]
       },
       "syntax_kinds": [
@@ -949,7 +731,7 @@
           "file": "tests/test_quality_catalog.py",
           "count": 1,
           "lines": [
-            1209
+            1210
           ],
           "syntax_kinds": [
             "attribute"
@@ -959,11 +741,11 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 5,
           "lines": [
-            1142,
-            9192,
-            9236,
-            9279,
-            9322
+            1147,
+            9197,
+            9241,
+            9284,
+            9327
           ],
           "syntax_kinds": [
             "attribute"
@@ -987,7 +769,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          817
+          743
         ]
       },
       "syntax_kinds": [
@@ -1009,7 +791,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          924
+          850
         ]
       },
       "syntax_kinds": [],
@@ -1026,28 +808,13 @@
       "profiler_targets": [],
       "production_call_sites": {
         "file": "src/context_search_tool/retrieval.py",
-        "count": 14,
-        "lines": [
-          1709,
-          2048,
-          2077,
-          2086,
-          2094,
-          2106,
-          2113,
-          3069,
-          3070,
-          3071,
-          3072,
-          3073,
-          3074,
-          3076
-        ]
+        "count": 0,
+        "lines": []
       },
       "syntax_kinds": [],
       "disposition": "migrate",
-      "remaining": 14,
-      "resolved_task": null
+      "remaining": 0,
+      "resolved_task": 2
     },
     {
       "old_symbol": "_chunk_role",
@@ -1058,11 +825,11 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 5,
           "lines": [
-            5683,
-            5698,
-            5891,
-            9383,
-            9404
+            5688,
+            5703,
+            5896,
+            9388,
+            9409
           ],
           "syntax_kinds": [
             "attribute"
@@ -1075,11 +842,11 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 5,
         "lines": [
-          2265,
-          4283,
-          4337,
-          4397,
-          4441
+          2161,
+          4162,
+          4216,
+          4276,
+          4320
         ]
       },
       "syntax_kinds": [
@@ -1098,7 +865,7 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 1,
           "lines": [
-            72
+            73
           ],
           "syntax_kinds": [
             "attribute"
@@ -1108,8 +875,8 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 2,
           "lines": [
-            7430,
-            7431
+            7435,
+            7436
           ],
           "syntax_kinds": [
             "attribute"
@@ -1122,7 +889,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          2295
+          2191
         ]
       },
       "syntax_kinds": [
@@ -1136,51 +903,18 @@
       "old_symbol": "_dedupe",
       "final_owner": "context_search_tool.retrieval_core.ordering.dedupe_lowered",
       "design_task": 2,
-      "direct_references": [
-        {
-          "file": "tests/test_quality_catalog.py",
-          "count": 1,
-          "lines": [
-            1191
-          ],
-          "syntax_kinds": [
-            "attribute"
-          ]
-        },
-        {
-          "file": "tests/test_retrieval_pipeline.py",
-          "count": 1,
-          "lines": [
-            1124
-          ],
-          "syntax_kinds": [
-            "attribute"
-          ]
-        }
-      ],
+      "direct_references": [],
       "monkeypatch_references": [],
       "profiler_targets": [],
       "production_call_sites": {
         "file": "src/context_search_tool/retrieval.py",
-        "count": 9,
-        "lines": [
-          668,
-          1028,
-          1252,
-          1434,
-          2858,
-          2866,
-          4465,
-          4474,
-          4509
-        ]
+        "count": 0,
+        "lines": []
       },
-      "syntax_kinds": [
-        "attribute"
-      ],
+      "syntax_kinds": [],
       "disposition": "migrate",
-      "remaining": 11,
-      "resolved_task": null
+      "remaining": 0,
+      "resolved_task": 2
     },
     {
       "old_symbol": "_direct_text_candidates",
@@ -1221,9 +955,9 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 3,
           "lines": [
-            972,
-            975,
-            981
+            973,
+            976,
+            982
           ],
           "syntax_kinds": [
             "attribute"
@@ -1233,7 +967,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            599
+            600
           ],
           "syntax_kinds": [
             "attribute"
@@ -1245,7 +979,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            610
+            611
           ],
           "syntax_kinds": [
             "setattr"
@@ -1257,8 +991,8 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 2,
         "lines": [
-          1448,
-          1538
+          1362,
+          1452
         ]
       },
       "syntax_kinds": [
@@ -1278,13 +1012,13 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 7,
           "lines": [
-            8809,
-            8810,
-            8811,
-            8812,
-            8813,
             8814,
-            8815
+            8815,
+            8816,
+            8817,
+            8818,
+            8819,
+            8820
           ],
           "syntax_kinds": [
             "attribute"
@@ -1297,7 +1031,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          1112
+          1038
         ]
       },
       "syntax_kinds": [
@@ -1316,24 +1050,24 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 18,
           "lines": [
-            98,
-            249,
-            265,
+            99,
+            250,
             266,
-            559,
-            666,
+            267,
+            560,
             667,
-            672,
+            668,
             673,
             674,
-            678,
-            682,
+            675,
+            679,
             683,
             684,
-            689,
-            720,
-            937,
-            938
+            685,
+            690,
+            721,
+            938,
+            939
           ],
           "syntax_kinds": [
             "attribute",
@@ -1344,7 +1078,7 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 1,
           "lines": [
-            10718
+            10723
           ],
           "syntax_kinds": [
             "import_from"
@@ -1357,9 +1091,9 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 3,
         "lines": [
-          2327,
-          3480,
-          4866
+          2223,
+          3359,
+          4650
         ]
       },
       "syntax_kinds": [
@@ -1379,12 +1113,12 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 6,
           "lines": [
-            99,
-            252,
-            282,
-            301,
-            668,
-            846
+            100,
+            253,
+            283,
+            302,
+            669,
+            847
           ],
           "syntax_kinds": [
             "attribute",
@@ -1398,7 +1132,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          2328
+          2224
         ]
       },
       "syntax_kinds": [
@@ -1418,7 +1152,7 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 1,
           "lines": [
-            541
+            542
           ],
           "syntax_kinds": [
             "import_from"
@@ -1428,7 +1162,7 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 9,
           "lines": [
-            481,
+            486,
             11093,
             11202,
             11253,
@@ -1448,7 +1182,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            202
+            203
           ],
           "syntax_kinds": [
             "setattr"
@@ -1471,7 +1205,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          948
+          874
         ]
       },
       "syntax_kinds": [
@@ -1493,7 +1227,7 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 1,
           "lines": [
-            237
+            238
           ],
           "syntax_kinds": [
             "attribute"
@@ -1503,7 +1237,7 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 1,
           "lines": [
-            7572
+            7577
           ],
           "syntax_kinds": [
             "attribute"
@@ -1516,8 +1250,8 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 2,
         "lines": [
-          2797,
-          2829
+          2693,
+          2725
         ]
       },
       "syntax_kinds": [
@@ -1560,16 +1294,16 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 10,
         "lines": [
-          772,
-          786,
-          805,
-          824,
-          848,
-          867,
-          1495,
-          1513,
-          1530,
-          1551
+          698,
+          712,
+          731,
+          750,
+          774,
+          793,
+          1409,
+          1427,
+          1444,
+          1465
         ]
       },
       "syntax_kinds": [
@@ -1589,7 +1323,7 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 1,
           "lines": [
-            859
+            860
           ],
           "syntax_kinds": [
             "import_from"
@@ -1602,7 +1336,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          3477
+          3356
         ]
       },
       "syntax_kinds": [
@@ -1621,8 +1355,8 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 2,
           "lines": [
-            917,
-            936
+            918,
+            937
           ],
           "syntax_kinds": [
             "attribute",
@@ -1636,8 +1370,8 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 2,
         "lines": [
-          3193,
-          3472
+          3072,
+          3351
         ]
       },
       "syntax_kinds": [
@@ -1657,8 +1391,8 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 2,
           "lines": [
-            96,
-            899
+            97,
+            900
           ],
           "syntax_kinds": [
             "attribute",
@@ -1672,7 +1406,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          3220
+          3099
         ]
       },
       "syntax_kinds": [
@@ -1692,8 +1426,8 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 2,
           "lines": [
-            97,
-            751
+            98,
+            752
           ],
           "syntax_kinds": [
             "attribute",
@@ -1707,10 +1441,10 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 4,
         "lines": [
-          2350,
-          3194,
-          3216,
-          3364
+          2246,
+          3073,
+          3095,
+          3243
         ]
       },
       "syntax_kinds": [
@@ -1732,8 +1466,8 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 2,
         "lines": [
-          3218,
-          3366
+          3097,
+          3245
         ]
       },
       "syntax_kinds": [],
@@ -1750,7 +1484,7 @@
           "file": "tests/test_quality_catalog.py",
           "count": 1,
           "lines": [
-            1193
+            1194
           ],
           "syntax_kinds": [
             "attribute"
@@ -1760,7 +1494,7 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 1,
           "lines": [
-            1126
+            1131
           ],
           "syntax_kinds": [
             "attribute"
@@ -1773,7 +1507,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          755
+          681
         ]
       },
       "syntax_kinds": [
@@ -1792,8 +1526,8 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 2,
           "lines": [
-            3147,
-            3292
+            3152,
+            3297
           ],
           "syntax_kinds": [
             "attribute"
@@ -1806,8 +1540,8 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 2,
         "lines": [
-          3469,
-          3976
+          3348,
+          3855
         ]
       },
       "syntax_kinds": [
@@ -1826,8 +1560,8 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 2,
           "lines": [
-            9430,
-            9457
+            9435,
+            9462
           ],
           "syntax_kinds": [
             "attribute"
@@ -1840,7 +1574,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          2270
+          2166
         ]
       },
       "syntax_kinds": [
@@ -1872,8 +1606,8 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 2,
         "lines": [
-          1508,
-          1668
+          1422,
+          1582
         ]
       },
       "syntax_kinds": [
@@ -1892,9 +1626,9 @@
           "file": "tests/test_quality_catalog.py",
           "count": 3,
           "lines": [
-            1203,
-            1216,
-            1227
+            1204,
+            1217,
+            1228
           ],
           "syntax_kinds": [
             "attribute"
@@ -1904,12 +1638,12 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 6,
           "lines": [
-            212,
-            352,
-            1136,
-            1149,
-            1160,
-            3106
+            217,
+            357,
+            1141,
+            1154,
+            1165,
+            3111
           ],
           "syntax_kinds": [
             "attribute"
@@ -1921,7 +1655,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            196
+            197
           ],
           "syntax_kinds": [
             "setattr"
@@ -1933,9 +1667,9 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 3,
         "lines": [
-          804,
-          832,
-          866
+          730,
+          758,
+          792
         ]
       },
       "syntax_kinds": [
@@ -1955,7 +1689,7 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 1,
           "lines": [
-            610
+            611
           ],
           "syntax_kinds": [
             "import_from"
@@ -1965,9 +1699,9 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 3,
           "lines": [
-            413,
-            10783,
-            10863
+            418,
+            10788,
+            10867
           ],
           "syntax_kinds": [
             "attribute",
@@ -1981,7 +1715,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          2788
+          2684
         ]
       },
       "syntax_kinds": [
@@ -2001,7 +1735,7 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 1,
           "lines": [
-            541
+            542
           ],
           "syntax_kinds": [
             "import_from"
@@ -2011,8 +1745,8 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 2,
           "lines": [
-            445,
-            10925
+            450,
+            10926
           ],
           "syntax_kinds": [
             "attribute",
@@ -2026,7 +1760,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          2620
+          2516
         ]
       },
       "syntax_kinds": [
@@ -2041,47 +1775,18 @@
       "old_symbol": "_merge_score_parts",
       "final_owner": "context_search_tool.retrieval_core.evidence_merge.merge_score_parts",
       "design_task": 2,
-      "direct_references": [
-        {
-          "file": "tests/test_retrieval_pipeline.py",
-          "count": 1,
-          "lines": [
-            10913
-          ],
-          "syntax_kinds": [
-            "import_from"
-          ]
-        }
-      ],
+      "direct_references": [],
       "monkeypatch_references": [],
       "profiler_targets": [],
       "production_call_sites": {
         "file": "src/context_search_tool/retrieval.py",
-        "count": 15,
-        "lines": [
-          2149,
-          2225,
-          2241,
-          2246,
-          2273,
-          2281,
-          2285,
-          2289,
-          2832,
-          4228,
-          4443,
-          4821,
-          4826,
-          4834,
-          4846
-        ]
+        "count": 0,
+        "lines": []
       },
-      "syntax_kinds": [
-        "import_from"
-      ],
+      "syntax_kinds": [],
       "disposition": "migrate",
-      "remaining": 16,
-      "resolved_task": null
+      "remaining": 0,
+      "resolved_task": 2
     },
     {
       "old_symbol": "_merge_semantic_matches",
@@ -2092,16 +1797,13 @@
       "profiler_targets": [],
       "production_call_sites": {
         "file": "src/context_search_tool/retrieval.py",
-        "count": 2,
-        "lines": [
-          2150,
-          2871
-        ]
+        "count": 0,
+        "lines": []
       },
       "syntax_kinds": [],
       "disposition": "migrate",
-      "remaining": 2,
-      "resolved_task": null
+      "remaining": 0,
+      "resolved_task": 2
     },
     {
       "old_symbol": "_normalized_score_parts",
@@ -2114,7 +1816,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          2134
+          2051
         ]
       },
       "syntax_kinds": [],
@@ -2131,30 +1833,13 @@
       "profiler_targets": [],
       "production_call_sites": {
         "file": "src/context_search_tool/retrieval.py",
-        "count": 16,
-        "lines": [
-          503,
-          510,
-          573,
-          582,
-          740,
-          1258,
-          1259,
-          1260,
-          1261,
-          1282,
-          1288,
-          1310,
-          1311,
-          1312,
-          1313,
-          1350
-        ]
+        "count": 0,
+        "lines": []
       },
       "syntax_kinds": [],
       "disposition": "migrate",
-      "remaining": 16,
-      "resolved_task": null
+      "remaining": 0,
+      "resolved_task": 2
     },
     {
       "old_symbol": "_planner_hint_candidates",
@@ -2178,7 +1863,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          785
+          711
         ]
       },
       "syntax_kinds": [
@@ -2197,7 +1882,7 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 1,
           "lines": [
-            19
+            18
           ],
           "syntax_kinds": [
             "import_from"
@@ -2207,59 +1892,59 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 54,
           "lines": [
-            3104,
-            3406,
-            3707,
-            3729,
-            3994,
-            4266,
-            4490,
-            4629,
-            4758,
-            5512,
-            5524,
-            5541,
-            5554,
-            5631,
-            5661,
-            5729,
-            5787,
-            5847,
-            5933,
-            6094,
-            6138,
-            6262,
-            6326,
-            6389,
-            7478,
-            7618,
-            7692,
-            7756,
-            7837,
-            8011,
-            8155,
-            8299,
-            8365,
-            8386,
-            8459,
-            8521,
-            8572,
-            8649,
-            8682,
-            8728,
-            9529,
-            9720,
-            9832,
-            9892,
-            9961,
-            10045,
-            10187,
-            10259,
-            10325,
-            10397,
-            10479,
-            10548,
-            10639,
+            3109,
+            3411,
+            3712,
+            3734,
+            3999,
+            4271,
+            4495,
+            4634,
+            4763,
+            5517,
+            5529,
+            5546,
+            5559,
+            5636,
+            5666,
+            5734,
+            5792,
+            5852,
+            5938,
+            6099,
+            6143,
+            6267,
+            6331,
+            6394,
+            7483,
+            7623,
+            7697,
+            7761,
+            7842,
+            8016,
+            8160,
+            8304,
+            8370,
+            8391,
+            8464,
+            8526,
+            8577,
+            8654,
+            8687,
+            8733,
+            9534,
+            9725,
+            9837,
+            9897,
+            9966,
+            10050,
+            10192,
+            10264,
+            10330,
+            10402,
+            10484,
+            10553,
+            10644,
             11030
           ],
           "syntax_kinds": [
@@ -2272,7 +1957,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            201
+            202
           ],
           "syntax_kinds": [
             "setattr"
@@ -2295,7 +1980,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          900
+          826
         ]
       },
       "syntax_kinds": [
@@ -2317,9 +2002,9 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 3,
           "lines": [
-            145,
-            193,
-            306
+            146,
+            194,
+            307
           ],
           "syntax_kinds": [
             "attribute"
@@ -2329,8 +2014,8 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 2,
           "lines": [
-            7534,
-            7538
+            7539,
+            7543
           ],
           "syntax_kinds": [
             "attribute"
@@ -2343,8 +2028,8 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 2,
         "lines": [
-          2425,
-          2519
+          2321,
+          2415
         ]
       },
       "syntax_kinds": [
@@ -2363,7 +2048,7 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 1,
           "lines": [
-            100
+            101
           ],
           "syntax_kinds": [
             "attribute"
@@ -2373,10 +2058,10 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 4,
           "lines": [
-            1662,
-            6813,
-            10098,
-            10108
+            1667,
+            6818,
+            10103,
+            10113
           ],
           "syntax_kinds": [
             "attribute"
@@ -2389,8 +2074,8 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 2,
         "lines": [
-          2411,
-          2508
+          2307,
+          2404
         ]
       },
       "syntax_kinds": [
@@ -2409,7 +2094,7 @@
           "file": "tests/test_quality_catalog.py",
           "count": 1,
           "lines": [
-            1222
+            1223
           ],
           "syntax_kinds": [
             "attribute"
@@ -2419,22 +2104,22 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 16,
           "lines": [
-            1155,
-            2012,
-            2108,
-            2197,
-            2440,
-            2955,
-            2971,
-            2993,
-            3039,
-            3062,
-            3099,
-            3129,
-            3159,
-            3193,
-            3236,
-            3275
+            1160,
+            2017,
+            2113,
+            2202,
+            2445,
+            2960,
+            2976,
+            2998,
+            3044,
+            3067,
+            3104,
+            3134,
+            3164,
+            3198,
+            3241,
+            3280
           ],
           "syntax_kinds": [
             "attribute"
@@ -2458,7 +2143,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          843
+          769
         ]
       },
       "syntax_kinds": [
@@ -2478,16 +2163,16 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 10,
           "lines": [
-            1451,
-            1459,
-            1498,
-            1506,
-            1546,
-            1554,
-            1593,
-            1601,
-            1641,
-            1649
+            1456,
+            1464,
+            1503,
+            1511,
+            1551,
+            1559,
+            1598,
+            1606,
+            1646,
+            1654
           ],
           "syntax_kinds": [
             "attribute"
@@ -2500,7 +2185,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          2331
+          2227
         ]
       },
       "syntax_kinds": [
@@ -2519,9 +2204,9 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 3,
           "lines": [
-            10092,
-            10093,
-            10094
+            10097,
+            10098,
+            10099
           ],
           "syntax_kinds": [
             "attribute"
@@ -2534,7 +2219,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          2234
+          2130
         ]
       },
       "syntax_kinds": [
@@ -2553,9 +2238,9 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 3,
           "lines": [
-            3333,
-            3334,
-            3335
+            3338,
+            3339,
+            3340
           ],
           "syntax_kinds": [
             "attribute"
@@ -2568,7 +2253,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          2258
+          2154
         ]
       },
       "syntax_kinds": [
@@ -2587,11 +2272,11 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 5,
           "lines": [
-            206,
-            247,
-            279,
-            310,
-            341
+            211,
+            252,
+            284,
+            315,
+            346
           ],
           "syntax_kinds": [
             "attribute"
@@ -2601,7 +2286,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            65
+            66
           ],
           "syntax_kinds": [
             "attribute"
@@ -2613,7 +2298,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            72
+            73
           ],
           "syntax_kinds": [
             "setattr"
@@ -2636,7 +2321,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          1489
+          1403
         ]
       },
       "syntax_kinds": [
@@ -2657,7 +2342,7 @@
           "file": "tests/test_quality_catalog.py",
           "count": 1,
           "lines": [
-            1202
+            1203
           ],
           "syntax_kinds": [
             "attribute"
@@ -2667,7 +2352,7 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 1,
           "lines": [
-            1135
+            1140
           ],
           "syntax_kinds": [
             "attribute"
@@ -2691,8 +2376,8 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 2,
         "lines": [
-          771,
-          1674
+          697,
+          1588
         ]
       },
       "syntax_kinds": [
@@ -2725,7 +2410,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          2610
+          2506
         ]
       },
       "syntax_kinds": [
@@ -2744,12 +2429,12 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 6,
           "lines": [
-            8738,
-            8880,
-            8930,
-            8975,
-            8997,
-            9080
+            8743,
+            8885,
+            8935,
+            8980,
+            9002,
+            9085
           ],
           "syntax_kinds": [
             "attribute"
@@ -2773,8 +2458,8 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 2,
         "lines": [
-          982,
-          990
+          908,
+          916
         ]
       },
       "syntax_kinds": [
@@ -2794,7 +2479,7 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 1,
           "lines": [
-            9146
+            9151
           ],
           "syntax_kinds": [
             "attribute"
@@ -2804,7 +2489,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            720
+            721
           ],
           "syntax_kinds": [
             "attribute"
@@ -2816,8 +2501,8 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 2,
           "lines": [
-            203,
-            732
+            204,
+            733
           ],
           "syntax_kinds": [
             "setattr"
@@ -2840,7 +2525,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          1014
+          940
         ]
       },
       "syntax_kinds": [
@@ -2861,7 +2546,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            837
+            838
           ],
           "syntax_kinds": [
             "attribute"
@@ -2874,7 +2559,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          451
+          377
         ]
       },
       "syntax_kinds": [
@@ -2903,7 +2588,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            839
+            840
           ],
           "syntax_kinds": [
             "attribute"
@@ -2927,7 +2612,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          957
+          883
         ]
       },
       "syntax_kinds": [
@@ -2957,8 +2642,8 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 2,
           "lines": [
-            474,
-            840
+            475,
+            841
           ],
           "syntax_kinds": [
             "attribute"
@@ -2982,7 +2667,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          1001
+          927
         ]
       },
       "syntax_kinds": [
@@ -3004,7 +2689,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          351
+          277
         ]
       },
       "syntax_kinds": [],
@@ -3031,7 +2716,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            838
+            839
           ],
           "syntax_kinds": [
             "attribute"
@@ -3055,8 +2740,8 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 2,
         "lines": [
-          903,
-          927
+          829,
+          853
         ]
       },
       "syntax_kinds": [
@@ -3076,7 +2761,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            600
+            601
           ],
           "syntax_kinds": [
             "attribute"
@@ -3088,7 +2773,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            611
+            612
           ],
           "syntax_kinds": [
             "setattr"
@@ -3100,21 +2785,21 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 15,
         "lines": [
-          724,
-          766,
-          780,
-          799,
-          812,
-          838,
-          861,
-          895,
-          919,
-          943,
-          974,
-          1484,
-          1503,
-          1521,
-          1539
+          650,
+          692,
+          706,
+          725,
+          738,
+          764,
+          787,
+          821,
+          845,
+          869,
+          900,
+          1398,
+          1417,
+          1435,
+          1453
         ]
       },
       "syntax_kinds": [
@@ -3134,8 +2819,8 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 2,
           "lines": [
-            66,
-            88
+            67,
+            89
           ],
           "syntax_kinds": [
             "attribute"
@@ -3148,7 +2833,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          2294
+          2190
         ]
       },
       "syntax_kinds": [
@@ -3168,7 +2853,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            537
+            538
           ],
           "syntax_kinds": [
             "setattr"
@@ -3180,7 +2865,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          697
+          623
         ]
       },
       "syntax_kinds": [
@@ -3223,7 +2908,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          732
+          658
         ]
       },
       "syntax_kinds": [
@@ -3293,7 +2978,7 @@
           "file": "tests/test_retrieval_core_boundaries.py",
           "count": 1,
           "lines": [
-            145
+            151
           ],
           "syntax_kinds": [
             "attribute"
@@ -3304,7 +2989,7 @@
           "count": 2,
           "lines": [
             34,
-            8993
+            8998
           ],
           "syntax_kinds": [
             "attribute",
@@ -3315,7 +3000,7 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 1,
           "lines": [
-            80
+            81
           ],
           "syntax_kinds": [
             "attribute"
@@ -3327,7 +3012,7 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 1,
           "lines": [
-            647
+            652
           ],
           "syntax_kinds": [
             "setattr"
@@ -3339,8 +3024,8 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 2,
         "lines": [
-          985,
-          993
+          911,
+          919
         ]
       },
       "syntax_kinds": [
@@ -3356,33 +3041,18 @@
       "old_symbol": "expand_lines",
       "final_owner": "context_search_tool.chunker.expand_lines",
       "design_task": 2,
-      "direct_references": [
-        {
-          "file": "tests/test_retrieval_pipeline.py",
-          "count": 1,
-          "lines": [
-            491
-          ],
-          "syntax_kinds": [
-            "attribute"
-          ]
-        }
-      ],
+      "direct_references": [],
       "monkeypatch_references": [],
       "profiler_targets": [],
       "production_call_sites": {
         "file": "src/context_search_tool/retrieval.py",
-        "count": 1,
-        "lines": [
-          2555
-        ]
+        "count": 0,
+        "lines": []
       },
-      "syntax_kinds": [
-        "attribute"
-      ],
+      "syntax_kinds": [],
       "disposition": "migrate",
-      "remaining": 2,
-      "resolved_task": null
+      "remaining": 0,
+      "resolved_task": 2
     },
     {
       "old_symbol": "expand_query_plan_tokens",
@@ -3417,7 +3087,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          744
+          670
         ]
       },
       "syntax_kinds": [
@@ -3437,11 +3107,11 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 5,
           "lines": [
-            790,
-            807,
-            814,
-            821,
-            828
+            791,
+            808,
+            815,
+            822,
+            829
           ],
           "syntax_kinds": [
             "import_from"
@@ -3451,9 +3121,9 @@
           "file": "tests/test_retrieval_core_boundaries.py",
           "count": 3,
           "lines": [
-            138,
-            139,
-            140
+            144,
+            145,
+            146
           ],
           "syntax_kinds": [
             "attribute"
@@ -3466,7 +3136,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          2322
+          2218
         ]
       },
       "syntax_kinds": [
@@ -3508,8 +3178,8 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 2,
           "lines": [
-            127,
-            177
+            128,
+            178
           ],
           "syntax_kinds": [
             "setattr"
@@ -3521,7 +3191,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          729
+          655
         ]
       },
       "syntax_kinds": [
@@ -3566,7 +3236,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          746
+          672
         ]
       },
       "syntax_kinds": [
@@ -3587,17 +3257,17 @@
           "file": "tests/test_retrieval_pipeline.py",
           "count": 11,
           "lines": [
-            203,
-            244,
-            276,
-            303,
-            337,
-            575,
-            645,
-            678,
-            737,
-            768,
-            786
+            208,
+            249,
+            281,
+            308,
+            342,
+            580,
+            650,
+            683,
+            742,
+            773,
+            791
           ],
           "syntax_kinds": [
             "setattr"
@@ -3607,8 +3277,8 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 2,
           "lines": [
-            550,
-            577
+            551,
+            578
           ],
           "syntax_kinds": [
             "setattr"
@@ -3620,7 +3290,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          1572
+          1486
         ]
       },
       "syntax_kinds": [
@@ -3699,8 +3369,8 @@
           "file": "tests/test_rerank_soft_sorting.py",
           "count": 2,
           "lines": [
-            541,
-            589
+            542,
+            590
           ],
           "syntax_kinds": [
             "import_from"
@@ -3720,11 +3390,11 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 5,
           "lines": [
-            63,
-            113,
-            148,
-            178,
-            511
+            64,
+            114,
+            149,
+            179,
+            512
           ],
           "syntax_kinds": [
             "attribute"
@@ -3737,7 +3407,7 @@
         "file": "src/context_search_tool/retrieval.py",
         "count": 1,
         "lines": [
-          642
+          568
         ]
       },
       "syntax_kinds": [
@@ -3752,102 +3422,18 @@
       "old_symbol": "tokenize_query",
       "final_owner": "context_search_tool.tokenizer.tokenize_query",
       "design_task": 2,
-      "direct_references": [
-        {
-          "file": "tests/retrieval_core_characterization.py",
-          "count": 1,
-          "lines": [
-            905
-          ],
-          "syntax_kinds": [
-            "attribute"
-          ]
-        },
-        {
-          "file": "tests/test_quality_catalog.py",
-          "count": 1,
-          "lines": [
-            1191
-          ],
-          "syntax_kinds": [
-            "attribute"
-          ]
-        },
-        {
-          "file": "tests/test_retrieval_pipeline.py",
-          "count": 27,
-          "lines": [
-            1124,
-            5745,
-            5803,
-            5863,
-            5970,
-            6007,
-            6505,
-            6551,
-            6609,
-            6660,
-            6729,
-            6802,
-            7098,
-            7124,
-            7238,
-            7273,
-            7316,
-            7363,
-            7387,
-            7640,
-            7714,
-            7772,
-            7862,
-            8014,
-            8158,
-            8302,
-            11052
-          ],
-          "syntax_kinds": [
-            "attribute"
-          ]
-        }
-      ],
-      "monkeypatch_references": [
-        {
-          "file": "tests/retrieval_core_characterization.py",
-          "count": 1,
-          "lines": [
-            942
-          ],
-          "syntax_kinds": [
-            "object"
-          ]
-        }
-      ],
+      "direct_references": [],
+      "monkeypatch_references": [],
       "profiler_targets": [],
       "production_call_sites": {
         "file": "src/context_search_tool/retrieval.py",
-        "count": 12,
-        "lines": [
-          668,
-          2673,
-          4027,
-          4070,
-          4085,
-          4087,
-          4088,
-          4096,
-          4101,
-          4592,
-          4609,
-          4711
-        ]
+        "count": 0,
+        "lines": []
       },
-      "syntax_kinds": [
-        "attribute",
-        "object"
-      ],
+      "syntax_kinds": [],
       "disposition": "migrate",
-      "remaining": 42,
-      "resolved_task": null
+      "remaining": 0,
+      "resolved_task": 2
     },
     {
       "old_symbol": "trace_repository",
@@ -3878,22 +3464,22 @@
           "file": "tests/test_retrieval_trace_pipeline.py",
           "count": 16,
           "lines": [
-            73,
-            149,
-            179,
-            213,
-            248,
-            292,
-            323,
-            350,
-            376,
-            392,
-            513,
-            559,
-            582,
-            613,
-            735,
-            862
+            74,
+            150,
+            180,
+            214,
+            249,
+            293,
+            324,
+            351,
+            377,
+            393,
+            514,
+            560,
+            583,
+            614,
+            736,
+            863
           ],
           "syntax_kinds": [
             "attribute"
