@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from xml.etree import ElementTree
 
 import pytest
 
@@ -93,6 +94,41 @@ def _load_baseline() -> dict[str, object]:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
 
 
+def assert_final_junit_evidence_matches_baseline(path: Path) -> dict[str, int]:
+    baseline = _load_baseline()["test_evidence"]
+    root = ElementTree.parse(path).getroot()
+    suite = next(root.iter("testsuite"))
+    failures = int(suite.attrib.get("failures", "0"))
+    errors = int(suite.attrib.get("errors", "0"))
+    skipped = int(suite.attrib.get("skipped", "0"))
+    skips: list[dict[str, str]] = []
+    xfails: list[dict[str, str]] = []
+    for testcase in root.iter("testcase"):
+        skipped_node = testcase.find("skipped")
+        if skipped_node is None:
+            continue
+        entry = {
+            "node_id": f"{testcase.attrib['classname']}::{testcase.attrib['name']}",
+            "reason": skipped_node.attrib.get("message", ""),
+        }
+        if skipped_node.attrib.get("type") == "pytest.xfail":
+            xfails.append(entry)
+        else:
+            skips.append(entry)
+
+    assert failures == 0
+    assert errors == 0
+    assert skipped == baseline["skipped"]
+    assert skips == baseline["skips"]
+    assert xfails == baseline["xfails"]
+    tests = int(suite.attrib["tests"])
+    return {
+        "passed": tests - failures - errors - skipped,
+        "skipped": skipped,
+        "xfails": len(xfails),
+    }
+
+
 def test_immutable_manifest_has_exact_case_and_evidence_universe() -> None:
     baseline = _load_baseline()
 
@@ -106,6 +142,10 @@ def test_immutable_manifest_has_exact_case_and_evidence_universe() -> None:
         (entry["node_id"], entry["reason"])
         for entry in baseline["test_evidence"]["skips"]
     ) == EXPECTED_BASELINE_SKIPS
+    assert baseline["test_evidence"]["passed"] == 1884
+    assert baseline["test_evidence"]["failed"] == 0
+    assert baseline["test_evidence"]["errors"] == 0
+    assert baseline["test_evidence"]["skipped"] == len(EXPECTED_BASELINE_SKIPS)
     assert baseline["test_evidence"]["xfails"] == []
 
 

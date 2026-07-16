@@ -50,6 +50,31 @@ EXPECTED_BUNDLE_REPR = (
     "variant_retrieval_status='original_only')"
 )
 
+SUPPORTED_RETRIEVAL_FACADE = {
+    "QueryBundle",
+    "TracedQueryBundle",
+    "query_repository",
+    "trace_repository",
+    "evidence_anchor_top_k",
+    "normalize_score",
+    "MAX_EXPANSION_DEPTH",
+    "MAX_EXPANSION_CANDIDATES",
+}
+
+EXPECTED_LOCAL_DEFINITIONS = {
+    "QueryBundle",
+    "TracedQueryBundle",
+    "query_repository",
+    "trace_repository",
+    "evidence_anchor_top_k",
+    "normalize_score",
+}
+
+EXPECTED_COMPATIBILITY_ASSIGNMENTS = {
+    "MAX_EXPANSION_DEPTH": "relation_policy.MAX_EXPANSION_DEPTH",
+    "MAX_EXPANSION_CANDIDATES": "relation_policy.MAX_EXPANSION_CANDIDATES",
+}
+
 FINAL_ALLOWED_EDGES = {
     "retrieval": {
         "candidates",
@@ -79,10 +104,6 @@ FINAL_ALLOWED_EDGES = {
     "context_expansion": {"types", "ordering", "evidence_merge"},
     "selection": {"types", "ordering"},
     "tracing": {"types", "ordering", "selection", "retrieval_trace"},
-}
-
-TRANSITIONAL_ALLOWED_EDGES = {
-    **FINAL_ALLOWED_EDGES,
 }
 
 
@@ -180,20 +201,49 @@ def _internal_edges(path: Path, importer: str) -> set[str]:
                 edges.add(module.rsplit(".", 1)[-1])
             elif module.startswith("context_search_tool.retrieval_trace"):
                 edges.add("retrieval_trace")
-            if importer != "retrieval" and module == "context_search_tool.retrieval":
+            elif module == "context_search_tool":
+                for alias in node.names:
+                    if alias.name == "retrieval_core":
+                        raise AssertionError(f"broad retrieval_core import in {path}")
+                    if alias.name == "retrieval_trace":
+                        edges.add("retrieval_trace")
+                    if importer != "retrieval" and alias.name == "retrieval":
+                        raise AssertionError(f"retrieval_core imports façade: {path}")
+            if importer != "retrieval" and (
+                module == "context_search_tool.retrieval"
+                or module.startswith("context_search_tool.retrieval.")
+            ):
                 raise AssertionError(f"retrieval_core imports façade: {path}")
         elif isinstance(node, ast.Import):
             for alias in node.names:
+                if alias.name == "context_search_tool.retrieval_core":
+                    raise AssertionError(f"broad retrieval_core import in {path}")
                 if alias.name.startswith("context_search_tool.retrieval_core."):
                     edges.add(alias.name.rsplit(".", 1)[-1])
                 elif alias.name.startswith("context_search_tool.retrieval_trace"):
                     edges.add("retrieval_trace")
                 elif (
                     importer != "retrieval"
-                    and alias.name == "context_search_tool.retrieval"
+                    and (
+                        alias.name == "context_search_tool.retrieval"
+                        or alias.name.startswith("context_search_tool.retrieval.")
+                    )
                 ):
                     raise AssertionError(f"retrieval_core imports façade: {path}")
     return edges
+
+
+def _retrieval_tree() -> ast.Module:
+    path = ROOT / "src" / "context_search_tool" / "retrieval.py"
+    return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+
+def _aliased_import_bindings(tree: ast.Module) -> set[str]:
+    bindings: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            bindings.update(alias.asname for alias in node.names if alias.asname)
+    return bindings
 
 
 def test_retrieval_boundary_rejects_aliased_private_core_reexport(
@@ -210,32 +260,30 @@ def test_retrieval_boundary_rejects_aliased_private_core_reexport(
         _internal_edges(source, "retrieval")
 
 
-def test_retrieval_core_import_adjacency_is_a_transitional_subset() -> None:
-    assert TRANSITIONAL_ALLOWED_EDGES == FINAL_ALLOWED_EDGES
-
+def test_retrieval_core_import_adjacency_is_exact_and_acyclic() -> None:
     paths = {"retrieval": ROOT / "src" / "context_search_tool" / "retrieval.py"}
     core = ROOT / "src" / "context_search_tool" / "retrieval_core"
-    if core.exists():
-        paths.update(
-            {
-                path.stem: path
-                for path in core.glob("*.py")
-                if path.name != "__init__.py"
-            }
-        )
-        package_tree = ast.parse((core / "__init__.py").read_text(encoding="utf-8"))
-        assert all(
-            isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-            for node in package_tree.body
-        )
+    paths.update(
+        {
+            path.stem: path
+            for path in core.glob("*.py")
+            if path.name != "__init__.py"
+        }
+    )
+    assert set(paths) == set(FINAL_ALLOWED_EDGES)
+
+    package_tree = ast.parse((core / "__init__.py").read_text(encoding="utf-8"))
+    assert all(
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+        for node in package_tree.body
+    )
 
     graph: dict[str, set[str]] = {}
     for importer, path in paths.items():
-        assert importer in TRANSITIONAL_ALLOWED_EDGES
         edges = _internal_edges(path, importer)
-        assert edges <= TRANSITIONAL_ALLOWED_EDGES[importer]
+        assert edges == FINAL_ALLOWED_EDGES[importer]
         graph[importer] = edges - {"retrieval_trace"}
 
     visiting: set[str] = set()
@@ -256,10 +304,45 @@ def test_retrieval_core_import_adjacency_is_a_transitional_subset() -> None:
         visit(node)
 
 
+def test_retrieval_defines_only_the_exact_supported_facade() -> None:
+    tree = _retrieval_tree()
+    definitions = [
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    assert len(definitions) == len(EXPECTED_LOCAL_DEFINITIONS)
+    assert set(definitions) == EXPECTED_LOCAL_DEFINITIONS
+
+    assignments: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            assert len(node.targets) == 1
+            target = node.targets[0]
+            assert isinstance(target, ast.Name)
+            assignments[target.id] = ast.unparse(node.value)
+        elif isinstance(node, ast.AnnAssign):
+            assert isinstance(node.target, ast.Name)
+            assert node.value is not None
+            assignments[node.target.id] = ast.unparse(node.value)
+    assert assignments == EXPECTED_COMPATIBILITY_ASSIGNMENTS
+
+    ledger = json.loads(MIGRATION_LEDGER_PATH.read_text(encoding="utf-8"))
+    migrated_names = {
+        row["old_symbol"]
+        for row in ledger["rows"]
+        if row["disposition"] == "migrate"
+    }
+    assert _aliased_import_bindings(tree).isdisjoint(migrated_names)
+
+
 def test_migration_ledger_matches_complete_ast_and_dynamic_inventory() -> None:
     frozen = json.loads(MIGRATION_LEDGER_PATH.read_text(encoding="utf-8"))
     actual = build_migration_ledger()
-    for actual_row, frozen_row in zip(actual["rows"], frozen["rows"]):
+
+    frozen_by_symbol = {row["old_symbol"]: row for row in frozen["rows"]}
+    for actual_row in actual["rows"]:
+        frozen_row = frozen_by_symbol[actual_row["old_symbol"]]
         actual_row["resolved_task"] = frozen_row["resolved_task"]
 
     assert actual == frozen
@@ -269,13 +352,21 @@ def test_migration_ledger_matches_complete_ast_and_dynamic_inventory() -> None:
         for row in frozen["rows"]
     )
     for row in frozen["rows"]:
-        if row["disposition"] != "migrate":
-            continue
-        if row["resolved_task"] is None:
+        if row["disposition"] == "supported_facade":
+            assert row["old_symbol"] in SUPPORTED_RETRIEVAL_FACADE
+            assert row["final_owner"] == (
+                f"context_search_tool.retrieval.{row['old_symbol']}"
+            )
             assert row["remaining"] > 0
-        else:
-            assert row["remaining"] == 0
-            assert row["resolved_task"] == row["design_task"]
+            continue
+        assert row["remaining"] == 0
+        assert row["resolved_task"] is not None
+        assert row["resolved_task"] == row["design_task"]
+    assert {
+        row["old_symbol"]
+        for row in frozen["rows"]
+        if row["disposition"] == "supported_facade"
+    } == SUPPORTED_RETRIEVAL_FACADE
 
 
 def test_runtime_inventory_excludes_annotations_but_keeps_live_loads() -> None:
@@ -308,6 +399,44 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         path == "src/context_search_tool/retrieval.py"
         or path.startswith("src/context_search_tool/retrieval_core/")
         for path in changed
+    )
+
+    source_status = subprocess.run(
+        (
+            "git",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            "src/context_search_tool",
+        ),
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert source_status == ""
+
+    subprocess.run(
+        (
+            "git",
+            "diff",
+            "--exit-code",
+            IMPLEMENTATION_COMMIT,
+            "--",
+            "src/context_search_tool/retrieval_trace",
+            "src/context_search_tool/context_pack",
+            "src/context_search_tool/quality",
+            "src/context_search_tool/models.py",
+            "src/context_search_tool/cli.py",
+            "src/context_search_tool/formatters.py",
+            "src/context_search_tool/mcp_server.py",
+            "src/context_search_tool/mcp_tools.py",
+        ),
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
     )
 
 

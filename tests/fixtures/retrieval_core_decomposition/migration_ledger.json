@@ -11,7 +11,7 @@
           "file": "tests/test_retrieval_core_boundaries.py",
           "count": 1,
           "lines": [
-            161
+            182
           ],
           "syntax_kinds": [
             "attribute"
@@ -52,7 +52,7 @@
           "file": "tests/test_retrieval_core_boundaries.py",
           "count": 1,
           "lines": [
-            160
+            181
           ],
           "syntax_kinds": [
             "attribute"
@@ -191,12 +191,12 @@
           "file": "tests/test_retrieval_core_boundaries.py",
           "count": 6,
           "lines": [
-            103,
-            104,
-            107,
-            113,
-            129,
-            130
+            124,
+            125,
+            128,
+            134,
+            150,
+            151
           ],
           "syntax_kinds": [
             "attribute"
@@ -323,11 +323,11 @@
           "file": "tests/test_retrieval_core_boundaries.py",
           "count": 5,
           "lines": [
-            105,
-            106,
-            107,
-            124,
-            133
+            126,
+            127,
+            128,
+            145,
+            154
           ],
           "syntax_kinds": [
             "attribute"
@@ -1481,7 +1481,7 @@
           "file": "tests/test_retrieval_core_boundaries.py",
           "count": 1,
           "lines": [
-            152
+            173
           ],
           "syntax_kinds": [
             "attribute"
@@ -1597,9 +1597,9 @@
           "file": "tests/test_retrieval_core_boundaries.py",
           "count": 3,
           "lines": [
-            145,
-            146,
-            147
+            166,
+            167,
+            168
           ],
           "syntax_kinds": [
             "attribute"
