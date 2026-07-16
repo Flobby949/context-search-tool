@@ -21,6 +21,7 @@ from context_search_tool.retrieval_core import (
     context_expansion,
     expansion,
     ranking,
+    selection,
 )
 from context_search_tool.sqlite_store import SQLiteStore
 
@@ -41,10 +42,10 @@ RETRIEVAL_FUNCTIONS = [
     ("_expand_ranked_chunks", context_expansion, "expand_ranked_chunks"),
     (
         "_split_code_results_and_evidence_anchors",
-        retrieval,
-        "_split_code_results_and_evidence_anchors",
+        selection,
+        "split_results_and_anchors",
     ),
-    ("_summarize_results", retrieval, "_summarize_results"),
+    ("_summarize_results", selection, "_summarize_results"),
 ]
 
 STORE_METHODS = [

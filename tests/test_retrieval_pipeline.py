@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import get_args, get_type_hints
 
 import numpy as np
 import pytest
@@ -39,6 +40,7 @@ from context_search_tool.retrieval_core import (
     expansion,
     ordering,
     ranking,
+    selection,
     types as core_types,
 )
 from context_search_tool.sqlite_store import SQLiteStore
@@ -8759,7 +8761,7 @@ def test_detail_only_strong_direct_still_sets_planner_ceiling(tmp_path: Path) ->
 def test_non_readme_markdown_display_priority_is_lower_than_code(
     tmp_path: Path,
 ) -> None:
-    code_results, evidence_anchors = retrieval._split_code_results_and_evidence_anchors(
+    code_results, evidence_anchors = selection.split_results_and_anchors(
         [
             core_types._ExpandedResult(
                 chunk_ids=["readme"],
@@ -8830,13 +8832,92 @@ def test_non_readme_markdown_display_priority_is_lower_than_code(
 
 
 def test_evidence_anchor_kind_classifies_supported_paths() -> None:
-    assert retrieval._evidence_anchor_kind(Path("README.md")) == "readme"
-    assert retrieval._evidence_anchor_kind(Path("docs/README-api.md")) == "readme"
-    assert retrieval._evidence_anchor_kind(Path("RISKS.md")) == "risks"
-    assert retrieval._evidence_anchor_kind(Path("docs/RISKS-auth.md")) == "risks"
-    assert retrieval._evidence_anchor_kind(Path("pom.xml")) == "pom"
-    assert retrieval._evidence_anchor_kind(Path("service/pom.xml")) == "pom"
-    assert retrieval._evidence_anchor_kind(Path("src/main/java/AuthController.java")) == ""
+    assert selection._evidence_anchor_kind(Path("README.md")) == "readme"
+    assert selection._evidence_anchor_kind(Path("docs/README-api.md")) == "readme"
+    assert selection._evidence_anchor_kind(Path("RISKS.md")) == "risks"
+    assert selection._evidence_anchor_kind(Path("docs/RISKS-auth.md")) == "risks"
+    assert selection._evidence_anchor_kind(Path("pom.xml")) == "pom"
+    assert selection._evidence_anchor_kind(Path("service/pom.xml")) == "pom"
+    assert selection._evidence_anchor_kind(Path("src/main/java/AuthController.java")) == ""
+
+
+def test_split_results_and_anchors_preserves_overloads_and_ordinary_allocations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    final_trace_hints = get_type_hints(selection._FinalTraceInput)
+    assert get_args(final_trace_hints["kind"]) == ("result", "evidence_anchor")
+    assert get_args(final_trace_hints["reason"]) == (
+        "selected_within_result_limit",
+        "selected_within_anchor_limit",
+    )
+
+    item = core_types._ExpandedResult(
+        chunk_ids=["controller"],
+        file_path=Path("src/main/java/AuthController.java"),
+        start_line=1,
+        end_line=5,
+        content="class AuthController {}",
+        score=0.7,
+        score_parts={"direct_text": 0.7},
+        reasons=["direct text match"],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=0.8,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+
+    traced = selection.split_results_and_anchors(
+        [item],
+        final_top_k=1,
+        anchor_top_k=1,
+        collect_trace=True,
+    )
+
+    assert traced == (
+        [item],
+        [],
+        selection._FinalTraceDecisions(
+            selected=(
+                selection._FinalTraceInput(
+                    kind="result",
+                    reason="selected_within_result_limit",
+                    item=item,
+                ),
+            ),
+            counts=(
+                ("selected_result", 1),
+                ("selected_anchor", 0),
+                ("duplicate_anchor", 0),
+                ("result_limit", 0),
+                ("anchor_limit", 0),
+            ),
+        ),
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("ordinary selection allocated trace decisions")
+
+    class ForbiddenDecisionKeys:
+        def __iter__(self):
+            raise AssertionError("ordinary selection allocated a decision counter")
+
+    monkeypatch.setattr(selection, "tuple", forbidden, raising=False)
+    monkeypatch.setattr(selection, "_FinalTraceInput", forbidden)
+    monkeypatch.setattr(selection, "_FinalTraceDecisions", forbidden)
+    monkeypatch.setattr(
+        selection,
+        "_FINAL_TRACE_DECISION_KEYS",
+        ForbiddenDecisionKeys(),
+    )
+
+    ordinary = selection.split_results_and_anchors(
+        [item],
+        final_top_k=1,
+        anchor_top_k=1,
+    )
+
+    assert ordinary == ([item], [])
 
 
 def test_evidence_anchors_do_not_consume_code_result_slots() -> None:
@@ -8901,7 +8982,7 @@ def test_evidence_anchors_do_not_consume_code_result_slots() -> None:
         evidence_priority=0,
     )
 
-    code_results, anchors = retrieval._split_code_results_and_evidence_anchors(
+    code_results, anchors = selection.split_results_and_anchors(
         [readme, risks, pom, controller],
         final_top_k=1,
         anchor_top_k=3,
@@ -8951,7 +9032,7 @@ def test_evidence_anchors_do_not_steal_when_many_code_results_exist() -> None:
         for index in range(3)
     ]
 
-    code_results, anchors = retrieval._split_code_results_and_evidence_anchors(
+    code_results, anchors = selection.split_results_and_anchors(
         [anchor, *code_items],
         final_top_k=2,
         anchor_top_k=1,
@@ -8996,7 +9077,7 @@ def test_only_evidence_anchors_leave_code_results_empty() -> None:
         evidence_priority=0,
     )
 
-    code_results, anchors = retrieval._split_code_results_and_evidence_anchors(
+    code_results, anchors = selection.split_results_and_anchors(
         [readme, risks],
         final_top_k=5,
         anchor_top_k=5,
@@ -9018,7 +9099,7 @@ def test_evidence_anchor_top_k_preserves_existing_formula(
 
 
 def test_evidence_anchors_dedupe_by_kind_and_file_path() -> None:
-    split_code, split_anchors = retrieval._split_code_results_and_evidence_anchors(
+    split_code, split_anchors = selection.split_results_and_anchors(
         [
             core_types._ExpandedResult(
                 chunk_ids=["readme-0"],
@@ -9101,7 +9182,7 @@ def test_evidence_anchors_do_not_contribute_to_summary(tmp_path: Path) -> None:
     )
     store.replace_chunks(controller.file_path, [controller])
 
-    code_results, evidence_anchors = retrieval._split_code_results_and_evidence_anchors(
+    code_results, evidence_anchors = selection.split_results_and_anchors(
         [
             core_types._ExpandedResult(
                 chunk_ids=["readme"],
@@ -9167,7 +9248,10 @@ def test_evidence_anchors_do_not_contribute_to_summary(tmp_path: Path) -> None:
         final_top_k=1,
         anchor_top_k=3,
     )
-    summary, _ = retrieval._summarize_results(store, code_results)
+    summary, results, followup_keywords = selection.assemble_query_output(
+        store,
+        code_results,
+    )
 
     assert [item.file_path.suffix for item in code_results] == [".java"]
     assert [anchor.anchor_kind for anchor in evidence_anchors] == [
@@ -9185,6 +9269,24 @@ def test_evidence_anchors_do_not_contribute_to_summary(tmp_path: Path) -> None:
     assert "RISKS.md" not in summary_items
     assert "pom.xml" not in summary_items
     assert any("ApprovalController" in item for item in summary.entry_points)
+    assert results == [
+        RetrievalResult(
+            file_path=controller.file_path,
+            start_line=1,
+            end_line=10,
+            content="class ApprovalController {}",
+            score=0.8,
+            score_parts={
+                "direct_text": 0.7,
+                "rerank_score": 0.8,
+                "combined_score": 0.7,
+                "evidence_priority": 0.0,
+            },
+            reasons=["direct text match"],
+            followup_keywords=[],
+        )
+    ]
+    assert followup_keywords == []
 
 
 def test_evidence_anchors_still_seed_directory_expansion(tmp_path: Path) -> None:

@@ -37,6 +37,7 @@ from context_search_tool.retrieval_core import (
     context_expansion,
     expansion,
     ranking,
+    selection,
     types as core_types,
 )
 from context_search_tool.sqlite_store import SQLiteStore
@@ -112,10 +113,10 @@ def test_plain_query_does_not_construct_or_touch_trace_observations(
         "_trace_adjustments",
         "_trace_final_selections",
         "_trace_query",
-        "_FinalTraceInput",
-        "_FinalTraceDecisions",
     ):
         monkeypatch.setattr(retrieval, name, forbidden)
+    for name in ("_FinalTraceInput", "_FinalTraceDecisions"):
+        monkeypatch.setattr(selection, name, forbidden)
 
     assert retrieval.query_repository(repo, "audit", config).results
 
@@ -207,7 +208,7 @@ def test_trace_repository_reports_no_candidates_after_candidate_merge(
 
     monkeypatch.setattr(ranking, "rank_chunks", forbidden)
     monkeypatch.setattr(context_expansion, "expand_ranked_chunks", forbidden)
-    monkeypatch.setattr(retrieval, "_summarize_results", forbidden)
+    monkeypatch.setattr(selection, "_summarize_results", forbidden)
     original_read_text = Path.read_text
 
     def forbid_source_read(path: Path, *args, **kwargs):
@@ -446,9 +447,9 @@ def test_merged_final_selection_keeps_origins_best_ranks_and_clamp() -> None:
         pre_ceiling_rerank_score=1.25,
         was_ceiling_clamped=True,
     )
-    decisions = retrieval._FinalTraceDecisions(
+    decisions = selection._FinalTraceDecisions(
         selected=(
-            retrieval._FinalTraceInput(
+            selection._FinalTraceInput(
                 kind="result",
                 reason="selected_within_result_limit",
                 item=item,
@@ -478,20 +479,20 @@ def test_merged_final_selection_keeps_origins_best_ranks_and_clamp() -> None:
         ),
     }
 
-    selection = retrieval._trace_final_selections(
+    trace_selection = retrieval._trace_final_selections(
         decisions,
         candidates,
         FinalSelectionCollector(),  # type: ignore[arg-type]
     )[0]
 
-    assert selection.origin_chunk_ids == ("chunk-a", "chunk-b")
-    assert [(entry.stage, entry.rank) for entry in selection.rank_history] == [
+    assert trace_selection.origin_chunk_ids == ("chunk-a", "chunk-b")
+    assert [(entry.stage, entry.rank) for entry in trace_selection.rank_history] == [
         ("ranking", 2),
         ("cohort_rerank", 3),
         ("context_expansion", 2),
         ("final_selection", 1),
     ]
-    adjustment_names = [entry.name for entry in selection.adjustments]
+    adjustment_names = [entry.name for entry in trace_selection.adjustments]
     assert adjustment_names == [
         "planner_ceiling_clamp",
         "role_boost",
@@ -631,6 +632,7 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
     events: list[str] = []
     active: dict[str, str | None] = {"stage": None}
     stopped_state: dict[str, str | None] = {"stage": None}
+    final_selection_stopped = False
     ticks = 0
 
     def clock() -> int:
@@ -651,10 +653,13 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
         return token
 
     def stop(collector, token):
+        nonlocal final_selection_stopped
         stopped = original_stop(collector, token)
         events.append(f"stop:{token.name}")
         active["stage"] = None
         stopped_state["stage"] = token.name
+        if token.name == "final_selection":
+            final_selection_stopped = True
         return stopped
 
     def finish_stage(collector, stage, **kwargs):
@@ -671,6 +676,28 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
     monkeypatch.setattr(RetrievalTraceCollector, "stop_stage", stop)
     monkeypatch.setattr(RetrievalTraceCollector, "finish_stage", finish_stage)
     monkeypatch.setattr(RetrievalTraceCollector, "finish", finish)
+
+    for method_name in (
+        "chunk_for_id",
+        "signals_for_chunk",
+        "relations_for_source",
+        "relations_targeting",
+    ):
+        original_method = getattr(SQLiteStore, method_name)
+
+        def make_store_read(method):
+            def wrapped(*args, **kwargs):
+                if final_selection_stopped:
+                    events.append("summary_store_read")
+                return method(*args, **kwargs)
+
+            return wrapped
+
+        monkeypatch.setattr(
+            SQLiteStore,
+            method_name,
+            make_store_read(original_method),
+        )
 
     for adapter_name in (
         "_trace_candidate_observations",
@@ -706,12 +733,9 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
 
         monkeypatch.setattr(target, name, wrapped)
 
-    for name in (
-        "build_query_variants",
-        "_split_code_results_and_evidence_anchors",
-    ):
-        mark_operation(retrieval, name)
+    mark_operation(retrieval, "build_query_variants")
     mark_operation(context_expansion, "expand_ranked_chunks")
+    mark_operation(selection, "split_results_and_anchors")
     for name in (
         "rank_chunks",
         "apply_frontend_import_cohort_rerank",
@@ -733,11 +757,17 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
     ):
         mark_operation(candidates, name)
 
-    original_summary = retrieval._summarize_results
+    original_summary = selection._summarize_results
 
     def summarize(*args, **kwargs):
         events.append("output_assembly")
         return original_summary(*args, **kwargs)
+
+    original_result = selection.RetrievalResult
+
+    def result(*args, **kwargs):
+        events.append("result_construction")
+        return original_result(*args, **kwargs)
 
     original_bundle = retrieval.QueryBundle
 
@@ -745,7 +775,8 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
         events.append("bundle_construction")
         return original_bundle(*args, **kwargs)
 
-    monkeypatch.setattr(retrieval, "_summarize_results", summarize)
+    monkeypatch.setattr(selection, "_summarize_results", summarize)
+    monkeypatch.setattr(selection, "RetrievalResult", result)
     monkeypatch.setattr(retrieval, "QueryBundle", bundle)
 
     traced = retrieval.trace_repository(
@@ -774,7 +805,9 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
     assert final_stop < events.index("observe:final_selection")
     assert final_stop < events.index("adapter:final_selection")
     assert final_stop < events.index("output_assembly")
-    assert final_stop < events.index("bundle_construction")
+    assert events.index("output_assembly") < events.index("summary_store_read")
+    assert events.index("summary_store_read") < events.index("result_construction")
+    assert events.index("result_construction") < events.index("bundle_construction")
     assert events.index("bundle_construction") < events.index("total_finish")
 
 
@@ -833,9 +866,9 @@ def test_trace_adapters_never_read_content_or_private_context_content() -> None:
 
     expanded = ExpandedTrap()
     candidates = {"chunk-a": candidate}
-    decisions = retrieval._FinalTraceDecisions(
+    decisions = selection._FinalTraceDecisions(
         selected=(
-            retrieval._FinalTraceInput(
+            selection._FinalTraceInput(
                 kind="result",
                 reason="selected_within_result_limit",
                 item=expanded,  # type: ignore[arg-type]
