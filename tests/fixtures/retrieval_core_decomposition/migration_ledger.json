@@ -1,0 +1,3919 @@
+{
+  "schema_version": 1,
+  "source_commit": "34c5b5bd2189fbba4ead3902342706266c399b41",
+  "rows": [
+    {
+      "old_symbol": "MAX_EXPANSION_CANDIDATES",
+      "final_owner": "context_search_tool.retrieval.MAX_EXPANSION_CANDIDATES",
+      "design_task": null,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_core_boundaries.py",
+          "count": 1,
+          "lines": [
+            154
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 2,
+          "lines": [
+            3053,
+            3068
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 5,
+        "lines": [
+          1939,
+          1959,
+          1993,
+          2124,
+          4270
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "supported_facade",
+      "remaining": 3,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "MAX_EXPANSION_DEPTH",
+      "final_owner": "context_search_tool.retrieval.MAX_EXPANSION_DEPTH",
+      "design_task": null,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_core_boundaries.py",
+          "count": 1,
+          "lines": [
+            153
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 3,
+          "lines": [
+            2480,
+            2483,
+            2485
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          1901
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "supported_facade",
+      "remaining": 4,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "NumpyVectorStore",
+      "final_owner": "context_search_tool.retrieval_core.candidates.NumpyVectorStore",
+      "design_task": 3,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 2,
+          "lines": [
+            169,
+            751
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 7,
+          "lines": [
+            204,
+            245,
+            277,
+            304,
+            338,
+            646,
+            765
+          ],
+          "syntax_kinds": [
+            "setattr"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            129
+          ],
+          "syntax_kinds": [
+            "setattr"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          1573
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "setattr"
+      ],
+      "disposition": "migrate",
+      "remaining": 11,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "QueryBundle",
+      "final_owner": "context_search_tool.retrieval.QueryBundle",
+      "design_task": null,
+      "direct_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            473
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_cli_commands.py",
+          "count": 1,
+          "lines": [
+            23
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_context_excerpts.py",
+          "count": 1,
+          "lines": [
+            26
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_context_needs.py",
+          "count": 1,
+          "lines": [
+            26
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_formatters.py",
+          "count": 1,
+          "lines": [
+            19
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_mcp_tools.py",
+          "count": 1,
+          "lines": [
+            38
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_quality_metrics.py",
+          "count": 1,
+          "lines": [
+            36
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_quality_runner.py",
+          "count": 1,
+          "lines": [
+            56
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_core_boundaries.py",
+          "count": 6,
+          "lines": [
+            96,
+            97,
+            100,
+            106,
+            122,
+            123
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 2,
+          "lines": [
+            2929,
+            2938
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 4,
+          "lines": [
+            140,
+            222,
+            232,
+            726
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            733
+          ],
+          "syntax_kinds": [
+            "setattr"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 6,
+        "lines": [
+          216,
+          666,
+          676,
+          703,
+          874,
+          1036
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "import_from",
+        "setattr"
+      ],
+      "disposition": "supported_facade",
+      "remaining": 21,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "RetrievalTraceCollector",
+      "final_owner": "context_search_tool.retrieval_trace.RetrievalTraceCollector",
+      "design_task": 8,
+      "direct_references": [],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 7,
+        "lines": [
+          337,
+          368,
+          441,
+          561,
+          641,
+          665,
+          1482
+        ]
+      },
+      "syntax_kinds": [],
+      "disposition": "migrate",
+      "remaining": 7,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "SQLiteStore",
+      "final_owner": "context_search_tool.sqlite_store.SQLiteStore",
+      "design_task": 2,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 2,
+          "lines": [
+            176,
+            509
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            128
+          ],
+          "syntax_kinds": [
+            "setattr"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 19,
+        "lines": [
+          390,
+          444,
+          699,
+          1196,
+          1338,
+          1438,
+          1476,
+          1614,
+          1643,
+          1679,
+          1738,
+          1775,
+          1842,
+          2180,
+          2630,
+          3951,
+          4015,
+          4200,
+          4330
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "setattr"
+      ],
+      "disposition": "migrate",
+      "remaining": 22,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "TracedQueryBundle",
+      "final_owner": "context_search_tool.retrieval.TracedQueryBundle",
+      "design_task": null,
+      "direct_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 2,
+          "lines": [
+            513,
+            1037
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_mcp_tools.py",
+          "count": 1,
+          "lines": [
+            38
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_core_boundaries.py",
+          "count": 5,
+          "lines": [
+            98,
+            99,
+            100,
+            117,
+            126
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 2,
+        "lines": [
+          639,
+          651
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "import_from"
+      ],
+      "disposition": "supported_facade",
+      "remaining": 8,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_COHORT_MISMATCH_PENALTY",
+      "final_owner": "context_search_tool.retrieval_core.ranking._COHORT_MISMATCH_PENALTY",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 1,
+          "lines": [
+            11062
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 2,
+        "lines": [
+          2400,
+          2402
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 3,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_ChunkRole",
+      "final_owner": "context_search_tool.retrieval_core.ranking._ChunkRole",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 7,
+          "lines": [
+            1437,
+            1485,
+            1532,
+            1580,
+            1627,
+            9433,
+            9460
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 19,
+        "lines": [
+          3003,
+          3011,
+          3013,
+          3015,
+          3018,
+          3020,
+          3022,
+          3024,
+          3026,
+          3028,
+          3030,
+          3031,
+          3319,
+          3536,
+          3917,
+          4564,
+          4583,
+          4626,
+          4660
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 26,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_ExpandedResult",
+      "final_owner": "context_search_tool.retrieval_core.types._ExpandedResult",
+      "design_task": 2,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 3,
+          "lines": [
+            200,
+            217,
+            610
+          ],
+          "syntax_kinds": [
+            "attribute",
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 27,
+          "lines": [
+            374,
+            393,
+            428,
+            429,
+            7540,
+            7555,
+            8740,
+            8758,
+            8776,
+            8819,
+            8834,
+            8849,
+            8864,
+            8893,
+            8909,
+            8944,
+            8959,
+            8999,
+            9014,
+            9029,
+            9082,
+            9097,
+            9112,
+            9127,
+            10783,
+            10863,
+            10925
+          ],
+          "syntax_kinds": [
+            "attribute",
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            419
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 30,
+        "lines": [
+          293,
+          492,
+          540,
+          1063,
+          1068,
+          1073,
+          1079,
+          1086,
+          1092,
+          1094,
+          1107,
+          1167,
+          1197,
+          2536,
+          2537,
+          2583,
+          2722,
+          2724,
+          2743,
+          2771,
+          2771,
+          2772,
+          2776,
+          2782,
+          2802,
+          2818,
+          2819,
+          2820,
+          2857,
+          2886
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "import_from"
+      ],
+      "disposition": "migrate",
+      "remaining": 61,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_FinalTraceDecisions",
+      "final_owner": "context_search_tool.retrieval_core.selection._FinalTraceDecisions",
+      "design_task": 7,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 2,
+          "lines": [
+            442,
+            820
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 4,
+        "lines": [
+          559,
+          1081,
+          1096,
+          1155
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 6,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_FinalTraceInput",
+      "final_owner": "context_search_tool.retrieval_core.selection._FinalTraceInput",
+      "design_task": 7,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 2,
+          "lines": [
+            444,
+            822
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 4,
+        "lines": [
+          298,
+          1099,
+          1126,
+          1141
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 6,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_GenericFileRole",
+      "final_owner": "context_search_tool.retrieval_core.file_roles._GenericFileRole",
+      "design_task": 2,
+      "direct_references": [],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 10,
+        "lines": [
+          4749,
+          4756,
+          4758,
+          4766,
+          4778,
+          4780,
+          4788,
+          4796,
+          4803,
+          4804
+        ]
+      },
+      "syntax_kinds": [],
+      "disposition": "migrate",
+      "remaining": 10,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_RELATION_SCORE_DECAY",
+      "final_owner": "context_search_tool.retrieval_core.expansion._RELATION_SCORE_DECAY",
+      "design_task": 4,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 2,
+          "lines": [
+            3013,
+            3014
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          1923
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 3,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_RERANK_SORT_DECIMALS",
+      "final_owner": "context_search_tool.retrieval_core.ordering.RERANK_SORT_DECIMALS",
+      "design_task": 2,
+      "direct_references": [],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 3,
+        "lines": [
+          156,
+          2433,
+          2805
+        ]
+      },
+      "syntax_kinds": [],
+      "disposition": "migrate",
+      "remaining": 3,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_RankedChunk",
+      "final_owner": "context_search_tool.retrieval_core.types._RankedChunk",
+      "design_task": 2,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 6,
+          "lines": [
+            104,
+            123,
+            152,
+            171,
+            267,
+            286
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 6,
+          "lines": [
+            47,
+            48,
+            5919,
+            7501,
+            7511,
+            7521
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            791
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 10,
+        "lines": [
+          466,
+          2184,
+          2186,
+          2407,
+          2430,
+          2448,
+          2450,
+          2479,
+          2504,
+          2532
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 23,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_SpringPathImplementor",
+      "final_owner": "context_search_tool.retrieval_core.ranking._SpringPathImplementor",
+      "design_task": 5,
+      "direct_references": [],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 4,
+        "lines": [
+          4333,
+          4351,
+          4371,
+          4450
+        ]
+      },
+      "syntax_kinds": [],
+      "disposition": "migrate",
+      "remaining": 4,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "__name__",
+      "final_owner": "context_search_tool.retrieval_core.expansion.logger.name",
+      "design_task": 4,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 1,
+          "lines": [
+            3061
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          74
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 2,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_anchor_expansion_candidates",
+      "final_owner": "context_search_tool.retrieval_core.expansion.anchor_candidates",
+      "design_task": 4,
+      "direct_references": [
+        {
+          "file": "tests/test_quality_catalog.py",
+          "count": 1,
+          "lines": [
+            1209
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 5,
+          "lines": [
+            1142,
+            9192,
+            9236,
+            9279,
+            9322
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [
+        {
+          "file": "scripts/profile_retrieval.py",
+          "count": 1,
+          "lines": [
+            28
+          ],
+          "syntax_kinds": [
+            "profiler_target"
+          ]
+        }
+      ],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          817
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "profiler_target"
+      ],
+      "disposition": "migrate",
+      "remaining": 8,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_apply_frontend_import_cohort_rerank",
+      "final_owner": "context_search_tool.retrieval_core.ranking.apply_frontend_import_cohort_rerank",
+      "design_task": 5,
+      "direct_references": [],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          924
+        ]
+      },
+      "syntax_kinds": [],
+      "disposition": "migrate",
+      "remaining": 1,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_bounded_score",
+      "final_owner": "context_search_tool.retrieval_core.evidence_merge.bounded_score",
+      "design_task": 2,
+      "direct_references": [],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 14,
+        "lines": [
+          1709,
+          2048,
+          2077,
+          2086,
+          2094,
+          2106,
+          2113,
+          3069,
+          3070,
+          3071,
+          3072,
+          3073,
+          3074,
+          3076
+        ]
+      },
+      "syntax_kinds": [],
+      "disposition": "migrate",
+      "remaining": 14,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_chunk_role",
+      "final_owner": "context_search_tool.retrieval_core.ranking._chunk_role",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 5,
+          "lines": [
+            5683,
+            5698,
+            5891,
+            9383,
+            9404
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 5,
+        "lines": [
+          2265,
+          4283,
+          4337,
+          4397,
+          4441
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 10,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_combined_score",
+      "final_owner": "context_search_tool.retrieval_core.ranking._combined_score",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 1,
+          "lines": [
+            72
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 2,
+          "lines": [
+            7430,
+            7431
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          2295
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 4,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_dedupe",
+      "final_owner": "context_search_tool.retrieval_core.ordering.dedupe_lowered",
+      "design_task": 2,
+      "direct_references": [
+        {
+          "file": "tests/test_quality_catalog.py",
+          "count": 1,
+          "lines": [
+            1191
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 1,
+          "lines": [
+            1124
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 9,
+        "lines": [
+          668,
+          1028,
+          1252,
+          1434,
+          2858,
+          2866,
+          4465,
+          4474,
+          4509
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 11,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_direct_text_candidates",
+      "final_owner": "context_search_tool.retrieval_core.candidates.direct_text_candidates",
+      "design_task": 3,
+      "direct_references": [],
+      "monkeypatch_references": [],
+      "profiler_targets": [
+        {
+          "file": "scripts/profile_retrieval.py",
+          "count": 1,
+          "lines": [
+            25
+          ],
+          "syntax_kinds": [
+            "profiler_target"
+          ]
+        }
+      ],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 0,
+        "lines": []
+      },
+      "syntax_kinds": [
+        "profiler_target"
+      ],
+      "disposition": "migrate",
+      "remaining": 1,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_direct_text_probes",
+      "final_owner": "context_search_tool.retrieval_core.candidates.direct_text_probes",
+      "design_task": 3,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 3,
+          "lines": [
+            972,
+            975,
+            981
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            599
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            610
+          ],
+          "syntax_kinds": [
+            "setattr"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 2,
+        "lines": [
+          1448,
+          1538
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "setattr"
+      ],
+      "disposition": "migrate",
+      "remaining": 7,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_evidence_anchor_kind",
+      "final_owner": "context_search_tool.retrieval_core.selection._evidence_anchor_kind",
+      "design_task": 7,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 7,
+          "lines": [
+            8809,
+            8810,
+            8811,
+            8812,
+            8813,
+            8814,
+            8815
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          1112
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 8,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_evidence_class",
+      "final_owner": "context_search_tool.retrieval_core.ranking._evidence_class",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 18,
+          "lines": [
+            98,
+            249,
+            265,
+            266,
+            559,
+            666,
+            667,
+            672,
+            673,
+            674,
+            678,
+            682,
+            683,
+            684,
+            689,
+            720,
+            937,
+            938
+          ],
+          "syntax_kinds": [
+            "attribute",
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 1,
+          "lines": [
+            10718
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 3,
+        "lines": [
+          2327,
+          3480,
+          4866
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "import_from"
+      ],
+      "disposition": "migrate",
+      "remaining": 22,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_evidence_priority",
+      "final_owner": "context_search_tool.retrieval_core.ranking._evidence_priority",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 6,
+          "lines": [
+            99,
+            252,
+            282,
+            301,
+            668,
+            846
+          ],
+          "syntax_kinds": [
+            "attribute",
+            "import_from"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          2328
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "import_from"
+      ],
+      "disposition": "migrate",
+      "remaining": 7,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_expand_ranked_chunks",
+      "final_owner": "context_search_tool.retrieval_core.context_expansion.expand_ranked_chunks",
+      "design_task": 6,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 1,
+          "lines": [
+            541
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 9,
+          "lines": [
+            481,
+            11093,
+            11202,
+            11253,
+            11299,
+            11332,
+            11339,
+            11364,
+            11440
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            202
+          ],
+          "syntax_kinds": [
+            "setattr"
+          ]
+        }
+      ],
+      "profiler_targets": [
+        {
+          "file": "scripts/profile_retrieval.py",
+          "count": 1,
+          "lines": [
+            31
+          ],
+          "syntax_kinds": [
+            "profiler_target"
+          ]
+        }
+      ],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          948
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "import_from",
+        "profiler_target",
+        "setattr"
+      ],
+      "disposition": "migrate",
+      "remaining": 13,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_expanded_result_sort_key",
+      "final_owner": "context_search_tool.retrieval_core.context_expansion._expanded_result_sort_key",
+      "design_task": 6,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 1,
+          "lines": [
+            237
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 1,
+          "lines": [
+            7572
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 2,
+        "lines": [
+          2797,
+          2829
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 4,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_finish_candidate_stage",
+      "final_owner": "context_search_tool.retrieval_core.tracing.finish_candidate_stage",
+      "design_task": 8,
+      "direct_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            948
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            961
+          ],
+          "syntax_kinds": [
+            "object"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 10,
+        "lines": [
+          772,
+          786,
+          805,
+          824,
+          848,
+          867,
+          1495,
+          1513,
+          1530,
+          1551
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "object"
+      ],
+      "disposition": "migrate",
+      "remaining": 12,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_generic_hint_penalty",
+      "final_owner": "context_search_tool.retrieval_core.ranking._generic_hint_penalty",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 1,
+          "lines": [
+            859
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          3477
+        ]
+      },
+      "syntax_kinds": [
+        "import_from"
+      ],
+      "disposition": "migrate",
+      "remaining": 2,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_has_original_direct_evidence",
+      "final_owner": "context_search_tool.retrieval_core.ranking._has_original_direct_evidence",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 2,
+          "lines": [
+            917,
+            936
+          ],
+          "syntax_kinds": [
+            "attribute",
+            "import_from"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 2,
+        "lines": [
+          3193,
+          3472
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "import_from"
+      ],
+      "disposition": "migrate",
+      "remaining": 4,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_has_planner_direct_evidence",
+      "final_owner": "context_search_tool.retrieval_core.ranking._has_planner_direct_evidence",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 2,
+          "lines": [
+            96,
+            899
+          ],
+          "syntax_kinds": [
+            "attribute",
+            "import_from"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          3220
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "import_from"
+      ],
+      "disposition": "migrate",
+      "remaining": 3,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_has_strong_original_direct_evidence",
+      "final_owner": "context_search_tool.retrieval_core.ranking._has_strong_original_direct_evidence",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 2,
+          "lines": [
+            97,
+            751
+          ],
+          "syntax_kinds": [
+            "attribute",
+            "import_from"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 4,
+        "lines": [
+          2350,
+          3194,
+          3216,
+          3364
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "import_from"
+      ],
+      "disposition": "migrate",
+      "remaining": 6,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_has_weak_original_direct_evidence",
+      "final_owner": "context_search_tool.retrieval_core.ranking._has_weak_original_direct_evidence",
+      "design_task": 5,
+      "direct_references": [],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 2,
+        "lines": [
+          3218,
+          3366
+        ]
+      },
+      "syntax_kinds": [],
+      "disposition": "migrate",
+      "remaining": 2,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_initial_candidates",
+      "final_owner": "context_search_tool.retrieval.query_repository",
+      "design_task": 3,
+      "direct_references": [
+        {
+          "file": "tests/test_quality_catalog.py",
+          "count": 1,
+          "lines": [
+            1193
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 1,
+          "lines": [
+            1126
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          755
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 3,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_is_planner_hint_only",
+      "final_owner": "context_search_tool.retrieval_core.ranking._is_planner_hint_only",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 2,
+          "lines": [
+            3147,
+            3292
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 2,
+        "lines": [
+          3469,
+          3976
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 4,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_java_context_score_parts",
+      "final_owner": "context_search_tool.retrieval_core.ranking._java_context_score_parts",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 2,
+          "lines": [
+            9430,
+            9457
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          2270
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 3,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_lexical_candidates",
+      "final_owner": "context_search_tool.retrieval_core.candidates.lexical_candidates",
+      "design_task": 3,
+      "direct_references": [],
+      "monkeypatch_references": [],
+      "profiler_targets": [
+        {
+          "file": "scripts/profile_retrieval.py",
+          "count": 1,
+          "lines": [
+            24
+          ],
+          "syntax_kinds": [
+            "profiler_target"
+          ]
+        }
+      ],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 2,
+        "lines": [
+          1508,
+          1668
+        ]
+      },
+      "syntax_kinds": [
+        "profiler_target"
+      ],
+      "disposition": "migrate",
+      "remaining": 3,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_merge_candidates",
+      "final_owner": "context_search_tool.retrieval_core.candidates.merge_candidates",
+      "design_task": 3,
+      "direct_references": [
+        {
+          "file": "tests/test_quality_catalog.py",
+          "count": 3,
+          "lines": [
+            1203,
+            1216,
+            1227
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 6,
+          "lines": [
+            212,
+            352,
+            1136,
+            1149,
+            1160,
+            3106
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            196
+          ],
+          "syntax_kinds": [
+            "setattr"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 3,
+        "lines": [
+          804,
+          832,
+          866
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "setattr"
+      ],
+      "disposition": "migrate",
+      "remaining": 13,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_merge_expanded_result",
+      "final_owner": "context_search_tool.retrieval_core.context_expansion._merge_expanded_result",
+      "design_task": 6,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 1,
+          "lines": [
+            610
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 3,
+          "lines": [
+            413,
+            10783,
+            10863
+          ],
+          "syntax_kinds": [
+            "attribute",
+            "import_from"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          2788
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "import_from"
+      ],
+      "disposition": "migrate",
+      "remaining": 5,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_merge_overlapping_results",
+      "final_owner": "context_search_tool.retrieval_core.context_expansion._merge_overlapping_results",
+      "design_task": 6,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 1,
+          "lines": [
+            541
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 2,
+          "lines": [
+            445,
+            10925
+          ],
+          "syntax_kinds": [
+            "attribute",
+            "import_from"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          2620
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "import_from"
+      ],
+      "disposition": "migrate",
+      "remaining": 4,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_merge_score_parts",
+      "final_owner": "context_search_tool.retrieval_core.evidence_merge.merge_score_parts",
+      "design_task": 2,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 1,
+          "lines": [
+            10913
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 15,
+        "lines": [
+          2149,
+          2225,
+          2241,
+          2246,
+          2273,
+          2281,
+          2285,
+          2289,
+          2832,
+          4228,
+          4443,
+          4821,
+          4826,
+          4834,
+          4846
+        ]
+      },
+      "syntax_kinds": [
+        "import_from"
+      ],
+      "disposition": "migrate",
+      "remaining": 16,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_merge_semantic_matches",
+      "final_owner": "context_search_tool.retrieval_core.evidence_merge.merge_semantic_matches",
+      "design_task": 2,
+      "direct_references": [],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 2,
+        "lines": [
+          2150,
+          2871
+        ]
+      },
+      "syntax_kinds": [],
+      "disposition": "migrate",
+      "remaining": 2,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_normalized_score_parts",
+      "final_owner": "context_search_tool.retrieval_core.candidates._normalized_score_parts",
+      "design_task": 3,
+      "direct_references": [],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          2134
+        ]
+      },
+      "syntax_kinds": [],
+      "disposition": "migrate",
+      "remaining": 1,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_ordered_unique",
+      "final_owner": "context_search_tool.retrieval_core.ordering.ordered_unique_preserving_case",
+      "design_task": 2,
+      "direct_references": [],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 16,
+        "lines": [
+          503,
+          510,
+          573,
+          582,
+          740,
+          1258,
+          1259,
+          1260,
+          1261,
+          1282,
+          1288,
+          1310,
+          1311,
+          1312,
+          1313,
+          1350
+        ]
+      },
+      "syntax_kinds": [],
+      "disposition": "migrate",
+      "remaining": 16,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_planner_hint_candidates",
+      "final_owner": "context_search_tool.retrieval_core.candidates.planner_hint_candidates",
+      "design_task": 3,
+      "direct_references": [],
+      "monkeypatch_references": [],
+      "profiler_targets": [
+        {
+          "file": "scripts/profile_retrieval.py",
+          "count": 1,
+          "lines": [
+            27
+          ],
+          "syntax_kinds": [
+            "profiler_target"
+          ]
+        }
+      ],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          785
+        ]
+      },
+      "syntax_kinds": [
+        "profiler_target"
+      ],
+      "disposition": "migrate",
+      "remaining": 2,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_rank_chunks",
+      "final_owner": "context_search_tool.retrieval_core.ranking.rank_chunks",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 1,
+          "lines": [
+            19
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 54,
+          "lines": [
+            3104,
+            3406,
+            3707,
+            3729,
+            3994,
+            4266,
+            4490,
+            4629,
+            4758,
+            5512,
+            5524,
+            5541,
+            5554,
+            5631,
+            5661,
+            5729,
+            5787,
+            5847,
+            5933,
+            6094,
+            6138,
+            6262,
+            6326,
+            6389,
+            7478,
+            7618,
+            7692,
+            7756,
+            7837,
+            8011,
+            8155,
+            8299,
+            8365,
+            8386,
+            8459,
+            8521,
+            8572,
+            8649,
+            8682,
+            8728,
+            9529,
+            9720,
+            9832,
+            9892,
+            9961,
+            10045,
+            10187,
+            10259,
+            10325,
+            10397,
+            10479,
+            10548,
+            10639,
+            11030
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            201
+          ],
+          "syntax_kinds": [
+            "setattr"
+          ]
+        }
+      ],
+      "profiler_targets": [
+        {
+          "file": "scripts/profile_retrieval.py",
+          "count": 1,
+          "lines": [
+            30
+          ],
+          "syntax_kinds": [
+            "profiler_target"
+          ]
+        }
+      ],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          900
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "import_from",
+        "profiler_target",
+        "setattr"
+      ],
+      "disposition": "migrate",
+      "remaining": 58,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_ranked_chunk_sort_key",
+      "final_owner": "context_search_tool.retrieval_core.ranking._ranked_chunk_sort_key",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 3,
+          "lines": [
+            145,
+            193,
+            306
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 2,
+          "lines": [
+            7534,
+            7538
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 2,
+        "lines": [
+          2425,
+          2519
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 7,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_reasons",
+      "final_owner": "context_search_tool.retrieval_core.ranking._reasons",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 1,
+          "lines": [
+            100
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 4,
+          "lines": [
+            1662,
+            6813,
+            10098,
+            10108
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 2,
+        "lines": [
+          2411,
+          2508
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 7,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_relation_expansion_candidates",
+      "final_owner": "context_search_tool.retrieval_core.expansion.relation_candidates",
+      "design_task": 4,
+      "direct_references": [
+        {
+          "file": "tests/test_quality_catalog.py",
+          "count": 1,
+          "lines": [
+            1222
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 16,
+          "lines": [
+            1155,
+            2012,
+            2108,
+            2197,
+            2440,
+            2955,
+            2971,
+            2993,
+            3039,
+            3062,
+            3099,
+            3129,
+            3159,
+            3193,
+            3236,
+            3275
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [
+        {
+          "file": "scripts/profile_retrieval.py",
+          "count": 1,
+          "lines": [
+            29
+          ],
+          "syntax_kinds": [
+            "profiler_target"
+          ]
+        }
+      ],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          843
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "profiler_target"
+      ],
+      "disposition": "migrate",
+      "remaining": 19,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_rerank_score",
+      "final_owner": "context_search_tool.retrieval_core.ranking._rerank_score",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 10,
+          "lines": [
+            1451,
+            1459,
+            1498,
+            1506,
+            1546,
+            1554,
+            1593,
+            1601,
+            1641,
+            1649
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          2331
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 11,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_route_boost",
+      "final_owner": "context_search_tool.retrieval_core.ranking._route_boost",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 3,
+          "lines": [
+            10092,
+            10093,
+            10094
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          2234
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 4,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_route_score_parts",
+      "final_owner": "context_search_tool.retrieval_core.ranking._route_score_parts",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 3,
+          "lines": [
+            3333,
+            3334,
+            3335
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          2258
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 4,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_semantic_candidates",
+      "final_owner": "context_search_tool.retrieval_core.candidates.semantic_candidates",
+      "design_task": 3,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 5,
+          "lines": [
+            206,
+            247,
+            279,
+            310,
+            341
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            65
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            72
+          ],
+          "syntax_kinds": [
+            "setattr"
+          ]
+        }
+      ],
+      "profiler_targets": [
+        {
+          "file": "scripts/profile_retrieval.py",
+          "count": 1,
+          "lines": [
+            23
+          ],
+          "syntax_kinds": [
+            "profiler_target"
+          ]
+        }
+      ],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          1489
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "profiler_target",
+        "setattr"
+      ],
+      "disposition": "migrate",
+      "remaining": 9,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_signal_candidates",
+      "final_owner": "context_search_tool.retrieval_core.candidates.signal_candidates",
+      "design_task": 3,
+      "direct_references": [
+        {
+          "file": "tests/test_quality_catalog.py",
+          "count": 1,
+          "lines": [
+            1202
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 1,
+          "lines": [
+            1135
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [
+        {
+          "file": "scripts/profile_retrieval.py",
+          "count": 1,
+          "lines": [
+            26
+          ],
+          "syntax_kinds": [
+            "profiler_target"
+          ]
+        }
+      ],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 2,
+        "lines": [
+          771,
+          1674
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "profiler_target"
+      ],
+      "disposition": "migrate",
+      "remaining": 5,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_span_sources",
+      "final_owner": "context_search_tool.retrieval_core.context_expansion._span_sources",
+      "design_task": 6,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 1,
+          "lines": [
+            11169
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          2610
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 2,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_split_code_results_and_evidence_anchors",
+      "final_owner": "context_search_tool.retrieval_core.selection.split_results_and_anchors",
+      "design_task": 7,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 6,
+          "lines": [
+            8738,
+            8880,
+            8930,
+            8975,
+            8997,
+            9080
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [
+        {
+          "file": "scripts/profile_retrieval.py",
+          "count": 1,
+          "lines": [
+            32
+          ],
+          "syntax_kinds": [
+            "profiler_target"
+          ]
+        }
+      ],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 2,
+        "lines": [
+          982,
+          990
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "profiler_target"
+      ],
+      "disposition": "migrate",
+      "remaining": 9,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_summarize_results",
+      "final_owner": "context_search_tool.retrieval_core.selection._summarize_results",
+      "design_task": 7,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 1,
+          "lines": [
+            9146
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            720
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 2,
+          "lines": [
+            203,
+            732
+          ],
+          "syntax_kinds": [
+            "setattr"
+          ]
+        }
+      ],
+      "profiler_targets": [
+        {
+          "file": "scripts/profile_retrieval.py",
+          "count": 1,
+          "lines": [
+            33
+          ],
+          "syntax_kinds": [
+            "profiler_target"
+          ]
+        }
+      ],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          1014
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "profiler_target",
+        "setattr"
+      ],
+      "disposition": "migrate",
+      "remaining": 6,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_trace_candidate_observations",
+      "final_owner": "context_search_tool.retrieval_core.tracing._candidate_observations",
+      "design_task": 8,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            837
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          451
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 2,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_trace_expanded_observations",
+      "final_owner": "context_search_tool.retrieval_core.tracing._expanded_observations",
+      "design_task": 8,
+      "direct_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            981
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            839
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            991
+          ],
+          "syntax_kinds": [
+            "object"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          957
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "object"
+      ],
+      "disposition": "migrate",
+      "remaining": 4,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_trace_final_selections",
+      "final_owner": "context_search_tool.retrieval_core.tracing._final_selections",
+      "design_task": 8,
+      "direct_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            1002
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 2,
+          "lines": [
+            474,
+            840
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            1034
+          ],
+          "syntax_kinds": [
+            "object"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          1001
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "object"
+      ],
+      "disposition": "migrate",
+      "remaining": 5,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_trace_query",
+      "final_owner": "context_search_tool.retrieval_core.tracing._trace_query",
+      "design_task": 8,
+      "direct_references": [],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          351
+        ]
+      },
+      "syntax_kinds": [],
+      "disposition": "migrate",
+      "remaining": 1,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_trace_ranked_observations",
+      "final_owner": "context_search_tool.retrieval_core.tracing._ranked_observations",
+      "design_task": 8,
+      "direct_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            965
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            838
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            977
+          ],
+          "syntax_kinds": [
+            "object"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 2,
+        "lines": [
+          903,
+          927
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "object"
+      ],
+      "disposition": "migrate",
+      "remaining": 5,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_trace_stage_start",
+      "final_owner": "context_search_tool.retrieval_core.tracing.start_stage",
+      "design_task": 8,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            600
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            611
+          ],
+          "syntax_kinds": [
+            "setattr"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 15,
+        "lines": [
+          724,
+          766,
+          780,
+          799,
+          812,
+          838,
+          861,
+          895,
+          919,
+          943,
+          974,
+          1484,
+          1503,
+          1521,
+          1539
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "setattr"
+      ],
+      "disposition": "migrate",
+      "remaining": 17,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "_with_effective_semantic",
+      "final_owner": "context_search_tool.retrieval_core.ranking._with_effective_semantic",
+      "design_task": 5,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 2,
+          "lines": [
+            66,
+            88
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          2294
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 3,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "assert_manifest_compatible",
+      "final_owner": "context_search_tool.manifest.assert_manifest_compatible",
+      "design_task": 8,
+      "direct_references": [],
+      "monkeypatch_references": [
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            537
+          ],
+          "syntax_kinds": [
+            "setattr"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          697
+        ]
+      },
+      "syntax_kinds": [
+        "setattr"
+      ],
+      "disposition": "migrate",
+      "remaining": 2,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "build_query_variants",
+      "final_owner": "context_search_tool.query_planner.build_query_variants",
+      "design_task": 8,
+      "direct_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            906
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            943
+          ],
+          "syntax_kinds": [
+            "object"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          732
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "object"
+      ],
+      "disposition": "migrate",
+      "remaining": 3,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "evidence_anchor_top_k",
+      "final_owner": "context_search_tool.retrieval.evidence_anchor_top_k",
+      "design_task": null,
+      "direct_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            1132
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_mcp_tools.py",
+          "count": 1,
+          "lines": [
+            38
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_quality_metrics.py",
+          "count": 1,
+          "lines": [
+            36
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_quality_p2.py",
+          "count": 1,
+          "lines": [
+            26
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_quality_runner.py",
+          "count": 1,
+          "lines": [
+            56
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_core_boundaries.py",
+          "count": 1,
+          "lines": [
+            145
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 2,
+          "lines": [
+            34,
+            8993
+          ],
+          "syntax_kinds": [
+            "attribute",
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 1,
+          "lines": [
+            80
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 1,
+          "lines": [
+            647
+          ],
+          "syntax_kinds": [
+            "setattr"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 2,
+        "lines": [
+          985,
+          993
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "import_from",
+        "setattr"
+      ],
+      "disposition": "supported_facade",
+      "remaining": 10,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "expand_lines",
+      "final_owner": "context_search_tool.chunker.expand_lines",
+      "design_task": 2,
+      "direct_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 1,
+          "lines": [
+            491
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          2555
+        ]
+      },
+      "syntax_kinds": [
+        "attribute"
+      ],
+      "disposition": "migrate",
+      "remaining": 2,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "expand_query_plan_tokens",
+      "final_owner": "context_search_tool.query_planner.expand_query_plan_tokens",
+      "design_task": 8,
+      "direct_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            907
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            944
+          ],
+          "syntax_kinds": [
+            "object"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          744
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "object"
+      ],
+      "disposition": "migrate",
+      "remaining": 3,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "normalize_score",
+      "final_owner": "context_search_tool.retrieval.normalize_score",
+      "design_task": null,
+      "direct_references": [
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 5,
+          "lines": [
+            790,
+            807,
+            814,
+            821,
+            828
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_core_boundaries.py",
+          "count": 3,
+          "lines": [
+            138,
+            139,
+            140
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          2322
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "import_from"
+      ],
+      "disposition": "supported_facade",
+      "remaining": 8,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "planner_from_config",
+      "final_owner": "context_search_tool.query_planner.planner_from_config",
+      "design_task": 8,
+      "direct_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            645
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            669
+          ],
+          "syntax_kinds": [
+            "object"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 2,
+          "lines": [
+            127,
+            177
+          ],
+          "syntax_kinds": [
+            "setattr"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          729
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "object",
+        "setattr"
+      ],
+      "disposition": "migrate",
+      "remaining": 5,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "planner_hint_tokens",
+      "final_owner": "context_search_tool.query_planner.planner_hint_tokens",
+      "design_task": 8,
+      "direct_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            908
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            945
+          ],
+          "syntax_kinds": [
+            "object"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          746
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "object"
+      ],
+      "disposition": "migrate",
+      "remaining": 3,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "provider_from_config",
+      "final_owner": "context_search_tool.retrieval_core.candidates.provider_from_config",
+      "design_task": 3,
+      "direct_references": [],
+      "monkeypatch_references": [
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 11,
+          "lines": [
+            203,
+            244,
+            276,
+            303,
+            337,
+            575,
+            645,
+            678,
+            737,
+            768,
+            786
+          ],
+          "syntax_kinds": [
+            "setattr"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 2,
+          "lines": [
+            550,
+            577
+          ],
+          "syntax_kinds": [
+            "setattr"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          1572
+        ]
+      },
+      "syntax_kinds": [
+        "setattr"
+      ],
+      "disposition": "migrate",
+      "remaining": 14,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "query_repository",
+      "final_owner": "context_search_tool.retrieval.query_repository",
+      "design_task": null,
+      "direct_references": [
+        {
+          "file": "scripts/profile_retrieval.py",
+          "count": 1,
+          "lines": [
+            192
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            1090
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_acceptance_java_fixture.py",
+          "count": 1,
+          "lines": [
+            6
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_direct_text_evidence.py",
+          "count": 1,
+          "lines": [
+            7
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_quality_p2.py",
+          "count": 1,
+          "lines": [
+            26
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_quality_p3.py",
+          "count": 1,
+          "lines": [
+            11
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_rerank_soft_sorting.py",
+          "count": 2,
+          "lines": [
+            541,
+            589
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 1,
+          "lines": [
+            34
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 5,
+          "lines": [
+            63,
+            113,
+            148,
+            178,
+            511
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 1,
+        "lines": [
+          642
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "import_from"
+      ],
+      "disposition": "supported_facade",
+      "remaining": 14,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "tokenize_query",
+      "final_owner": "context_search_tool.tokenizer.tokenize_query",
+      "design_task": 2,
+      "direct_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            905
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_quality_catalog.py",
+          "count": 1,
+          "lines": [
+            1191
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_pipeline.py",
+          "count": 27,
+          "lines": [
+            1124,
+            5745,
+            5803,
+            5863,
+            5970,
+            6007,
+            6505,
+            6551,
+            6609,
+            6660,
+            6729,
+            6802,
+            7098,
+            7124,
+            7238,
+            7273,
+            7316,
+            7363,
+            7387,
+            7640,
+            7714,
+            7772,
+            7862,
+            8014,
+            8158,
+            8302,
+            11052
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            942
+          ],
+          "syntax_kinds": [
+            "object"
+          ]
+        }
+      ],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 12,
+        "lines": [
+          668,
+          2673,
+          4027,
+          4070,
+          4085,
+          4087,
+          4088,
+          4096,
+          4101,
+          4592,
+          4609,
+          4711
+        ]
+      },
+      "syntax_kinds": [
+        "attribute",
+        "object"
+      ],
+      "disposition": "migrate",
+      "remaining": 42,
+      "resolved_task": null
+    },
+    {
+      "old_symbol": "trace_repository",
+      "final_owner": "context_search_tool.retrieval.trace_repository",
+      "design_task": null,
+      "direct_references": [
+        {
+          "file": "tests/retrieval_core_characterization.py",
+          "count": 1,
+          "lines": [
+            1099
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        },
+        {
+          "file": "tests/test_quality_p3.py",
+          "count": 1,
+          "lines": [
+            11
+          ],
+          "syntax_kinds": [
+            "import_from"
+          ]
+        },
+        {
+          "file": "tests/test_retrieval_trace_pipeline.py",
+          "count": 16,
+          "lines": [
+            73,
+            149,
+            179,
+            213,
+            248,
+            292,
+            323,
+            350,
+            376,
+            392,
+            513,
+            559,
+            582,
+            613,
+            735,
+            862
+          ],
+          "syntax_kinds": [
+            "attribute"
+          ]
+        }
+      ],
+      "monkeypatch_references": [],
+      "profiler_targets": [],
+      "production_call_sites": {
+        "file": "src/context_search_tool/retrieval.py",
+        "count": 0,
+        "lines": []
+      },
+      "syntax_kinds": [
+        "attribute",
+        "import_from"
+      ],
+      "disposition": "supported_facade",
+      "remaining": 18,
+      "resolved_task": null
+    }
+  ]
+}
