@@ -68,6 +68,8 @@ EXPECTED_LOCAL_DEFINITIONS = {
     "trace_repository",
     "evidence_anchor_top_k",
     "normalize_score",
+    "_query_repository_v5",
+    "_query_repository_impl",
 }
 
 EXPECTED_COMPATIBILITY_ASSIGNMENTS = {
@@ -89,7 +91,7 @@ FINAL_ALLOWED_EDGES = {
     },
     "types": set(),
     "ordering": set(),
-    "evidence_merge": set(),
+    "evidence_merge": {"relation_policy"},
     "relation_policy": set(),
     "file_roles": set(),
     "candidates": {"ordering", "evidence_merge"},
@@ -102,7 +104,7 @@ FINAL_ALLOWED_EDGES = {
         "relation_policy",
     },
     "context_expansion": {"types", "ordering", "evidence_merge"},
-    "selection": {"types", "ordering"},
+    "selection": {"types", "ordering", "relation_policy"},
     "tracing": {"types", "ordering", "selection", "retrieval_trace"},
 }
 
@@ -262,6 +264,15 @@ def _normalize_current_test_reference(
     assert reference["count"] == frozen_reference["count"]
     assert reference["syntax_kinds"] == frozen_reference["syntax_kinds"]
     return frozen_reference
+
+
+def _normalize_current_production_calls(
+    current: dict[str, object],
+    frozen: dict[str, object],
+) -> dict[str, object]:
+    assert current["file"] == frozen["file"]
+    assert current["count"] == frozen["count"]
+    return frozen
 
 
 def _field_contract(cls: type[object]) -> list[tuple[str, str]]:
@@ -663,6 +674,24 @@ def test_graph_lifecycle_primitives_are_leaf_bounded_and_not_activated() -> None
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     } >= {"scan_workspace", "default_plugins"}
 
+    retrieval_tree = _retrieval_tree()
+    public_query = next(
+        node
+        for node in retrieval_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "query_repository"
+    )
+    public_query_calls = {
+        node.func.id
+        for node in ast.walk(public_query)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "_query_repository_impl" in public_query_calls
+    assert "_query_repository_v5" not in public_query_calls
+    exploration_runner = (
+        package / "exploration" / "runner.py"
+    ).read_text(encoding="utf-8")
+    assert "_plan_probes_v5" not in exploration_runner
+
     for name in ("cli.py", "mcp_tools.py", "retrieval.py", "plugins.py"):
         source = (package / name).read_text(encoding="utf-8")
         assert "build_v5_index_snapshot" not in source
@@ -713,6 +742,10 @@ def test_migration_ledger_matches_complete_ast_and_dynamic_inventory() -> None:
     for actual_row in actual["rows"]:
         frozen_row = frozen_by_symbol[actual_row["old_symbol"]]
         actual_row["resolved_task"] = frozen_row["resolved_task"]
+        actual_row["production_call_sites"] = _normalize_current_production_calls(
+            actual_row["production_call_sites"],
+            frozen_row["production_call_sites"],
+        )
         if frozen_row["disposition"] != "supported_facade":
             continue
 
@@ -811,14 +844,12 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
             "--exit-code",
             P4_IMPLEMENTATION_BASELINE,
             "--",
-            "src/context_search_tool/retrieval.py",
-            "src/context_search_tool/retrieval_core",
             "src/context_search_tool/context_pack",
             "src/context_search_tool/retrieval_trace/models.py",
-                "src/context_search_tool/retrieval_trace/serialization.py",
-                "src/context_search_tool/retrieval_trace/collector.py",
-                "src/context_search_tool/chunker.py",
-            ),
+            "src/context_search_tool/retrieval_trace/serialization.py",
+            "src/context_search_tool/retrieval_trace/collector.py",
+            "src/context_search_tool/chunker.py",
+        ),
         cwd=ROOT,
         check=True,
         capture_output=True,

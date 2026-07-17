@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal, overload
 
 from context_search_tool import sqlite_store
+from context_search_tool.graph_contract import effective_relation_confidence
 from context_search_tool.models import (
     CodeSignal,
     DocumentChunk,
@@ -14,7 +15,11 @@ from context_search_tool.models import (
     RetrievalResult,
     RetrievalSummary,
 )
-from context_search_tool.retrieval_core import ordering, types as core_types
+from context_search_tool.retrieval_core import (
+    ordering,
+    relation_policy,
+    types as core_types,
+)
 
 
 _FinalSelectionKind = Literal["result", "evidence_anchor"]
@@ -177,8 +182,16 @@ def _evidence_anchor_from_expanded(
 def assemble_query_output(
     store: sqlite_store.SQLiteStore,
     visible_results: list[core_types._ExpandedResult],
+    *,
+    graph_session: sqlite_store.GraphReadSession | None = None,
+    test_intent: bool = False,
 ) -> tuple[RetrievalSummary, list[RetrievalResult], list[str]]:
-    summary, result_reasons = _summarize_results(store, visible_results)
+    summary, result_reasons = _summarize_results(
+        store,
+        visible_results,
+        graph_session=graph_session,
+        test_intent=test_intent,
+    )
     results = [
         RetrievalResult(
             file_path=item.file_path,
@@ -192,7 +205,7 @@ def assemble_query_output(
                 "rerank_score": item.rerank_score,
                 "evidence_priority": float(item.evidence_priority),
             },
-            reasons=ordering.dedupe_lowered(item.reasons + result_reasons[index]),
+            reasons=_result_reasons(item.reasons + result_reasons[index]),
             followup_keywords=item.followup_keywords,
             semantic_matches=item.semantic_matches,
             spans=item.spans,
@@ -203,9 +216,23 @@ def assemble_query_output(
     return summary, results, _followup_keywords(results)
 
 
+def _result_reasons(reasons: list[str]) -> list[str]:
+    canonical_graph_reasons = {
+        reason.lower(): reason
+        for reason in relation_policy.GRAPH_REASON_BY_SCORE_KEY.values()
+    }
+    return [
+        canonical_graph_reasons.get(reason, reason)
+        for reason in ordering.dedupe_lowered(reasons)
+    ]
+
+
 def _summarize_results(
     store: sqlite_store.SQLiteStore,
     visible_results: list[core_types._ExpandedResult],
+    *,
+    graph_session: sqlite_store.GraphReadSession | None,
+    test_intent: bool,
 ) -> tuple[RetrievalSummary, list[list[str]]]:
     summary = RetrievalSummary()
     result_reasons: list[list[str]] = []
@@ -218,18 +245,37 @@ def _summarize_results(
         chunk_reasons: list[str] = []
 
         for chunk_id in item.chunk_ids:
-            try:
-                chunk = store.chunk_for_id(chunk_id)
-            except KeyError:
+            if graph_session is None:
+                try:
+                    chunk = store.chunk_for_id(chunk_id)
+                except KeyError:
+                    continue
+            else:
+                chunk = graph_session.chunk_for_id(chunk_id)
+            if chunk is None:
                 continue
             try:
-                signals = store.signals_for_chunk(chunk_id)
+                signals = (
+                    graph_session.signals_for_chunk(chunk_id)
+                    if graph_session is not None
+                    else store.signals_for_chunk(chunk_id)
+                )
             except sqlite3.Error:
                 signals = []
 
             has_endpoint_signal = any(signal.kind == "endpoint" for signal in signals)
             has_usage_signal = any(signal.kind == "usage" for signal in signals)
-            has_relation_support = _chunk_has_relation_support(store, chunk, signals)
+            protected_direct = (
+                graph_session is not None
+                and item.evidence_priority == 0
+            )
+            has_relation_support = not protected_direct and _chunk_has_relation_support(
+                store,
+                chunk,
+                signals,
+                graph_session=graph_session,
+                test_intent=test_intent,
+            )
 
             (
                 chunk_entry,
@@ -349,7 +395,121 @@ def _chunk_has_relation_support(
     store: sqlite_store.SQLiteStore,
     chunk: DocumentChunk,
     signals: list[CodeSignal],
+    *,
+    graph_session: sqlite_store.GraphReadSession | None,
+    test_intent: bool,
 ) -> bool:
+    if graph_session is not None:
+        if graph_session.capability.status == "stale":
+            return False
+        if graph_session.capability.status == "ready":
+            for signal in signals:
+                for direction, relations in (
+                    (
+                        "outgoing",
+                        graph_session.outgoing_relations(
+                            signal.signal_id,
+                            limit=relation_policy.MAX_EDGES_PER_SIGNAL_DIRECTION
+                            + 1,
+                        ),
+                    ),
+                    (
+                        "incoming",
+                        graph_session.incoming_relations(
+                            signal.signal_id,
+                            limit=relation_policy.MAX_EDGES_PER_SIGNAL_DIRECTION
+                            + 1,
+                        ),
+                    ),
+                ):
+                    if (
+                        len(relations)
+                        > relation_policy.MAX_EDGES_PER_SIGNAL_DIRECTION
+                    ):
+                        graph_session.record_graph_truncation()
+                        relations = relations[
+                            : relation_policy.MAX_EDGES_PER_SIGNAL_DIRECTION
+                        ]
+                    for relation in relations:
+                        neighbor_id = (
+                            relation.target_signal_id
+                            if direction == "outgoing"
+                            else relation.source_signal_id
+                        )
+                        neighbor = graph_session.signal_for_id(neighbor_id)
+                        if (
+                            neighbor is None
+                            or graph_session.chunk_for_id(neighbor.chunk_id) is None
+                        ):
+                            graph_session.record_graph_fault("dangling_target")
+                            return False
+                        try:
+                            confidence = effective_relation_confidence(
+                                resolution=relation.resolution,
+                                target_signal_id=relation.target_signal_id,
+                                producer_confidence=relation.producer_confidence,
+                                resolution_confidence=(
+                                    relation.resolution_confidence
+                                ),
+                            )
+                        except ValueError:
+                            graph_session.record_graph_fault(
+                                "integrity_check_failed"
+                            )
+                            return False
+                        if confidence < relation_policy._MIN_RELATION_CONFIDENCE:
+                            continue
+                        policy = relation_policy.RELATION_DIRECTIONS.get(relation.kind)
+                        if policy == "intent_gated_both":
+                            if test_intent:
+                                return True
+                        elif (
+                            relation_policy.RELATION_WEIGHTS.get(relation.kind)
+                            is not None
+                            and (policy == "both" or policy == direction)
+                        ):
+                            return True
+            for signal in signals:
+                relations = graph_session.legacy_relations_for_source(
+                    signal.signal_id,
+                    limit=relation_policy.MAX_EDGES_PER_SIGNAL_DIRECTION + 1,
+                )
+                if len(relations) > relation_policy.MAX_EDGES_PER_SIGNAL_DIRECTION:
+                    graph_session.record_graph_truncation()
+                    relations = relations[
+                        : relation_policy.MAX_EDGES_PER_SIGNAL_DIRECTION
+                    ]
+                if relations:
+                    return True
+            relation_targets = ordering.ordered_unique_preserving_case(
+                [chunk.file_path.stem] + [signal.name for signal in signals]
+            )
+            for target_name in relation_targets:
+                relations = graph_session.legacy_relations_targeting(
+                    target_name,
+                    limit=relation_policy.MAX_EDGES_PER_SIGNAL_DIRECTION + 1,
+                )
+                if len(relations) > relation_policy.MAX_EDGES_PER_SIGNAL_DIRECTION:
+                    graph_session.record_graph_truncation()
+                    relations = relations[
+                        : relation_policy.MAX_EDGES_PER_SIGNAL_DIRECTION
+                    ]
+                if relations:
+                    return True
+            return False
+        if any(
+            graph_session.legacy_relations_for_source(signal.signal_id)
+            for signal in signals
+        ):
+            return True
+        relation_targets = ordering.ordered_unique_preserving_case(
+            [chunk.file_path.stem] + [signal.name for signal in signals]
+        )
+        return any(
+            graph_session.legacy_relations_targeting(target_name)
+            for target_name in relation_targets
+        )
+
     signal_ids = [signal.signal_id for signal in signals]
     for signal_id in signal_ids:
         try:

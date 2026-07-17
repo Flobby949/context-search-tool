@@ -108,18 +108,51 @@ def _candidate_base_score(candidate: RetrievalCandidate) -> float:
     return evidence_merge.bounded_score(max(candidate.score, *candidate.score_parts.values(), 0.0))
 
 
+def protected_direct_chunk_ids(
+    store: sqlite_store.SQLiteStore,
+    candidates: list[RetrievalCandidate],
+    tokens: list[str],
+    *,
+    graph_session: sqlite_store.GraphReadSession | None = None,
+) -> set[str]:
+    chunk_ids = [candidate.chunk_id for candidate in candidates]
+    chunks = (
+        graph_session.chunks_for_ids(chunk_ids)
+        if graph_session is not None
+        else store.chunks_for_ids(chunk_ids)
+    )
+    protected: set[str] = set()
+    for candidate in candidates:
+        chunk = chunks.get(candidate.chunk_id)
+        if chunk is None:
+            continue
+        score_parts = _with_effective_semantic(dict(candidate.score_parts))
+        coverage = _token_coverage(tokens, chunk)
+        if coverage:
+            score_parts["token_coverage"] = coverage
+        if _evidence_priority(_evidence_class(score_parts)) == 0:
+            protected.add(candidate.chunk_id)
+    return protected
+
+
 def rank_chunks(
     store: sqlite_store.SQLiteStore,
     candidates: dict[str, RetrievalCandidate],
     tokens: list[str],
     query: str,
+    *,
+    graph_session: sqlite_store.GraphReadSession | None = None,
 ) -> list[core_types._RankedChunk]:
     # First pass: compute scores and build ranked list
     ranked: list[core_types._RankedChunk] = []
     all_combined_scores: list[float] = []
     signal_cache: dict[str, list[CodeSignal]] = {}
     query_route = _query_route(query)
-    candidate_chunks = store.chunks_for_ids(list(candidates))
+    candidate_chunks = (
+        graph_session.chunks_for_ids(list(candidates))
+        if graph_session is not None
+        else store.chunks_for_ids(list(candidates))
+    )
     project_units = project_units_from_chunk_metadata(tuple(candidate_chunks.values()))
     query_scope = infer_query_scope(query, tokens, project_units)
     identifier_intent = infer_identifier_intent(query, tokens)
@@ -127,17 +160,25 @@ def rank_chunks(
     frontend_enabled = frontend_candidate_scope_enabled(
         chunk.file_path for chunk in candidate_chunks.values()
     )
-    spring_path_parts = _spring_path_score_parts(
-        store,
-        candidate_chunks,
-        query_route,
+    spring_path_parts = (
+        {}
+        if graph_session is not None and graph_session.capability.structured
+        else _spring_path_score_parts(
+            graph_session if graph_session is not None else store,
+            candidate_chunks,
+            query_route,
+        )
     )
     java_context_tokens = _java_context_query_tokens(tokens, query_route)
 
     def signals_for_ranked_chunk(chunk_id: str) -> list[CodeSignal]:
         if chunk_id not in signal_cache:
             try:
-                signal_cache[chunk_id] = store.signals_for_chunk(chunk_id)
+                signal_cache[chunk_id] = (
+                    graph_session.signals_for_chunk(chunk_id)
+                    if graph_session is not None
+                    else store.signals_for_chunk(chunk_id)
+                )
             except sqlite3.Error:
                 signal_cache[chunk_id] = []
         return signal_cache[chunk_id]
@@ -235,7 +276,7 @@ def rank_chunks(
                 signal.kind == "endpoint" for signal in rank_tier_signals or []
             ),
             'is_controller': penalty == 0 and 'controller' in chunk.file_path.as_posix().lower(),
-            'has_relation_support': score_parts.get("original_relation", 0.0) > 0 or score_parts.get("planner_relation", 0.0) > 0,
+            'has_relation_support': _has_relation_support(score_parts),
             'role_name': role.name,
             'role_priority': role.priority,
         }
@@ -530,6 +571,12 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         + evidence_merge.bounded_score(score_parts.get("relation", 0.0))
         + evidence_merge.bounded_score(score_parts.get("original_relation", 0.0))
         + evidence_merge.bounded_score(score_parts.get("planner_relation", 0.0))
+        + evidence_merge.bounded_score(
+            max(
+                (score_parts.get(key, 0.0) for key in relation_policy.GRAPH_SCORE_KEYS),
+                default=0.0,
+            )
+        )
         + (evidence_merge.bounded_score(score_parts.get("anchored_relation", 0.0)) * 0.75)
         + (score_parts.get("token_coverage", 0.0) * 0.20)
         + (evidence_merge.bounded_score(score_parts.get("direct_text", 0.0)) * 0.45)  # High weight for literal text matches in comments/strings
@@ -551,6 +598,19 @@ def _combined_score(score_parts: dict[str, float]) -> float:
         + score_parts.get("frontend_support_boost", 0.0)
         + score_parts.get("frontend_support_name_match_boost", 0.0)
         + score_parts.get("penalty", 0.0)
+    )
+
+
+def _has_relation_support(score_parts: dict[str, float]) -> bool:
+    return (
+        score_parts.get("relation", 0.0) > 0
+        or score_parts.get("original_relation", 0.0) > 0
+        or score_parts.get("planner_relation", 0.0) > 0
+        or score_parts.get("resolved_relation", 0.0) > 0
+        or any(
+            score_parts.get(key, 0.0) > 0
+            for key in relation_policy.GRAPH_SCORE_KEYS
+        )
     )
 
 
@@ -674,9 +734,15 @@ def _evidence_class(score_parts: dict[str, float]) -> str:
         return "weak_original_direct"
     if _has_planner_direct_evidence(score_parts):
         return "planner_direct"
-    if score_parts.get("original_relation", 0.0) > 0:
+    if (
+        score_parts.get("original_relation", 0.0) > 0
+        or score_parts.get("graph_seed_original", 0.0) > 0
+    ):
         return "original_relation"
-    if score_parts.get("planner_relation", 0.0) > 0:
+    if (
+        score_parts.get("planner_relation", 0.0) > 0
+        or score_parts.get("graph_seed_planner", 0.0) > 0
+    ):
         return "planner_relation"
     return "weak_or_generic"
 
@@ -924,8 +990,8 @@ def _rerank_score(
         if _is_planner_hint_only(score_parts):
             rerank_score -= 0.3
 
-        if not _has_original_direct_evidence(score_parts) and (
-            score_parts.get("original_relation", 0.0) > 0 or score_parts.get("planner_relation", 0.0) > 0
+        if not _has_original_direct_evidence(score_parts) and _has_relation_support(
+            score_parts
         ):
             rerank_score -= 0.2
 
@@ -1419,7 +1485,9 @@ def _rank_tier(
 
     if has_signal_evidence and has_endpoint_signal:
         base_tier = 0
-    elif score_parts.get("relation", 0.0) > 0:
+    elif score_parts.get("relation", 0.0) > 0 or score_parts.get(
+        "resolved_relation", 0.0
+    ) > 0:
         base_tier = 1
     elif has_signal_evidence:
         base_tier = 2
@@ -1442,6 +1510,7 @@ def _has_planner_hint(score_parts: dict[str, float]) -> bool:
             "planner_path_symbol",
             "planner_signal",
             "planner_relation",
+            "graph_seed_planner",
         )
     )
 
@@ -1456,6 +1525,7 @@ def _has_original_query_evidence(score_parts: dict[str, float]) -> bool:
             "signal",
             "token_coverage",
             "original_relation",
+            "graph_seed_original",
             "direct_text",
         )
     )
@@ -1652,7 +1722,7 @@ def _route_score_parts(
 
 
 def _spring_path_score_parts(
-    store: sqlite_store.SQLiteStore,
+    store: sqlite_store.SQLiteStore | sqlite_store.GraphReadSession,
     candidate_chunks: dict[str, DocumentChunk],
     query_route: str,
 ) -> dict[str, dict[str, float]]:
@@ -1782,7 +1852,7 @@ def _spring_path_score_parts(
 
 
 def _spring_path_candidate_implementors_by_interface(
-    store: sqlite_store.SQLiteStore,
+    store: sqlite_store.SQLiteStore | sqlite_store.GraphReadSession,
     candidate_chunks: dict[str, DocumentChunk],
     signals_by_chunk: dict[str, list[CodeSignal]],
 ) -> list[_SpringPathImplementor]:
@@ -2235,6 +2305,16 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("signal match")
     if score_parts.get("relation", 0.0) > 0:
         reasons.append("relation expansion")
+    graph_reason = next(
+        (
+            relation_policy.GRAPH_REASON_BY_SCORE_KEY[key]
+            for key in relation_policy.GRAPH_SCORE_KEYS
+            if score_parts.get(key, 0.0) > 0
+        ),
+        None,
+    )
+    if graph_reason is not None:
+        reasons.append(graph_reason)
     if score_parts.get("direct_text", 0.0) > 0:
         reasons.append("direct text match")
     if score_parts.get("anchored_relation", 0.0) > 0:

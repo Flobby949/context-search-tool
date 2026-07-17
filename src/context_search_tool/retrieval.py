@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import context_search_tool.retrieval_trace as retrieval_trace
-from context_search_tool import manifest, query_planner, sqlite_store, tokenizer
+from context_search_tool import (
+    manifest,
+    query_intent,
+    query_planner,
+    sqlite_store,
+    tokenizer,
+)
 from context_search_tool.config import ToolConfig
 from context_search_tool.models import (
     EvidenceAnchor,
@@ -93,6 +100,105 @@ def query_repository(
     *,
     trace_collector: RetrievalTraceCollector | None = None,
 ) -> QueryBundle:
+    return _query_repository_impl(
+        repo,
+        query,
+        config,
+        context_lines=context_lines,
+        full_file=full_file,
+        planner=planner,
+        trace_collector=trace_collector,
+    )
+
+
+def _query_repository_v5(
+    repo: Path,
+    query: str,
+    config: ToolConfig,
+    context_lines: int | None = None,
+    full_file: bool = False,
+    planner: QueryPlanner | None = None,
+    *,
+    trace_collector: RetrievalTraceCollector | None = None,
+    graph_session_factory=None,
+    vector_snapshot_loader=None,
+) -> QueryBundle:
+    resolved_repo = repo.resolve()
+    index_dir = index_dir_for(resolved_repo)
+    db_path = index_dir / "index.sqlite"
+    if not db_path.exists():
+        return _query_repository_impl(
+            resolved_repo,
+            query,
+            config,
+            context_lines=context_lines,
+            full_file=full_file,
+            planner=planner,
+            trace_collector=trace_collector,
+        )
+
+    store = sqlite_store.SQLiteStore(db_path)
+    session_context = (
+        graph_session_factory()
+        if graph_session_factory is not None
+        else store.graph_read_session()
+    )
+    graph_fault: str | None = None
+    with session_context as graph_session:
+        graph_session.validate_ready_targets()
+        if vector_snapshot_loader is not None:
+            vector_snapshot = vector_snapshot_loader(
+                resolved_repo,
+                config,
+                graph_session,
+            )
+        else:
+            _descriptor, vector_snapshot = (
+                candidates.NumpyVectorStore.load_published_snapshot(
+                    index_dir,
+                    expected_embedding_identity=manifest.embedding_config_hash(
+                        config.embedding
+                    ),
+                )
+            )
+            if set(vector_snapshot.ids) != graph_session.active_embedding_ids():
+                raise ValueError("vector snapshot does not match graph snapshot")
+        bundle = _query_repository_impl(
+            resolved_repo,
+            query,
+            config,
+            context_lines=context_lines,
+            full_file=full_file,
+            planner=planner,
+            trace_collector=trace_collector,
+            graph_session=graph_session,
+            vector_snapshot=vector_snapshot,
+        )
+        graph_fault = graph_session.graph_fault
+
+    if graph_fault is not None:
+        try:
+            store.mark_graph_stale(graph_fault)
+        except (OSError, sqlite3.Error):
+            logging.getLogger("context_search_tool.retrieval").warning(
+                "graph snapshot fault could not be persisted: %s",
+                graph_fault,
+            )
+    return bundle
+
+
+def _query_repository_impl(
+    repo: Path,
+    query: str,
+    config: ToolConfig,
+    context_lines: int | None = None,
+    full_file: bool = False,
+    planner: QueryPlanner | None = None,
+    *,
+    trace_collector: RetrievalTraceCollector | None = None,
+    graph_session: sqlite_store.GraphReadSession | None = None,
+    vector_snapshot: candidates.NumpyVectorStore | None = None,
+) -> QueryBundle:
     repo = repo.resolve()
     original_tokens = ordering.dedupe_lowered(tokenizer.tokenize_query(query))
     tokens = original_tokens
@@ -127,7 +233,11 @@ def query_repository(
 
     store = sqlite_store.SQLiteStore(db_path)
     try:
-        deleted_ids = store.deleted_chunk_ids()
+        deleted_ids = (
+            graph_session.deleted_chunk_ids()
+            if graph_session is not None
+            else store.deleted_chunk_ids()
+        )
     except sqlite3.Error:
         bundle = QueryBundle(
             query=query,
@@ -190,14 +300,24 @@ def query_repository(
         "semantic_recall",
         input_count=len(query_variants),
     )
-    semantic_candidates, query_variants, variant_retrieval_status = (
-        candidates.semantic_candidates(
-            index_dir,
-            query_variants,
-            config,
-            deleted_ids,
+    if graph_session is None:
+        semantic_candidates, query_variants, variant_retrieval_status = (
+            candidates.semantic_candidates(
+                index_dir,
+                query_variants,
+                config,
+                deleted_ids,
+            )
         )
-    )
+    else:
+        semantic_candidates, query_variants, variant_retrieval_status = (
+            candidates.semantic_candidates_from_snapshot(
+                vector_snapshot,
+                query_variants,
+                config,
+                deleted_ids,
+            )
+        )
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_candidate_stage(
         trace_collector,
@@ -205,6 +325,7 @@ def query_repository(
         store=store,
         candidates=semantic_candidates,
         source_keys=("semantic", "planner_semantic"),
+        graph_session=graph_session,
     )
 
     token = tracing.start_stage(
@@ -224,6 +345,7 @@ def query_repository(
         store=store,
         candidates=lexical_candidates,
         source_keys=("lexical",),
+        graph_session=graph_session,
     )
 
     token = tracing.start_stage(
@@ -243,6 +365,7 @@ def query_repository(
         store=store,
         candidates=path_symbol_candidates,
         source_keys=("path_symbol",),
+        graph_session=graph_session,
     )
 
     probes = candidates.direct_text_probes(query, original_tokens)
@@ -263,6 +386,7 @@ def query_repository(
         store=store,
         candidates=direct_text_candidates,
         source_keys=("direct_text",),
+        graph_session=graph_session,
     )
 
     initial_candidates = [
@@ -277,7 +401,12 @@ def query_repository(
         "signal_recall",
         input_count=len(original_tokens),
     )
-    signal_candidates = candidates.signal_candidates(store, original_tokens, config)
+    signal_candidates = candidates.signal_candidates(
+        store,
+        original_tokens,
+        config,
+        graph_session=graph_session,
+    )
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_candidate_stage(
         trace_collector,
@@ -285,6 +414,7 @@ def query_repository(
         store=store,
         candidates=signal_candidates,
         source_keys=("signal",),
+        graph_session=graph_session,
     )
 
     token = tracing.start_stage(
@@ -292,7 +422,12 @@ def query_repository(
         "planner_hint_recall",
         input_count=len(hint_tokens),
     )
-    planner_candidates = candidates.planner_hint_candidates(store, hint_tokens, config)
+    planner_candidates = candidates.planner_hint_candidates(
+        store,
+        hint_tokens,
+        config,
+        graph_session=graph_session,
+    )
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_candidate_stage(
         trace_collector,
@@ -304,6 +439,7 @@ def query_repository(
             "planner_path_symbol",
             "planner_signal",
         ),
+        graph_session=graph_session,
     )
 
     raw_direct = [*initial_candidates, *signal_candidates, *planner_candidates]
@@ -319,6 +455,7 @@ def query_repository(
         stopped,
         store=store,
         candidates=list(direct_candidates.values()),
+        graph_session=graph_session,
     )
 
     token = tracing.start_stage(
@@ -340,6 +477,7 @@ def query_repository(
         store=store,
         candidates=anchor_candidates,
         source_keys=("anchor_expansion",),
+        graph_session=graph_session,
     )
 
     relation_seed_candidates = candidates.merge_candidates(
@@ -348,16 +486,43 @@ def query_repository(
             *anchor_candidates,
         ]
     )
+    has_test_intent = "test" in query_intent.infer_query_intent(
+        query,
+        original_tokens,
+    ).target_roles
     token = tracing.start_stage(
         trace_collector,
         "relation_expansion",
         input_count=len(relation_seed_candidates),
     )
+    protected_chunk_ids = (
+        ranking.protected_direct_chunk_ids(
+            store,
+            list(relation_seed_candidates.values()),
+            original_tokens,
+            graph_session=graph_session,
+        )
+        if graph_session is not None
+        else set()
+    )
     relation_candidates = expansion.relation_candidates(
         store,
         list(relation_seed_candidates.values()),
         config,
+        graph_session=graph_session,
+        test_intent=has_test_intent,
+        protected_chunk_ids=protected_chunk_ids,
     )
+    if graph_session is not None and graph_session.graph_fault is not None:
+        planner_candidates = [
+            candidate
+            for candidate in planner_candidates
+            if candidate.source != "planner_signal"
+        ]
+        direct_candidates = candidates.merge_candidates(
+            [*initial_candidates, *planner_candidates]
+        )
+        relation_candidates = []
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_candidate_stage(
         trace_collector,
@@ -365,6 +530,7 @@ def query_repository(
         store=store,
         candidates=relation_candidates,
         source_keys=("relation",),
+        graph_session=graph_session,
     )
 
     all_candidates = [
@@ -384,6 +550,7 @@ def query_repository(
         stopped,
         store=store,
         candidates=list(merged_candidates.values()),
+        graph_session=graph_session,
     )
     if not merged_candidates:
         bundle = QueryBundle(
@@ -413,7 +580,11 @@ def query_repository(
         input_count=len(merged_candidates),
     )
     ranked_chunks = ranking.rank_chunks(
-        store, merged_candidates, original_tokens, query
+        store,
+        merged_candidates,
+        original_tokens,
+        query,
+        graph_session=graph_session,
     )
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_ranked_stage(
@@ -450,6 +621,7 @@ def query_repository(
         config,
         context_lines,
         full_file,
+        protect_direct_graph=graph_session is not None,
     )
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_expanded_stage(
@@ -493,6 +665,8 @@ def query_repository(
     summary, results, followup_keywords = selection.assemble_query_output(
         store,
         visible_results,
+        graph_session=graph_session,
+        test_intent=has_test_intent,
     )
     bundle = QueryBundle(
         query=query,

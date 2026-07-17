@@ -41,7 +41,7 @@ _SPAN_SOURCE_SCORE_KEYS = {
         "same_file_anchor",
         "directory_anchor",
     ),
-    "relation": ("relation",),
+    "relation": ("relation", "resolved_relation"),
 }
 
 
@@ -51,6 +51,8 @@ def expand_ranked_chunks(
     config: ToolConfig,
     context_lines: int | None,
     full_file: bool,
+    *,
+    protect_direct_graph: bool = False,
 ) -> list[core_types._ExpandedResult]:
     expanded: list[core_types._ExpandedResult] = []
     for ranked in ranked_chunks:
@@ -135,7 +137,10 @@ def expand_ranked_chunks(
             )
         )
 
-    merged = _merge_overlapping_results(expanded)
+    merged = _merge_overlapping_results(
+        expanded,
+        protect_direct_graph=protect_direct_graph,
+    )
     if not full_file:
         return merged
     return [
@@ -211,6 +216,8 @@ def _end_line_for_content(start_line: int, content: str) -> int:
 
 def _merge_overlapping_results(
     results: list[core_types._ExpandedResult],
+    *,
+    protect_direct_graph: bool = False,
 ) -> list[core_types._ExpandedResult]:
     by_file: dict[Path, list[core_types._ExpandedResult]] = {}
     for result in results:
@@ -228,6 +235,10 @@ def _merge_overlapping_results(
                 current = result
                 continue
             if result.start_line <= current.end_line + 1:
+                if protect_direct_graph and _protected_graph_pair(current, result):
+                    merged.append(current)
+                    current = result
+                    continue
                 current = _merge_expanded_result(current, result)
                 continue
             merged.append(current)
@@ -238,6 +249,31 @@ def _merge_overlapping_results(
     return sorted(
         merged,
         key=_expanded_result_sort_key,
+    )
+
+
+def _protected_graph_pair(
+    left: core_types._ExpandedResult,
+    right: core_types._ExpandedResult,
+) -> bool:
+    return (
+        left.evidence_priority == 0
+        and _has_graph_relation(right)
+    ) or (
+        right.evidence_priority == 0
+        and _has_graph_relation(left)
+    )
+
+
+def _has_graph_relation(item: core_types._ExpandedResult) -> bool:
+    return any(
+        item.score_parts.get(key, 0.0) > 0
+        for key in (
+            "relation",
+            "original_relation",
+            "planner_relation",
+            "resolved_relation",
+        )
     )
 
 

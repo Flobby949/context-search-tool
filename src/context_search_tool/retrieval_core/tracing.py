@@ -15,7 +15,7 @@ if TYPE_CHECKING:
         QueryVariant,
         RetrievalCandidate,
     )
-    from context_search_tool.sqlite_store import SQLiteStore
+    from context_search_tool.sqlite_store import GraphReadSession, SQLiteStore
 
 
 _PUBLIC_SOURCE_FAMILY = {
@@ -67,9 +67,15 @@ def _candidate_observations(
     store: SQLiteStore,
     candidates: list[RetrievalCandidate],
     limit: int,
+    graph_session: GraphReadSession | None = None,
 ) -> tuple[retrieval_trace.TraceCandidate, ...]:
     preview = candidates[:limit]
-    chunks = store.chunks_for_ids([item.chunk_id for item in preview])
+    chunk_ids = [item.chunk_id for item in preview]
+    chunks = (
+        graph_session.chunks_for_ids(chunk_ids)
+        if graph_session is not None
+        else store.chunks_for_ids(chunk_ids)
+    )
     observations: list[retrieval_trace.TraceCandidate] = []
     for candidate in preview:
         chunk = chunks.get(candidate.chunk_id)
@@ -335,6 +341,7 @@ def finish_candidate_stage(
     store: SQLiteStore,
     candidates: list[RetrievalCandidate],
     source_keys: tuple[str, ...] = (),
+    graph_session: GraphReadSession | None = None,
 ) -> None:
     if collector is None or stopped is None:
         return
@@ -342,6 +349,7 @@ def finish_candidate_stage(
         store,
         candidates,
         collector.limits.stage_top_k,
+        graph_session,
     )
     collector.finish_stage(
         stopped,

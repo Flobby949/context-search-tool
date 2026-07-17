@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 import stat
@@ -22,8 +23,15 @@ from context_search_tool.frontend_roles import (
     extract_static_imports,
     resolve_frontend_import,
 )
+from context_search_tool.graph_contract import (
+    MAX_EDGES_PER_SIGNAL_DIRECTION,
+    effective_relation_confidence,
+)
 from context_search_tool.paths import index_dir_for
-from context_search_tool.sqlite_store import SQLiteStore
+from context_search_tool.query_intent import infer_query_intent
+from context_search_tool.retrieval_core import relation_policy
+from context_search_tool.sqlite_store import GraphReadSession, SQLiteStore
+from context_search_tool.tokenizer import tokenize_query
 
 if TYPE_CHECKING:
     from context_search_tool.context_pack import ContextPack
@@ -79,6 +87,7 @@ class _Seed:
     source_rank: int
     seed_paths: tuple[str, ...]
     complete_query: bool = False
+    graph_test: bool = False
 
 
 @dataclass(frozen=True)
@@ -123,6 +132,126 @@ def plan_probes(
         )
     except (KeyError, OSError, sqlite3.Error, UnicodeError, ValueError):
         return ()
+
+    raw: list[ProbeCandidate] = []
+    goal_order = {goal.id: index for index, goal in enumerate(frozen.goals)}
+    composite = _required_goal_composite(initial_bundle, frozen)
+    if composite is not None:
+        raw.append(composite)
+    raw.extend(_single_required_view_composites(seeds, frozen))
+    for goal in goals:
+        suffix = _goal_suffix(goal)
+        for seed in seeds:
+            if not _seed_supports_goal(seed, goal):
+                continue
+            candidate = _candidate_from_seed(
+                goal,
+                goal_order[goal.id],
+                seed,
+                suffix,
+            )
+            if candidate is not None:
+                raw.append(candidate)
+        raw.extend(
+            _next_query_candidates(
+                initial_bundle,
+                initial_pack,
+                frozen,
+                goal,
+                goal_order[goal.id],
+                suffix,
+            )
+        )
+    return order_probe_candidates(tuple(raw), frozen)
+
+
+def _plan_probes_v5(
+    repo: Path,
+    initial_bundle: QueryBundle,
+    initial_trace: RetrievalTrace,
+    initial_pack: ContextPack,
+    frozen: FrozenGoals,
+    *,
+    store: SQLiteStore | None = None,
+    graph_session_factory=None,
+) -> tuple[ProbeCandidate, ...]:
+    goals = unsatisfied_goals(frozen)
+    if not goals or initial_trace.outcome != "complete":
+        return ()
+    if initial_trace.final_selection_omitted_count != 0:
+        return ()
+
+    repo = repo.resolve()
+    active_store = store or SQLiteStore(index_dir_for(repo) / "index.sqlite")
+    session_context = (
+        graph_session_factory()
+        if graph_session_factory is not None
+        else active_store.graph_read_session()
+    )
+    graph_fault: str | None = None
+    seeds: tuple[_Seed, ...] = ()
+    try:
+        with session_context as graph_session:
+            graph_session.validate_ready_targets()
+            origins = _load_origins(
+                graph_session,
+                initial_trace,
+                initial_pack,
+            )
+            if origins is None:
+                return ()
+            if (
+                graph_session.capability.status == "ready"
+                and graph_session.graph_fault is None
+            ):
+                allow_tests = (
+                    "test"
+                    in infer_query_intent(
+                        initial_bundle.query,
+                        tokenize_query(initial_bundle.query),
+                    ).target_roles
+                    or any(
+                        goal.category == "tests"
+                        or "test" in goal.accepted_roles
+                        for goal in goals
+                    )
+                )
+                seeds = _ready_graph_seeds(
+                    graph_session,
+                    origins,
+                    include_view_literals=any(
+                        set(goal.accepted_roles).intersection(_VIEW_ROLES)
+                        for goal in goals
+                    ),
+                    allow_tests=allow_tests,
+                )
+            if (
+                graph_session.capability.status != "ready"
+                or graph_session.graph_fault is not None
+            ):
+                seeds = _grounded_seeds(
+                    repo,
+                    graph_session,
+                    initial_bundle,
+                    initial_pack,
+                    origins,
+                    include_view_literals=any(
+                        set(goal.accepted_roles).intersection(_VIEW_ROLES)
+                        for goal in goals
+                    ),
+                )
+            graph_fault = graph_session.graph_fault
+    except (KeyError, OSError, sqlite3.Error, UnicodeError, ValueError):
+        return ()
+
+    if graph_fault is not None:
+        try:
+            active_store.mark_graph_stale(graph_fault)
+        except (OSError, sqlite3.Error):
+            logging.getLogger(__name__).warning(
+                "graph snapshot fault could not be persisted: %s",
+                graph_fault,
+            )
 
     raw: list[ProbeCandidate] = []
     goal_order = {goal.id: index for index, goal in enumerate(frozen.goals)}
@@ -339,7 +468,7 @@ def _single_required_view_composites(
 
 
 def _load_origins(
-    store: SQLiteStore,
+    store: SQLiteStore | GraphReadSession,
     trace: RetrievalTrace,
     pack: ContextPack,
 ) -> _OriginState | None:
@@ -375,9 +504,167 @@ def _load_origins(
     )
 
 
+def _ready_graph_seeds(
+    session: GraphReadSession,
+    origins: _OriginState,
+    *,
+    include_view_literals: bool,
+    allow_tests: bool,
+) -> tuple[_Seed, ...]:
+    symbols: list[_Seed] = []
+    path_stems: list[_Seed] = []
+    relation_targets: list[_Seed] = []
+    endpoints: list[_Seed] = []
+    imports: list[_Seed] = []
+
+    ordered_chunks = sorted(
+        origins.chunks,
+        key=lambda chunk: (
+            origins.rank_by_chunk_id[chunk.chunk_id],
+            chunk.file_path.as_posix(),
+            chunk.start_line,
+            chunk.chunk_id,
+        ),
+    )
+    for chunk in ordered_chunks:
+        rank = origins.rank_by_chunk_id[chunk.chunk_id]
+        seed_path = chunk.file_path.as_posix()
+        if not _relative_path(seed_path):
+            raise ValueError("origin path is not repository-relative")
+        for symbol in chunk.symbols:
+            seed = _safe_seed(symbol.name)
+            if seed is not None:
+                symbols.append(_Seed(seed, "indexed_symbol", rank, (seed_path,)))
+            literal_seed = (
+                _view_constant_literal_seed(chunk, symbol)
+                if include_view_literals
+                else None
+            )
+            if literal_seed is not None:
+                symbols.append(
+                    _Seed(literal_seed, "indexed_symbol", rank, (seed_path,))
+                )
+        stem = _safe_seed(chunk.file_path.stem)
+        if stem is not None:
+            path_stems.append(_Seed(stem, "path_stem", rank, (seed_path,)))
+
+    seed_specs = [
+        (chunk.chunk_id, index, 0)
+        for index, chunk in enumerate(ordered_chunks)
+    ]
+    initial_signals = session.initial_graph_signals(
+        seed_specs,
+        limit=_MAX_SEEDS_PER_SOURCE + 1,
+    )
+    if len(initial_signals) > _MAX_SEEDS_PER_SOURCE:
+        session.record_graph_truncation()
+        initial_signals = initial_signals[:_MAX_SEEDS_PER_SOURCE]
+
+    for signal, seed_rank, _source_priority in initial_signals:
+        origin = ordered_chunks[seed_rank]
+        rank = origins.rank_by_chunk_id[origin.chunk_id]
+        seed_path = origin.file_path.as_posix()
+        seed = _safe_seed(signal.name)
+        if seed is not None:
+            if signal.kind in {"endpoint", "route"}:
+                endpoints.append(
+                    _Seed(seed, "endpoint_or_route", rank, (seed_path,))
+                )
+            elif signal.kind == "usage":
+                relation_targets.append(
+                    _Seed(seed, "relation_target", rank, (seed_path,))
+                )
+
+        for direction, relations in (
+            (
+                "outgoing",
+                session.outgoing_relations(
+                    signal.signal_id,
+                    limit=MAX_EDGES_PER_SIGNAL_DIRECTION + 1,
+                ),
+            ),
+            (
+                "incoming",
+                session.incoming_relations(
+                    signal.signal_id,
+                    limit=MAX_EDGES_PER_SIGNAL_DIRECTION + 1,
+                ),
+            ),
+        ):
+            if len(relations) > MAX_EDGES_PER_SIGNAL_DIRECTION:
+                session.record_graph_truncation()
+                relations = relations[:MAX_EDGES_PER_SIGNAL_DIRECTION]
+            for relation in relations:
+                policy = relation_policy.RELATION_DIRECTIONS.get(relation.kind)
+                if policy == "intent_gated_both":
+                    admitted = allow_tests
+                else:
+                    admitted = policy == "both" or policy == direction
+                if not admitted:
+                    continue
+                try:
+                    confidence = effective_relation_confidence(
+                        resolution=relation.resolution,
+                        target_signal_id=relation.target_signal_id,
+                        producer_confidence=relation.producer_confidence,
+                        resolution_confidence=relation.resolution_confidence,
+                    )
+                except ValueError:
+                    session.record_graph_fault("integrity_check_failed")
+                    return ()
+                if confidence < relation_policy._MIN_RELATION_CONFIDENCE:
+                    continue
+                neighbor_id = (
+                    relation.target_signal_id
+                    if direction == "outgoing"
+                    else relation.source_signal_id
+                )
+                neighbor = session.signal_for_id(neighbor_id)
+                if neighbor is None or session.chunk_for_id(neighbor.chunk_id) is None:
+                    session.record_graph_fault("dangling_target")
+                    return ()
+                neighbor_path = neighbor.file_path.as_posix()
+                seed_paths = _ordered_union(
+                    (seed_path,),
+                    (neighbor_path,),
+                    limit=MAX_PROBE_SEED_PATHS,
+                )
+                if relation.kind == "imports":
+                    imported = _safe_seed(neighbor.file_path.stem)
+                    if imported is not None and len(imports) < _MAX_SEEDS_PER_SOURCE:
+                        imports.append(
+                            _Seed(imported, "static_import", rank, seed_paths)
+                        )
+                    continue
+                related = _safe_seed(neighbor.name)
+                if (
+                    related is not None
+                    and len(relation_targets) < _MAX_SEEDS_PER_SOURCE
+                ):
+                    relation_targets.append(
+                        _Seed(
+                            related,
+                            "relation_target",
+                            rank,
+                            seed_paths,
+                            graph_test=relation.kind == "tests",
+                        )
+                    )
+
+    return tuple(
+        [
+            *relation_targets[:_MAX_SEEDS_PER_SOURCE],
+            *symbols[:_MAX_SEEDS_PER_SOURCE],
+            *endpoints[:_MAX_SEEDS_PER_SOURCE],
+            *imports[:_MAX_SEEDS_PER_SOURCE],
+            *path_stems[:_MAX_SEEDS_PER_SOURCE],
+        ]
+    )
+
+
 def _grounded_seeds(
     repo: Path,
-    store: SQLiteStore,
+    store: SQLiteStore | GraphReadSession,
     bundle: QueryBundle,
     pack: ContextPack,
     origins: _OriginState,
@@ -509,7 +796,7 @@ def _grounded_seeds(
 
 def _frontend_import_seeds(
     repo: Path,
-    store: SQLiteStore,
+    store: SQLiteStore | GraphReadSession,
     bundle: QueryBundle,
     pack: ContextPack,
     origins: _OriginState,
@@ -738,6 +1025,8 @@ def _candidate_from_seed(
 
 
 def _seed_supports_goal(seed: _Seed, goal: ExplorationGoal) -> bool:
+    if seed.graph_test:
+        return goal.category == "tests" or "test" in goal.accepted_roles
     if seed.source == "relation_target":
         if set(goal.accepted_roles).intersection(_VIEW_ROLES | _ROUTE_ROLES):
             return False

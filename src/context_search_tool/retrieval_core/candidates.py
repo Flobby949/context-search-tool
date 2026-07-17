@@ -26,8 +26,37 @@ def semantic_candidates(
     config: ToolConfig,
     deleted_ids: set[str],
 ) -> tuple[list[RetrievalCandidate], list[QueryVariant], str]:
+    return _semantic_candidates_with_store(
+        NumpyVectorStore(index_dir),
+        variants,
+        config,
+        deleted_ids,
+    )
+
+
+def semantic_candidates_from_snapshot(
+    vector_store: NumpyVectorStore | None,
+    variants: list[QueryVariant],
+    config: ToolConfig,
+    deleted_ids: set[str],
+) -> tuple[list[RetrievalCandidate], list[QueryVariant], str]:
+    if vector_store is None:
+        return [], variants[:1], "original_only"
+    return _semantic_candidates_with_store(
+        vector_store,
+        variants,
+        config,
+        deleted_ids,
+    )
+
+
+def _semantic_candidates_with_store(
+    vector_store: NumpyVectorStore,
+    variants: list[QueryVariant],
+    config: ToolConfig,
+    deleted_ids: set[str],
+) -> tuple[list[RetrievalCandidate], list[QueryVariant], str]:
     provider = provider_from_config(config.embedding)
-    vector_store = NumpyVectorStore(index_dir)
     try:
         vectors = provider.embed_texts([variant.text for variant in variants])
         if len(vectors) != len(variants):
@@ -150,6 +179,8 @@ def signal_candidates(
     tokens: list[str],
     config: ToolConfig,
     planner_hint: bool = False,
+    *,
+    graph_session: sqlite_store.GraphReadSession | None = None,
 ) -> list[RetrievalCandidate]:
     limit = max(
         config.retrieval.semantic_top_k,
@@ -159,7 +190,12 @@ def signal_candidates(
     source = "planner_signal" if planner_hint else "signal"
     score_key = "planner_signal" if planner_hint else "signal"
     candidates: list[RetrievalCandidate] = []
-    for signal in store.signal_search(tokens, limit):
+    signals = (
+        graph_session.signal_search(tokens, limit)
+        if graph_session is not None
+        else store.signal_search(tokens, limit)
+    )
+    for signal in signals:
         score = _signal_score(signal.name, signal.tokens, signal.metadata, tokens)
         if score <= 0:
             continue
@@ -227,6 +263,8 @@ def planner_hint_candidates(
     store: sqlite_store.SQLiteStore,
     hint_tokens: list[str],
     config: ToolConfig,
+    *,
+    graph_session: sqlite_store.GraphReadSession | None = None,
 ) -> list[RetrievalCandidate]:
     if not hint_tokens:
         return []
@@ -255,7 +293,13 @@ def planner_hint_candidates(
             config.retrieval.lexical_top_k,
         )
     ]
-    signals = signal_candidates(store, hint_tokens, config, planner_hint=True)
+    signals = signal_candidates(
+        store,
+        hint_tokens,
+        config,
+        planner_hint=True,
+        graph_session=graph_session,
+    )
     return [*lexical, *path_symbol, *signals]
 
 

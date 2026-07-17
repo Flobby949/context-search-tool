@@ -10,7 +10,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
-from context_search_tool.graph_contract import EDGE_QUERY_LIMIT, RESOLUTION_STATES
+from context_search_tool.graph_contract import (
+    EDGE_QUERY_LIMIT,
+    MAX_EDGES_PER_SIGNAL_DIRECTION,
+    MAX_GRAPH_SEED_SIGNALS,
+    MAX_SIGNALS_PER_FILE,
+    RESOLUTION_STATES,
+)
 from context_search_tool.graph_lifecycle import (
     FULL_REINDEX_REQUIRED_KEY,
     GRAPH_RESOLUTION_STATE_KEY,
@@ -1785,6 +1791,8 @@ class GraphReadSession:
         self.busy_timeout_ms = busy_timeout_ms
         self._connection: sqlite3.Connection | None = None
         self.capability: GraphCapability
+        self.graph_fault: str | None = None
+        self.graph_truncated = False
 
     def __enter__(self) -> GraphReadSession:
         connection = _open_connection(self.db_path, self.busy_timeout_ms)
@@ -1812,8 +1820,240 @@ class GraphReadSession:
         connection = self._require_connection()
         return _metadata_value(connection, key)
 
-    def module_for_path(self, file_path: Path) -> CodeSignal | None:
+    def record_graph_fault(self, reason: str) -> None:
+        if self.graph_fault is None:
+            self.graph_fault = reason
+
+    def record_graph_truncation(self) -> None:
+        self.graph_truncated = True
+
+    def validate_ready_targets(self) -> bool:
         if self.capability.status != "ready" or not self.capability.structured:
+            return True
+        row = self._require_connection().execute(
+            """
+            SELECT 1
+            FROM code_relations AS relations
+            LEFT JOIN code_signals AS targets
+              ON targets.signal_id = relations.target_signal_id
+             AND targets.deleted_at IS NULL
+            LEFT JOIN chunks AS target_chunks
+              ON target_chunks.chunk_id = targets.chunk_id
+             AND target_chunks.deleted_at IS NULL
+            WHERE relations.deleted_at IS NULL
+              AND relations.resolution IN ('resolved_exact', 'resolved_unique')
+              AND (
+                targets.signal_id IS NULL
+                OR target_chunks.chunk_id IS NULL
+              )
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return True
+        self.record_graph_fault("dangling_target")
+        return False
+
+    def chunks_for_ids(self, chunk_ids: list[str]) -> dict[str, DocumentChunk]:
+        chunk_ids = _dedupe_values(chunk_ids)
+        if not chunk_ids:
+            return {}
+        connection = self._require_connection()
+        rows = connection.execute(
+            _in_query(
+                """
+                SELECT *
+                FROM chunks
+                WHERE chunk_id IN ({placeholders})
+                  AND deleted_at IS NULL
+                ORDER BY file_path, start_line, chunk_id
+                """,
+                chunk_ids,
+            ),
+            chunk_ids,
+        ).fetchall()
+        decoder = SQLiteStore(self.db_path)
+        chunks_by_id = {
+            row["chunk_id"]: decoder._chunk_from_row(connection, row)
+            for row in rows
+        }
+        return {
+            chunk_id: chunks_by_id[chunk_id]
+            for chunk_id in chunk_ids
+            if chunk_id in chunks_by_id
+        }
+
+    def chunk_for_id(self, chunk_id: str) -> DocumentChunk | None:
+        return self.chunks_for_ids([chunk_id]).get(chunk_id)
+
+    def deleted_chunk_ids(self) -> set[str]:
+        rows = self._require_connection().execute(
+            "SELECT chunk_id FROM chunks WHERE deleted_at IS NOT NULL"
+        ).fetchall()
+        return {str(row["chunk_id"]) for row in rows}
+
+    def source_file_for_path(self, path: Path) -> SourceFile | None:
+        row = self._require_connection().execute(
+            """
+            SELECT *
+            FROM source_files
+            WHERE path = ?
+            """,
+            (_path_key(path),),
+        ).fetchone()
+        return _source_file_from_row(row) if row is not None else None
+
+    def signal_search(self, tokens: list[str], limit: int) -> list[CodeSignal]:
+        normalized = [token.lower() for token in tokens if token]
+        if (
+            not normalized
+            or limit <= 0
+            or not self.capability.signal_evidence_allowed
+            or self.graph_fault is not None
+        ):
+            return []
+        connection = self._require_connection()
+        if self.capability.structured:
+            legal_filter = "AND recallable = 1"
+        elif _has_column(connection, "code_signals", "producer"):
+            legal_filter = "AND recallable = 1 AND producer = 'legacy'"
+        else:
+            legal_filter = ""
+        rows = connection.execute(
+            f"""
+            SELECT *
+            FROM code_signals
+            WHERE deleted_at IS NULL
+              {legal_filter}
+            """
+        ).fetchall()
+        matches: list[tuple[CodeSignal, float]] = []
+        for row in rows:
+            signal = _signal_from_row(row)
+            haystack = " ".join(
+                (
+                    signal.name,
+                    " ".join(signal.tokens),
+                    _metadata_search_text(signal.metadata),
+                )
+            ).lower()
+            score = sum(1.0 for token in normalized if token in haystack)
+            if score > 0:
+                matches.append((signal, score))
+        matches.sort(
+            key=lambda item: (
+                -item[1],
+                0 if item[0].kind == "endpoint" else 1,
+                item[0].start_line,
+                item[0].end_line,
+                item[0].kind,
+                item[0].name,
+                item[0].signal_id,
+            )
+        )
+        return [signal for signal, _score in matches[:limit]]
+
+    def signals_for_chunks(
+        self,
+        chunk_ids: list[str],
+    ) -> dict[str, list[CodeSignal]]:
+        chunk_ids = _dedupe_values(chunk_ids)
+        grouped: dict[str, list[CodeSignal]] = {
+            chunk_id: [] for chunk_id in chunk_ids
+        }
+        if (
+            not chunk_ids
+            or not self.capability.signal_evidence_allowed
+            or self.graph_fault is not None
+        ):
+            return grouped
+        connection = self._require_connection()
+        legacy_filter = (
+            "AND producer = 'legacy'"
+            if not self.capability.structured
+            and _has_column(connection, "code_signals", "producer")
+            else ""
+        )
+        rows = connection.execute(
+            _in_query(
+                f"""
+                SELECT *
+                FROM code_signals
+                WHERE chunk_id IN ({{placeholders}})
+                  AND deleted_at IS NULL
+                  {legacy_filter}
+                ORDER BY chunk_id, start_line, end_line, kind, name, signal_id
+                """,
+                chunk_ids,
+            ),
+            chunk_ids,
+        ).fetchall()
+        for row in rows:
+            grouped[str(row["chunk_id"])].append(_signal_from_row(row))
+        return grouped
+
+    def relations_for_sources(
+        self,
+        source_signal_ids: list[str],
+    ) -> dict[str, list[CodeRelation]]:
+        grouped: dict[str, list[CodeRelation]] = {}
+        if (
+            not self.capability.relation_evidence_allowed
+            or self.graph_fault is not None
+        ):
+            return grouped
+        for signal_id in _dedupe_values(source_signal_ids):
+            relations = self.legacy_relations_for_source(
+                signal_id,
+                limit=EDGE_QUERY_LIMIT,
+            )
+            if len(relations) > MAX_EDGES_PER_SIGNAL_DIRECTION:
+                self.record_graph_truncation()
+                relations = relations[:MAX_EDGES_PER_SIGNAL_DIRECTION]
+            if relations:
+                grouped[signal_id] = relations
+        return grouped
+
+    def chunks_matching_signal_or_symbols(
+        self,
+        target_names: list[str],
+        limit_per_target: int,
+    ) -> dict[str, list[DocumentChunk]]:
+        target_names = _dedupe_values(target_names)
+        grouped: dict[str, list[DocumentChunk]] = {
+            target_name: [] for target_name in target_names
+        }
+        if (
+            not self.capability.relation_evidence_allowed
+            or self.graph_fault is not None
+            or limit_per_target <= 0
+        ):
+            return grouped
+        connection = self._require_connection()
+        decoder = SQLiteStore(self.db_path)
+        for target_name in target_names:
+            if not target_name:
+                continue
+            rows = _chunks_matching_name(connection, target_name, limit_per_target)
+            if not rows and "." in target_name:
+                owner_name, member_name = target_name.rsplit(".", 1)
+                rows = _chunks_matching_member_name(
+                    connection,
+                    owner_name,
+                    member_name,
+                    limit_per_target,
+                )
+            grouped[target_name] = [
+                decoder._chunk_from_row(connection, row) for row in rows
+            ]
+        return grouped
+
+    def module_for_path(self, file_path: Path) -> CodeSignal | None:
+        if (
+            self.graph_fault is not None
+            or self.capability.status != "ready"
+            or not self.capability.structured
+        ):
             return None
         row = self._require_connection().execute(
             """
@@ -1831,7 +2071,11 @@ class GraphReadSession:
         return _signal_from_row(row[0]) if len(row) == 1 else None
 
     def signal_for_id(self, signal_id: str) -> CodeSignal | None:
-        if self.capability.status != "ready" or not self.capability.structured:
+        if (
+            self.graph_fault is not None
+            or self.capability.status != "ready"
+            or not self.capability.structured
+        ):
             return None
         row = self._require_connection().execute(
             """
@@ -1844,6 +2088,44 @@ class GraphReadSession:
         ).fetchone()
         return _signal_from_row(row) if row is not None else None
 
+    def signals_for_chunk(
+        self,
+        chunk_id: str,
+        *,
+        limit: int = MAX_SIGNALS_PER_FILE + 1,
+    ) -> list[CodeSignal]:
+        if (
+            self.graph_fault is not None
+            or not self.capability.signal_evidence_allowed
+        ):
+            return []
+        connection = self._require_connection()
+        legal_filter = ""
+        if not self.capability.structured and _has_column(
+            connection,
+            "code_signals",
+            "producer",
+        ):
+            legal_filter = "AND producer = 'legacy'"
+        signal_order = (
+            "file_path, start_line, start_column, end_line, end_column, signal_id"
+            if self.capability.structured
+            else "file_path, start_line, end_line, kind, name, signal_id"
+        )
+        rows = connection.execute(
+            f"""
+            SELECT *
+            FROM code_signals
+            WHERE chunk_id = ?
+              AND deleted_at IS NULL
+              {legal_filter}
+            ORDER BY {signal_order}
+            LIMIT ?
+            """,
+            (chunk_id, min(max(limit, 0), MAX_SIGNALS_PER_FILE + 1)),
+        ).fetchall()
+        return [_signal_from_row(row) for row in rows]
+
     def signals_for_chunks_with_modules(
         self,
         chunk_ids: list[str],
@@ -1851,14 +2133,15 @@ class GraphReadSession:
         limit: int = EDGE_QUERY_LIMIT,
     ) -> list[CodeSignal]:
         if (
-            self.capability.status != "ready"
+            self.graph_fault is not None
+            or self.capability.status != "ready"
             or not self.capability.structured
             or not chunk_ids
             or limit <= 0
         ):
             return []
         chunk_ids = _dedupe_values(chunk_ids)
-        bounded_limit = min(limit, EDGE_QUERY_LIMIT)
+        bounded_limit = min(limit, MAX_GRAPH_SEED_SIGNALS + 1)
         connection = self._require_connection()
         placeholders = ", ".join("?" for _ in chunk_ids)
         rows = connection.execute(
@@ -1886,24 +2169,129 @@ class GraphReadSession:
         ).fetchall()
         return [_signal_from_row(row) for row in rows]
 
+    def initial_graph_signals(
+        self,
+        seeds: list[tuple[str, int, int]],
+        *,
+        limit: int = MAX_GRAPH_SEED_SIGNALS + 1,
+    ) -> list[tuple[CodeSignal, int, int]]:
+        if (
+            self.graph_fault is not None
+            or self.capability.status != "ready"
+            or not self.capability.structured
+            or not seeds
+            or limit <= 0
+        ):
+            return []
+        values = ", ".join("(?, ?, ?)" for _ in seeds)
+        parameters: list[object] = []
+        for chunk_id, seed_rank, source_priority in seeds:
+            parameters.extend((chunk_id, seed_rank, source_priority))
+        rows = self._require_connection().execute(
+            f"""
+            WITH seed_chunks(chunk_id, seed_rank, source_priority) AS (
+                VALUES {values}
+            ), matching AS (
+                SELECT signals.*, seed_chunks.seed_rank AS graph_seed_rank,
+                       seed_chunks.source_priority AS graph_source_priority
+                FROM seed_chunks
+                JOIN code_signals AS signals
+                  ON signals.chunk_id = seed_chunks.chunk_id
+                 AND signals.deleted_at IS NULL
+                JOIN chunks AS owners
+                  ON owners.chunk_id = signals.chunk_id
+                 AND owners.deleted_at IS NULL
+                UNION ALL
+                SELECT signals.*, seed_chunks.seed_rank AS graph_seed_rank,
+                       seed_chunks.source_priority AS graph_source_priority
+                FROM seed_chunks
+                JOIN chunks AS selected
+                  ON selected.chunk_id = seed_chunks.chunk_id
+                 AND selected.deleted_at IS NULL
+                JOIN code_signals AS signals
+                  ON signals.kind = 'module'
+                 AND signals.producer = 'core_module'
+                 AND signals.file_path = selected.file_path
+                 AND signals.deleted_at IS NULL
+                JOIN chunks AS owners
+                  ON owners.chunk_id = signals.chunk_id
+                 AND owners.deleted_at IS NULL
+            ), ordered AS (
+                SELECT matching.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY signal_id
+                           ORDER BY graph_seed_rank, graph_source_priority
+                       ) AS graph_row
+                FROM matching
+            )
+            SELECT *
+            FROM ordered
+            WHERE graph_row = 1
+            ORDER BY graph_seed_rank, graph_source_priority, file_path,
+                     start_line, start_column, end_line, end_column, signal_id
+            LIMIT ?
+            """,
+            (*parameters, min(limit, MAX_GRAPH_SEED_SIGNALS + 1)),
+        ).fetchall()
+        return [
+            (
+                _signal_from_row(row),
+                int(row["graph_seed_rank"]),
+                int(row["graph_source_priority"]),
+            )
+            for row in rows
+        ]
+
     def outgoing_relations(
         self,
         source_signal_id: str,
         *,
         limit: int = EDGE_QUERY_LIMIT,
     ) -> list[CodeRelation]:
-        if self.capability.status != "ready" or not self.capability.structured:
+        if (
+            self.graph_fault is not None
+            or self.capability.status != "ready"
+            or not self.capability.structured
+        ):
             return []
         rows = self._require_connection().execute(
             """
-            SELECT *
-            FROM code_relations
-            WHERE source_signal_id = ?
-              AND resolution IN ('resolved_exact', 'resolved_unique')
-              AND deleted_at IS NULL
-            ORDER BY kind, target_project_unit_key, target_kind,
-                     target_qualified_name, target_signature,
-                     COALESCE(target_arity, -1), relation_id
+            SELECT relations.*
+            FROM code_relations AS relations
+            LEFT JOIN code_signals AS targets
+              ON targets.signal_id = relations.target_signal_id
+             AND targets.deleted_at IS NULL
+            WHERE relations.source_signal_id = ?
+              AND relations.resolution IN ('resolved_exact', 'resolved_unique')
+              AND relations.deleted_at IS NULL
+            ORDER BY
+              MIN(relations.producer_confidence, relations.resolution_confidence)
+              * CASE relations.kind
+                  WHEN 'calls' THEN 1.0
+                  WHEN 'implements' THEN 0.95
+                  WHEN 'implements_method' THEN 0.95
+                  WHEN 'uses_type' THEN 0.75
+                  WHEN 'imports' THEN 0.85
+                  WHEN 'routes_to' THEN 1.0
+                  WHEN 'mapped_by' THEN 0.95
+                  WHEN 'tests' THEN 0.8
+                  ELSE 0.0
+                END DESC,
+              MIN(relations.producer_confidence, relations.resolution_confidence) DESC,
+              CASE relations.kind
+                WHEN 'calls' THEN 0
+                WHEN 'implements' THEN 1
+                WHEN 'implements_method' THEN 2
+                WHEN 'uses_type' THEN 3
+                WHEN 'imports_type' THEN 4
+                WHEN 'imports' THEN 5
+                WHEN 'routes_to' THEN 6
+                WHEN 'mapped_by' THEN 7
+                WHEN 'tests' THEN 8
+                ELSE 9
+              END,
+              relations.source_signal_id, relations.target_signal_id,
+              COALESCE(targets.chunk_id, ''), relations.relation_id
             LIMIT ?
             """,
             (source_signal_id, min(max(limit, 0), EDGE_QUERY_LIMIT)),
@@ -1916,14 +2304,24 @@ class GraphReadSession:
         *,
         limit: int = EDGE_QUERY_LIMIT,
     ) -> list[CodeRelation]:
-        if self.capability.status != "legacy":
+        if (
+            not self.capability.relation_evidence_allowed
+            or self.graph_fault is not None
+        ):
             return []
-        rows = self._require_connection().execute(
-            """
+        connection = self._require_connection()
+        legacy_filter = (
+            "AND resolution = 'legacy'"
+            if _has_column(connection, "code_relations", "resolution")
+            else ""
+        )
+        rows = connection.execute(
+            f"""
             SELECT *
             FROM code_relations
             WHERE source_signal_id = ?
               AND deleted_at IS NULL
+              {legacy_filter}
             ORDER BY kind, target_name, relation_id
             LIMIT ?
             """,
@@ -1937,22 +2335,87 @@ class GraphReadSession:
             for row in rows
         ]
 
+    def legacy_relations_targeting(
+        self,
+        target_name: str,
+        *,
+        limit: int = EDGE_QUERY_LIMIT,
+    ) -> list[CodeRelation]:
+        if (
+            not self.capability.relation_evidence_allowed
+            or self.graph_fault is not None
+            or not target_name
+        ):
+            return []
+        connection = self._require_connection()
+        legacy_filter = (
+            "AND resolution = 'legacy'"
+            if _has_column(connection, "code_relations", "resolution")
+            else ""
+        )
+        rows = connection.execute(
+            f"""
+            SELECT *
+            FROM code_relations
+            WHERE target_name = ?
+              AND deleted_at IS NULL
+              {legacy_filter}
+            ORDER BY kind, source_signal_id, relation_id
+            LIMIT ?
+            """,
+            (target_name, min(max(limit, 0), EDGE_QUERY_LIMIT)),
+        ).fetchall()
+        return [
+            _relation_from_row(
+                row,
+                v4_confidence_from_effective=False,
+            )
+            for row in rows
+        ]
+
     def incoming_relations(
         self,
         target_signal_id: str,
         *,
         limit: int = EDGE_QUERY_LIMIT,
     ) -> list[CodeRelation]:
-        if self.capability.status != "ready" or not self.capability.structured:
+        if (
+            self.graph_fault is not None
+            or self.capability.status != "ready"
+            or not self.capability.structured
+        ):
             return []
         rows = self._require_connection().execute(
             """
-            SELECT *
-            FROM code_relations
-            WHERE target_signal_id = ?
-              AND resolution IN ('resolved_exact', 'resolved_unique')
-              AND deleted_at IS NULL
-            ORDER BY kind, source_file_path, source_signal_id, relation_id
+            SELECT relations.*
+            FROM code_relations AS relations
+            WHERE relations.target_signal_id = ?
+              AND relations.resolution IN ('resolved_exact', 'resolved_unique')
+              AND relations.deleted_at IS NULL
+            ORDER BY
+              MIN(relations.producer_confidence, relations.resolution_confidence)
+              * CASE relations.kind
+                  WHEN 'implements' THEN 0.95
+                  WHEN 'implements_method' THEN 0.95
+                  WHEN 'mapped_by' THEN 0.95
+                  WHEN 'tests' THEN 0.8
+                  ELSE 0.0
+                END DESC,
+              MIN(relations.producer_confidence, relations.resolution_confidence) DESC,
+              CASE relations.kind
+                WHEN 'calls' THEN 0
+                WHEN 'implements' THEN 1
+                WHEN 'implements_method' THEN 2
+                WHEN 'uses_type' THEN 3
+                WHEN 'imports_type' THEN 4
+                WHEN 'imports' THEN 5
+                WHEN 'routes_to' THEN 6
+                WHEN 'mapped_by' THEN 7
+                WHEN 'tests' THEN 8
+                ELSE 9
+              END,
+              relations.source_signal_id, relations.target_signal_id,
+              relations.source_chunk_id, relations.relation_id
             LIMIT ?
             """,
             (target_signal_id, min(max(limit, 0), EDGE_QUERY_LIMIT)),

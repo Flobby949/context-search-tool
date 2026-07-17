@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from context_search_tool.models import DocumentChunk, SemanticMatch
+from context_search_tool.models import DocumentChunk, RetrievalSpan, SemanticMatch
 from context_search_tool.retrieval_core import (
+    context_expansion,
     evidence_merge,
     file_roles,
     ordering,
@@ -212,10 +213,108 @@ def test_evidence_merge_primitives_preserve_score_policy_and_order() -> None:
     ]
 
 
+def test_resolved_graph_merge_scoring_and_provenance_are_single_channel() -> None:
+    merged = evidence_merge.merge_score_parts(
+        {
+            "graph_calls_match": 0.4,
+            "resolved_relation": 1.0,
+            "graph_seed_original": 1.0,
+        },
+        {
+            "graph_imports_match": 0.7,
+            "resolved_relation": 1.0,
+            "graph_seed_planner": 1.0,
+        },
+    )
+
+    assert merged == {
+        "graph_imports_match": 0.7,
+        "resolved_relation": 1.0,
+        "graph_seed_planner": 1.0,
+    }
+    assert ranking._combined_score(merged) == pytest.approx(0.7)
+    assert ranking._evidence_class(merged) == "planner_relation"
+    assert context_expansion._span_sources(merged) == ("relation",)
+    assert "frontend import dependency" in ranking._reasons(merged, "query")
+
+
+def test_context_merge_keeps_a_protected_direct_result_exact() -> None:
+    direct = core_types._ExpandedResult(
+        chunk_ids=["direct"],
+        file_path=Path("src/Same.java"),
+        start_line=1,
+        end_line=3,
+        content="one\ntwo\nthree",
+        score=0.8,
+        score_parts={"direct_text": 0.8},
+        reasons=["direct text match"],
+        followup_keywords=["direct"],
+        rank_tier=2,
+        rerank_score=0.8,
+        evidence_class="original_direct",
+        evidence_priority=0,
+        spans=(RetrievalSpan(1, 3, 0.8, ("lexical",)),),
+    )
+    graph = core_types._ExpandedResult(
+        chunk_ids=["graph"],
+        file_path=Path("src/Same.java"),
+        start_line=3,
+        end_line=5,
+        content="three\nfour\nfive",
+        score=0.7,
+        score_parts={
+            "graph_calls_match": 0.7,
+            "resolved_relation": 1.0,
+            "graph_seed_original": 1.0,
+        },
+        reasons=["resolved Java method call"],
+        followup_keywords=["graph"],
+        rank_tier=1,
+        rerank_score=0.7,
+        evidence_class="original_relation",
+        evidence_priority=2,
+    )
+
+    merged = context_expansion._merge_overlapping_results(
+        [direct, graph],
+        protect_direct_graph=True,
+    )
+
+    assert direct in merged
+    assert next(item for item in merged if item is direct) == direct
+    assert direct.score_parts == {"direct_text": 0.8}
+    assert direct.spans == (RetrievalSpan(1, 3, 0.8, ("lexical",)),)
+
+
 def test_relation_policy_values_are_exact() -> None:
     assert relation_policy.MAX_EXPANSION_DEPTH == 3
     assert relation_policy.MAX_EXPANSION_CANDIDATES == 1000
     assert relation_policy._MIN_RELATION_CONFIDENCE == 0.5
+    assert relation_policy.MAX_GRAPH_SEED_SIGNALS == 512
+    assert relation_policy.MAX_RESOLVED_GRAPH_HOPS == 4
+    assert relation_policy.MAX_SIGNALS_POPPED_PER_QUERY == 4096
+    assert relation_policy.MAX_EDGES_EXAMINED_PER_QUERY == 16384
+    assert relation_policy.MAX_FRONTIER_ENTRIES_PER_QUERY == 8192
+    assert relation_policy.MAX_EDGES_PER_SIGNAL_DIRECTION == 64
+    assert relation_policy.MAX_RELATION_EXPANDED_CANDIDATES == 1000
+    assert relation_policy.GRAPH_SCORE_KEYS == (
+        "graph_calls_match",
+        "graph_implements_match",
+        "graph_uses_type_match",
+        "graph_imports_match",
+        "graph_routes_to_match",
+        "graph_mapped_by_match",
+        "graph_tests_match",
+    )
+    assert dict(relation_policy.GRAPH_REASON_BY_SCORE_KEY) == {
+        "graph_calls_match": "resolved Java method call",
+        "graph_implements_match": "Spring interface implementation",
+        "graph_uses_type_match": "repository-local related type",
+        "graph_routes_to_match": "frontend route target",
+        "graph_imports_match": "frontend import dependency",
+        "graph_mapped_by_match": "MyBatis mapper statement",
+        "graph_tests_match": "associated test module",
+    }
 
 
 @pytest.mark.parametrize(

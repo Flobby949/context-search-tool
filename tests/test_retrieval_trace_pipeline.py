@@ -1004,3 +1004,9 @@ def test_mcp_trace_success_early_return_and_error_never_write_feedback(
         "error": {"code": "trace_failed", "message": "Retrieval trace failed"},
     }
     assert "PRIVATE_TRACE_ERROR" not in repr(failed)
+
+
+def test_resolved_graph_flags_are_not_trace_adjustments() -> None:
+    assert tracing._is_adjustment("graph_calls_match") is True
+    assert tracing._is_adjustment("resolved_relation") is False
+    assert tracing._is_adjustment("graph_seed_original") is False

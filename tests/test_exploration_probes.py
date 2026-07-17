@@ -400,6 +400,233 @@ def test_planning_uses_only_approved_origin_provenance(tmp_path: Path, monkeypat
     assert all(len(candidate.seed_paths) <= MAX_PROBE_SEED_PATHS for candidate in planned)
 
 
+def test_private_v5_probe_seeds_use_one_resolved_hop_and_reverse_tests(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    store = SQLiteStore(repo / ".context-search/index.sqlite")
+    store.initialize_v5()
+
+    def chunk(chunk_id: str, path: str, content: str) -> DocumentChunk:
+        return DocumentChunk(
+            chunk_id,
+            Path(path),
+            1,
+            4,
+            content,
+            "symbol",
+            lexical_tokens=content.lower().split(),
+            embedding_id=chunk_id,
+        )
+
+    def signal(
+        signal_id: str,
+        chunk_id: str,
+        path: str,
+        *,
+        kind: str = "module",
+        producer: str = "core_module",
+        name: str | None = None,
+    ) -> CodeSignal:
+        return CodeSignal(
+            signal_id,
+            chunk_id,
+            Path(path),
+            kind,
+            name or signal_id,
+            1,
+            4,
+            "java",
+            qualified_name=path if kind == "module" else f"demo.{signal_id}",
+            producer=producer,
+            recallable=kind != "module",
+        )
+
+    first = chunk("origin-first", "src/Owner.java", "class Owner")
+    origin = chunk("origin-second", "src/Owner.java", "owner selected method")
+    owner_module = signal(
+        "owner-module",
+        first.chunk_id,
+        "src/Owner.java",
+        name="Owner",
+    )
+    owner_method = signal(
+        "owner-method",
+        origin.chunk_id,
+        "src/Owner.java",
+        kind="method",
+        producer="java_ast",
+        name="ownerMethod",
+    )
+    target = chunk("target", "src/TargetService.java", "class TargetService")
+    target_module = signal(
+        "target-module",
+        target.chunk_id,
+        "src/TargetService.java",
+        name="TargetService",
+    )
+    deep = chunk("deep", "src/DeepService.java", "class DeepService")
+    deep_module = signal(
+        "deep-module",
+        deep.chunk_id,
+        "src/DeepService.java",
+        name="DeepService",
+    )
+    test_chunk = chunk("test", "src/test/OwnerTests.java", "class OwnerTests")
+    test_module = signal(
+        "test-module",
+        test_chunk.chunk_id,
+        "src/test/OwnerTests.java",
+        name="OwnerTests",
+    )
+
+    def relation(
+        relation_id: str,
+        source: CodeSignal,
+        target_signal: CodeSignal,
+        kind: str,
+    ) -> CodeRelation:
+        return CodeRelation(
+            relation_id,
+            source.signal_id,
+            target_signal.name,
+            kind,
+            0.9,
+            target_kind=target_signal.kind,
+            target_qualified_name=target_signal.qualified_name,
+            target_signal_id=target_signal.signal_id,
+            resolution="resolved_exact",
+            producer="test_graph",
+            producer_confidence=0.9,
+            resolution_confidence=1.0,
+        )
+
+    store.replace_chunks(first.file_path, [first, origin])
+    store.replace_graph_facts(
+        first.file_path,
+        [owner_module, owner_method],
+        [relation("import", owner_module, target_module, "imports")],
+    )
+    store.replace_chunks(target.file_path, [target])
+    store.replace_graph_facts(
+        target.file_path,
+        [target_module],
+        [relation("deep", target_module, deep_module, "imports")],
+    )
+    store.replace_chunks(deep.file_path, [deep])
+    store.replace_graph_facts(deep.file_path, [deep_module], [])
+    store.replace_chunks(test_chunk.file_path, [test_chunk])
+    store.replace_graph_facts(
+        test_chunk.file_path,
+        [test_module],
+        [relation("tests", test_module, owner_module, "tests")],
+    )
+    store.mark_graph_ready(topology_fingerprint="a" * 64)
+
+    path = origin.file_path.as_posix()
+    bundle = QueryBundle("owner flow", ["owner"], [_result(path)], [])
+    pack = _pack((_item(path),))
+    frozen = _frozen(
+        _goal("goal-test"),
+        _goal(
+            "goal-implementation",
+            category="implementations",
+            roles=("service", "service_impl"),
+            required=False,
+        ),
+    )
+    trace = _trace(_selection(1, path, origin.chunk_id))
+    sessions: list[object] = []
+
+    def session_factory():
+        context = store.graph_read_session()
+        sessions.append(context)
+        return context
+
+    planned = probes._plan_probes_v5(
+        repo,
+        bundle,
+        trace,
+        pack,
+        frozen,
+        store=store,
+        graph_session_factory=session_factory,
+    )
+
+    serialized = "\n".join(candidate.query for candidate in planned)
+    assert len(sessions) == 1
+    assert "OwnerTests test" in serialized
+    assert "TargetService service implementation" in serialized
+    assert "DeepService" not in serialized
+    assert {candidate.source for candidate in planned} >= {
+        "relation_target",
+        "static_import",
+    }
+
+
+def test_private_v5_stale_probe_fallback_stays_in_one_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    store = SQLiteStore(repo / ".context-search/index.sqlite")
+    store.initialize_v5()
+    chunk = DocumentChunk(
+        "origin",
+        Path("src/Owner.txt"),
+        1,
+        1,
+        "owner",
+        "text",
+        embedding_id="origin",
+    )
+    store.replace_chunks(chunk.file_path, [chunk])
+    path = chunk.file_path.as_posix()
+    bundle = QueryBundle("owner flow", ["owner"], [_result(path)], [])
+    pack = _pack((_item(path),))
+    frozen = _frozen(
+        _goal(
+            "goal-implementation",
+            category="implementations",
+            roles=("service", "service_impl"),
+        )
+    )
+    trace = _trace(_selection(1, path, chunk.chunk_id))
+    sessions: list[object] = []
+
+    def session_factory():
+        context = store.graph_read_session()
+        sessions.append(context)
+        return context
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("stale P4 fallback reopened SQLiteStore")
+
+    monkeypatch.setattr(SQLiteStore, "chunks_for_ids", forbidden)
+    monkeypatch.setattr(SQLiteStore, "signals_for_chunks", forbidden)
+    monkeypatch.setattr(SQLiteStore, "relations_for_sources", forbidden)
+    monkeypatch.setattr(SQLiteStore, "source_file_for_path", forbidden)
+
+    planned = probes._plan_probes_v5(
+        repo,
+        bundle,
+        trace,
+        pack,
+        frozen,
+        store=store,
+        graph_session_factory=session_factory,
+    )
+
+    assert len(sessions) == 1
+    assert any(
+        candidate.query == "Owner service implementation"
+        and candidate.source == "path_stem"
+        for candidate in planned
+    )
+
+
 def test_relation_symbol_route_import_path_and_next_query_priority_is_fixed(
 ) -> None:
     frozen = _frozen(
