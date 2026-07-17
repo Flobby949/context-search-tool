@@ -158,6 +158,42 @@ def test_exact_module_and_complete_candidate_set_resolution(tmp_path: Path) -> N
     assert candidate.resolution_confidence == 0.9
 
 
+def test_empty_scanned_module_candidate_inventory_never_uses_stale_target(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    _source(store)
+    _add_file(
+        store,
+        "src/Page.ts",
+        [_module("page", "page-chunk", "src/Page.ts")],
+    )
+    store.append_graph_relations(
+        [
+            CodeRelation(
+                relation_id="inactive-exact",
+                source_signal_id="source",
+                target_name="src/Page.ts",
+                kind="imports",
+                confidence=1.0,
+                target_kind="module",
+                target_qualified_name="src/Page.ts",
+                resolution="unresolved",
+                producer="frontend_graph",
+                producer_confidence=1.0,
+                metadata={"selector_state": "exact", "candidates": []},
+            )
+        ]
+    )
+
+    resolve_graph_relations(store)
+
+    relation = store.graph_relation_for_id("inactive-exact")
+    assert relation is not None
+    assert relation.resolution == "unresolved"
+    assert relation.target_signal_id == ""
+
+
 def test_candidate_tie_is_ambiguous_independent_of_insertion_order(
     tmp_path: Path,
 ) -> None:

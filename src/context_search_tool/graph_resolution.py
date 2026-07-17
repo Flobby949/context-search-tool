@@ -102,8 +102,9 @@ def _classify_relation(
         return cleared
 
     if relation.target_kind == "module":
-        candidates = _string_tuple(relation.metadata.get("candidates"))
-        if not candidates and relation.target_qualified_name:
+        candidate_value = relation.metadata.get("candidates")
+        candidates = _string_tuple(candidate_value)
+        if not isinstance(candidate_value, (list, tuple)) and relation.target_qualified_name:
             candidates = (relation.target_qualified_name,)
         matches = session.find_modules(
             candidates,
