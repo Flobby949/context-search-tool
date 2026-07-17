@@ -40,6 +40,14 @@ class CodeSignal:
     language: str
     tokens: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    qualified_name: str = ""
+    signature: str = ""
+    arity: int | None = None
+    project_unit_key: str = ""
+    producer: str = "legacy"
+    start_column: int = 0
+    end_column: int = 0
+    recallable: bool = True
 
 
 @dataclass(frozen=True)
@@ -50,6 +58,16 @@ class CodeRelation:
     kind: str
     confidence: float
     metadata: dict[str, Any] = field(default_factory=dict)
+    target_kind: str = ""
+    target_qualified_name: str = ""
+    target_signature: str = ""
+    target_arity: int | None = None
+    target_project_unit_key: str = ""
+    target_signal_id: str = ""
+    resolution: str = "legacy"
+    producer: str = "legacy"
+    producer_confidence: float = 1.0
+    resolution_confidence: float | None = None
 
 
 def generate_signal_id(file_path: Path, kind: str, start_line: int, name: str) -> str:

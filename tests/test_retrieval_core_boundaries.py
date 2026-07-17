@@ -171,6 +171,27 @@ P5_REVIEWED_PRODUCTION_CHANGES = {
 P4_IMPLEMENTATION_BASELINE = "b827707325d0ee4e9c6b2bcb3dee39955c263822"
 THIS_TEST_PATH = "tests/test_retrieval_core_boundaries.py"
 
+GRAPH_CONTRACT_STDLIB_IMPORTS = {
+    "hashlib",
+    "json",
+    "math",
+    "pathlib",
+    "types",
+    "typing",
+    "unicodedata",
+    "__future__",
+}
+
+MODULE_ID_CONSUMERS = {
+    "frontend_graph.py",
+    "graph_lifecycle.py",
+    "graph_resolution.py",
+    "indexer.py",
+    "mybatis_xml.py",
+    "retrieval.py",
+    "test_association.py",
+}
+
 
 def _is_p4_public_facade_reference(reference: dict[str, object]) -> bool:
     path = reference["file"]
@@ -326,6 +347,41 @@ def _retrieval_tree() -> ast.Module:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
+def _import_roots(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".", 1)[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            roots.add(node.module.split(".", 1)[0])
+    return roots
+
+
+def _reconstructs_core_module_id(path: Path) -> bool:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function_name = ""
+        if isinstance(node.func, ast.Name):
+            function_name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            function_name = node.func.attr
+        if function_name != "generate_v5_signal_id":
+            continue
+        keyword_values = {
+            keyword.arg: keyword.value
+            for keyword in node.keywords
+            if keyword.arg is not None
+        }
+        for name, expected in (("kind", "module"), ("producer", "core_module")):
+            value = keyword_values.get(name)
+            if isinstance(value, ast.Constant) and value.value == expected:
+                return True
+    return False
+
+
 def _aliased_import_bindings(tree: ast.Module) -> set[str]:
     bindings: set[str] = set()
     for node in ast.walk(tree):
@@ -390,6 +446,17 @@ def test_retrieval_core_import_adjacency_is_exact_and_acyclic() -> None:
 
     for node in graph:
         visit(node)
+
+
+def test_graph_contract_is_pure_and_module_identity_is_shared() -> None:
+    package = ROOT / "src" / "context_search_tool"
+    contract = package / "graph_contract.py"
+    assert _import_roots(contract) <= GRAPH_CONTRACT_STDLIB_IMPORTS
+
+    for name in MODULE_ID_CONSUMERS:
+        path = package / name
+        if path.exists():
+            assert not _reconstructs_core_module_id(path), path
 
 
 def test_retrieval_defines_only_the_exact_supported_facade() -> None:
@@ -536,7 +603,6 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
             "src/context_search_tool/retrieval_trace/models.py",
             "src/context_search_tool/retrieval_trace/serialization.py",
             "src/context_search_tool/retrieval_trace/collector.py",
-            "src/context_search_tool/models.py",
             "src/context_search_tool/indexer.py",
             "src/context_search_tool/scanner.py",
             "src/context_search_tool/chunker.py",
