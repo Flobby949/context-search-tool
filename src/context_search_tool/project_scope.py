@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +18,9 @@ _MARKER_NAMES = {
     "go.mod",
     "pom.xml",
     "build.gradle",
+    "build.gradle.kts",
     "settings.gradle",
+    "settings.gradle.kts",
     "Cargo.toml",
     "pyproject.toml",
 }
@@ -40,9 +44,11 @@ _MARKER_ORDER = {
     "go.mod": 1,
     "pom.xml": 2,
     "build.gradle": 3,
-    "settings.gradle": 4,
-    "Cargo.toml": 5,
-    "pyproject.toml": 6,
+    "build.gradle.kts": 4,
+    "settings.gradle": 5,
+    "settings.gradle.kts": 6,
+    "Cargo.toml": 7,
+    "pyproject.toml": 8,
 }
 _BUSINESS_SHARED_WORDS = {
     "auth",
@@ -142,6 +148,38 @@ def project_metadata(unit: ProjectUnit) -> dict[str, Any]:
         "project_languages": list(unit.languages),
         "project_markers": list(unit.markers),
     }
+
+
+def project_unit_topology_fingerprint(
+    units: Iterable[ProjectUnit],
+) -> str:
+    projection = []
+    for unit in units:
+        root = _root_to_metadata(unit.root)
+        marker_paths = sorted(
+            marker if not root else f"{root}/{marker}"
+            for marker in unit.markers
+        )
+        projection.append(
+            {
+                "root": root,
+                "kind": unit.kind,
+                "marker_paths": marker_paths,
+            }
+        )
+    projection.sort(
+        key=lambda item: (
+            item["root"],
+            item["kind"],
+            item["marker_paths"],
+        )
+    )
+    payload = json.dumps(
+        projection,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def project_units_from_chunk_metadata(
@@ -360,7 +398,14 @@ def _classify_unit(
         return "go", ("go",)
     if "pom.xml" in markers:
         return "java", ("java",)
-    if "build.gradle" in markers or "settings.gradle" in markers:
+    if markers.intersection(
+        {
+            "build.gradle",
+            "build.gradle.kts",
+            "settings.gradle",
+            "settings.gradle.kts",
+        }
+    ):
         return "java", ("java", "kotlin")
     if "Cargo.toml" in markers:
         return "rust", ("rust",)

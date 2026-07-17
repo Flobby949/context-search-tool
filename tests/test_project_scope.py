@@ -14,6 +14,7 @@ from context_search_tool.project_scope import (
     project_metadata,
     project_scope_rerank_adjustment,
     project_scope_score_parts,
+    project_unit_topology_fingerprint,
     project_units_from_chunk_metadata,
     unit_for_path,
 )
@@ -151,6 +152,92 @@ def test_no_marker_falls_back_to_root_unknown(tmp_path: Path) -> None:
             confidence=0.0,
         ),
     )
+
+
+def test_project_unit_topology_fingerprint_is_canonical_and_ignores_display_data() -> None:
+    units = (
+        ProjectUnit(
+            Path(""),
+            "display-one",
+            "node",
+            ("javascript",),
+            ("package.json",),
+            0.9,
+        ),
+        ProjectUnit(
+            Path("backend"),
+            "backend",
+            "java",
+            ("java",),
+            ("pom.xml", "settings.gradle"),
+            0.9,
+        ),
+    )
+    reordered_and_renamed = (
+        ProjectUnit(
+            Path("backend"),
+            "renamed",
+            "java",
+            ("kotlin", "java"),
+            ("settings.gradle", "pom.xml"),
+            0.1,
+        ),
+        ProjectUnit(
+            Path(""),
+            "display-two",
+            "node",
+            (),
+            ("package.json",),
+            0.1,
+        ),
+    )
+
+    fingerprint = project_unit_topology_fingerprint(units)
+
+    assert len(fingerprint) == 64
+    assert fingerprint == project_unit_topology_fingerprint(reordered_and_renamed)
+    assert fingerprint != project_unit_topology_fingerprint(
+        (
+            units[0],
+            ProjectUnit(
+                Path("backend"),
+                "backend",
+                "java",
+                ("java",),
+                ("pom.xml",),
+                0.9,
+            ),
+        )
+    )
+    assert fingerprint != project_unit_topology_fingerprint(
+        (
+            units[0],
+            ProjectUnit(
+                Path("server"),
+                "backend",
+                "java",
+                ("java",),
+                ("pom.xml", "settings.gradle"),
+                0.9,
+            ),
+        )
+    )
+
+
+def test_gradle_kotlin_marker_paths_participate_in_topology(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "backend").mkdir()
+    (repo / "backend" / "build.gradle.kts").write_text(
+        "plugins { java }\n",
+        encoding="utf-8",
+    )
+
+    [unit] = detect_project_units(repo, [])
+
+    assert unit.root == Path("backend")
+    assert unit.kind == "java"
+    assert unit.markers == ("build.gradle.kts",)
 
 
 def test_project_metadata_is_json_compatible() -> None:

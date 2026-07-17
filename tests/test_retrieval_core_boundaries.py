@@ -206,6 +206,19 @@ MYBATIS_ALLOWED_INTERNAL_IMPORTS = {
     "context_search_tool.graph_contract",
 }
 
+GRAPH_LIFECYCLE_ALLOWED_INTERNAL_IMPORTS = {
+    "context_search_tool.graph_contract",
+}
+
+GRAPH_RESOLUTION_ALLOWED_INTERNAL_IMPORTS = {
+    "context_search_tool.graph_contract",
+    "context_search_tool.models",
+}
+
+INDEX_LOCK_ALLOWED_INTERNAL_IMPORTS = {
+    "context_search_tool.graph_lifecycle",
+}
+
 
 def _is_p4_public_facade_reference(reference: dict[str, object]) -> bool:
     path = reference["file"]
@@ -546,6 +559,57 @@ def test_frontend_and_mybatis_fact_modules_are_pure_and_dormant() -> None:
     ]
 
 
+def test_graph_lifecycle_primitives_are_leaf_bounded_and_not_activated() -> None:
+    package = ROOT / "src" / "context_search_tool"
+    assert _internal_imports(package / "graph_lifecycle.py") <= (
+        GRAPH_LIFECYCLE_ALLOWED_INTERNAL_IMPORTS
+    )
+    assert _internal_imports(package / "graph_resolution.py") <= (
+        GRAPH_RESOLUTION_ALLOWED_INTERNAL_IMPORTS
+    )
+    assert _internal_imports(package / "index_lock.py") <= (
+        INDEX_LOCK_ALLOWED_INTERNAL_IMPORTS
+    )
+
+    indexer_path = package / "indexer.py"
+    indexer_imports = _internal_imports(indexer_path)
+    assert "context_search_tool.graph_lifecycle" not in indexer_imports
+    assert "context_search_tool.graph_resolution" not in indexer_imports
+    assert "context_search_tool.index_lock" not in indexer_imports
+    assert "context_search_tool.scanner" in indexer_imports
+
+    indexer_tree = ast.parse(indexer_path.read_text(encoding="utf-8"))
+    assignments = {
+        target.id: node.value.value
+        for node in indexer_tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance((target := node.targets[0]), ast.Name)
+        and isinstance(node.value, ast.Constant)
+    }
+    assert assignments["CURRENT_SIGNAL_SCHEMA_VERSION"] == 4
+    assert not [
+        node
+        for node in ast.walk(indexer_tree)
+        if isinstance(node, ast.Call)
+        and (
+            isinstance(node.func, ast.Name)
+            and node.func.id
+            in {
+                "scan_workspace_v5",
+                "read_scanned_file_bytes",
+                "resolve_graph_relations",
+                "exclusive_index_lock",
+            }
+        )
+    ]
+
+    for name in ("graph_lifecycle.py", "graph_resolution.py", "index_lock.py"):
+        assert _import_roots(package / name).isdisjoint(
+            {"http", "requests", "socket", "subprocess", "urllib"}
+        )
+
+
 def test_retrieval_defines_only_the_exact_supported_facade() -> None:
     tree = _retrieval_tree()
     definitions = [
@@ -691,7 +755,6 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
             "src/context_search_tool/retrieval_trace/serialization.py",
             "src/context_search_tool/retrieval_trace/collector.py",
             "src/context_search_tool/indexer.py",
-            "src/context_search_tool/scanner.py",
             "src/context_search_tool/chunker.py",
             "src/context_search_tool/manifest.py",
         ),

@@ -8,8 +8,25 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from context_search_tool.graph_contract import EDGE_QUERY_LIMIT, RESOLUTION_STATES
+from context_search_tool.graph_lifecycle import (
+    FULL_REINDEX_REQUIRED_KEY,
+    GRAPH_RESOLUTION_STATE_KEY,
+    GRAPH_RESOLUTION_VERSION_KEY,
+    GRAPH_STALE_REASON_KEY,
+    PROJECT_UNIT_TOPOLOGY_FINGERPRINT_KEY,
+    SIGNAL_SCHEMA_VERSION_KEY,
+    GraphCapability,
+    GraphIntegrityError,
+    GraphIntegrityResult,
+    IncompatibleSignalSchemaError,
+    IndexBusyError,
+    TARGET_GRAPH_RESOLUTION_VERSION,
+    TARGET_SIGNAL_SCHEMA_VERSION,
+    read_graph_capability,
+)
 from context_search_tool.models import (
     CodeRelation,
     CodeSignal,
@@ -21,6 +38,8 @@ from context_search_tool.models import (
 
 logger = logging.getLogger(__name__)
 _DIRECT_TEXT_CJK_SEQUENCE_RE = re.compile(r"[㐀-鿿]{2,}")
+_DEFAULT_BUSY_TIMEOUT_MS = 5_000
+_RESOLVED_STATES = ("resolved_exact", "resolved_unique")
 
 
 class SQLiteStore:
@@ -134,6 +153,280 @@ class SQLiteStore:
                 """
             )
 
+    def migrate_signal_schema_v5(
+        self,
+        *,
+        before_commit: Callable[[], None] | None = None,
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> None:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            stored_version = _stored_signal_schema_version(connection)
+            if stored_version > TARGET_SIGNAL_SCHEMA_VERSION:
+                raise IncompatibleSignalSchemaError(stored_version)
+            if stored_version == TARGET_SIGNAL_SCHEMA_VERSION:
+                _require_v5_tables(connection)
+                return
+
+            connection.execute("BEGIN IMMEDIATE")
+            stored_version = _stored_signal_schema_version(connection)
+            if stored_version > TARGET_SIGNAL_SCHEMA_VERSION:
+                raise IncompatibleSignalSchemaError(stored_version)
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS index_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+                """
+            )
+            connection.execute("DROP TABLE IF EXISTS code_relations")
+            connection.execute("DROP TABLE IF EXISTS code_signals")
+            for statement in _v5_schema_statements():
+                connection.execute(statement)
+            now = _now()
+            _set_metadata_row(
+                connection,
+                SIGNAL_SCHEMA_VERSION_KEY,
+                str(TARGET_SIGNAL_SCHEMA_VERSION),
+                now,
+            )
+            _set_metadata_row(
+                connection,
+                GRAPH_RESOLUTION_VERSION_KEY,
+                str(TARGET_GRAPH_RESOLUTION_VERSION),
+                now,
+            )
+            _set_metadata_row(
+                connection,
+                GRAPH_RESOLUTION_STATE_KEY,
+                "stale",
+                now,
+            )
+            _set_metadata_row(
+                connection,
+                GRAPH_STALE_REASON_KEY,
+                "schema_migration",
+                now,
+            )
+            _set_metadata_row(
+                connection,
+                FULL_REINDEX_REQUIRED_KEY,
+                "1",
+                now,
+            )
+            if before_commit is not None:
+                before_commit()
+            connection.commit()
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
+
+    def replace_graph_facts(
+        self,
+        file_path: Path,
+        signals: list[CodeSignal],
+        relations: list[CodeRelation],
+    ) -> None:
+        path = _path_key(file_path)
+        deleted_at = _now()
+        with self._connect() as connection:
+            _require_v5_tables(connection)
+            _replace_signals_v5(
+                connection,
+                path,
+                signals,
+                deleted_at,
+            )
+            _replace_relations_v5(
+                connection,
+                path,
+                relations,
+                deleted_at,
+            )
+
+    def append_graph_relations(self, relations: list[CodeRelation]) -> None:
+        if not relations:
+            return
+        with self._connect() as connection:
+            _require_v5_tables(connection)
+            for relation in relations:
+                _upsert_relation_v5(connection, relation)
+
+    def graph_signal_for_id(self, signal_id: str) -> CodeSignal | None:
+        with self._connect() as connection:
+            _require_v5_tables(connection)
+            row = connection.execute(
+                """
+                SELECT *
+                FROM code_signals
+                WHERE signal_id = ?
+                  AND deleted_at IS NULL
+                """,
+                (signal_id,),
+            ).fetchone()
+        return _signal_from_row(row) if row is not None else None
+
+    def graph_relation_for_id(self, relation_id: str) -> CodeRelation | None:
+        with self._connect() as connection:
+            _require_v5_tables(connection)
+            row = connection.execute(
+                """
+                SELECT *
+                FROM code_relations
+                WHERE relation_id = ?
+                  AND deleted_at IS NULL
+                """,
+                (relation_id,),
+            ).fetchone()
+        return _relation_from_row(row) if row is not None else None
+
+    def graph_integrity(self) -> GraphIntegrityResult:
+        with self._connect() as connection:
+            _require_v5_tables(connection)
+            return _graph_integrity(connection)
+
+    def mark_graph_stale(
+        self,
+        reason: str,
+        *,
+        full_reindex_required: bool | None = None,
+        before_commit: Callable[[], None] | None = None,
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> None:
+        if not reason:
+            raise ValueError("graph stale reason must not be empty")
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            _require_target_schema(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            now = _now()
+            _set_metadata_row(
+                connection,
+                GRAPH_RESOLUTION_STATE_KEY,
+                "stale",
+                now,
+            )
+            _set_metadata_row(
+                connection,
+                GRAPH_STALE_REASON_KEY,
+                reason,
+                now,
+            )
+            if full_reindex_required:
+                _set_metadata_row(
+                    connection,
+                    FULL_REINDEX_REQUIRED_KEY,
+                    "1",
+                    now,
+                )
+            if before_commit is not None:
+                before_commit()
+            connection.commit()
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
+
+    def mark_graph_ready(
+        self,
+        *,
+        topology_fingerprint: str,
+        before_commit: Callable[[], None] | None = None,
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> GraphIntegrityResult:
+        if not re.fullmatch(r"[0-9a-f]{64}", topology_fingerprint):
+            raise ValueError("topology fingerprint must be a full SHA-256")
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            _require_target_schema(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            integrity = _graph_integrity(connection)
+            if not integrity.ok:
+                raise GraphIntegrityError("graph integrity check failed")
+            now = _now()
+            _set_metadata_row(
+                connection,
+                PROJECT_UNIT_TOPOLOGY_FINGERPRINT_KEY,
+                topology_fingerprint,
+                now,
+            )
+            _set_metadata_row(
+                connection,
+                GRAPH_RESOLUTION_VERSION_KEY,
+                str(TARGET_GRAPH_RESOLUTION_VERSION),
+                now,
+            )
+            _set_metadata_row(
+                connection,
+                GRAPH_STALE_REASON_KEY,
+                "",
+                now,
+            )
+            _set_metadata_row(
+                connection,
+                FULL_REINDEX_REQUIRED_KEY,
+                "0",
+                now,
+            )
+            _set_metadata_row(
+                connection,
+                GRAPH_RESOLUTION_STATE_KEY,
+                "ready",
+                now,
+            )
+            if before_commit is not None:
+                before_commit()
+            connection.commit()
+            return integrity
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
+
+    @contextmanager
+    def graph_read_session(
+        self,
+        *,
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> Iterator[GraphReadSession]:
+        session = GraphReadSession(self.db_path, busy_timeout_ms=busy_timeout_ms)
+        with session:
+            yield session
+
+    @contextmanager
+    def graph_resolution_session(
+        self,
+        *,
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> Iterator[Any]:
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            _require_target_schema(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            session = _SQLiteResolutionSession(connection)
+            yield session
+            connection.commit()
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
+
     def upsert_source_file(self, file: SourceFile) -> None:
         with self._connect() as connection:
             connection.execute(
@@ -216,6 +509,14 @@ class SQLiteStore:
         path = _path_key(file_path)
         deleted_at = _now()
         with self._connect() as connection:
+            if _has_column(connection, "code_signals", "qualified_name"):
+                _replace_signals_v5(
+                    connection,
+                    path,
+                    signals,
+                    deleted_at,
+                )
+                return
             connection.execute(
                 """
                 UPDATE code_signals
@@ -265,6 +566,14 @@ class SQLiteStore:
         path = _path_key(file_path)
         deleted_at = _now()
         with self._connect() as connection:
+            if _has_column(connection, "code_relations", "resolution"):
+                _replace_relations_v5(
+                    connection,
+                    path,
+                    relations,
+                    deleted_at,
+                )
+                return
             connection.execute(
                 """
                 UPDATE code_relations
@@ -318,12 +627,18 @@ class SQLiteStore:
 
     def signals_for_chunk(self, chunk_id: str) -> list[CodeSignal]:
         with self._connect() as connection:
+            legacy_filter = (
+                "AND producer = 'legacy'"
+                if _has_column(connection, "code_signals", "producer")
+                else ""
+            )
             rows = connection.execute(
-                """
+                f"""
                 SELECT *
                 FROM code_signals
                 WHERE chunk_id = ?
                   AND deleted_at IS NULL
+                  {legacy_filter}
                 ORDER BY start_line, end_line, kind, name, signal_id
                 """,
                 (chunk_id,),
@@ -337,13 +652,19 @@ class SQLiteStore:
             return grouped
 
         with self._connect() as connection:
+            legacy_filter = (
+                "AND producer = 'legacy'"
+                if _has_column(connection, "code_signals", "producer")
+                else ""
+            )
             rows = connection.execute(
                 _in_query(
-                    """
+                    f"""
                 SELECT *
                 FROM code_signals
-                WHERE chunk_id IN ({placeholders})
+                WHERE chunk_id IN ({{placeholders}})
                   AND deleted_at IS NULL
+                  {legacy_filter}
                 ORDER BY chunk_id, start_line, end_line, kind, name, signal_id
                 """,
                     chunk_ids,
@@ -362,11 +683,17 @@ class SQLiteStore:
 
         matches: list[tuple[CodeSignal, float]] = []
         with self._connect() as connection:
+            recallable_filter = (
+                "AND recallable = 1"
+                if _has_column(connection, "code_signals", "recallable")
+                else ""
+            )
             rows = connection.execute(
-                """
+                f"""
                 SELECT *
                 FROM code_signals
                 WHERE deleted_at IS NULL
+                  {recallable_filter}
                 """
             ).fetchall()
 
@@ -398,17 +725,29 @@ class SQLiteStore:
 
     def relations_for_source(self, source_signal_id: str) -> list[CodeRelation]:
         with self._connect() as connection:
+            legacy_filter = (
+                "AND resolution = 'legacy'"
+                if _has_column(connection, "code_relations", "resolution")
+                else ""
+            )
             rows = connection.execute(
-                """
+                f"""
                 SELECT *
                 FROM code_relations
                 WHERE source_signal_id = ?
                   AND deleted_at IS NULL
+                  {legacy_filter}
                 ORDER BY kind, target_name, relation_id
                 """,
                 (source_signal_id,),
             ).fetchall()
-        return [_relation_from_row(row) for row in rows]
+        return [
+            _relation_from_row(
+                row,
+                v4_confidence_from_effective=False,
+            )
+            for row in rows
+        ]
 
     def relations_for_sources(
         self, source_signal_ids: list[str]
@@ -421,13 +760,19 @@ class SQLiteStore:
             return grouped
 
         with self._connect() as connection:
+            legacy_filter = (
+                "AND resolution = 'legacy'"
+                if _has_column(connection, "code_relations", "resolution")
+                else ""
+            )
             rows = connection.execute(
                 _in_query(
-                    """
+                    f"""
                 SELECT *
                 FROM code_relations
-                WHERE source_signal_id IN ({placeholders})
+                WHERE source_signal_id IN ({{placeholders}})
                   AND deleted_at IS NULL
+                  {legacy_filter}
                 ORDER BY source_signal_id, kind, target_name, relation_id
                 """,
                     source_signal_ids,
@@ -436,22 +781,39 @@ class SQLiteStore:
             ).fetchall()
 
         for row in rows:
-            grouped[row["source_signal_id"]].append(_relation_from_row(row))
+            grouped[row["source_signal_id"]].append(
+                _relation_from_row(
+                    row,
+                    v4_confidence_from_effective=False,
+                )
+            )
         return grouped
 
     def relations_targeting(self, target_name: str) -> list[CodeRelation]:
         with self._connect() as connection:
+            legacy_filter = (
+                "AND resolution = 'legacy'"
+                if _has_column(connection, "code_relations", "resolution")
+                else ""
+            )
             rows = connection.execute(
-                """
+                f"""
                 SELECT *
                 FROM code_relations
                 WHERE target_name = ?
                   AND deleted_at IS NULL
+                  {legacy_filter}
                 ORDER BY kind, source_signal_id, relation_id
                 """,
                 (target_name,),
             ).fetchall()
-        return [_relation_from_row(row) for row in rows]
+        return [
+            _relation_from_row(
+                row,
+                v4_confidence_from_effective=False,
+            )
+            for row in rows
+        ]
 
     def chunks_matching_signal_or_symbol(
         self, target_name: str, limit: int
@@ -515,6 +877,15 @@ class SQLiteStore:
 
     def set_metadata(self, key: str, value: str) -> None:
         with self._connect() as connection:
+            if (
+                key == FULL_REINDEX_REQUIRED_KEY
+                and value == "0"
+                and _stored_signal_schema_version(connection)
+                == TARGET_SIGNAL_SCHEMA_VERSION
+            ):
+                raise ValueError(
+                    "full reindex flag clears only with the ready transaction"
+                )
             connection.execute(
                 """
                 INSERT INTO index_metadata (key, value, updated_at)
@@ -980,12 +1351,13 @@ class SQLiteStore:
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.db_path)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
+        connection = _open_connection(self.db_path, _DEFAULT_BUSY_TIMEOUT_MS)
         try:
             with connection:
                 yield connection
+        except BaseException as error:
+            _raise_if_busy(error)
+            raise
         finally:
             connection.close()
 
@@ -1176,18 +1548,364 @@ class SQLiteStore:
         )
 
 
+class GraphReadSession:
+    def __init__(self, db_path: Path, *, busy_timeout_ms: int) -> None:
+        self.db_path = db_path
+        self.busy_timeout_ms = busy_timeout_ms
+        self._connection: sqlite3.Connection | None = None
+        self.capability: GraphCapability
+
+    def __enter__(self) -> GraphReadSession:
+        connection = _open_connection(self.db_path, self.busy_timeout_ms)
+        try:
+            connection.execute("BEGIN")
+            self._connection = connection
+            self.capability = read_graph_capability(self)
+            return self
+        except BaseException:
+            if connection.in_transaction:
+                connection.rollback()
+            connection.close()
+            self._connection = None
+            raise
+
+    def __exit__(self, *_exc_info: object) -> None:
+        connection = self._connection
+        self._connection = None
+        if connection is not None:
+            if connection.in_transaction:
+                connection.rollback()
+            connection.close()
+
+    def get_metadata(self, key: str) -> str | None:
+        connection = self._require_connection()
+        return _metadata_value(connection, key)
+
+    def module_for_path(self, file_path: Path) -> CodeSignal | None:
+        if self.capability.status != "ready" or not self.capability.structured:
+            return None
+        row = self._require_connection().execute(
+            """
+            SELECT *
+            FROM code_signals
+            WHERE kind = 'module'
+              AND producer = 'core_module'
+              AND qualified_name = ?
+              AND deleted_at IS NULL
+            ORDER BY signal_id
+            LIMIT 2
+            """,
+            (_path_key(file_path),),
+        ).fetchall()
+        return _signal_from_row(row[0]) if len(row) == 1 else None
+
+    def signal_for_id(self, signal_id: str) -> CodeSignal | None:
+        if self.capability.status != "ready" or not self.capability.structured:
+            return None
+        row = self._require_connection().execute(
+            """
+            SELECT *
+            FROM code_signals
+            WHERE signal_id = ?
+              AND deleted_at IS NULL
+            """,
+            (signal_id,),
+        ).fetchone()
+        return _signal_from_row(row) if row is not None else None
+
+    def signals_for_chunks_with_modules(
+        self,
+        chunk_ids: list[str],
+        *,
+        limit: int = EDGE_QUERY_LIMIT,
+    ) -> list[CodeSignal]:
+        if (
+            self.capability.status != "ready"
+            or not self.capability.structured
+            or not chunk_ids
+            or limit <= 0
+        ):
+            return []
+        chunk_ids = _dedupe_values(chunk_ids)
+        bounded_limit = min(limit, EDGE_QUERY_LIMIT)
+        connection = self._require_connection()
+        placeholders = ", ".join("?" for _ in chunk_ids)
+        rows = connection.execute(
+            f"""
+                SELECT DISTINCT code_signals.*
+                FROM code_signals
+                LEFT JOIN chunks attached
+                  ON attached.chunk_id IN ({placeholders})
+                 AND attached.deleted_at IS NULL
+                WHERE code_signals.deleted_at IS NULL
+                  AND (
+                    code_signals.chunk_id IN ({placeholders})
+                    OR (
+                      code_signals.kind = 'module'
+                      AND code_signals.producer = 'core_module'
+                      AND code_signals.file_path = attached.file_path
+                    )
+                  )
+                ORDER BY code_signals.file_path, code_signals.start_line,
+                         code_signals.start_column, code_signals.kind,
+                         code_signals.signal_id
+                LIMIT ?
+                """,
+            (*chunk_ids, *chunk_ids, bounded_limit),
+        ).fetchall()
+        return [_signal_from_row(row) for row in rows]
+
+    def outgoing_relations(
+        self,
+        source_signal_id: str,
+        *,
+        limit: int = EDGE_QUERY_LIMIT,
+    ) -> list[CodeRelation]:
+        if self.capability.status != "ready" or not self.capability.structured:
+            return []
+        rows = self._require_connection().execute(
+            """
+            SELECT *
+            FROM code_relations
+            WHERE source_signal_id = ?
+              AND resolution IN ('resolved_exact', 'resolved_unique')
+              AND deleted_at IS NULL
+            ORDER BY kind, target_project_unit_key, target_kind,
+                     target_qualified_name, target_signature,
+                     COALESCE(target_arity, -1), relation_id
+            LIMIT ?
+            """,
+            (source_signal_id, min(max(limit, 0), EDGE_QUERY_LIMIT)),
+        ).fetchall()
+        return [_relation_from_row(row) for row in rows]
+
+    def legacy_relations_for_source(
+        self,
+        source_signal_id: str,
+        *,
+        limit: int = EDGE_QUERY_LIMIT,
+    ) -> list[CodeRelation]:
+        if self.capability.status != "legacy":
+            return []
+        rows = self._require_connection().execute(
+            """
+            SELECT *
+            FROM code_relations
+            WHERE source_signal_id = ?
+              AND deleted_at IS NULL
+            ORDER BY kind, target_name, relation_id
+            LIMIT ?
+            """,
+            (source_signal_id, min(max(limit, 0), EDGE_QUERY_LIMIT)),
+        ).fetchall()
+        return [
+            _relation_from_row(
+                row,
+                v4_confidence_from_effective=True,
+            )
+            for row in rows
+        ]
+
+    def incoming_relations(
+        self,
+        target_signal_id: str,
+        *,
+        limit: int = EDGE_QUERY_LIMIT,
+    ) -> list[CodeRelation]:
+        if self.capability.status != "ready" or not self.capability.structured:
+            return []
+        rows = self._require_connection().execute(
+            """
+            SELECT *
+            FROM code_relations
+            WHERE target_signal_id = ?
+              AND resolution IN ('resolved_exact', 'resolved_unique')
+              AND deleted_at IS NULL
+            ORDER BY kind, source_file_path, source_signal_id, relation_id
+            LIMIT ?
+            """,
+            (target_signal_id, min(max(limit, 0), EDGE_QUERY_LIMIT)),
+        ).fetchall()
+        return [_relation_from_row(row) for row in rows]
+
+    def active_embedding_ids(self) -> set[str]:
+        rows = self._require_connection().execute(
+            """
+            SELECT embedding_id
+            FROM chunks
+            WHERE deleted_at IS NULL
+              AND embedding_id IS NOT NULL
+            """
+        ).fetchall()
+        return {str(row["embedding_id"]) for row in rows}
+
+    def _require_connection(self) -> sqlite3.Connection:
+        if self._connection is None:
+            raise RuntimeError("graph read session is closed")
+        return self._connection
+
+
+class _SQLiteResolutionSession:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+
+    def relations(
+        self,
+        *,
+        association_only: bool,
+    ) -> Iterator[tuple[CodeRelation, CodeSignal]]:
+        association_filter = (
+            "AND relations.kind = 'tests'"
+            if association_only
+            else "AND relations.kind <> 'tests'"
+        )
+        cursor = self.connection.execute(
+            f"""
+            SELECT relations.relation_id
+            FROM code_relations relations
+            JOIN code_signals sources
+              ON sources.signal_id = relations.source_signal_id
+             AND sources.deleted_at IS NULL
+            WHERE relations.resolution <> 'legacy'
+              AND relations.deleted_at IS NULL
+              {association_filter}
+            ORDER BY sources.project_unit_key, sources.file_path,
+                     sources.start_line, sources.start_column,
+                     relations.kind, relations.target_kind,
+                     relations.target_qualified_name,
+                     relations.target_signature,
+                     COALESCE(relations.target_arity, -1),
+                     relations.target_project_unit_key,
+                     relations.relation_id
+            """
+        )
+        while True:
+            batch = cursor.fetchmany(128)
+            if not batch:
+                break
+            for id_row in batch:
+                relation_row = self.connection.execute(
+                    "SELECT * FROM code_relations WHERE relation_id = ?",
+                    (id_row["relation_id"],),
+                ).fetchone()
+                if relation_row is None:
+                    continue
+                source_row = self.connection.execute(
+                    "SELECT * FROM code_signals WHERE signal_id = ?",
+                    (relation_row["source_signal_id"],),
+                ).fetchone()
+                if source_row is not None:
+                    yield (
+                        _relation_from_row(relation_row),
+                        _signal_from_row(source_row),
+                    )
+
+    def find_modules(
+        self,
+        candidates: tuple[str, ...],
+        project_unit_key: str,
+    ) -> tuple[CodeSignal, ...]:
+        candidates = tuple(dict.fromkeys(candidates))
+        if not candidates:
+            return ()
+        rows = self.connection.execute(
+            _in_query(
+                """
+                SELECT *
+                FROM code_signals
+                WHERE qualified_name IN ({placeholders})
+                  AND project_unit_key = ?
+                  AND kind = 'module'
+                  AND producer = 'core_module'
+                  AND deleted_at IS NULL
+                ORDER BY qualified_name, signal_id
+                LIMIT 2
+                """,
+                list(candidates),
+            ),
+            (*candidates, project_unit_key),
+        ).fetchall()
+        return tuple(_signal_from_row(row) for row in rows)
+
+    def find_signals(
+        self,
+        *,
+        project_unit_key: str,
+        kind: str,
+        qualified_name: str,
+        signature: str | None,
+        arity: int | None,
+        language: str | None,
+    ) -> tuple[CodeSignal, ...]:
+        clauses = [
+            "project_unit_key = ?",
+            "kind = ?",
+            "qualified_name = ?",
+            "deleted_at IS NULL",
+        ]
+        values: list[object] = [project_unit_key, kind, qualified_name]
+        if signature is not None:
+            clauses.append("signature = ?")
+            values.append(signature)
+        elif arity is not None:
+            clauses.append("arity = ?")
+            values.append(arity)
+        if language:
+            clauses.append("language = ?")
+            values.append(language)
+        rows = self.connection.execute(
+            f"""
+            SELECT *
+            FROM code_signals
+            WHERE {' AND '.join(clauses)}
+            ORDER BY file_path, start_line, start_column, signal_id
+            LIMIT 2
+            """,
+            values,
+        ).fetchall()
+        return tuple(_signal_from_row(row) for row in rows)
+
+    def update_relation(self, relation: CodeRelation) -> None:
+        self.connection.execute(
+            """
+            UPDATE code_relations
+            SET target_signal_id = ?,
+                resolution = ?,
+                confidence = ?,
+                producer_confidence = ?,
+                resolution_confidence = ?
+            WHERE relation_id = ?
+              AND deleted_at IS NULL
+            """,
+            (
+                relation.target_signal_id,
+                relation.resolution,
+                relation.confidence,
+                relation.producer_confidence,
+                relation.resolution_confidence,
+                relation.relation_id,
+            ),
+        )
+
+
 def _chunks_matching_name(
     connection: sqlite3.Connection,
     target_name: str,
     limit: int,
 ) -> list[sqlite3.Row]:
+    legacy_filter = (
+        "AND code_signals.producer = 'legacy'"
+        if _has_column(connection, "code_signals", "producer")
+        else ""
+    )
     return connection.execute(
-        """
+        f"""
         SELECT DISTINCT chunks.*
         FROM chunks
         LEFT JOIN code_signals
           ON code_signals.chunk_id = chunks.chunk_id
          AND code_signals.deleted_at IS NULL
+         {legacy_filter}
         LEFT JOIN chunk_symbols
           ON chunk_symbols.chunk_id = chunks.chunk_id
         LEFT JOIN symbols
@@ -1213,21 +1931,27 @@ def _chunks_matching_member_name(
     owner_variants = [owner_name, f"{owner_name}Impl"]
     signal_names = [f"{owner}.{member_name}" for owner in owner_variants]
     path_patterns = [f"%{owner}.java" for owner in owner_variants]
+    legacy_filter = (
+        "AND code_signals.producer = 'legacy'"
+        if _has_column(connection, "code_signals", "producer")
+        else ""
+    )
     return connection.execute(
         _in_query(
-            """
+            f"""
         SELECT DISTINCT chunks.*
         FROM chunks
         LEFT JOIN code_signals
           ON code_signals.chunk_id = chunks.chunk_id
          AND code_signals.deleted_at IS NULL
+         {legacy_filter}
         LEFT JOIN chunk_symbols
           ON chunk_symbols.chunk_id = chunks.chunk_id
         LEFT JOIN symbols
           ON symbols.symbol_id = chunk_symbols.symbol_id
         WHERE chunks.deleted_at IS NULL
           AND (
-            code_signals.name IN ({placeholders})
+            code_signals.name IN ({{placeholders}})
             OR (
               symbols.name = ?
               AND (
@@ -1243,6 +1967,521 @@ def _chunks_matching_member_name(
         ),
         (*signal_names, member_name, *path_patterns, limit),
     ).fetchall()
+
+
+def _v5_schema_statements() -> tuple[str, ...]:
+    return (
+        """
+        CREATE TABLE code_signals (
+            signal_id TEXT PRIMARY KEY,
+            chunk_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            name TEXT NOT NULL,
+            qualified_name TEXT NOT NULL,
+            signature TEXT NOT NULL,
+            arity INTEGER,
+            project_unit_key TEXT NOT NULL,
+            producer TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            start_column INTEGER NOT NULL,
+            end_column INTEGER NOT NULL,
+            language TEXT NOT NULL,
+            recallable INTEGER NOT NULL,
+            tokens TEXT NOT NULL,
+            metadata TEXT NOT NULL,
+            deleted_at INTEGER
+        )
+        """,
+        """
+        CREATE INDEX idx_code_signals_chunk_active
+        ON code_signals(chunk_id, deleted_at)
+        """,
+        """
+        CREATE INDEX idx_code_signals_file_active
+        ON code_signals(file_path, deleted_at)
+        """,
+        """
+        CREATE INDEX idx_code_signals_selector_active
+        ON code_signals(
+            project_unit_key, language, kind, qualified_name, deleted_at
+        )
+        """,
+        """
+        CREATE INDEX idx_code_signals_arity_active
+        ON code_signals(
+            project_unit_key, language, kind, qualified_name, arity, deleted_at
+        )
+        """,
+        """
+        CREATE INDEX idx_code_signals_recallable_active
+        ON code_signals(recallable, deleted_at)
+        """,
+        """
+        CREATE TABLE code_relations (
+            relation_id TEXT PRIMARY KEY,
+            source_signal_id TEXT NOT NULL,
+            source_chunk_id TEXT NOT NULL,
+            source_file_path TEXT NOT NULL,
+            target_name TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            target_kind TEXT NOT NULL,
+            target_qualified_name TEXT NOT NULL,
+            target_signature TEXT NOT NULL,
+            target_arity INTEGER,
+            target_project_unit_key TEXT NOT NULL,
+            target_signal_id TEXT NOT NULL,
+            resolution TEXT NOT NULL,
+            producer TEXT NOT NULL,
+            producer_confidence REAL NOT NULL,
+            resolution_confidence REAL,
+            metadata TEXT NOT NULL,
+            deleted_at INTEGER
+        )
+        """,
+        """
+        CREATE INDEX idx_code_relations_source_active
+        ON code_relations(source_signal_id, deleted_at)
+        """,
+        """
+        CREATE INDEX idx_code_relations_target_signal_active
+        ON code_relations(target_signal_id, deleted_at)
+        """,
+        """
+        CREATE INDEX idx_code_relations_resolution_active
+        ON code_relations(resolution, deleted_at)
+        """,
+        """
+        CREATE INDEX idx_code_relations_target_active
+        ON code_relations(target_name, deleted_at)
+        WHERE resolution = 'legacy'
+        """,
+    )
+
+
+def _replace_signals_v5(
+    connection: sqlite3.Connection,
+    path: str,
+    signals: list[CodeSignal],
+    deleted_at: int,
+) -> None:
+    connection.execute(
+        """
+        UPDATE code_signals
+        SET deleted_at = ?
+        WHERE file_path = ?
+          AND deleted_at IS NULL
+        """,
+        (deleted_at, path),
+    )
+    for signal in signals:
+        connection.execute(
+            """
+            INSERT INTO code_signals (
+                signal_id, chunk_id, file_path, kind, name,
+                qualified_name, signature, arity, project_unit_key,
+                producer, start_line, end_line, start_column, end_column,
+                language, recallable, tokens, metadata, deleted_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            ON CONFLICT(signal_id) DO UPDATE SET
+                chunk_id = excluded.chunk_id,
+                file_path = excluded.file_path,
+                kind = excluded.kind,
+                name = excluded.name,
+                qualified_name = excluded.qualified_name,
+                signature = excluded.signature,
+                arity = excluded.arity,
+                project_unit_key = excluded.project_unit_key,
+                producer = excluded.producer,
+                start_line = excluded.start_line,
+                end_line = excluded.end_line,
+                start_column = excluded.start_column,
+                end_column = excluded.end_column,
+                language = excluded.language,
+                recallable = excluded.recallable,
+                tokens = excluded.tokens,
+                metadata = excluded.metadata,
+                deleted_at = NULL
+            """,
+            (
+                signal.signal_id,
+                signal.chunk_id,
+                _path_key(signal.file_path),
+                signal.kind,
+                signal.name,
+                signal.qualified_name,
+                signal.signature,
+                signal.arity,
+                signal.project_unit_key,
+                signal.producer,
+                signal.start_line,
+                signal.end_line,
+                signal.start_column,
+                signal.end_column,
+                signal.language,
+                int(signal.recallable),
+                _to_json_list(signal.tokens),
+                _to_json(signal.metadata),
+            ),
+        )
+
+
+def _replace_relations_v5(
+    connection: sqlite3.Connection,
+    path: str,
+    relations: list[CodeRelation],
+    deleted_at: int,
+) -> None:
+    connection.execute(
+        """
+        UPDATE code_relations
+        SET deleted_at = ?
+        WHERE source_file_path = ?
+          AND deleted_at IS NULL
+        """,
+        (deleted_at, path),
+    )
+    for relation in relations:
+        _upsert_relation_v5(connection, relation)
+
+
+def _upsert_relation_v5(
+    connection: sqlite3.Connection,
+    relation: CodeRelation,
+) -> None:
+    if relation.resolution not in RESOLUTION_STATES:
+        raise ValueError(f"unknown resolution state: {relation.resolution!r}")
+    source = connection.execute(
+        """
+        SELECT chunk_id, file_path
+        FROM code_signals
+        WHERE signal_id = ?
+          AND deleted_at IS NULL
+        """,
+        (relation.source_signal_id,),
+    ).fetchone()
+    if source is None:
+        raise ValueError(
+            f"relation source signal is not active: {relation.source_signal_id}"
+        )
+    producer_confidence = (
+        relation.confidence
+        if relation.resolution == "legacy"
+        else relation.producer_confidence
+    )
+    connection.execute(
+        """
+        INSERT INTO code_relations (
+            relation_id, source_signal_id, source_chunk_id,
+            source_file_path, target_name, kind, confidence,
+            target_kind, target_qualified_name, target_signature,
+            target_arity, target_project_unit_key, target_signal_id,
+            resolution, producer, producer_confidence,
+            resolution_confidence, metadata, deleted_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        ON CONFLICT(relation_id) DO UPDATE SET
+            source_signal_id = excluded.source_signal_id,
+            source_chunk_id = excluded.source_chunk_id,
+            source_file_path = excluded.source_file_path,
+            target_name = excluded.target_name,
+            kind = excluded.kind,
+            confidence = excluded.confidence,
+            target_kind = excluded.target_kind,
+            target_qualified_name = excluded.target_qualified_name,
+            target_signature = excluded.target_signature,
+            target_arity = excluded.target_arity,
+            target_project_unit_key = excluded.target_project_unit_key,
+            target_signal_id = excluded.target_signal_id,
+            resolution = excluded.resolution,
+            producer = excluded.producer,
+            producer_confidence = excluded.producer_confidence,
+            resolution_confidence = excluded.resolution_confidence,
+            metadata = excluded.metadata,
+            deleted_at = NULL
+        """,
+        (
+            relation.relation_id,
+            relation.source_signal_id,
+            source["chunk_id"],
+            source["file_path"],
+            relation.target_name,
+            relation.kind,
+            relation.confidence,
+            relation.target_kind,
+            relation.target_qualified_name,
+            relation.target_signature,
+            relation.target_arity,
+            relation.target_project_unit_key,
+            relation.target_signal_id,
+            relation.resolution,
+            relation.producer,
+            producer_confidence,
+            relation.resolution_confidence,
+            _to_json(relation.metadata),
+        ),
+    )
+
+
+def _graph_integrity(connection: sqlite3.Connection) -> GraphIntegrityResult:
+    dangling_targets = int(
+        connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM code_relations relations
+            LEFT JOIN code_signals targets
+              ON targets.signal_id = relations.target_signal_id
+             AND targets.deleted_at IS NULL
+            WHERE relations.deleted_at IS NULL
+              AND relations.resolution IN ('resolved_exact', 'resolved_unique')
+              AND (
+                relations.target_signal_id = ''
+                OR targets.signal_id IS NULL
+              )
+            """
+        ).fetchone()["count"]
+    )
+    valid_states = ", ".join("?" for _ in RESOLUTION_STATES)
+    invalid_resolution_rows = int(
+        connection.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM code_relations
+            WHERE deleted_at IS NULL
+              AND (
+                resolution NOT IN ({valid_states})
+                OR (
+                  resolution IN ('resolved_exact', 'resolved_unique')
+                  AND (
+                    target_signal_id = ''
+                    OR resolution_confidence IS NULL
+                    OR ABS(
+                      confidence - MIN(producer_confidence, resolution_confidence)
+                    ) > 0.000000001
+                  )
+                )
+                OR (
+                  resolution NOT IN ('resolved_exact', 'resolved_unique')
+                  AND (
+                    target_signal_id <> ''
+                    OR resolution_confidence IS NOT NULL
+                    OR ABS(confidence - producer_confidence) > 0.000000001
+                  )
+                )
+              )
+            """,
+            RESOLUTION_STATES,
+        ).fetchone()["count"]
+    )
+    invalid_resolution_rows += int(
+        connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM code_relations relations
+            JOIN code_signals sources
+              ON sources.signal_id = relations.source_signal_id
+             AND sources.deleted_at IS NULL
+            LEFT JOIN code_signals targets
+              ON targets.signal_id = relations.target_signal_id
+             AND targets.deleted_at IS NULL
+            WHERE relations.deleted_at IS NULL
+              AND (
+                (
+                  relations.resolution <> 'legacy'
+                  AND relations.kind IN (
+                    'calls', 'implements', 'implements_method', 'uses_type',
+                    'imports_type', 'mapped_by', 'tests'
+                  )
+                  AND relations.target_project_unit_key
+                      <> sources.project_unit_key
+                )
+                OR (
+                  relations.resolution IN ('resolved_exact', 'resolved_unique')
+                  AND targets.signal_id IS NOT NULL
+                  AND (
+                    targets.project_unit_key
+                        <> relations.target_project_unit_key
+                    OR targets.kind <> relations.target_kind
+                    OR (
+                      relations.target_kind <> 'module'
+                      AND targets.qualified_name
+                          <> relations.target_qualified_name
+                    )
+                    OR (
+                      relations.target_signature <> ''
+                      AND targets.signature <> relations.target_signature
+                    )
+                    OR (
+                      relations.target_arity IS NOT NULL
+                      AND (
+                        targets.arity IS NULL
+                        OR targets.arity <> relations.target_arity
+                      )
+                    )
+                  )
+                )
+              )
+            """
+        ).fetchone()["count"]
+    )
+    orphan_sources = int(
+        connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM code_relations relations
+            LEFT JOIN code_signals sources
+              ON sources.signal_id = relations.source_signal_id
+             AND sources.deleted_at IS NULL
+            WHERE relations.deleted_at IS NULL
+              AND sources.signal_id IS NULL
+            """
+        ).fetchone()["count"]
+    )
+    module_count_mismatches = int(
+        connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM (
+                SELECT active_files.file_path
+                FROM (
+                    SELECT DISTINCT file_path
+                    FROM chunks
+                    WHERE deleted_at IS NULL
+                ) active_files
+                LEFT JOIN code_signals modules
+                  ON modules.file_path = active_files.file_path
+                 AND modules.kind = 'module'
+                 AND modules.producer = 'core_module'
+                 AND modules.deleted_at IS NULL
+                GROUP BY active_files.file_path
+                HAVING COUNT(modules.signal_id) <> 1
+            ) mismatches
+            """
+        ).fetchone()["count"]
+    )
+    return GraphIntegrityResult(
+        dangling_targets=dangling_targets,
+        invalid_resolution_rows=invalid_resolution_rows,
+        orphan_sources=orphan_sources,
+        module_count_mismatches=module_count_mismatches,
+    )
+
+
+def _open_connection(
+    db_path: Path,
+    busy_timeout_ms: int,
+) -> sqlite3.Connection:
+    if busy_timeout_ms < 0:
+        raise ValueError("busy timeout must be non-negative")
+    connection = sqlite3.connect(
+        db_path,
+        timeout=busy_timeout_ms / 1_000,
+    )
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
+    return connection
+
+
+def _stored_signal_schema_version(connection: sqlite3.Connection) -> int:
+    raw = _metadata_value(connection, SIGNAL_SCHEMA_VERSION_KEY)
+    if raw is None or raw == "":
+        return 0
+    try:
+        version = int(raw)
+    except (TypeError, ValueError) as error:
+        raise IncompatibleSignalSchemaError(raw) from error
+    if version < 0:
+        raise IncompatibleSignalSchemaError(raw)
+    return version
+
+
+def _require_target_schema(connection: sqlite3.Connection) -> None:
+    version = _stored_signal_schema_version(connection)
+    if version != TARGET_SIGNAL_SCHEMA_VERSION:
+        raise IncompatibleSignalSchemaError(version)
+    _require_v5_tables(connection)
+
+
+def _require_v5_tables(connection: sqlite3.Connection) -> None:
+    if not _has_column(connection, "code_signals", "qualified_name"):
+        raise ValueError("v5 signal schema is required")
+    if not _has_column(connection, "code_relations", "resolution"):
+        raise ValueError("v5 relation schema is required")
+
+
+def _metadata_value(
+    connection: sqlite3.Connection,
+    key: str,
+) -> str | None:
+    table = connection.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'index_metadata'
+        """
+    ).fetchone()
+    if table is None:
+        return None
+    row = connection.execute(
+        "SELECT value FROM index_metadata WHERE key = ?",
+        (key,),
+    ).fetchone()
+    return str(row["value"]) if row is not None else None
+
+
+def _set_metadata_row(
+    connection: sqlite3.Connection,
+    key: str,
+    value: str,
+    updated_at: int,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO index_metadata (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        """,
+        (key, value, updated_at),
+    )
+
+
+def _table_columns(
+    connection: sqlite3.Connection,
+    table: str,
+) -> frozenset[str]:
+    if table not in {"code_signals", "code_relations"}:
+        raise ValueError("unsupported schema table")
+    return frozenset(
+        str(row["name"])
+        for row in connection.execute(f"PRAGMA table_info({table})")
+    )
+
+
+def _has_column(
+    connection: sqlite3.Connection,
+    table: str,
+    column: str,
+) -> bool:
+    return column in _table_columns(connection, table)
+
+
+def _raise_if_busy(error: BaseException) -> None:
+    if isinstance(error, sqlite3.OperationalError) and any(
+        marker in str(error).lower()
+        for marker in ("database is locked", "database is busy")
+    ):
+        raise IndexBusyError() from error
+
+
+def _row_value(row: sqlite3.Row, key: str, default: Any) -> Any:
+    return row[key] if key in row.keys() else default
 
 
 def _path_key(path: Path) -> str:
@@ -1348,17 +2587,58 @@ def _signal_from_row(row: sqlite3.Row) -> CodeSignal:
         language=row["language"],
         tokens=_from_json_list(row["tokens"]),
         metadata=_from_json(row["metadata"]),
+        qualified_name=_row_value(row, "qualified_name", ""),
+        signature=_row_value(row, "signature", ""),
+        arity=_row_value(row, "arity", None),
+        project_unit_key=_row_value(row, "project_unit_key", ""),
+        producer=_row_value(row, "producer", "legacy"),
+        start_column=int(_row_value(row, "start_column", 0)),
+        end_column=int(_row_value(row, "end_column", 0)),
+        recallable=bool(_row_value(row, "recallable", 1)),
     )
 
 
-def _relation_from_row(row: sqlite3.Row) -> CodeRelation:
+def _relation_from_row(
+    row: sqlite3.Row,
+    *,
+    v4_confidence_from_effective: bool = True,
+) -> CodeRelation:
+    confidence = float(row["confidence"])
     return CodeRelation(
         relation_id=row["relation_id"],
         source_signal_id=row["source_signal_id"],
         target_name=row["target_name"],
         kind=row["kind"],
-        confidence=float(row["confidence"]),
+        confidence=confidence,
         metadata=_from_json(row["metadata"]),
+        target_kind=_row_value(row, "target_kind", ""),
+        target_qualified_name=_row_value(
+            row,
+            "target_qualified_name",
+            "",
+        ),
+        target_signature=_row_value(row, "target_signature", ""),
+        target_arity=_row_value(row, "target_arity", None),
+        target_project_unit_key=_row_value(
+            row,
+            "target_project_unit_key",
+            "",
+        ),
+        target_signal_id=_row_value(row, "target_signal_id", ""),
+        resolution=_row_value(row, "resolution", "legacy"),
+        producer=_row_value(row, "producer", "legacy"),
+        producer_confidence=float(
+            _row_value(
+                row,
+                "producer_confidence",
+                confidence if v4_confidence_from_effective else 1.0,
+            )
+        ),
+        resolution_confidence=_row_value(
+            row,
+            "resolution_confidence",
+            None,
+        ),
     )
 
 

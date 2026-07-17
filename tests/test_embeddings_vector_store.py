@@ -176,6 +176,120 @@ def test_numpy_vector_store_rejects_mismatched_persisted_ids(tmp_path: Path) -> 
         NumpyVectorStore(tmp_path)
 
 
+def test_fresh_vector_replacement_ignores_corrupt_legacy_files(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "vectors.npy").write_bytes(b"not numpy")
+    (tmp_path / "vector_ids.json").write_text("not json", encoding="utf-8")
+
+    store = NumpyVectorStore.fresh(tmp_path)
+    store.upsert_many(
+        [("fresh", np.asarray([1.0, 0.0], dtype=np.float32))]
+    )
+
+    assert store.ids == ("fresh",)
+
+
+def test_immutable_vector_generations_publish_only_one_validated_descriptor(
+    tmp_path: Path,
+) -> None:
+    first = NumpyVectorStore.fresh(tmp_path)
+    first.upsert_many(
+        [("a", np.asarray([1.0, 0.0], dtype=np.float32))]
+    )
+    prepared_first = first.prepare_generation(
+        generation="g1",
+        embedding_identity="hash-v1:2",
+    )
+    first.publish_generation(prepared_first)
+
+    loaded_first = NumpyVectorStore.load_published(
+        tmp_path,
+        expected_embedding_identity="hash-v1:2",
+    )
+    assert loaded_first.ids == ("a",)
+
+    second = NumpyVectorStore.load_published(
+        tmp_path,
+        expected_embedding_identity="hash-v1:2",
+    )
+    second.remove_many(["a"])
+    second.upsert_many(
+        [("b", np.asarray([0.0, 1.0], dtype=np.float32))]
+    )
+    prepared_second = second.prepare_generation(
+        generation="g2",
+        embedding_identity="hash-v1:2",
+    )
+
+    assert NumpyVectorStore.load_published(tmp_path).ids == ("a",)
+    second.publish_generation(prepared_second)
+    assert NumpyVectorStore.load_published(tmp_path).ids == ("b",)
+    assert (tmp_path / "vectors.g1.npy").is_file()
+    assert (tmp_path / "vector_ids.g1.json").is_file()
+    assert (tmp_path / "vectors.g2.npy").is_file()
+    assert (tmp_path / "vector_ids.g2.json").is_file()
+
+
+def test_vector_descriptor_hash_and_embedding_identity_are_validated(
+    tmp_path: Path,
+) -> None:
+    store = NumpyVectorStore.fresh(tmp_path)
+    store.upsert_many(
+        [("a", np.asarray([1.0, 0.0], dtype=np.float32))]
+    )
+    prepared = store.prepare_generation(
+        generation="g1",
+        embedding_identity="hash-v1:2",
+    )
+    store.publish_generation(prepared)
+
+    with pytest.raises(ValueError, match="embedding identity"):
+        NumpyVectorStore.load_published(
+            tmp_path,
+            expected_embedding_identity="other:2",
+        )
+
+    (tmp_path / "vector_ids.g1.json").write_text(
+        '["tampered"]\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="hash"):
+        NumpyVectorStore.load_published(tmp_path)
+
+
+def test_vector_generation_fault_never_repoints_published_descriptor(
+    tmp_path: Path,
+) -> None:
+    first = NumpyVectorStore.fresh(tmp_path)
+    first.upsert_many(
+        [("a", np.asarray([1.0, 0.0], dtype=np.float32))]
+    )
+    prepared = first.prepare_generation(
+        generation="g1",
+        embedding_identity="hash-v1:2",
+    )
+    first.publish_generation(prepared)
+
+    second = NumpyVectorStore.fresh(tmp_path)
+    second.upsert_many(
+        [("b", np.asarray([0.0, 1.0], dtype=np.float32))]
+    )
+
+    def fail(stage: str) -> None:
+        if stage == "ids_file_fsync":
+            raise RuntimeError("vector fault")
+
+    with pytest.raises(RuntimeError, match="vector fault"):
+        second.prepare_generation(
+            generation="g2",
+            embedding_identity="hash-v1:2",
+            fault_hook=fail,
+        )
+
+    assert NumpyVectorStore.load_published(tmp_path).ids == ("a",)
+
+
 def test_provider_from_config_supports_bge() -> None:
     from context_search_tool.embeddings import provider_from_config
     from context_search_tool.embeddings_bge import BGEEmbeddingProvider

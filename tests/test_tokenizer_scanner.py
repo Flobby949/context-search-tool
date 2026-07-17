@@ -5,7 +5,12 @@ import pytest
 
 from context_search_tool import scanner
 from context_search_tool.config import DEFAULT_CONFIG
-from context_search_tool.scanner import scan_workspace
+from context_search_tool.scanner import (
+    ScannedFile,
+    read_scanned_file_bytes,
+    scan_workspace,
+    scan_workspace_v5,
+)
 from context_search_tool.tokenizer import tokenize_identifier, tokenize_query
 
 
@@ -97,6 +102,73 @@ def test_scanner_respects_gitignore_and_context_search(tmp_path: Path) -> None:
     assert files[0].language == "java"
     assert files[0].size > 0
     assert len(files[0].sha256) == 64
+
+
+def test_v5_scanner_reads_only_regular_non_symlink_candidates(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    real = repo / "src" / "Real.py"
+    real.parent.mkdir()
+    real.write_text("value = 1\n", encoding="utf-8")
+    outside = tmp_path / "Outside.py"
+    outside.write_text("outside = 1\n", encoding="utf-8")
+
+    try:
+        (repo / "OutsideLink.py").symlink_to(outside)
+        (repo / "src" / "InternalLink.py").symlink_to(real)
+        (repo / "Broken.py").symlink_to(tmp_path / "missing.py")
+        (repo / "LinkedDir").symlink_to(real.parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are unavailable")
+
+    files = scan_workspace_v5(repo, DEFAULT_CONFIG)
+
+    assert [item.path for item in files] == [Path("src/Real.py")]
+    assert read_scanned_file_bytes(
+        repo,
+        files[0],
+        max_file_bytes=DEFAULT_CONFIG.index.max_file_bytes,
+    ) == b"value = 1\n"
+
+
+def test_v5_read_rejects_scan_to_read_replacement(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    path = repo / "value.py"
+    path.write_text("value = 1\n", encoding="utf-8")
+    [scanned] = scan_workspace_v5(repo, DEFAULT_CONFIG)
+    path.write_text("value = 2\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="changed since scan"):
+        read_scanned_file_bytes(
+            repo,
+            scanned,
+            max_file_bytes=DEFAULT_CONFIG.index.max_file_bytes,
+        )
+
+
+def test_v5_read_rejects_relative_escape_even_with_plausible_metadata(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("outside = 1\n", encoding="utf-8")
+    fake = ScannedFile(
+        path=Path("../outside.py"),
+        absolute_path=outside,
+        language="python",
+        sha256="0" * 64,
+        size=outside.stat().st_size,
+        mtime_ns=outside.stat().st_mtime_ns,
+    )
+
+    with pytest.raises(ValueError, match="repository"):
+        read_scanned_file_bytes(
+            repo,
+            fake,
+            max_file_bytes=DEFAULT_CONFIG.index.max_file_bytes,
+        )
 
 
 def test_scanner_recognizes_common_source_language_suffixes(tmp_path: Path) -> None:
