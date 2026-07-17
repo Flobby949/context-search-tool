@@ -1,0 +1,61 @@
+name: P5 parser ABI
+
+on:
+  push:
+    paths:
+      - pyproject.toml
+      - .github/workflows/p5-parser-abi.yml
+      - src/context_search_tool/syntax_parsers.py
+      - tests/test_parser_abi.py
+  pull_request:
+    paths:
+      - pyproject.toml
+      - .github/workflows/p5-parser-abi.yml
+      - src/context_search_tool/syntax_parsers.py
+      - tests/test_parser_abi.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parser-abi:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+        python-version:
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install '.[dev]'
+      - name: Show parser runtime
+        run: |
+          python - <<'PY'
+          import importlib.metadata
+          import platform
+          import sys
+
+          packages = (
+              "tree-sitter",
+              "tree-sitter-java",
+              "tree-sitter-javascript",
+              "tree-sitter-typescript",
+              "defusedxml",
+          )
+          print(sys.version)
+          print(platform.platform(), platform.machine())
+          for package in packages:
+              print(package, importlib.metadata.version(package))
+          PY
+      - run: python -m pytest -q tests/test_parser_abi.py

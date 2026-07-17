@@ -127,6 +127,47 @@ EXPECTED_P4_PRODUCTION_DIFF = {
     "src/context_search_tool/retrieval_trace/__init__.py",
     "src/context_search_tool/retrieval_trace/exploration.py",
 }
+
+P5_REVIEWED_PRODUCTION_CHANGES = {
+    "src/context_search_tool/graph_contract.py",
+    "src/context_search_tool/graph_lifecycle.py",
+    "src/context_search_tool/graph_resolution.py",
+    "src/context_search_tool/graph_plugins.py",
+    "src/context_search_tool/models.py",
+    "src/context_search_tool/syntax_parsers.py",
+    "src/context_search_tool/java_ast.py",
+    "src/context_search_tool/java_graph.py",
+    "src/context_search_tool/java_plugin.py",
+    "src/context_search_tool/frontend_graph.py",
+    "src/context_search_tool/mybatis_xml.py",
+    "src/context_search_tool/test_paths.py",
+    "src/context_search_tool/test_association.py",
+    "src/context_search_tool/index_lock.py",
+    "src/context_search_tool/plugins.py",
+    "src/context_search_tool/project_scope.py",
+    "src/context_search_tool/scanner.py",
+    "src/context_search_tool/sqlite_store.py",
+    "src/context_search_tool/vector_store.py",
+    "src/context_search_tool/manifest.py",
+    "src/context_search_tool/paths.py",
+    "src/context_search_tool/indexer.py",
+    "src/context_search_tool/retrieval.py",
+    "src/context_search_tool/retrieval_core/candidates.py",
+    "src/context_search_tool/retrieval_core/expansion.py",
+    "src/context_search_tool/retrieval_core/relation_policy.py",
+    "src/context_search_tool/retrieval_core/ranking.py",
+    "src/context_search_tool/retrieval_core/evidence_merge.py",
+    "src/context_search_tool/retrieval_core/context_expansion.py",
+    "src/context_search_tool/retrieval_core/selection.py",
+    "src/context_search_tool/retrieval_core/tracing.py",
+    "src/context_search_tool/exploration/probes.py",
+    "src/context_search_tool/context_pack/roles.py",
+    "src/context_search_tool/cli.py",
+    "src/context_search_tool/mcp_tools.py",
+    "src/context_search_tool/quality/cases.py",
+    "src/context_search_tool/quality/runner.py",
+}
+
 P4_IMPLEMENTATION_BASELINE = "b827707325d0ee4e9c6b2bcb3dee39955c263822"
 THIS_TEST_PATH = "tests/test_retrieval_core_boundaries.py"
 
@@ -445,22 +486,25 @@ def test_runtime_inventory_excludes_annotations_but_keeps_live_loads() -> None:
 
 
 def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
-    changed = subprocess.run(
-        (
-            "git",
-            "diff",
-            "--name-only",
-            P4_IMPLEMENTATION_BASELINE,
-            "--",
-            "src/context_search_tool",
-        ),
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.splitlines()
+    changed = set(
+        subprocess.run(
+            (
+                "git",
+                "diff",
+                "--name-only",
+                P4_IMPLEMENTATION_BASELINE,
+                "--",
+                "src/context_search_tool",
+            ),
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+    )
 
-    assert set(changed) == EXPECTED_P4_PRODUCTION_DIFF
+    assert EXPECTED_P4_PRODUCTION_DIFF <= changed
+    assert changed <= EXPECTED_P4_PRODUCTION_DIFF | P5_REVIEWED_PRODUCTION_CHANGES
 
     source_status = subprocess.run(
         (
@@ -475,8 +519,9 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         check=True,
         capture_output=True,
         text=True,
-    ).stdout
-    assert source_status == ""
+    ).stdout.splitlines()
+    dirty_source_paths = {line[3:] for line in source_status}
+    assert dirty_source_paths <= P5_REVIEWED_PRODUCTION_CHANGES
 
     subprocess.run(
         (

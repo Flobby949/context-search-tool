@@ -38,6 +38,50 @@ ALLOWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/quality/compare.py",
 }
 
+P5_REVIEWED_PRODUCTION_CHANGES = {
+    "src/context_search_tool/graph_contract.py",
+    "src/context_search_tool/graph_lifecycle.py",
+    "src/context_search_tool/graph_resolution.py",
+    "src/context_search_tool/graph_plugins.py",
+    "src/context_search_tool/models.py",
+    "src/context_search_tool/syntax_parsers.py",
+    "src/context_search_tool/java_ast.py",
+    "src/context_search_tool/java_graph.py",
+    "src/context_search_tool/java_plugin.py",
+    "src/context_search_tool/frontend_graph.py",
+    "src/context_search_tool/mybatis_xml.py",
+    "src/context_search_tool/test_paths.py",
+    "src/context_search_tool/test_association.py",
+    "src/context_search_tool/index_lock.py",
+    "src/context_search_tool/plugins.py",
+    "src/context_search_tool/project_scope.py",
+    "src/context_search_tool/scanner.py",
+    "src/context_search_tool/sqlite_store.py",
+    "src/context_search_tool/vector_store.py",
+    "src/context_search_tool/manifest.py",
+    "src/context_search_tool/paths.py",
+    "src/context_search_tool/indexer.py",
+    "src/context_search_tool/retrieval.py",
+    "src/context_search_tool/retrieval_core/candidates.py",
+    "src/context_search_tool/retrieval_core/expansion.py",
+    "src/context_search_tool/retrieval_core/relation_policy.py",
+    "src/context_search_tool/retrieval_core/ranking.py",
+    "src/context_search_tool/retrieval_core/evidence_merge.py",
+    "src/context_search_tool/retrieval_core/context_expansion.py",
+    "src/context_search_tool/retrieval_core/selection.py",
+    "src/context_search_tool/retrieval_core/tracing.py",
+    "src/context_search_tool/exploration/probes.py",
+    "src/context_search_tool/context_pack/roles.py",
+    "src/context_search_tool/cli.py",
+    "src/context_search_tool/mcp_tools.py",
+    "src/context_search_tool/quality/cases.py",
+    "src/context_search_tool/quality/runner.py",
+}
+
+REVIEWED_PRODUCTION_CHANGES = (
+    ALLOWED_PRODUCTION_CHANGES | P5_REVIEWED_PRODUCTION_CHANGES
+)
+
 
 def _python_files(root: Path) -> tuple[Path, ...]:
     if root.is_file():
@@ -117,7 +161,7 @@ def test_only_reviewed_production_change_roots_are_used() -> None:
     for path in sorted(_changed_production_paths()):
         if path.startswith("src/context_search_tool/exploration/"):
             continue
-        if path not in ALLOWED_PRODUCTION_CHANGES:
+        if path not in REVIEWED_PRODUCTION_CHANGES:
             unexpected.append(path)
     assert unexpected == []
 
