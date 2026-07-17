@@ -1,7 +1,7 @@
 # P4 Controlled Multi-Round Exploration v1 Design
 
 Date: 2026-07-16
-Status: Agent-reviewed; implementation not started
+Status: Implemented and verified (2026-07-17)
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
 Roadmap: `roadmap/2026-07-08-fast-context-like-retrieval-roadmap.md`
 Predecessor: `docs/superpowers/specs/2026-07-16-p3-2-retrieval-core-decomposition-design.md`
@@ -80,6 +80,33 @@ new index or graph:
 
 The design therefore must improve grounded probe specificity, not merely execute
 every current `next_queries` string verbatim.
+
+## Implementation Verification
+
+The implementation satisfies this design without changing the protected
+single-pass retrieval core, ContextPack v2 schema/policy, or RetrievalTrace-v1
+models. Final 2026-07-17 evidence:
+
+- P4 focused suite: 243 passed with no skips/xfails;
+- protected P0-P3 suite: 194 passed;
+- full suite: 2,181 passed, the same 9 skips, 0 xfails, for an exact P4 delta of
+  243 tests;
+- deterministic P4 profile: 4/4 passed, every non-empty trace coverage 1.0;
+- P2 and raw CI: 5/5 and 8/8, byte-identical non-timing projections and zero
+  gating regressions;
+- pinned PetClinic: two 1/1 production runs, one grounded follow-up, 2 total
+  retrieval calls, goal gain 2, 40,139 pack bytes, zero configured noise, trace
+  coverage 1.0, and byte-identical normalized projections;
+- protected catalog/blob identities and protected production files remained
+  unchanged; Phase 1 remains independently pending at 6/7.
+
+The requested fresh fast-context run was attempted against the same PetClinic
+pin but was rejected by the configured service's tenant privacy policy and
+returned no file/range suggestions. Per design, this is an honest qualitative
+availability note, not a gate. Exact commands, metrics, hashes, commit mapping,
+and privacy evidence are recorded in `docs/retrieval-quality.md` and the
+implementation plan. The Task 10 documentation commit is intentionally not
+self-recorded here.
 
 ## Problem Statement
 

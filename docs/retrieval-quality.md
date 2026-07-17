@@ -14,6 +14,8 @@
 | `p1_hybrid_bge` | local `bge-m3` and `qwen3.5:4b-mlx` | Phase 1 hybrid acceptance candidate |
 | `p2_context_pack` | committed snapshots and offline `hash-v1` | deterministic ContextPack v2 acceptance |
 | `p2_real_context` | explicitly prepared pinned PetClinic checkout | opt-in real-project ContextPack v2 acceptance |
+| `p4_exploration` | committed snapshots and offline `hash-v1` | deterministic controlled-exploration acceptance |
+| `p4_real_exploration` | explicitly prepared pinned PetClinic checkout | opt-in real-project exploration acceptance |
 
 All commands below assume that `cst` imports `context_search_tool` from the
 current checkout. Editable installs and multiple worktrees can point elsewhere,
@@ -441,6 +443,137 @@ Implementation and closure commits:
 | Task 7: selection | `fd2340ac91e21099b44d82fbd7ee62b797bc4d09` |
 | Task 8: trace adapters | `d0a65a5af560e8eeff46000be0cf88490e6c4bca` |
 | Task 9: strict boundary closure | `b21f0a350b3f132f8befebf87f5e211092fe7ad1` |
+
+## Phase 4 Controlled Exploration Acceptance
+
+P4 adds a third quality-case mode, `exploration`, in the separate catalog
+`tests/fixtures/retrieval_quality/p4_exploration.json`. Ordinary `results` and
+`context_pack` cases keep their previous execution paths. Exploration cases add
+exactly these ten closed fields: `initial_absent`, `final_present`,
+`final_at_least`, `final_forbidden`, `final_noise_matchers`,
+`expected_termination_reason`, `expected_retrieval_call_count`,
+`maximum_retrieval_call_count`, `minimum_goal_gain`, and
+`maximum_final_noise_items`.
+
+The operation is explicitly requested and bounded: one traced initial call,
+one follow-up round, at most two sequential planner-off probes, at most three
+retrieval calls, eight frozen goals, eight planned probes, and a normal
+65,536-byte ContextPack v2. It does not recursively explore, persist state,
+compare scores across queries, generate probes with a model, or alter ordinary
+`query`, `context`, or `trace` behavior.
+
+Exploration metrics are:
+
+| metric | definition |
+| --- | --- |
+| `exploration_goal_coverage_initial` / `final` | Satisfied frozen goals divided by retained goals before/after exploration. |
+| `exploration_goal_gain` | Final minus initial satisfied-goal count. |
+| `novel_path_count` | Follow-up repository-relative paths absent from round 0. |
+| `duplicate_path_ratio` | Duplicate follow-up paths divided by all follow-up paths; `null` with no follow-up paths. |
+| `executed_probe_count` | Follow-up probes actually sent to retrieval. |
+| `probe_efficiency` | Probes with positive goal gain divided by executed probes; `null` with no executed probes. |
+| `retrieval_call_count` | Initial call plus executed probes; a hard gate. |
+| `exploration_trace_coverage` | Fully proven final-evidence entries divided by all final-evidence entries. |
+| `final_pack_noise_count` / `ratio` | Matched configured noise items and their share of the final pack. |
+| `exploration_latency_ms` | Total explore duration; reported and compared as neutral, never substituted for round-0 `latency_ms`. |
+
+Run the deterministic profile with:
+
+```bash
+PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality run \
+  tests/fixtures/retrieval_quality/p4_exploration.json \
+  --profile p4_exploration \
+  --output /tmp/cst-p4-final.json \
+  --markdown /tmp/cst-p4-final.md
+```
+
+Verified on 2026-07-17:
+
+| case | stop | initial → final coverage | gain | probes / calls | final noise | trace coverage |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `owner-registration-form-test` | `satisfied` | 0.1667 → 0.6667 | 3 | 1 / 2 | 0 | 1.0 |
+| `owner-controller-exact` | `exact_satisfied` | 0.25 → 0.25 | 0 | 0 / 1 | 0 | 1.0 |
+| `qrcode-route-service-type` | `satisfied` | 0.125 → 0.875 | 6 | 1 / 2 | 0 | 1.0 |
+| `solo-controller-no-gain` | `no_marginal_gain` | 0.20 → 0.20 | 0 | 1 / 2 | 0 | 1.0 |
+
+The profile selected/executed/passed `4/4/4`, with zero failures/errors; report
+SHA-256 is
+`81ff1c53dab0af00d59adc71be6ab8a9aacb15c72e0ae34109fd17759cc031f9`.
+The P4 catalog SHA-256 is
+`110e806dead64b4270d579a955abc8f56d7ec23d1b1f61a7951e5e4309a9c683`;
+the frozen input-manifest SHA-256 is
+`78e81f1c08c8216dc3355519cb89f07577ed61706e8150c9575e8395141c0b40`.
+
+### Pinned PetClinic exploration
+
+`p4_real_exploration` uses Spring PetClinic at exact commit
+`51045d1648dad955df586150c1a1a6e22ef400c2`. Preparation is explicit and
+network-capable; profile execution accepts only the already prepared, detached,
+tracked-clean checkout:
+
+```bash
+PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality prepare \
+  tests/fixtures/retrieval_quality/p4_exploration.json \
+  --profile p4_real_exploration \
+  --repos-dir .quality/p4-repos
+
+PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality run \
+  tests/fixtures/retrieval_quality/p4_exploration.json \
+  --profile p4_real_exploration \
+  --repos-dir .quality/p4-repos \
+  --output /tmp/cst-p4-real.json
+```
+
+For `owner registration form validation flow`, round 0 ranked
+`OwnerController.java` first. The single grounded follow-up
+`createOrUpdateOwnerForm form template view test` added the owner form and
+`OwnerControllerTests.java`; the final pack also retained `Owner.java` and the
+controller. It stopped `satisfied` after 2 calls, gained 2 goals, reached goal
+coverage 0.5 → 1.0, used 40,139 pack bytes, had zero configured noise, and had
+ExplorationTraceCoverage 1.0.
+
+Two production-profile runs each passed `1/1`; their timing-bearing report
+SHA-256 values are
+`599de075e6ccc5db8d7edb0bf7bb09c92ddd543682c74c75cc4e2ec32dd950e7`
+and
+`d838db9568b988215749dca617e684812f53ed7e8237220e4d0a3f60dac1b915`.
+The two independently generated acceptance projections were byte-identical to
+the committed baseline, SHA-256
+`a0f21574ba933ae9ab6f55bdfe080755f2c6cd333c0935d108f002089074df7e`;
+only approved timing fields are normalized.
+
+The requested fresh fast-context comparison was attempted against this same
+pinned checkout after explicit user authorization, but the configured service
+rejected the call under its tenant privacy policy. It returned no file/range
+suggestions, so no new overlap table can be reported honestly. This availability
+failure is qualitative and non-gating; the CST PetClinic acceptance above
+remains mandatory and passed. The earlier dated P2 comparison remains historical
+evidence, not a substitute P4 result.
+
+### Final compatibility and privacy evidence
+
+- P4 focused gate: `243` passed, no skip/xfail.
+- Protected P0-P3 gate: `194` passed; all 13 characterization cases, four
+  full-stage ledgers, RetrievalTrace v1, P3 TraceCoverage, and ContextPack v2
+  contracts remained exact.
+- Full suite: `2,181` passed, the same `9` skip node IDs/reasons, `0` xfails;
+  the P4 delta was exactly `243`. The real acceptance helper is not default
+  collected. The BGE integration passed when the sandbox allowed its local
+  Ollama connection.
+- P2 and raw CI selected/executed/passed `5/5/5` and `8/8/8`; their non-timing
+  projections remained byte-identical with SHA-256
+  `57d42f4c1ef17aa4fe28176c08189cf286a1b8a68baea5b63518515c88d0e1b5`
+  and `5b581b2eb66379a377392c91dad156f6ccff12556a2aa853f368aa41a1b41013`.
+  Both baseline comparisons reported zero gating regressions.
+- The protected P0-P3 catalog Git OID stayed
+  `8bbe4d560fec1499aa1f436af929b8a6bb6f3eac`; the immutable P3.2 baseline
+  stayed `a0011178b2671af25cb0853260c8fdcf586acee0`; protected retrieval core,
+  ContextPack, RetrievalTrace-v1, scanner/indexer/chunker/manifest files had no
+  diff from `b827707`.
+- Explore feedback contains only bounded aggregate counts and limit/outcome
+  fields. Generated probes/queries, goal IDs, seed/final paths, source content,
+  source-count detail, and exception text are excluded.
+- Phase 1 remains independently pending at `6/7`.
 
 ## MCP Feedback Privacy
 

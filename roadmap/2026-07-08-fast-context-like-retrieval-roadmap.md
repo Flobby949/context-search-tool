@@ -3,7 +3,7 @@
 Date: 2026-07-08
 Status: Long-term roadmap
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
-Next-stage review: Phase 4 controlled multi-round exploration design review
+Next-stage review: Phase 5 language and framework graph design review
 
 ## Summary
 
@@ -38,6 +38,8 @@ CST already has a solid base:
 - Strong exact-match behavior for endpoints, class names, method names, constants, and business keywords already present in code.
 - Java/Spring signal extraction and relation hints.
 - Generic language baseline across common source suffixes.
+- Explicit bounded controlled exploration with frozen goals, grounded probes,
+  path-monotonic fusion, ContextPack v2, and ExplorationTrace v2.
 - Frontend role/cohort reranking work in progress through design docs and fixtures.
 - MCP tools for indexing, querying, stats, and explain.
 - Real test coverage and real-project quality fixtures.
@@ -49,7 +51,9 @@ The long-term strategy should preserve these advantages instead of replacing the
 The main gaps compared with fast-context-like behavior are:
 
 - Cross-language understanding: Chinese queries such as `数据看板统计图表功能` need to surface English code such as `DashboardController`, `StatisticsService`, and chart-related implementation.
-- Exploration: the retrieval flow is mostly a single pass. It does not yet run bounded follow-up searches from the first result set.
+- Exploration depth: ordinary retrieval intentionally remains single-pass;
+  explicit P4 exploration adds one bounded follow-up round, but does not yet
+  have Phase 5 language/framework graphs or recursive exploration.
 - Context grouping: results are ranked snippets, but not yet packaged as a task-oriented reading set with entrypoints, implementations, types, tests, configs, and missing evidence.
 - Traceability: score parts exist, but there is no complete retrieval trace showing candidate sources, stage counts, rerank decisions, and why a result survived.
 - Architecture pressure: `retrieval.py` has accumulated candidate collection, relation expansion, ranking, formatting support, and explanation logic in one large module.
@@ -260,6 +264,31 @@ Success signal:
 - Future features can be added to one stage without touching every part of the retrieval pipeline.
 
 ### Phase 4: Controlled Multi-Round Exploration
+
+Status: Complete (2026-07-17)
+
+Design: `docs/superpowers/specs/2026-07-16-p4-controlled-multi-round-exploration-design.md`
+Plan: `docs/superpowers/plans/2026-07-16-p4-controlled-multi-round-exploration.md`
+
+Acceptance evidence:
+
+- explicit `cst explore`, `context_search_explore`, and library surfaces with
+  one initial call plus at most two sequential grounded follow-ups;
+- deterministic P4 profile 4/4, P2 5/5, raw CI 8/8, with byte-identical P0-P3
+  projections and zero gating regressions;
+- pinned PetClinic profile 1/1 twice: one follow-up, two total calls, goal gain
+  2, 40,139-byte final pack, zero configured noise, trace coverage 1.0, and
+  byte-identical normalized projections;
+- focused P4 243 passed; protected P0-P3 194 passed; full suite 2,181 passed,
+  exact 9 skips, 0 xfails;
+- protected single-pass retrieval, ContextPack v2, RetrievalTrace v1, index and
+  P0-P3 fixture identities remained unchanged;
+- the requested fresh fast-context comparison was blocked by the configured
+  service's tenant privacy policy and returned no file/range result; this was
+  recorded honestly and remained non-gating.
+
+Phase statuses remain independent. Phase 1 is still 6/7 and pending; Phase 4
+does not reclassify it. Phase 5 is the next design review and has not started.
 
 Goal: approximate fast-context's exploratory strength in a deterministic, bounded local engine.
 

@@ -1,7 +1,7 @@
 # P4 Controlled Multi-Round Exploration Implementation Plan
 
 Date: 2026-07-16
-Status: Agent-reviewed; implementation not started
+Status: Implemented and verified (2026-07-17)
 Repository: /Users/flobby/vibe_coding/context-search-tool
 Design: docs/superpowers/specs/2026-07-16-p4-controlled-multi-round-exploration-design.md
 Protected P0-P3 implementation baseline: b827707325d0ee4e9c6b2bcb3dee39955c263822
@@ -71,11 +71,10 @@ to remain equal.
 
 Execution constraints:
 
-1. This document plans future implementation; it does not authorize starting
-   Task 0. Begin implementation only after a later explicit user instruction,
-   from reviewed main after the P4 design and this plan are merged.
-   Documentation-only commits after b827707 are allowed; production source and
-   protected P0-P3 fixtures must still match b827707 at Task 0.
+1. The original authorization condition required a later explicit user
+   instruction before Task 0. That instruction was received; implementation
+   began from the reviewed plan lineage with production source and protected
+   P0-P3 fixtures matching b827707.
 2. Task 1 assays current single-pass behavior, then freezes all new
    deterministic P4 inputs before production code is added. Later tasks must
    not edit those inputs or their identity manifest.
@@ -339,7 +338,7 @@ characterization test before commit.
 
 **Files:** none
 
-- [ ] **Step 1: Create the implementation branch from reviewed main**
+- [x] **Step 1: Create the implementation branch from reviewed main**
 
   ~~~bash
   git switch main
@@ -349,7 +348,7 @@ characterization test before commit.
 
   Expected: main contains the reviewed design and plan; the new branch is clean.
 
-- [ ] **Step 2: Prove the protected production baseline**
+- [x] **Step 2: Prove the protected production baseline**
 
   ~~~bash
   git diff --exit-code \
@@ -361,7 +360,7 @@ characterization test before commit.
   Expected: no source diff and retrieval.py remains 529 lines. Documentation
   commits after b827707 do not authorize source drift.
 
-- [ ] **Step 3: Prove the immutable P3.2 inputs**
+- [x] **Step 3: Prove the immutable P3.2 inputs**
 
   ~~~bash
   test "$(git hash-object tests/fixtures/retrieval_core_decomposition/baseline.json)" = \
@@ -380,7 +379,7 @@ characterization test before commit.
 
   Expected: all commands are silent and successful.
 
-- [ ] **Step 4: Capture the baseline suite with machine-readable evidence**
+- [x] **Step 4: Capture the baseline suite with machine-readable evidence**
 
   ~~~bash
   mkdir -p .quality/p4-artifacts
@@ -398,7 +397,7 @@ characterization test before commit.
   Required: 1,938 passed, exact 9 skips, 0 xfails, no errors. The .quality
   directory is gitignored and persists across the implementation commits.
 
-- [ ] **Step 5: Reproduce protected quality gates**
+- [x] **Step 5: Reproduce protected quality gates**
 
   ~~~bash
   PYTHONPATH="$PWD/src:$PWD/tests" conda run -n base python -m pytest -q \
@@ -441,7 +440,7 @@ characterization test before commit.
 - Create: tests/test_exploration_inputs.py
 - Create: tests/test_exploration_boundaries.py
 
-- [ ] **Step 1: Write the protected-input tests first**
+- [x] **Step 1: Write the protected-input tests first**
 
   Task 1 deliberately cannot use production load_quality_fixture because
   production exploration schema support does not exist until Task 8. Use a
@@ -469,7 +468,7 @@ characterization test before commit.
 
   Expected: FAIL because the P4 catalog and manifest do not exist.
 
-- [ ] **Step 2: Build the deterministic Java flow snapshot**
+- [x] **Step 2: Build the deterministic Java flow snapshot**
 
   Keep the snapshot minimal and semantically explicit:
 
@@ -485,7 +484,7 @@ characterization test before commit.
   the exact test and form while grounded symbol/path probes can recover both.
   Do not tune production scoring or add a new parser to make the fixture pass.
 
-- [ ] **Step 3: Build the duplicate/no-gain snapshot**
+- [x] **Step 3: Build the duplicate/no-gain snapshot**
 
   SoloController is the only indexed path. It contains at least two safe indexed
   symbols capable of producing distinct planned probes for the same missing test
@@ -493,7 +492,7 @@ characterization test before commit.
   already-fused controller path, yield zero goal gain, and leave a second
   planned candidate unexecuted.
 
-- [ ] **Step 4: Define the separate P4 catalog exactly**
+- [x] **Step 4: Define the separate P4 catalog exactly**
 
   Add four deterministic cases:
 
@@ -509,7 +508,7 @@ characterization test before commit.
   p4_real_exploration. Use only the closed exploration fields from the design.
   Do not add P4 profiles or cases to queries.json.
 
-- [ ] **Step 5: Run the pre-freeze single-pass assay**
+- [x] **Step 5: Run the pre-freeze single-pass assay**
 
   Before hashing any P4 input, use only existing b827707 indexing,
   trace_repository, and ContextPack APIs in temporary workspaces. Assert:
@@ -535,7 +534,7 @@ characterization test before commit.
   assay. If any current single-pass precondition fails, adjust the not-yet-frozen
   fixture/query now or stop for design review; never defer discovery to Task 8.
 
-- [ ] **Step 6: Add the one-shot identity generator**
+- [x] **Step 6: Add the one-shot identity generator**
 
   tests/generate_p4_exploration_manifest.py must refuse to run unless:
 
@@ -573,7 +572,7 @@ characterization test before commit.
 
   It never stores source content or absolute paths.
 
-- [ ] **Step 7: Add the initial AST boundary test**
+- [x] **Step 7: Add the initial AST boundary test**
 
   Assert that retrieval.py, every retrieval_core module, and every context_pack
   module have no import edge to context_search_tool.exploration. Assert that the
@@ -587,7 +586,7 @@ characterization test before commit.
   The protected modules remain exact. Task 7 extends this file with runtime
   no-call sentinels.
 
-- [ ] **Step 8: Generate once and verify**
+- [x] **Step 8: Generate once and verify**
 
   ~~~bash
   PYTHONPATH="$PWD/src:$PWD/tests" conda run -n base python \
@@ -601,7 +600,7 @@ characterization test before commit.
 
   Required: all pass; queries.json remains the exact protected blob.
 
-- [ ] **Step 9: Commit the frozen inputs**
+- [x] **Step 9: Commit the frozen inputs**
 
   ~~~bash
   git add \
@@ -633,7 +632,7 @@ characterization test before commit.
 - Create: tests/test_exploration_options.py
 - Create: tests/test_exploration_goals.py
 
-- [ ] **Step 1: Write failing strict-option tests**
+- [x] **Step 1: Write failing strict-option tests**
 
   Cover every request field with None, boundary values, bool impostors, negative
   values, floats, and strings. Require:
@@ -653,7 +652,7 @@ characterization test before commit.
     preserves max_items=0, rejects bool impostors, and enforces max_items <= 32;
   - existing resolve_context_pack_options behavior remains unchanged.
 
-- [ ] **Step 2: Implement the minimum option API**
+- [x] **Step 2: Implement the minimum option API**
 
   In options.py provide narrow helpers with one owner each:
 
@@ -671,7 +670,7 @@ characterization test before commit.
   24+8 candidate ceiling. Do not call the single-pass resolver and patch its
   result.
 
-- [ ] **Step 3: Write failing model and goal tests**
+- [x] **Step 3: Write failing model and goal tests**
 
   Require fixed dataclass field order and frozen instances for:
 
@@ -698,7 +697,7 @@ characterization test before commit.
   - the exact Java/frontend queries in the frozen Task 1 assay derive the
     recorded required role-goal classes and order.
 
-- [ ] **Step 4: Implement the classifier-backed role table**
+- [x] **Step 4: Implement the classifier-backed role table**
 
   Use the exact reviewed explicit-token mapping. Parameterized tests must pass
   real QueryBundle examples through context_pack.roles.normalize_candidates and
@@ -715,7 +714,7 @@ characterization test before commit.
 
   Do not add a role to ContextPack serialization or classifier code.
 
-- [ ] **Step 5: Implement structural and exact predicates**
+- [x] **Step 5: Implement structural and exact predicates**
 
   The eligible structural-entrypoint predicate is exact: selected entrypoints
   group, one of the eight reviewed roles, and either protected initial direct
@@ -730,13 +729,13 @@ characterization test before commit.
   Tests must prove OwnerController stops exactly while OwnerController test does
   not when the test role is missing.
 
-- [ ] **Step 6: Implement goal matching**
+- [x] **Step 6: Implement goal matching**
 
   Need goals reuse ContextPack category/subject semantics. Role gaps require
   accepted role plus subjects and may match across their nominal group. Keep
   subject terms internal; the later trace ledger must not serialize them.
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit**
 
   ~~~bash
   PYTHONPATH="$PWD/src" conda run -n base python -m pytest -q \
@@ -764,7 +763,7 @@ characterization test before commit.
 - Create: src/context_search_tool/exploration/probes.py
 - Create: tests/test_exploration_probes.py
 
-- [ ] **Step 1: Write failing seed-provenance tests**
+- [x] **Step 1: Write failing seed-provenance tests**
 
   Construct controlled bundles, packs, v1 traces, SQLite stores, and repository
   files. Accept seeds only from:
@@ -784,7 +783,7 @@ characterization test before commit.
   discarded planner hints, environment values, absolute paths, exception text,
   control characters, and repo escapes.
 
-- [ ] **Step 2: Implement bounded origin lookup**
+- [x] **Step 2: Implement bounded origin lookup**
 
   Resolve origin chunk IDs only from complete v1 final selections. Use:
 
@@ -797,7 +796,7 @@ characterization test before commit.
   origin provenance cannot cover the selected evidence required by the design.
   Do not fabricate missing origins.
 
-- [ ] **Step 3: Implement bounded frontend fallback**
+- [x] **Step 3: Implement bounded frontend fallback**
 
   First parse already-returned candidate content. Only when its window omits the
   import header may P4 read:
@@ -813,7 +812,7 @@ characterization test before commit.
   and string/template literals; it must not change the shared parser. Tests
   count every stat/read and prove count/byte ceilings exactly.
 
-- [ ] **Step 4: Implement text construction and deduplication**
+- [x] **Step 4: Implement text construction and deduplication**
 
   Every ProbeCandidate records source, purpose, goal IDs, and at most three seed
   paths. Normalize to one line, remove unsafe controls, trim to 160 Unicode code
@@ -833,7 +832,7 @@ characterization test before commit.
   supporting indexed-symbol seed may combine that required suffix with ordered
   suffixes for supported unsatisfied recommended goals.
 
-- [ ] **Step 5: Implement priority and fairness**
+- [x] **Step 5: Implement priority and fairness**
 
   Sort by:
 
@@ -850,7 +849,7 @@ characterization test before commit.
   probe_candidate_is_stale(candidate, satisfied_goal_ids) predicate for runner
   use.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
   ~~~bash
   PYTHONPATH="$PWD/src" conda run -n base python -m pytest -q \
@@ -874,7 +873,7 @@ characterization test before commit.
 - Create: src/context_search_tool/exploration/fusion.py
 - Create: tests/test_exploration_fusion.py
 
-- [ ] **Step 1: Write failing initial-state and ordering tests**
+- [x] **Step 1: Write failing initial-state and ordering tests**
 
   Require:
 
@@ -885,7 +884,7 @@ characterization test before commit.
   - novel paths append by probe then within-probe rank;
   - result and anchor caps are exactly 24 and 8.
 
-- [ ] **Step 2: Write failing replacement tests**
+- [x] **Step 2: Write failing replacement tests**
 
   For one same-path proposed follow-up, cover every condition independently:
 
@@ -897,7 +896,7 @@ characterization test before commit.
 
   P4 must not merge arbitrary spans to manufacture a superset.
 
-- [ ] **Step 3: Implement provenance adaptation**
+- [x] **Step 3: Implement provenance adaptation**
 
   Copy a winning follow-up representative with:
 
@@ -909,7 +908,7 @@ characterization test before commit.
 
   Never mutate an input bundle or merge numeric score parts between calls.
 
-- [ ] **Step 4: Build the synthetic QueryBundle**
+- [x] **Step 4: Build the synthetic QueryBundle**
 
   Preserve the initial query, tokens, planner, variants, variant status,
   summary, and top-level follow-up keywords exactly. Replace only results and
@@ -918,13 +917,13 @@ characterization test before commit.
   Build a ContextPack with the explore-only options in tests and require
   canonical bytes, valid groups/needs, and all configured byte/item limits.
 
-- [ ] **Step 5: Recompute frozen goal satisfaction**
+- [x] **Step 5: Recompute frozen goal satisfaction**
 
   Re-normalize fused candidates and use goal matching after every accepted
   probe. New ContextPack needs may appear in the final pack but never enter the
   FrozenGoals object. Assert monotonic frozen-goal coverage.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
   ~~~bash
   PYTHONPATH="$PWD/src" conda run -n base python -m pytest -q \
@@ -949,7 +948,7 @@ characterization test before commit.
 - Modify: src/context_search_tool/retrieval_trace/__init__.py
 - Create: tests/test_exploration_trace.py
 
-- [ ] **Step 1: Write failing exact-field and key-order tests**
+- [x] **Step 1: Write failing exact-field and key-order tests**
 
   Define expected dataclass field tuples and serialized key tuples for:
 
@@ -963,13 +962,13 @@ characterization test before commit.
   Require all fixed values and exact top-level order from the design. No field is
   implicitly optional or omitted.
 
-- [ ] **Step 2: Implement a separate v2 model**
+- [x] **Step 2: Implement a separate v2 model**
 
   Add ExplorationTraceError and the v2 dataclasses in exploration.py. Do not
   subclass or widen RetrievalTrace v1. retrieval_trace/__init__.py exports only
   the reviewed v2 public types and serializer beside unchanged v1 exports.
 
-- [ ] **Step 3: Implement closed validation**
+- [x] **Step 3: Implement closed validation**
 
   Validate:
 
@@ -986,14 +985,14 @@ characterization test before commit.
 
   Failed thrown probes use zero canonical counts and no fake v1 trace.
 
-- [ ] **Step 4: Implement payload and canonical bytes**
+- [x] **Step 4: Implement payload and canonical bytes**
 
   exploration_trace_payload preserves insertion order exactly.
   canonical_exploration_trace_bytes serializes UTF-8 with fixed separators,
   sort_keys=False, and allow_nan=False. Tests reject NaN/Infinity and verify that
   only timing fields can be normalized by the quality acceptance helper.
 
-- [ ] **Step 5: Add privacy and omission-invariant tests**
+- [x] **Step 5: Add privacy and omission-invariant tests**
 
   Validate privacy by field and provenance, not by rejecting arbitrary string
   values. The trace intentionally retains r0p0.query, every executed follow-up
@@ -1013,7 +1012,7 @@ characterization test before commit.
   final_selection_omitted_count=0 under 16/8 maximum selections. Test the
   fail-closed projections for violations.
 
-- [ ] **Step 6: Prove v1 is unchanged**
+- [x] **Step 6: Prove v1 is unchanged**
 
   ~~~bash
   git diff --exit-code \
@@ -1027,7 +1026,7 @@ characterization test before commit.
     tests/test_exploration_trace.py
   ~~~
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit**
 
   ~~~bash
   PYTHONPATH="$PWD/src" conda run -n base python -m pytest -q \
@@ -1052,7 +1051,7 @@ characterization test before commit.
 - Create: src/context_search_tool/exploration/__init__.py
 - Create: tests/test_exploration_runner.py
 
-- [ ] **Step 1: Write one fake-driven test per initial stop**
+- [x] **Step 1: Write one fake-driven test per initial stop**
 
   With injected clock and monkeypatched runner seams, prove exact order/count for:
 
@@ -1070,7 +1069,7 @@ characterization test before commit.
   v1 outcome partial, budget-zero before exact, and planning only after earlier
   stops are false.
 
-- [ ] **Step 2: Write one fake-driven test per follow-up stop**
+- [x] **Step 2: Write one fake-driven test per follow-up stop**
 
   Cover:
 
@@ -1089,7 +1088,7 @@ characterization test before commit.
   Duplicate tests count the result/anchor union once and serialize null only for
   an empty denominator.
 
-- [ ] **Step 3: Implement the initial round**
+- [x] **Step 3: Implement the initial round**
 
   explore_repository has the exact reviewed signature. It:
 
@@ -1116,7 +1115,7 @@ characterization test before commit.
   The returned ExploredContext always retains the initial snapshot. CLI/MCP
   serialization later omits it.
 
-- [ ] **Step 4: Implement sequential follow-ups**
+- [x] **Step 4: Implement sequential follow-ups**
 
   Before each candidate, recompute stale status. For at most two executed probes:
 
@@ -1131,7 +1130,7 @@ characterization test before commit.
   Tests use an active-call counter to fail if probes overlap and a call ledger to
   fail if they reorder.
 
-- [ ] **Step 5: Assemble v2 trace and ExploredContext**
+- [x] **Step 5: Assemble v2 trace and ExploredContext**
 
   Count planned = executed + stale skipped + unexecuted, calls = 1 + executed,
   rounds contiguous, and final provenance covers every final item. Initial and
@@ -1139,7 +1138,7 @@ characterization test before commit.
   mutable list/dict containers must not share references across the initial and
   final snapshots.
 
-- [ ] **Step 6: Bound errors**
+- [x] **Step 6: Bound errors**
 
   Initial ValueError/HTTP/provider errors propagate for adapter mapping to
   query_failed. Handled follow-up failures return a partial ExploredContext
@@ -1147,7 +1146,7 @@ characterization test before commit.
   ExplorationError with stable public message; KeyboardInterrupt/SystemExit are
   not caught.
 
-- [ ] **Step 7: Run mutation-oriented call gates**
+- [x] **Step 7: Run mutation-oriented call gates**
 
   Add tests that fail if:
 
@@ -1165,7 +1164,7 @@ characterization test before commit.
   explore_repository, ExploredContext, and resolve_explore_pack_options are the
   only reviewed public exports.
 
-- [ ] **Step 8: Verify and commit**
+- [x] **Step 8: Verify and commit**
 
   ~~~bash
   PYTHONPATH="$PWD/src" conda run -n base python -m pytest -q \
@@ -1198,7 +1197,7 @@ characterization test before commit.
 - Create: tests/test_exploration_contracts.py
 - Modify: tests/test_exploration_boundaries.py
 
-- [ ] **Step 1: Write failing envelope/formatter tests**
+- [x] **Step 1: Write failing envelope/formatter tests**
 
   Define exact functions:
 
@@ -1219,7 +1218,7 @@ characterization test before commit.
   already materialized fields. It must not perform a module-scope runtime import
   from the exploration package.
 
-- [ ] **Step 2: Add cst explore**
+- [x] **Step 2: Add cst explore**
 
   Reuse the context command's repo/question resolution and the exact reviewed
   options. CLI has no final-top-k option and reports requested_final_top_k null.
@@ -1235,7 +1234,7 @@ characterization test before commit.
   - initial query errors through existing error handling;
   - unexpected ExplorationError as Controlled exploration failed and exit 1.
 
-- [ ] **Step 3: Add context_search_explore_tool and registration**
+- [x] **Step 3: Add context_search_explore_tool and registration**
 
   Add the exact MCP signature and forwarding order in mcp_server.py. Preflight:
 
@@ -1256,7 +1255,7 @@ characterization test before commit.
   function. mcp_tools.py and mcp_server.py module import must not load the
   exploration runner.
 
-- [ ] **Step 4: Add dedicated aggregate-only feedback**
+- [x] **Step 4: Add dedicated aggregate-only feedback**
 
   Implement exact signatures:
 
@@ -1280,7 +1279,7 @@ characterization test before commit.
   - KeyboardInterrupt and SystemExit are not swallowed;
   - CLI/library write nothing.
 
-- [ ] **Step 5: Add exact CLI/MCP contract tests**
+- [x] **Step 5: Add exact CLI/MCP contract tests**
 
   Prove:
 
@@ -1291,7 +1290,7 @@ characterization test before commit.
   - partial follow-up has valid pack and sanitized trace;
   - MCP registration and optional forwarding are exact.
 
-- [ ] **Step 6: Extend runtime isolation gates**
+- [x] **Step 6: Extend runtime isolation gates**
 
   For cst query/context/trace, context_search_query/context/trace, direct
   query_repository, and direct trace_repository, patch the exploration runner
@@ -1309,7 +1308,7 @@ characterization test before commit.
   AST checks also require the reviewed adjacency and forbid imports in protected
   core/context modules.
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit**
 
   ~~~bash
   PYTHONPATH="$PWD/src" conda run -n base python -m pytest -q \
@@ -1346,7 +1345,7 @@ characterization test before commit.
 - Create: tests/test_quality_p4.py
 - Create: tests/p4_real_exploration_acceptance.py
 
-- [ ] **Step 1: Write failing closed-schema tests**
+- [x] **Step 1: Write failing closed-schema tests**
 
   Add mode exploration and validate only the ten reviewed exploration fields.
   Reject:
@@ -1369,7 +1368,7 @@ characterization test before commit.
   so production parsing matches every frozen profile/repo/case/field and does
   not silently default or discard an exploration field.
 
-- [ ] **Step 2: Add same-run runner ownership**
+- [x] **Step 2: Add same-run runner ownership**
 
   For exploration cases, quality.runner performs its exploration import only
   inside the exploration-mode branch, calls explore_repository exactly once,
@@ -1387,7 +1386,7 @@ characterization test before commit.
   exploration_latency_ms. A clock-controlled test proves the two fields have
   distinct owners and values.
 
-- [ ] **Step 3: Implement exact metrics**
+- [x] **Step 3: Implement exact metrics**
 
   Add the twelve reviewed metrics with exact zero-denominator null behavior:
 
@@ -1409,7 +1408,7 @@ characterization test before commit.
   trace.final_evidence_count, and divide by final pack item count; do not use the
   at-most-20 final_evidence preview length when items were omitted from preview.
 
-- [ ] **Step 4: Add fixture gates**
+- [x] **Step 4: Add fixture gates**
 
   Apply initial_absent to initial pack, all final matchers to final pack, and the
   exact/max/gain/noise/termination gates to trace/metrics. The injected
@@ -1417,7 +1416,7 @@ characterization test before commit.
   requires ok-quality ownership of the best pack with partial sanitized trace.
   It is not added as a real hash-profile case.
 
-- [ ] **Step 5: Extend aggregation/report comparison conservatively**
+- [x] **Step 5: Extend aggregation/report comparison conservatively**
 
   Keep quality report schema unchanged. Validate types/bounds and aggregate
   nullable ratios safely.
@@ -1439,7 +1438,7 @@ characterization test before commit.
   Reports show calls, gain, trace coverage, noise, and latency without exposing
   probes or source paths beyond the explicit quality case output contract.
 
-- [ ] **Step 6: Define the real acceptance projection helper**
+- [x] **Step 6: Define the real acceptance projection helper**
 
   tests/p4_real_exploration_acceptance.py is an executable test utility with
   exact subcommands run, initialize, and verify. The run subcommand accepts
@@ -1464,7 +1463,7 @@ characterization test before commit.
 
   Do not name this file test_*.py and do not add a default skip.
 
-- [ ] **Step 7: Run the deterministic four-case profile**
+- [x] **Step 7: Run the deterministic four-case profile**
 
   ~~~bash
   PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality run \
@@ -1487,7 +1486,7 @@ characterization test before commit.
   Do not edit the frozen P4 catalog/snapshots if a case fails. Fix only behavior
   that violates the reviewed contract; stop for fixture/design ambiguity.
 
-- [ ] **Step 8: Run quality and compatibility tests**
+- [x] **Step 8: Run quality and compatibility tests**
 
   ~~~bash
   PYTHONPATH="$PWD/src" conda run -n base python -m pytest -q \
@@ -1541,7 +1540,7 @@ characterization test before commit.
   Required: both stable projections are byte-identical and both comparisons
   report zero gating regressions. A 5/5 or 8/8 pass count alone is insufficient.
 
-- [ ] **Step 9: Commit quality support**
+- [x] **Step 9: Commit quality support**
 
   ~~~bash
   git add \
@@ -1562,7 +1561,7 @@ characterization test before commit.
 
 - Create: tests/fixtures/p4_exploration/petclinic-owner-registration.json
 
-- [ ] **Step 1: Prepare the exact pinned checkout**
+- [x] **Step 1: Prepare the exact pinned checkout**
 
   ~~~bash
   PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality prepare \
@@ -1575,7 +1574,7 @@ characterization test before commit.
   51045d1648dad955df586150c1a1a6e22ef400c2 and the prepared tree is clean before
   indexing. Network approval may be required; do not substitute another commit.
 
-- [ ] **Step 2: Run the real profile twice**
+- [x] **Step 2: Run the real profile twice**
 
   ~~~bash
   PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality run \
@@ -1604,7 +1603,7 @@ characterization test before commit.
   These two reports prove the production quality path, but they are not inputs
   to the canonical pack/trace projection below.
 
-- [ ] **Step 3: Build and compare exact case projections**
+- [x] **Step 3: Build and compare exact case projections**
 
   ~~~bash
   PYTHONPATH="$PWD/src:$PWD/tests" conda run -n base python \
@@ -1649,7 +1648,7 @@ characterization test before commit.
   gate rather than initialize's only equality proof. Do not hash or compare the
   complete quality reports.
 
-- [ ] **Step 4: Run the qualitative fast-context comparison**
+- [x] **Step 4: Run the qualitative fast-context comparison**
 
   When the configured fast-context service is available and authorized, run one
   balanced semantic query against the same pinned PetClinic checkout and the
@@ -1663,7 +1662,7 @@ characterization test before commit.
   comparison into a gate. If the service is unavailable, record that fact
   honestly; PetClinic CST acceptance remains mandatory.
 
-- [ ] **Step 5: Re-run deterministic and protected gates**
+- [x] **Step 5: Re-run deterministic and protected gates**
 
   ~~~bash
   PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality run \
@@ -1677,7 +1676,7 @@ characterization test before commit.
   git diff --check
   ~~~
 
-- [ ] **Step 6: Commit the pinned projection**
+- [x] **Step 6: Commit the pinned projection**
 
   ~~~bash
   git add tests/fixtures/p4_exploration/petclinic-owner-registration.json
@@ -1694,7 +1693,7 @@ characterization test before commit.
 - Modify: docs/superpowers/plans/2026-07-16-p4-controlled-multi-round-exploration.md
 - Modify: roadmap/2026-07-08-fast-context-like-retrieval-roadmap.md
 
-- [ ] **Step 1: Run all P4 focused gates**
+- [x] **Step 1: Run all P4 focused gates**
 
   ~~~bash
   PYTHONPATH="$PWD/src" conda run -n base python -m pytest -q \
@@ -1713,7 +1712,7 @@ characterization test before commit.
   Record exact passed count. No test may be skipped or xfailed in this focused
   deterministic command.
 
-- [ ] **Step 2: Run protected P0-P3 acceptance**
+- [x] **Step 2: Run protected P0-P3 acceptance**
 
   ~~~bash
   PYTHONPATH="$PWD/src:$PWD/tests" conda run -n base python -m pytest -q \
@@ -1728,7 +1727,7 @@ characterization test before commit.
   Required: all 13 characterization cases and four full-stage ledgers exact;
   RetrievalTrace v1 exact; P3 TraceCoverage 1.0; ContextPack v2 tests exact.
 
-- [ ] **Step 3: Run all three deterministic profiles**
+- [x] **Step 3: Run all three deterministic profiles**
 
   ~~~bash
   PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality run \
@@ -1778,7 +1777,7 @@ characterization test before commit.
   coverage values 1.0; both P0-P3 stable projections byte-identical; both
   quality comparisons report zero gating regressions.
 
-- [ ] **Step 4: Run the full suite with JUnit evidence**
+- [x] **Step 4: Run the full suite with JUnit evidence**
 
   ~~~bash
   env \
@@ -1809,7 +1808,7 @@ characterization test before commit.
   Record both the absolute count and P4 delta. The explicitly invoked real
   acceptance file must not add a default skip.
 
-- [ ] **Step 5: Run protected-file and privacy gates**
+- [x] **Step 5: Run protected-file and privacy gates**
 
   ~~~bash
   test "$(git hash-object tests/fixtures/retrieval_quality/queries.json)" = \
@@ -1838,7 +1837,7 @@ characterization test before commit.
 
   Review every remaining changed production file against the allowed map.
 
-- [ ] **Step 6: Capture commit and artifact evidence**
+- [x] **Step 6: Capture commit and artifact evidence**
 
   Record:
 
@@ -1854,7 +1853,7 @@ characterization test before commit.
   - fast-context qualitative comparison or honest availability note;
   - Phase 1 still 6/7.
 
-- [ ] **Step 7: Update docs conditionally**
+- [x] **Step 7: Update docs conditionally**
 
   Only after all gates pass:
 
@@ -1870,7 +1869,7 @@ characterization test before commit.
 
   If any hard gate fails, leave Phase 4 open and document the blocker instead.
 
-- [ ] **Step 8: Commit verification evidence**
+- [x] **Step 8: Commit verification evidence**
 
   ~~~bash
   git add \
@@ -1884,23 +1883,51 @@ characterization test before commit.
 
 ## Implementation And Acceptance Record
 
-Implementation has not started. Populate this table only after each focused
-commit exists:
+Implementation and acceptance completed on 2026-07-17. Focused commits are:
 
 | task | commit |
 | --- | --- |
-| Task 1 | pending |
-| Task 2 | pending |
-| Task 3 | pending |
-| Task 4 | pending |
-| Task 5 | pending |
-| Task 6 | pending |
-| Task 7 | pending |
-| Task 8 | pending |
-| Task 9 | pending |
+| Task 1 | `d021fae` |
+| Task 2 | `9297267` |
+| Task 3 | `1d0d11c` |
+| Task 4 | `6f2bbc6` |
+| Task 5 | `e46fbbe` |
+| Task 6 | `a7b2542` |
+| Task 7 | `da64b17` |
+| Task 8 | `5eb5db6` |
+| Task 9 | `eaae583` |
 
-Final evidence is pending. The Task 10 documentation commit is intentionally
-reported after creation in the handoff, not self-recorded here.
+Reviewed acceptance repairs were kept as separate commits:
+
+- `5cf3a9d`: isolate ExplorationTrace-v2 schema ownership;
+- `18bc76c`: align deterministic satisfaction/composite semantics;
+- `1fd3cb9`: ground the PetClinic view-constant basename and its bounded
+  form/test composite probe;
+- `6209cac`: make the cross-milestone P3.2 boundary gate and documented
+  projection/JUnit commands executable without rewriting frozen baselines.
+
+Final evidence:
+
+- focused P4 `243/243`; protected P0-P3 `194/194`;
+- full suite `2,181` passed, exact 9 skips, 0 xfails, P4 delta 243;
+- profiles: P4 `4/4`, P2 `5/5`, raw CI `8/8`, PetClinic `1/1` twice;
+- P2/CI non-timing projections byte-identical; both comparisons have zero
+  gating regressions;
+- deterministic report SHA-256
+  `81ff1c53dab0af00d59adc71be6ab8a9aacb15c72e0ae34109fd17759cc031f9`;
+- PetClinic normalized projection SHA-256
+  `a0f21574ba933ae9ab6f55bdfe080755f2c6cd333c0935d108f002089074df7e`;
+- P4 catalog/input-manifest SHA-256 values
+  `110e806dead64b4270d579a955abc8f56d7ec23d1b1f61a7951e5e4309a9c683`
+  and `78e81f1c08c8216dc3355519cb89f07577ed61706e8150c9575e8395141c0b40`;
+- protected catalog/blob and protected-file/privacy checks passed;
+- fast-context returned no result because the configured service rejected the
+  explicitly authorized call under tenant privacy policy; this remained
+  qualitative and non-gating;
+- Phase 1 remains 6/7. Phase 5 design review is next and was not started.
+
+The Task 10 documentation commit is intentionally reported after creation in
+the handoff, not self-recorded here.
 
 ## Stop Conditions
 
@@ -1944,41 +1971,41 @@ These are boundary failures, not permission to improvise a broader P4.
 
 Before requesting implementation review, verify:
 
-- [ ] every design acceptance criterion maps to a task/test/gate;
-- [ ] P4 catalog is separate and queries.json remains exact;
-- [ ] Task 1 assays initial/probe retrieval behavior before freezing all
+- [x] every design acceptance criterion maps to a task/test/gate;
+- [x] P4 catalog is separate and queries.json remains exact;
+- [x] Task 1 assays initial/probe retrieval behavior before freezing all
   deterministic inputs;
-- [ ] every new module has one responsibility and allowed imports only;
-- [ ] exploration dependency direction is acyclic;
-- [ ] public signatures/envelopes are exact and additive;
-- [ ] the supported pack resolver is exported and direct-library invalid inputs
+- [x] every new module has one responsibility and allowed imports only;
+- [x] exploration dependency direction is acyclic;
+- [x] public signatures/envelopes are exact and additive;
+- [x] the supported pack resolver is exported and direct-library invalid inputs
   make zero retrieval calls;
-- [ ] strict explore validation does not alter existing operations;
-- [ ] fresh ordinary imports/execution leave exploration.runner unloaded;
-- [ ] initial cap, follow-up cap, fused caps, goal/probe/call caps are exact;
-- [ ] goal ordering includes all six reviewed classes;
-- [ ] role tables are classifier-producible, including pom fallback;
-- [ ] structural and exact predicates are closed;
-- [ ] every seed is approved, bounded, and provenance-backed;
-- [ ] Java/frontend metadata reads use exact current APIs and I/O caps;
-- [ ] probe fairness, dedupe, priority, and stale skip are deterministic;
-- [ ] fusion never uses cross-query score comparison;
-- [ ] protected evidence and global goal coverage are monotonic;
-- [ ] v2 trace is separate from unchanged v1 and self-validating;
-- [ ] failure pairs and zero-count projections are exact;
-- [ ] final provenance covers every final item;
-- [ ] feedback signatures/projection exclude all forbidden values;
-- [ ] quality uses same-run initial snapshot and no second baseline query;
-- [ ] all metric formulas and null denominators are exact;
-- [ ] legacy latency belongs to round 0, exploration latency belongs to total
+- [x] strict explore validation does not alter existing operations;
+- [x] fresh ordinary imports/execution leave exploration.runner unloaded;
+- [x] initial cap, follow-up cap, fused caps, goal/probe/call caps are exact;
+- [x] goal ordering includes all six reviewed classes;
+- [x] role tables are classifier-producible, including pom fallback;
+- [x] structural and exact predicates are closed;
+- [x] every seed is approved, bounded, and provenance-backed;
+- [x] Java/frontend metadata reads use exact current APIs and I/O caps;
+- [x] probe fairness, dedupe, priority, and stale skip are deterministic;
+- [x] fusion never uses cross-query score comparison;
+- [x] protected evidence and global goal coverage are monotonic;
+- [x] v2 trace is separate from unchanged v1 and self-validating;
+- [x] failure pairs and zero-count projections are exact;
+- [x] final provenance covers every final item;
+- [x] feedback signatures/projection exclude all forbidden values;
+- [x] quality uses same-run initial snapshot and no second baseline query;
+- [x] all metric formulas and null denominators are exact;
+- [x] legacy latency belongs to round 0, exploration latency belongs to total
   duration, latency is neutral, and call counts are hard gates;
-- [ ] P2/raw-CI non-timing report projections remain byte-identical;
-- [ ] deterministic four-case profile proves gain/exact/no-gain behavior;
-- [ ] PetClinic projection utility has executable run/initialize/verify commands
+- [x] P2/raw-CI non-timing report projections remain byte-identical;
+- [x] deterministic four-case profile proves gain/exact/no-gain behavior;
+- [x] PetClinic projection utility has executable run/initialize/verify commands
   and normalizes only allowed timings;
-- [ ] real acceptance does not add a default skipped test;
-- [ ] full suite skip identities, P2, raw CI, P3, and Phase 1 status remain exact;
-- [ ] docs/roadmap update only after acceptance.
+- [x] real acceptance does not add a default skipped test;
+- [x] full suite skip identities, P2, raw CI, P3, and Phase 1 status remain exact;
+- [x] docs/roadmap update only after acceptance.
 
 ## Plan Review Rubric
 
