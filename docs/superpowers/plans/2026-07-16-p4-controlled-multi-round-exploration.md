@@ -827,6 +827,12 @@ characterization test before commit.
   fixed suffixes. It represents all of those required goal IDs and adds no new
   seed source.
 
+  For an indexed single-line Java `static final String` view/form/page/template
+  constant, accept only the safe repository-relative literal basename from the
+  exact symbol declaration. When exactly one required UI/form goal remains, a
+  supporting indexed-symbol seed may combine that required suffix with ordered
+  suffixes for supported unsatisfied recommended goals.
+
 - [ ] **Step 5: Implement priority and fairness**
 
   Sort by:
@@ -1607,7 +1613,7 @@ characterization test before commit.
     --profile p4_real_exploration \
     --repos-dir .quality/p4-repos \
     --repo-key spring_petclinic \
-    --case-id owner-registration-validation-flow \
+    --case-id owner-registration-form-validation \
     --output /tmp/cst-p4-owner-projection-a.json
 
   PYTHONPATH="$PWD/src:$PWD/tests" conda run -n base python \
@@ -1616,7 +1622,7 @@ characterization test before commit.
     --profile p4_real_exploration \
     --repos-dir .quality/p4-repos \
     --repo-key spring_petclinic \
-    --case-id owner-registration-validation-flow \
+    --case-id owner-registration-form-validation \
     --output /tmp/cst-p4-owner-projection-b.json
 
   cmp -s \

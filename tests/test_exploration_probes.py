@@ -239,11 +239,17 @@ def _java_setup(tmp_path: Path) -> tuple[
         file_path=Path(path),
         start_line=1,
         end_line=20,
-        content='class OwnerController { String literal = "ARBITRARY_LITERAL"; }',
+        content=(
+            "class OwnerController {\n"
+            '  String literal = "ARBITRARY_LITERAL";\n'
+            "  private static final String VIEWS_OWNER_FORM = "
+            '"owners/createOrUpdateOwnerForm";\n'
+            "}"
+        ),
         chunk_type="symbol",
         symbols=[
             SymbolRef("OwnerController", "class", 1, 20, "java"),
-            SymbolRef("VIEWS_OWNER_FORM", "constant", 2, 2, "java"),
+            SymbolRef("VIEWS_OWNER_FORM", "constant", 3, 3, "java"),
         ],
         lexical_tokens=["owner"],
         metadata={
@@ -489,7 +495,9 @@ def test_multi_required_goal_composite_precedes_single_goal_candidates() -> None
     assert probes.order_probe_candidates((*singles, composite), frozen)[0] == composite
 
 
-def test_view_goal_prefers_a_parser_recognized_view_symbol(tmp_path: Path) -> None:
+def test_view_goal_prefers_a_parser_recognized_view_constant_basename(
+    tmp_path: Path,
+) -> None:
     repo, store, bundle, pack, _, trace = _java_setup(tmp_path)
     frozen = _frozen(
         _goal(
@@ -501,7 +509,94 @@ def test_view_goal_prefers_a_parser_recognized_view_symbol(tmp_path: Path) -> No
 
     planned = probes.plan_probes(repo, bundle, trace, pack, frozen, store=store)
 
-    assert planned[0].query == "VIEWS_OWNER_FORM form template view"
+    assert planned[0].query == "createOrUpdateOwnerForm form template view"
+
+
+def test_view_constant_literal_seed_is_declaration_bound_and_repo_relative() -> None:
+    symbol = SymbolRef("VIEWS_OWNER_FORM", "constant", 3, 3, "java")
+    approved = DocumentChunk(
+        "approved",
+        Path("src/OwnerController.java"),
+        1,
+        4,
+        (
+            "class OwnerController {\n"
+            '  String ignored = "ARBITRARY_LITERAL";\n'
+            "  private static final String VIEWS_OWNER_FORM = "
+            '"owners/createOrUpdateOwnerForm";\n'
+            "}"
+        ),
+        "symbol",
+    )
+
+    assert probes._view_constant_literal_seed(approved, symbol) == (
+        "createOrUpdateOwnerForm"
+    )
+    assert probes._view_constant_literal_seed(
+        replace(
+            approved,
+            content=(
+                "class OwnerController {\n"
+                '  String ignored = "ARBITRARY_LITERAL";\n'
+                "  // private static final String VIEWS_OWNER_FORM = "
+                '"owners/commentSecret";\n'
+                "}"
+            ),
+        ),
+        symbol,
+    ) is None
+    assert probes._view_constant_literal_seed(
+        replace(
+            approved,
+            content=(
+                "class OwnerController {\n"
+                '  String ignored = "ARBITRARY_LITERAL";\n'
+                "  private static final String VIEWS_OWNER_FORM = "
+                '"../outsideSecret";\n'
+                "}"
+            ),
+        ),
+        symbol,
+    ) is None
+    assert probes._view_constant_literal_seed(
+        approved,
+        replace(symbol, name="OWNER_SECRET"),
+    ) is None
+
+
+def test_single_required_view_goal_uses_grounded_composite_before_narrow_probe(
+) -> None:
+    form = _goal(
+        "goal-form",
+        category="implementations",
+        roles=("view",),
+    )
+    test = _goal(
+        "goal-test",
+        category="tests",
+        roles=("test",),
+        required=False,
+    )
+    frozen = _frozen(form, test)
+    seed = probes._Seed(
+        "createOrUpdateOwnerForm",
+        "indexed_symbol",
+        1,
+        ("src/OwnerController.java",),
+    )
+
+    composites = probes._single_required_view_composites((seed,), frozen)
+
+    assert len(composites) == 1
+    assert composites[0].query == (
+        "createOrUpdateOwnerForm form template view test"
+    )
+    assert composites[0].goal_ids == ("goal-form", "goal-test")
+    narrow = probes._candidate_from_seed(form, 0, seed, "form template view")
+    assert narrow is not None
+    assert probes.order_probe_candidates((*composites, narrow), frozen)[0] == (
+        composites[0]
+    )
 
 
 def test_planning_fails_closed_on_omitted_or_missing_origin_provenance(

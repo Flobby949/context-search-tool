@@ -27,7 +27,7 @@ from context_search_tool.sqlite_store import SQLiteStore
 
 if TYPE_CHECKING:
     from context_search_tool.context_pack import ContextPack
-    from context_search_tool.models import DocumentChunk
+    from context_search_tool.models import DocumentChunk, SymbolRef
     from context_search_tool.retrieval import QueryBundle
     from context_search_tool.retrieval_trace import RetrievalTrace, TraceSelection
 
@@ -55,6 +55,21 @@ _MULTILINE_NAMED_IMPORT_RE = re.compile(
     r"(?P<quote>[\"'])(?P<specifier>[^\"'\r\n]+)(?P=quote)",
     re.MULTILINE,
 )
+_JAVA_VIEW_CONSTANT_RE = re.compile(
+    r'^[ \t]*(?:(?:public|protected|private)[ \t]+)?static[ \t]+final[ \t]+'
+    r'String[ \t]+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)[ \t]*=[ \t]*'
+    r'"(?P<value>[A-Za-z0-9_./-]+)"[ \t]*;[ \t]*$'
+)
+_VIEW_CONSTANT_NAME_PARTS = {
+    "FORM",
+    "FORMS",
+    "PAGE",
+    "PAGES",
+    "TEMPLATE",
+    "TEMPLATES",
+    "VIEW",
+    "VIEWS",
+}
 
 
 @dataclass(frozen=True)
@@ -101,6 +116,10 @@ def plan_probes(
             initial_bundle,
             initial_pack,
             origins,
+            include_view_literals=any(
+                set(goal.accepted_roles).intersection(_VIEW_ROLES)
+                for goal in goals
+            ),
         )
     except (KeyError, OSError, sqlite3.Error, UnicodeError, ValueError):
         return ()
@@ -110,6 +129,7 @@ def plan_probes(
     composite = _required_goal_composite(initial_bundle, frozen)
     if composite is not None:
         raw.append(composite)
+    raw.extend(_single_required_view_composites(seeds, frozen))
     for goal in goals:
         suffix = _goal_suffix(goal)
         for seed in seeds:
@@ -260,6 +280,64 @@ def _required_goal_composite(
     )
 
 
+def _single_required_view_composites(
+    seeds: Iterable[_Seed],
+    frozen: FrozenGoals,
+) -> tuple[ProbeCandidate, ...]:
+    required = tuple(
+        goal
+        for goal in frozen.goals
+        if goal.required and not goal.initially_satisfied
+    )
+    if len(required) != 1 or not set(required[0].accepted_roles).intersection(
+        _VIEW_ROLES
+    ):
+        return ()
+    required_goal = required[0]
+    recommended = tuple(
+        goal
+        for goal in frozen.goals
+        if not goal.required
+        and not goal.initially_satisfied
+    )
+    goal_order = next(
+        index
+        for index, goal in enumerate(frozen.goals)
+        if goal.id == required_goal.id
+    )
+    candidates: list[ProbeCandidate] = []
+    for seed in seeds:
+        if seed.source != "indexed_symbol" or seed.complete_query:
+            continue
+        if not _seed_supports_goal(seed, required_goal):
+            continue
+        supported = tuple(
+            goal for goal in recommended if _seed_supports_goal(seed, goal)
+        )
+        if not supported:
+            continue
+        goals = (required_goal, *supported)
+        suffixes = _ordered_union(_goal_suffix(goal) for goal in goals)
+        query = normalize_probe_text(" ".join((seed.text, *suffixes)))
+        if query is None:
+            continue
+        candidates.append(
+            ProbeCandidate(
+                query=query,
+                source=seed.source,
+                purpose=required_goal.category,
+                goal_ids=tuple(goal.id for goal in goals),
+                seed_paths=tuple(
+                    path for path in seed.seed_paths if _relative_path(path)
+                )[:MAX_PROBE_SEED_PATHS],
+                required=True,
+                goal_order=goal_order,
+                source_rank=seed.source_rank,
+            )
+        )
+    return tuple(candidates)
+
+
 def _load_origins(
     store: SQLiteStore,
     trace: RetrievalTrace,
@@ -303,6 +381,8 @@ def _grounded_seeds(
     bundle: QueryBundle,
     pack: ContextPack,
     origins: _OriginState,
+    *,
+    include_view_literals: bool,
 ) -> tuple[_Seed, ...]:
     symbols: list[_Seed] = []
     path_stems: list[_Seed] = []
@@ -319,6 +399,15 @@ def _grounded_seeds(
             seed = _safe_seed(symbol.name)
             if seed is not None:
                 symbols.append(_Seed(seed, "indexed_symbol", rank, (seed_path,)))
+            literal_seed = (
+                _view_constant_literal_seed(chunk, symbol)
+                if include_view_literals
+                else None
+            )
+            if literal_seed is not None:
+                symbols.append(
+                    _Seed(literal_seed, "indexed_symbol", rank, (seed_path,))
+                )
 
     signals_by_chunk = store.signals_for_chunks(
         [chunk.chunk_id for chunk in origins.chunks]
@@ -476,6 +565,32 @@ def _extract_probe_static_imports(content: str) -> tuple[str, ...]:
             seen.add(specifier)
             specifiers.append(specifier)
     return tuple(specifiers)
+
+
+def _view_constant_literal_seed(
+    chunk: DocumentChunk,
+    symbol: SymbolRef,
+) -> str | None:
+    if (
+        symbol.kind != "constant"
+        or symbol.language.casefold() != "java"
+        or symbol.start_line != symbol.end_line
+    ):
+        return None
+    name_parts = set(re.split(r"[^A-Za-z0-9]+", symbol.name.upper()))
+    if not name_parts.intersection(_VIEW_CONSTANT_NAME_PARTS):
+        return None
+    line_index = symbol.start_line - chunk.start_line
+    lines = chunk.content.splitlines()
+    if line_index < 0 or line_index >= len(lines):
+        return None
+    match = _JAVA_VIEW_CONSTANT_RE.fullmatch(lines[line_index])
+    if match is None or match.group("name") != symbol.name:
+        return None
+    literal = match.group("value")
+    if not _relative_path(literal):
+        return None
+    return _safe_seed(PurePosixPath(literal).name)
 
 
 def _javascript_code_positions(content: str) -> bytearray:

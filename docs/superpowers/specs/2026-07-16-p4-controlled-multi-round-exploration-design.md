@@ -581,6 +581,9 @@ Probe seeds may come only from:
 2. subject terms from frozen goals;
 3. file stems from initial selected items;
 4. symbols on origin chunks named by initial RetrievalTrace final selections;
+   for an indexed single-line Java `static final String` constant whose name
+   contains a closed view/form/page/template token, the repository-relative
+   literal basename from that exact declaration may also be used;
 5. indexed endpoint, route, usage, and relation target names attached to those
    origin chunks;
 6. Java imports from the origin chunk's repository-relative path via
@@ -601,8 +604,9 @@ import recursively.
 
 Arbitrary comments, string literals, full source lines, planner discarded hints,
 environment values, absolute paths, and exception text are forbidden seed
-sources. A parser-recognized template/view constant may be used as an indexed
-symbol; P4 does not scan arbitrary literals for guessed filenames.
+sources. The view-constant exception is declaration-bound: symbol kind, name,
+line, Java type/modifiers, and a safe relative literal must all match. P4 does
+not scan arbitrary literals for guessed filenames.
 
 ### Probe Sources
 
@@ -637,14 +641,21 @@ role:
 
 The implementation uses fixed strings, not locale/model generation. A seed such
 as `OwnerController` plus the test suffix yields `OwnerController test`; the
-PetClinic index's actual `VIEWS_OWNER_CREATE_OR_UPDATE_FORM` symbol may be used
-as an exact high-signal UI probe rather than broadening it with generic terms.
+PetClinic index's actual `VIEWS_OWNER_CREATE_OR_UPDATE_FORM` declaration safely
+grounds the higher-signal `createOrUpdateOwnerForm` basename without broadening
+to unrelated literals.
 
 When at least two retained required goals are initially unsatisfied, planning
 also creates exactly one composite candidate from the already-allowed original
 query plus the ordered unique fixed suffixes for those goals. Its `goal_ids`
 name every represented required goal. It introduces no new seed source and is
 still subject to the normal 160-code-point bound.
+
+When exactly one retained required UI/form goal remains, an indexed-symbol seed
+that supports it may also combine that required suffix with the ordered suffixes
+of supported unsatisfied recommended goals. This lets one bounded, grounded
+probe cover the form and its requested test evidence before the required-goal
+stop condition fires.
 
 ### Deterministic Priority
 
