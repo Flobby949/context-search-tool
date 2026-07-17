@@ -8,24 +8,22 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from context_search_tool.context_pack import CONTEXT_GROUPS
-from context_search_tool.exploration.models import (
-    FOLLOWUP_FINAL_TOP_K,
-    MAX_FINAL_EVIDENCE_PREVIEW,
-    MAX_FOLLOWUP_PROBES,
-    MAX_FRONTEND_HEADER_BYTES,
-    MAX_FROZEN_GOALS,
-    MAX_FUSED_ANCHORS,
-    MAX_FUSED_RESULTS,
-    MAX_LOGICAL_ROUNDS,
-    MAX_PLANNED_PROBES,
-    MAX_PROBE_SEED_PATHS,
-    MAX_PROBE_TEXT_CODE_POINTS,
-    MAX_RETRIEVAL_CALLS,
-)
 from context_search_tool.retrieval_trace.models import SOURCE_COUNT_KEYS
 
 
+_MAX_LOGICAL_ROUNDS = 2
+_MAX_FOLLOWUP_PROBES = 2
+_MAX_RETRIEVAL_CALLS = 3
+_MAX_PLANNED_PROBES = 8
+_MAX_FROZEN_GOALS = 8
+_MAX_PROBE_TEXT_CODE_POINTS = 160
+_MAX_PROBE_SEED_PATHS = 3
+_MAX_FRONTEND_HEADER_BYTES = 16_384
 _MAX_FRONTEND_IMPORT_PATHS = 3
+_FOLLOWUP_FINAL_TOP_K = 6
+_MAX_FUSED_RESULTS = 24
+_MAX_FUSED_ANCHORS = 8
+_MAX_FINAL_EVIDENCE_PREVIEW = 20
 _TOP_LEVEL_PAIRS = {
     ("complete", "context_budget_zero"),
     ("complete", "exact_satisfied"),
@@ -182,20 +180,20 @@ def _source_counts(values: object) -> None:
 
 @dataclass(frozen=True)
 class ExplorationLimits:
-    max_rounds: int = MAX_LOGICAL_ROUNDS
-    max_followup_probes: int = MAX_FOLLOWUP_PROBES
-    max_retrieval_calls: int = MAX_RETRIEVAL_CALLS
-    max_planned_probes: int = MAX_PLANNED_PROBES
-    max_goals: int = MAX_FROZEN_GOALS
-    max_probe_code_points: int = MAX_PROBE_TEXT_CODE_POINTS
-    max_seed_paths: int = MAX_PROBE_SEED_PATHS
-    max_frontend_import_header_bytes: int = MAX_FRONTEND_HEADER_BYTES
+    max_rounds: int = _MAX_LOGICAL_ROUNDS
+    max_followup_probes: int = _MAX_FOLLOWUP_PROBES
+    max_retrieval_calls: int = _MAX_RETRIEVAL_CALLS
+    max_planned_probes: int = _MAX_PLANNED_PROBES
+    max_goals: int = _MAX_FROZEN_GOALS
+    max_probe_code_points: int = _MAX_PROBE_TEXT_CODE_POINTS
+    max_seed_paths: int = _MAX_PROBE_SEED_PATHS
+    max_frontend_import_header_bytes: int = _MAX_FRONTEND_HEADER_BYTES
     max_frontend_import_paths: int = _MAX_FRONTEND_IMPORT_PATHS
     effective_initial_top_k: int = 12
-    followup_top_k: int = FOLLOWUP_FINAL_TOP_K
-    max_fused_results: int = MAX_FUSED_RESULTS
-    max_fused_anchors: int = MAX_FUSED_ANCHORS
-    final_evidence_top_k: int = MAX_FINAL_EVIDENCE_PREVIEW
+    followup_top_k: int = _FOLLOWUP_FINAL_TOP_K
+    max_fused_results: int = _MAX_FUSED_RESULTS
+    max_fused_anchors: int = _MAX_FUSED_ANCHORS
+    final_evidence_top_k: int = _MAX_FINAL_EVIDENCE_PREVIEW
 
     def __post_init__(self) -> None:
         for field in fields(self):
@@ -298,7 +296,7 @@ class ExplorationProbe:
         else:
             if _FOLLOWUP_PURPOSE_RE.fullmatch(self.purpose) is None:
                 _fail("follow-up probe purpose is invalid")
-            if len(self.query) > MAX_PROBE_TEXT_CODE_POINTS or any(
+            if len(self.query) > _MAX_PROBE_TEXT_CODE_POINTS or any(
                 unicodedata.category(character).startswith("C")
                 for character in self.query
             ):
@@ -307,7 +305,7 @@ class ExplorationProbe:
         paths = _string_tuple(
             "seed_paths",
             self.seed_paths,
-            maximum=MAX_PROBE_SEED_PATHS,
+            maximum=_MAX_PROBE_SEED_PATHS,
         )
         for path in paths:
             _canonical_path("seed path", path)
@@ -389,7 +387,7 @@ class ExplorationRound:
             type(probe) is not ExplorationProbe for probe in self.probes
         ):
             _fail("round probes must be a non-empty tuple")
-        if len(self.probes) > MAX_FOLLOWUP_PROBES:
+        if len(self.probes) > _MAX_FOLLOWUP_PROBES:
             _fail("round probe count exceeds the fixed limit")
         if self.output_path_count < self.input_path_count or (
             self.novel_path_count
