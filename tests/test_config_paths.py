@@ -14,9 +14,11 @@ from context_search_tool.config import (
 )
 from context_search_tool.paths import (
     RepositoryNotFoundError,
+    atomic_write_index_bytes,
     find_repo_root,
     index_dir_for,
     ensure_index_layout,
+    prepare_index_directory,
 )
 
 
@@ -218,6 +220,42 @@ def test_ensure_index_layout_does_not_duplicate_gitignore_entry(
     ensure_index_layout(repo)
 
     assert (repo / ".gitignore").read_text(encoding="utf-8") == ".context-search/\n"
+
+
+def test_prepare_index_directory_is_the_only_allowed_pre_lock_mutation(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    index_dir = prepare_index_directory(repo)
+
+    assert index_dir == repo / ".context-search"
+    assert index_dir.is_dir()
+    assert not (repo / ".gitignore").exists()
+    assert list(index_dir.iterdir()) == []
+
+
+def test_atomic_index_write_exposes_durable_publication_stages(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "manifest.json"
+    stages: list[str] = []
+
+    atomic_write_index_bytes(
+        target,
+        b"{}\n",
+        fault_prefix="manifest",
+        fault_hook=stages.append,
+    )
+
+    assert target.read_bytes() == b"{}\n"
+    assert stages == [
+        "manifest_temp_write",
+        "manifest_file_fsync",
+        "manifest_rename",
+        "manifest_directory_fsync",
+    ]
 
 
 def test_find_repo_root_prefers_existing_index_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
+from context_search_tool import vector_store as vector_store_module
 from context_search_tool.config import EmbeddingConfig
 from context_search_tool.embeddings import (
     HashEmbeddingProvider,
@@ -190,6 +191,24 @@ def test_fresh_vector_replacement_ignores_corrupt_legacy_files(
     assert store.ids == ("fresh",)
 
 
+def test_empty_immutable_generation_retains_configured_dimensions(
+    tmp_path: Path,
+) -> None:
+    store = NumpyVectorStore.fresh(tmp_path, dimensions=7)
+    prepared = store.prepare_generation(
+        generation="empty",
+        embedding_identity="hash-v1:7",
+    )
+    store.publish_generation(prepared)
+
+    descriptor = NumpyVectorStore.published_descriptor(tmp_path)
+
+    assert descriptor is not None
+    assert descriptor.row_count == 0
+    assert descriptor.dimensions == 7
+    assert NumpyVectorStore.load_published(tmp_path).ids == ()
+
+
 def test_immutable_vector_generations_publish_only_one_validated_descriptor(
     tmp_path: Path,
 ) -> None:
@@ -229,6 +248,54 @@ def test_immutable_vector_generations_publish_only_one_validated_descriptor(
     assert (tmp_path / "vector_ids.g1.json").is_file()
     assert (tmp_path / "vectors.g2.npy").is_file()
     assert (tmp_path / "vector_ids.g2.json").is_file()
+
+
+def test_published_snapshot_binds_one_descriptor_to_one_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = NumpyVectorStore.fresh(tmp_path)
+    first.upsert_many(
+        [("a", np.asarray([1.0, 0.0], dtype=np.float32))]
+    )
+    prepared_first = first.prepare_generation(
+        generation="g1",
+        embedding_identity="hash-v1:2",
+    )
+    first.publish_generation(prepared_first)
+
+    second = NumpyVectorStore.fresh(tmp_path)
+    second.upsert_many(
+        [("b", np.asarray([0.0, 1.0], dtype=np.float32))]
+    )
+    prepared_second = second.prepare_generation(
+        generation="g2",
+        embedding_identity="hash-v1:2",
+    )
+    original_read_descriptor = vector_store_module._read_descriptor
+    swapped = False
+
+    def read_and_swap(path: Path):
+        nonlocal swapped
+        descriptor = original_read_descriptor(path)
+        if not swapped:
+            swapped = True
+            second.publish_generation(prepared_second)
+        return descriptor
+
+    monkeypatch.setattr(vector_store_module, "_read_descriptor", read_and_swap)
+
+    descriptor, loaded = NumpyVectorStore.load_published_snapshot(
+        tmp_path,
+        expected_embedding_identity="hash-v1:2",
+    )
+
+    assert descriptor is not None
+    assert descriptor.generation == "g1"
+    assert loaded.ids == ("a",)
+    published = NumpyVectorStore.published_descriptor(tmp_path)
+    assert published is not None
+    assert published.generation == "g2"
 
 
 def test_vector_descriptor_hash_and_embedding_identity_are_validated(

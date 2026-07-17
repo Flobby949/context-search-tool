@@ -598,10 +598,13 @@ def test_graph_producer_protocol_adapters_and_test_paths_are_leaf_bounded() -> N
     assert "FrontendGraphProducer" not in graph_plugins
     assert "MyBatisGraphProducer" not in graph_plugins
 
-    for name in ("plugins.py", "indexer.py", "java_plugin.py", "retrieval.py"):
+    for name in ("plugins.py", "java_plugin.py", "retrieval.py"):
         imports = _internal_imports(package / name)
         assert "context_search_tool.java_graph" not in imports
         assert "context_search_tool.test_association" not in imports
+    indexer_imports = _internal_imports(package / "indexer.py")
+    assert "context_search_tool.java_graph" not in indexer_imports
+    assert "context_search_tool.test_association" in indexer_imports
 
 
 def test_graph_lifecycle_primitives_are_leaf_bounded_and_not_activated() -> None:
@@ -618,9 +621,9 @@ def test_graph_lifecycle_primitives_are_leaf_bounded_and_not_activated() -> None
 
     indexer_path = package / "indexer.py"
     indexer_imports = _internal_imports(indexer_path)
-    assert "context_search_tool.graph_lifecycle" not in indexer_imports
-    assert "context_search_tool.graph_resolution" not in indexer_imports
-    assert "context_search_tool.index_lock" not in indexer_imports
+    assert "context_search_tool.graph_lifecycle" in indexer_imports
+    assert "context_search_tool.graph_resolution" in indexer_imports
+    assert "context_search_tool.index_lock" in indexer_imports
     assert "context_search_tool.scanner" in indexer_imports
 
     indexer_tree = ast.parse(indexer_path.read_text(encoding="utf-8"))
@@ -633,9 +636,15 @@ def test_graph_lifecycle_primitives_are_leaf_bounded_and_not_activated() -> None
         and isinstance(node.value, ast.Constant)
     }
     assert assignments["CURRENT_SIGNAL_SCHEMA_VERSION"] == 4
+    public_indexer = next(
+        node
+        for node in indexer_tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "index_repository"
+    )
     assert not [
         node
-        for node in ast.walk(indexer_tree)
+        for node in ast.walk(public_indexer)
         if isinstance(node, ast.Call)
         and (
             isinstance(node.func, ast.Name)
@@ -648,6 +657,15 @@ def test_graph_lifecycle_primitives_are_leaf_bounded_and_not_activated() -> None
             }
         )
     ]
+    assert {
+        node.func.id
+        for node in ast.walk(public_indexer)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    } >= {"scan_workspace", "default_plugins"}
+
+    for name in ("cli.py", "mcp_tools.py", "retrieval.py", "plugins.py"):
+        source = (package / name).read_text(encoding="utf-8")
+        assert "build_v5_index_snapshot" not in source
 
     for name in ("graph_lifecycle.py", "graph_resolution.py", "index_lock.py"):
         assert _import_roots(package / name).isdisjoint(
@@ -797,12 +815,10 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
             "src/context_search_tool/retrieval_core",
             "src/context_search_tool/context_pack",
             "src/context_search_tool/retrieval_trace/models.py",
-            "src/context_search_tool/retrieval_trace/serialization.py",
-            "src/context_search_tool/retrieval_trace/collector.py",
-            "src/context_search_tool/indexer.py",
-            "src/context_search_tool/chunker.py",
-            "src/context_search_tool/manifest.py",
-        ),
+                "src/context_search_tool/retrieval_trace/serialization.py",
+                "src/context_search_tool/retrieval_trace/collector.py",
+                "src/context_search_tool/chunker.py",
+            ),
         cwd=ROOT,
         check=True,
         capture_output=True,

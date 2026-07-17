@@ -13,8 +13,18 @@ from context_search_tool.graph_lifecycle import (
     IncompatibleSignalSchemaError,
     SIGNAL_SCHEMA_VERSION_KEY,
 )
-from context_search_tool.models import CodeRelation, CodeSignal, DocumentChunk
-from context_search_tool.sqlite_store import SQLiteStore
+from context_search_tool.models import (
+    CodeRelation,
+    CodeSignal,
+    DocumentChunk,
+    SourceFile,
+)
+from context_search_tool.sqlite_store import (
+    PRODUCER_RESOLUTION_GENERATION_KEY,
+    TEST_ASSOCIATION_SOURCE_GENERATION_KEY,
+    SQLiteStore,
+)
+from context_search_tool.test_association import regenerate_test_associations
 
 
 V5_SIGNAL_COLUMNS = {
@@ -282,6 +292,12 @@ def test_future_schema_refusal_precedes_unknown_queries_or_ddl(tmp_path: Path) -
         SQLiteStore(path).migrate_signal_schema_v5()
 
     assert _schema_projection(path) == before
+    with pytest.raises(
+        IncompatibleSignalSchemaError,
+        match="incompatible signal schema 6",
+    ):
+        SQLiteStore(path).initialize_v5()
+    assert _schema_projection(path) == before
 
 
 def test_atomic_v4_to_v5_migration_creates_exact_empty_schema_and_metadata(
@@ -324,6 +340,28 @@ def test_atomic_v4_to_v5_migration_creates_exact_empty_schema_and_metadata(
     assert metadata[GRAPH_STALE_REASON_KEY] == "schema_migration"
     assert metadata[FULL_REINDEX_REQUIRED_KEY] == "1"
     assert counts == (0, 0)
+
+
+def test_fresh_store_initializes_directly_as_complete_v5_stale(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "fresh.sqlite"
+    store = SQLiteStore(path)
+
+    store.initialize_v5()
+
+    assert store.inspect_signal_schema_version() == 5
+    assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "stale"
+    assert store.get_metadata(GRAPH_STALE_REASON_KEY) == "full_reindex"
+    assert store.get_metadata(FULL_REINDEX_REQUIRED_KEY) == "1"
+    with sqlite3.connect(path) as connection:
+        assert {
+            row[1] for row in connection.execute("PRAGMA table_info(code_signals)")
+        } == V5_SIGNAL_COLUMNS
+        assert {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(code_relations)")
+        } == V5_RELATION_COLUMNS
 
 
 def test_migration_fault_rolls_back_to_complete_v4(tmp_path: Path) -> None:
@@ -377,13 +415,53 @@ def test_v5_codecs_root_unit_recallable_filter_and_legacy_view(tmp_path: Path) -
     store.replace_chunks(chunk.file_path, [chunk])
     store.replace_graph_facts(chunk.file_path, [module, method], [legacy, structured])
 
-    assert store.signal_search(["Target"], limit=10) == [method]
+    assert store.signal_search(["Target"], limit=10) == []
     [legacy_view] = store.relations_for_source("method")
     assert legacy_view.relation_id == "legacy"
     assert legacy_view.producer_confidence == 0.5
     assert store.graph_signal_for_id("module") == module
     assert store.graph_signal_for_id("method") == method
     assert store.graph_relation_for_id("structured") == structured
+
+
+def test_sqlite_test_association_session_records_producer_generation(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "association.sqlite")
+    store.initialize_v5()
+    production_path = Path("src/main/java/demo/Service.java")
+    test_path = Path("src/test/java/demo/ServiceTest.java")
+    for path, chunk_id, module_id, is_test in (
+        (production_path, "production-chunk", "production-module", False),
+        (test_path, "test-chunk", "test-module", True),
+    ):
+        store.replace_chunks(path, [_chunk(chunk_id, path.as_posix())])
+        store.replace_graph_facts(
+            path,
+            [_module(module_id, chunk_id, path.as_posix())],
+            [],
+        )
+        store.upsert_source_file(
+            SourceFile(
+                path=path,
+                language="java",
+                sha256=module_id,
+                size=1,
+                mtime_ns=1,
+                is_test=is_test,
+            )
+        )
+
+    generation = store.advance_producer_resolution_generation()
+    relations = regenerate_test_associations(
+        store,
+        producer_resolution_generation=generation,
+    )
+
+    assert len(relations) == 1
+    assert relations[0].kind == "tests"
+    assert store.get_metadata(PRODUCER_RESOLUTION_GENERATION_KEY) == "1"
+    assert store.get_metadata(TEST_ASSOCIATION_SOURCE_GENERATION_KEY) == "1"
 
 
 def test_graph_session_reads_ready_snapshot_with_bounded_canonical_adjacency(
@@ -479,3 +557,39 @@ def test_ready_transition_rejects_dangling_targets_and_keeps_stale_flag(
 
     assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "stale"
     assert store.get_metadata(FULL_REINDEX_REQUIRED_KEY) == "1"
+
+
+def test_v5_snapshot_validation_rejects_signal_without_owning_chunk(
+    tmp_path: Path,
+) -> None:
+    store = _v5_store(tmp_path)
+    file_path = Path("src/Source.java")
+    chunk = _chunk("chunk", file_path.as_posix())
+    module = _module("module", "chunk", file_path.as_posix())
+    store.upsert_source_file(
+        SourceFile(
+            path=file_path,
+            language="java",
+            sha256="a" * 64,
+            size=1,
+            mtime_ns=1,
+            is_generated=False,
+            is_test=False,
+        )
+    )
+    store.replace_chunks(file_path, [chunk])
+    store.replace_graph_facts(file_path, [module], [])
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE code_signals SET chunk_id = 'missing' WHERE signal_id = 'module'"
+        )
+
+    with pytest.raises(ValueError, match="active signal has no owning source chunk"):
+        store.mark_graph_ready(
+            topology_fingerprint="c" * 64,
+            expected_embedding_ids={"chunk"},
+            expected_source_count=1,
+            expected_chunk_count=1,
+        )
+
+    assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "stale"

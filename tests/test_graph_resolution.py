@@ -6,8 +6,12 @@ from pathlib import Path
 import pytest
 
 import context_search_tool.sqlite_store as sqlite_store
+from context_search_tool.config import DEFAULT_CONFIG
+from context_search_tool.frontend_graph import FrontendGraphProducer
 from context_search_tool.graph_resolution import resolve_graph_relations
+from context_search_tool.indexer import build_v5_index_snapshot
 from context_search_tool.models import CodeRelation, CodeSignal, DocumentChunk
+from context_search_tool.scanner import scan_workspace_v5
 from context_search_tool.sqlite_store import SQLiteStore
 
 
@@ -641,3 +645,57 @@ def test_test_association_resolution_confidence_depends_on_exact_basis(
     assert relation.resolution == "resolved_exact"
     assert relation.resolution_confidence == expected_confidence
     assert relation.confidence == expected_confidence
+
+
+def test_changed_ready_index_reresolves_every_active_structured_relation(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "entry.ts").write_text(
+        'import Target from "./target";\nexport { Target };\n',
+        encoding="utf-8",
+    )
+    (repo / "target.ts").write_text(
+        "export default class Target {}\n",
+        encoding="utf-8",
+    )
+    note = repo / "note.md"
+    note.write_text("first\n", encoding="utf-8")
+    build_v5_index_snapshot(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[FrontendGraphProducer()],
+        scanner=scan_workspace_v5,
+    )
+    database = repo / ".context-search" / "index.sqlite"
+    with sqlite3.connect(database) as connection:
+        relation_id = connection.execute(
+            """
+            SELECT relation_id FROM code_relations
+            WHERE kind = 'imports' AND deleted_at IS NULL
+            """
+        ).fetchone()[0]
+        connection.execute(
+            """
+            UPDATE code_relations
+            SET target_signal_id = '', resolution = 'unresolved',
+                confidence = producer_confidence,
+                resolution_confidence = NULL
+            WHERE relation_id = ?
+            """,
+            (relation_id,),
+        )
+    note.write_text("second\n", encoding="utf-8")
+
+    build_v5_index_snapshot(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[FrontendGraphProducer()],
+        scanner=scan_workspace_v5,
+    )
+
+    relation = SQLiteStore(database).graph_relation_for_id(relation_id)
+    assert relation is not None
+    assert relation.resolution in {"resolved_exact", "resolved_unique"}
+    assert relation.target_signal_id

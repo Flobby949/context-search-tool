@@ -50,11 +50,18 @@ class NumpyVectorStore:
         self._load()
 
     @classmethod
-    def fresh(cls, index_dir: Path) -> NumpyVectorStore:
+    def fresh(
+        cls,
+        index_dir: Path,
+        *,
+        dimensions: int = 0,
+    ) -> NumpyVectorStore:
+        if dimensions < 0:
+            raise ValueError("vector dimensions must be non-negative")
         store = cls.__new__(cls)
         store.index_dir = index_dir
         store._ids = []
-        store._vectors = np.empty((0, 0), dtype=np.float32)
+        store._vectors = np.empty((0, dimensions), dtype=np.float32)
         return store
 
     @classmethod
@@ -64,9 +71,22 @@ class NumpyVectorStore:
         *,
         expected_embedding_identity: str | None = None,
     ) -> NumpyVectorStore:
+        _descriptor, store = cls.load_published_snapshot(
+            index_dir,
+            expected_embedding_identity=expected_embedding_identity,
+        )
+        return store
+
+    @classmethod
+    def load_published_snapshot(
+        cls,
+        index_dir: Path,
+        *,
+        expected_embedding_identity: str | None = None,
+    ) -> tuple[VectorGenerationDescriptor | None, NumpyVectorStore]:
         descriptor_path = index_dir / _DESCRIPTOR_FILENAME
         if not descriptor_path.exists():
-            return cls(index_dir)
+            return None, cls(index_dir)
         descriptor = _read_descriptor(descriptor_path)
         if (
             expected_embedding_identity is not None
@@ -77,7 +97,19 @@ class NumpyVectorStore:
         store = cls.fresh(index_dir)
         store._ids = ids
         store._vectors = vectors
-        return store
+        return descriptor, store
+
+    @classmethod
+    def published_descriptor(
+        cls,
+        index_dir: Path,
+    ) -> VectorGenerationDescriptor | None:
+        descriptor_path = index_dir / _DESCRIPTOR_FILENAME
+        if not descriptor_path.exists():
+            return None
+        descriptor = _read_descriptor(descriptor_path)
+        _load_generation(index_dir, descriptor)
+        return descriptor
 
     def upsert_many(self, items: list[tuple[str, np.ndarray]]) -> None:
         if not items:
@@ -116,6 +148,13 @@ class NumpyVectorStore:
     @property
     def ids(self) -> tuple[str, ...]:
         return tuple(self._ids)
+
+    def sort_by_id(self) -> None:
+        if len(self._ids) < 2:
+            return
+        order = sorted(range(len(self._ids)), key=self._ids.__getitem__)
+        self._ids = [self._ids[index] for index in order]
+        self._vectors = self._vectors[order]
 
     def prepare_generation(
         self,
@@ -290,7 +329,13 @@ def _read_descriptor(path: Path) -> VectorGenerationDescriptor:
             dimensions=int(raw["dimensions"]),
             embedding_identity=str(raw["embedding_identity"]),
         )
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+    except (
+        KeyError,
+        OSError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as error:
         raise ValueError("invalid vector descriptor") from error
     if descriptor.schema_version != 1:
         raise ValueError("invalid vector descriptor schema")

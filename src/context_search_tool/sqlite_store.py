@@ -40,6 +40,11 @@ logger = logging.getLogger(__name__)
 _DIRECT_TEXT_CJK_SEQUENCE_RE = re.compile(r"[㐀-鿿]{2,}")
 _DEFAULT_BUSY_TIMEOUT_MS = 5_000
 _RESOLVED_STATES = ("resolved_exact", "resolved_unique")
+PRODUCER_RESOLUTION_GENERATION_KEY = "graph_producer_resolution_generation"
+TEST_ASSOCIATION_SOURCE_GENERATION_KEY = (
+    "graph_test_association_source_generation"
+)
+FILE_WRITE_IN_PROGRESS_KEY = "graph_file_write_in_progress"
 
 
 class SQLiteStore:
@@ -49,109 +54,73 @@ class SQLiteStore:
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS source_files (
-                    path TEXT PRIMARY KEY,
-                    language TEXT NOT NULL,
-                    sha256 TEXT NOT NULL,
-                    size INTEGER NOT NULL,
-                    mtime_ns INTEGER NOT NULL,
-                    is_generated INTEGER NOT NULL,
-                    is_test INTEGER NOT NULL,
-                    metadata TEXT NOT NULL
-                );
+            for statement in (
+                *_common_schema_statements(),
+                *_v4_graph_schema_statements(),
+            ):
+                connection.execute(statement)
 
-                CREATE TABLE IF NOT EXISTS chunks (
-                    chunk_id TEXT PRIMARY KEY,
-                    file_path TEXT NOT NULL,
-                    start_line INTEGER NOT NULL,
-                    end_line INTEGER NOT NULL,
-                    content TEXT NOT NULL,
-                    chunk_type TEXT NOT NULL,
-                    embedding_id TEXT,
-                    deleted_at INTEGER,
-                    metadata TEXT NOT NULL
-                );
+    def inspect_signal_schema_version(self) -> int:
+        if not self.db_path.exists():
+            return 0
+        with self._connect() as connection:
+            return _stored_signal_schema_version(connection)
 
-                CREATE INDEX IF NOT EXISTS idx_chunks_file_active
-                ON chunks(file_path, deleted_at);
+    def initialize_v5(
+        self,
+        *,
+        stale_reason: str = "full_reindex",
+        before_commit: Callable[[], None] | None = None,
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> None:
+        if not stale_reason:
+            raise ValueError("graph stale reason must not be empty")
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            stored_version = _stored_signal_schema_version(connection)
+            if stored_version > TARGET_SIGNAL_SCHEMA_VERSION:
+                raise IncompatibleSignalSchemaError(stored_version)
+            if stored_version == TARGET_SIGNAL_SCHEMA_VERSION:
+                _require_v5_tables(connection)
+                return
 
-                CREATE TABLE IF NOT EXISTS symbols (
-                    symbol_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    start_line INTEGER NOT NULL,
-                    end_line INTEGER NOT NULL,
-                    language TEXT NOT NULL,
-                    metadata TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS chunk_symbols (
-                    chunk_id TEXT NOT NULL,
-                    symbol_id INTEGER NOT NULL,
-                    PRIMARY KEY (chunk_id, symbol_id),
-                    FOREIGN KEY (chunk_id) REFERENCES chunks(chunk_id),
-                    FOREIGN KEY (symbol_id) REFERENCES symbols(symbol_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS chunk_tokens (
-                    chunk_id TEXT NOT NULL,
-                    token TEXT NOT NULL,
-                    FOREIGN KEY (chunk_id) REFERENCES chunks(chunk_id)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_chunk_tokens_token
-                ON chunk_tokens(token);
-
-                CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
-                USING fts5(chunk_id UNINDEXED, file_path, content, tokens);
-
-                CREATE TABLE IF NOT EXISTS index_metadata (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL,
-                    updated_at INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS code_signals (
-                    signal_id TEXT PRIMARY KEY,
-                    chunk_id TEXT NOT NULL,
-                    file_path TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    start_line INTEGER NOT NULL,
-                    end_line INTEGER NOT NULL,
-                    language TEXT NOT NULL,
-                    tokens TEXT NOT NULL,
-                    metadata TEXT NOT NULL,
-                    deleted_at INTEGER
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_code_signals_chunk_active
-                ON code_signals(chunk_id, deleted_at);
-
-                CREATE INDEX IF NOT EXISTS idx_code_signals_file_active
-                ON code_signals(file_path, deleted_at);
-
-                CREATE TABLE IF NOT EXISTS code_relations (
-                    relation_id TEXT PRIMARY KEY,
-                    source_signal_id TEXT NOT NULL,
-                    source_chunk_id TEXT NOT NULL,
-                    source_file_path TEXT NOT NULL,
-                    target_name TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    confidence REAL NOT NULL,
-                    metadata TEXT NOT NULL,
-                    deleted_at INTEGER
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_code_relations_source_active
-                ON code_relations(source_signal_id, deleted_at);
-
-                CREATE INDEX IF NOT EXISTS idx_code_relations_target_active
-                ON code_relations(target_name, deleted_at);
-                """
-            )
+            connection.execute("BEGIN IMMEDIATE")
+            stored_version = _stored_signal_schema_version(connection)
+            if stored_version > TARGET_SIGNAL_SCHEMA_VERSION:
+                raise IncompatibleSignalSchemaError(stored_version)
+            for statement in _common_schema_statements():
+                connection.execute(statement)
+            connection.execute("DROP TABLE IF EXISTS code_relations")
+            connection.execute("DROP TABLE IF EXISTS code_signals")
+            for statement in _v5_schema_statements():
+                connection.execute(statement)
+            now = _now()
+            reason = "schema_migration" if stored_version else stale_reason
+            for key, value in (
+                (SIGNAL_SCHEMA_VERSION_KEY, str(TARGET_SIGNAL_SCHEMA_VERSION)),
+                (
+                    GRAPH_RESOLUTION_VERSION_KEY,
+                    str(TARGET_GRAPH_RESOLUTION_VERSION),
+                ),
+                (GRAPH_RESOLUTION_STATE_KEY, "stale"),
+                (GRAPH_STALE_REASON_KEY, reason),
+                (FULL_REINDEX_REQUIRED_KEY, "1"),
+                (PRODUCER_RESOLUTION_GENERATION_KEY, "0"),
+                (TEST_ASSOCIATION_SOURCE_GENERATION_KEY, "-1"),
+                (FILE_WRITE_IN_PROGRESS_KEY, ""),
+            ):
+                _set_metadata_row(connection, key, value, now)
+            if before_commit is not None:
+                before_commit()
+            connection.commit()
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
 
     def migrate_signal_schema_v5(
         self,
@@ -215,6 +184,24 @@ class SQLiteStore:
                 connection,
                 FULL_REINDEX_REQUIRED_KEY,
                 "1",
+                now,
+            )
+            _set_metadata_row(
+                connection,
+                PRODUCER_RESOLUTION_GENERATION_KEY,
+                "0",
+                now,
+            )
+            _set_metadata_row(
+                connection,
+                TEST_ASSOCIATION_SOURCE_GENERATION_KEY,
+                "-1",
+                now,
+            )
+            _set_metadata_row(
+                connection,
+                FILE_WRITE_IN_PROGRESS_KEY,
+                "",
                 now,
             )
             if before_commit is not None:
@@ -341,6 +328,12 @@ class SQLiteStore:
         self,
         *,
         topology_fingerprint: str,
+        expected_embedding_ids: set[str] | None = None,
+        expected_source_count: int | None = None,
+        expected_chunk_count: int | None = None,
+        expected_producer_resolution_generation: int | None = None,
+        external_validator: Callable[[], None] | None = None,
+        indexed_at: int | None = None,
         before_commit: Callable[[], None] | None = None,
         busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
     ) -> GraphIntegrityResult:
@@ -353,6 +346,26 @@ class SQLiteStore:
             integrity = _graph_integrity(connection)
             if not integrity.ok:
                 raise GraphIntegrityError("graph integrity check failed")
+            if any(
+                value is not None
+                for value in (
+                    expected_embedding_ids,
+                    expected_source_count,
+                    expected_chunk_count,
+                    expected_producer_resolution_generation,
+                )
+            ):
+                _validate_v5_snapshot(
+                    connection,
+                    expected_embedding_ids=expected_embedding_ids,
+                    expected_source_count=expected_source_count,
+                    expected_chunk_count=expected_chunk_count,
+                    expected_producer_resolution_generation=(
+                        expected_producer_resolution_generation
+                    ),
+                )
+            if external_validator is not None:
+                external_validator()
             now = _now()
             _set_metadata_row(
                 connection,
@@ -384,6 +397,13 @@ class SQLiteStore:
                 "ready",
                 now,
             )
+            if indexed_at is not None:
+                _set_metadata_row(
+                    connection,
+                    "indexed_at",
+                    str(indexed_at),
+                    now,
+                )
             if before_commit is not None:
                 before_commit()
             connection.commit()
@@ -394,6 +414,54 @@ class SQLiteStore:
             _raise_if_busy(error)
             raise
         finally:
+            connection.close()
+
+    def validate_ready_v5_snapshot(
+        self,
+        *,
+        topology_fingerprint: str,
+        expected_embedding_ids: set[str],
+        expected_source_count: int,
+        expected_chunk_count: int,
+        external_validator: Callable[[], None] | None = None,
+    ) -> GraphIntegrityResult:
+        connection = _open_connection(self.db_path, _DEFAULT_BUSY_TIMEOUT_MS)
+        try:
+            _require_target_schema(connection)
+            connection.execute("BEGIN")
+            capability = read_graph_capability(
+                _ConnectionMetadataReader(connection)
+            )
+            if capability.status != "ready":
+                raise GraphIntegrityError("graph snapshot is not ready")
+            if (
+                _metadata_value(
+                    connection,
+                    PROJECT_UNIT_TOPOLOGY_FINGERPRINT_KEY,
+                )
+                != topology_fingerprint
+            ):
+                raise GraphIntegrityError("project topology fingerprint mismatch")
+            integrity = _graph_integrity(connection)
+            if not integrity.ok:
+                raise GraphIntegrityError("graph integrity check failed")
+            producer_generation = _integer_metadata(
+                connection,
+                PRODUCER_RESOLUTION_GENERATION_KEY,
+            )
+            _validate_v5_snapshot(
+                connection,
+                expected_embedding_ids=expected_embedding_ids,
+                expected_source_count=expected_source_count,
+                expected_chunk_count=expected_chunk_count,
+                expected_producer_resolution_generation=producer_generation,
+            )
+            if external_validator is not None:
+                external_validator()
+            return integrity
+        finally:
+            if connection.in_transaction:
+                connection.rollback()
             connection.close()
 
     @contextmanager
@@ -426,6 +494,91 @@ class SQLiteStore:
             raise
         finally:
             connection.close()
+
+    @contextmanager
+    def test_association_session(
+        self,
+        *,
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> Iterator[Any]:
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            _require_target_schema(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            session = _SQLiteTestAssociationSession(connection)
+            yield session
+            connection.commit()
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
+
+    def advance_producer_resolution_generation(self) -> int:
+        with self._connect() as connection:
+            _require_target_schema(connection)
+            raw = _metadata_value(
+                connection,
+                PRODUCER_RESOLUTION_GENERATION_KEY,
+            )
+            try:
+                generation = int(raw or "0") + 1
+            except ValueError as error:
+                raise GraphIntegrityError(
+                    "invalid producer resolution generation"
+                ) from error
+            _set_metadata_row(
+                connection,
+                PRODUCER_RESOLUTION_GENERATION_KEY,
+                str(generation),
+                _now(),
+            )
+        return generation
+
+    def begin_v5_file_write(self, file_path: Path) -> None:
+        self.set_metadata(FILE_WRITE_IN_PROGRESS_KEY, _path_key(file_path))
+
+    def finish_v5_file_write(self, file: SourceFile) -> None:
+        with self._connect() as connection:
+            _require_target_schema(connection)
+            current = _metadata_value(connection, FILE_WRITE_IN_PROGRESS_KEY)
+            if current != _path_key(file.path):
+                raise GraphIntegrityError("file write marker mismatch")
+            connection.execute(
+                """
+                INSERT INTO source_files (
+                    path, language, sha256, size, mtime_ns,
+                    is_generated, is_test, metadata
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                    language = excluded.language,
+                    sha256 = excluded.sha256,
+                    size = excluded.size,
+                    mtime_ns = excluded.mtime_ns,
+                    is_generated = excluded.is_generated,
+                    is_test = excluded.is_test,
+                    metadata = excluded.metadata
+                """,
+                (
+                    _path_key(file.path),
+                    file.language,
+                    file.sha256,
+                    file.size,
+                    file.mtime_ns,
+                    int(file.is_generated),
+                    int(file.is_test),
+                    _to_json(file.metadata),
+                ),
+            )
+            _set_metadata_row(
+                connection,
+                FILE_WRITE_IN_PROGRESS_KEY,
+                "",
+                _now(),
+            )
 
     def upsert_source_file(self, file: SourceFile) -> None:
         with self._connect() as connection:
@@ -475,6 +628,51 @@ class SQLiteStore:
         with self._connect() as connection:
             rows = connection.execute("SELECT path FROM source_files").fetchall()
         return {Path(row["path"]) for row in rows}
+
+    def source_files_snapshot(self) -> tuple[SourceFile, ...]:
+        if not self.db_path.exists():
+            return ()
+        with self._connect() as connection:
+            if not _table_exists(connection, "source_files"):
+                return ()
+            rows = connection.execute(
+                "SELECT * FROM source_files ORDER BY path"
+            ).fetchall()
+        return tuple(_source_file_from_row(row) for row in rows)
+
+    def persisted_file_paths_snapshot(self) -> set[Path]:
+        if not self.db_path.exists():
+            return set()
+        paths: set[Path] = set()
+        with self._connect() as connection:
+            if _table_exists(connection, "source_files"):
+                paths.update(
+                    Path(row["path"])
+                    for row in connection.execute(
+                        "SELECT path FROM source_files"
+                    )
+                )
+            if _table_exists(connection, "chunks"):
+                paths.update(
+                    Path(row["file_path"])
+                    for row in connection.execute(
+                        """
+                        SELECT DISTINCT file_path FROM chunks
+                        WHERE deleted_at IS NULL
+                        """
+                    )
+                )
+            if _table_exists(connection, "code_signals"):
+                paths.update(
+                    Path(row["file_path"])
+                    for row in connection.execute(
+                        """
+                        SELECT DISTINCT file_path FROM code_signals
+                        WHERE deleted_at IS NULL
+                        """
+                    )
+                )
+        return paths
 
     def indexed_file_paths(self) -> set[Path]:
         with self._connect() as connection:
@@ -683,8 +881,8 @@ class SQLiteStore:
 
         matches: list[tuple[CodeSignal, float]] = []
         with self._connect() as connection:
-            recallable_filter = (
-                "AND recallable = 1"
+            legacy_filter = (
+                "AND recallable = 1 AND producer = 'legacy'"
                 if _has_column(connection, "code_signals", "recallable")
                 else ""
             )
@@ -693,7 +891,7 @@ class SQLiteStore:
                 SELECT *
                 FROM code_signals
                 WHERE deleted_at IS NULL
-                  {recallable_filter}
+                  {legacy_filter}
                 """
             ).fetchall()
 
@@ -1218,6 +1416,39 @@ class SQLiteStore:
             ).fetchall()
         return {row["chunk_id"] for row in rows}
 
+    def active_embedding_ids(self) -> set[str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT embedding_id
+                FROM chunks
+                WHERE deleted_at IS NULL
+                  AND embedding_id IS NOT NULL
+                """
+            ).fetchall()
+        return {str(row["embedding_id"]) for row in rows}
+
+    def active_embedding_ids_for_files(
+        self,
+        file_paths: set[Path],
+    ) -> set[str]:
+        paths = sorted({_path_key(path) for path in file_paths})
+        if not paths:
+            return set()
+        placeholders = ", ".join("?" for _ in paths)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT embedding_id
+                FROM chunks
+                WHERE file_path IN ({placeholders})
+                  AND deleted_at IS NULL
+                  AND embedding_id IS NOT NULL
+                """,
+                paths,
+            ).fetchall()
+        return {str(row["embedding_id"]) for row in rows}
+
     def language_counts(self) -> list[tuple[str, int]]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -1739,10 +1970,99 @@ class GraphReadSession:
         ).fetchall()
         return {str(row["embedding_id"]) for row in rows}
 
+    def source_chunk_counts(self) -> tuple[int, int]:
+        connection = self._require_connection()
+        source_count = int(
+            connection.execute(
+                "SELECT COUNT(*) AS count FROM source_files"
+            ).fetchone()["count"]
+        )
+        chunk_count = int(
+            connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM chunks
+                WHERE deleted_at IS NULL
+                """
+            ).fetchone()["count"]
+        )
+        return source_count, chunk_count
+
     def _require_connection(self) -> sqlite3.Connection:
         if self._connection is None:
             raise RuntimeError("graph read session is closed")
         return self._connection
+
+
+class _SQLiteTestAssociationSession:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+
+    def snapshot(self) -> Any:
+        from context_search_tool.test_association import TestAssociationSnapshot
+
+        source_rows = self.connection.execute(
+            "SELECT * FROM source_files ORDER BY path"
+        ).fetchall()
+        signal_rows = self.connection.execute(
+            """
+            SELECT *
+            FROM code_signals
+            WHERE deleted_at IS NULL
+            ORDER BY project_unit_key, file_path, start_line, start_column,
+                     kind, qualified_name, signature, signal_id
+            """
+        ).fetchall()
+        relation_rows = self.connection.execute(
+            """
+            SELECT *
+            FROM code_relations
+            WHERE deleted_at IS NULL
+              AND kind IN ('imports', 'imports_type')
+              AND resolution IN ('resolved_exact', 'resolved_unique')
+            ORDER BY source_file_path, source_signal_id, kind,
+                     target_project_unit_key, target_qualified_name,
+                     relation_id
+            """
+        ).fetchall()
+        return TestAssociationSnapshot(
+            source_files=tuple(
+                _source_file_from_row(row) for row in source_rows
+            ),
+            signals=tuple(_signal_from_row(row) for row in signal_rows),
+            resolved_relations=tuple(
+                _relation_from_row(row) for row in relation_rows
+            ),
+        )
+
+    def replace_test_associations(
+        self,
+        relations: tuple[CodeRelation, ...],
+        *,
+        producer_resolution_generation: int,
+    ) -> None:
+        if producer_resolution_generation < 0:
+            raise ValueError("producer resolution generation must be non-negative")
+        deleted_at = _now()
+        self.connection.execute(
+            """
+            UPDATE code_relations
+            SET deleted_at = ?
+            WHERE producer = 'test_association'
+              AND deleted_at IS NULL
+            """,
+            (deleted_at,),
+        )
+        for relation in relations:
+            if relation.kind != "tests" or relation.producer != "test_association":
+                raise ValueError("invalid test association relation")
+            _upsert_relation_v5(self.connection, relation)
+        _set_metadata_row(
+            self.connection,
+            TEST_ASSOCIATION_SOURCE_GENERATION_KEY,
+            str(producer_resolution_generation),
+            deleted_at,
+        )
 
 
 class _SQLiteResolutionSession:
@@ -1967,6 +2287,131 @@ def _chunks_matching_member_name(
         ),
         (*signal_names, member_name, *path_patterns, limit),
     ).fetchall()
+
+
+def _common_schema_statements() -> tuple[str, ...]:
+    return (
+        """
+        CREATE TABLE IF NOT EXISTS source_files (
+            path TEXT PRIMARY KEY,
+            language TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            mtime_ns INTEGER NOT NULL,
+            is_generated INTEGER NOT NULL,
+            is_test INTEGER NOT NULL,
+            metadata TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS chunks (
+            chunk_id TEXT PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            chunk_type TEXT NOT NULL,
+            embedding_id TEXT,
+            deleted_at INTEGER,
+            metadata TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_chunks_file_active
+        ON chunks(file_path, deleted_at)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS symbols (
+            symbol_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            language TEXT NOT NULL,
+            metadata TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS chunk_symbols (
+            chunk_id TEXT NOT NULL,
+            symbol_id INTEGER NOT NULL,
+            PRIMARY KEY (chunk_id, symbol_id),
+            FOREIGN KEY (chunk_id) REFERENCES chunks(chunk_id),
+            FOREIGN KEY (symbol_id) REFERENCES symbols(symbol_id)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS chunk_tokens (
+            chunk_id TEXT NOT NULL,
+            token TEXT NOT NULL,
+            FOREIGN KEY (chunk_id) REFERENCES chunks(chunk_id)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_chunk_tokens_token
+        ON chunk_tokens(token)
+        """,
+        """
+        CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
+        USING fts5(chunk_id UNINDEXED, file_path, content, tokens)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS index_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """,
+    )
+
+
+def _v4_graph_schema_statements() -> tuple[str, ...]:
+    return (
+        """
+        CREATE TABLE IF NOT EXISTS code_signals (
+            signal_id TEXT PRIMARY KEY,
+            chunk_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            name TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            language TEXT NOT NULL,
+            tokens TEXT NOT NULL,
+            metadata TEXT NOT NULL,
+            deleted_at INTEGER
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_code_signals_chunk_active
+        ON code_signals(chunk_id, deleted_at)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_code_signals_file_active
+        ON code_signals(file_path, deleted_at)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS code_relations (
+            relation_id TEXT PRIMARY KEY,
+            source_signal_id TEXT NOT NULL,
+            source_chunk_id TEXT NOT NULL,
+            source_file_path TEXT NOT NULL,
+            target_name TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            metadata TEXT NOT NULL,
+            deleted_at INTEGER
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_code_relations_source_active
+        ON code_relations(source_signal_id, deleted_at)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_code_relations_target_active
+        ON code_relations(target_name, deleted_at)
+        """,
+    )
 
 
 def _v5_schema_statements() -> tuple[str, ...]:
@@ -2370,6 +2815,134 @@ def _graph_integrity(connection: sqlite3.Connection) -> GraphIntegrityResult:
     )
 
 
+def _validate_v5_snapshot(
+    connection: sqlite3.Connection,
+    *,
+    expected_embedding_ids: set[str] | None,
+    expected_source_count: int | None,
+    expected_chunk_count: int | None,
+    expected_producer_resolution_generation: int | None,
+) -> None:
+    unfinished = _metadata_value(connection, FILE_WRITE_IN_PROGRESS_KEY) or ""
+    if unfinished:
+        raise GraphIntegrityError("unfinished file write")
+    orphan_chunks = int(
+        connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM chunks
+            LEFT JOIN source_files
+              ON source_files.path = chunks.file_path
+            WHERE chunks.deleted_at IS NULL
+              AND source_files.path IS NULL
+            """
+        ).fetchone()["count"]
+    )
+    if orphan_chunks:
+        raise GraphIntegrityError("active chunk has no source file")
+    orphan_signals = int(
+        connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM code_signals signals
+            LEFT JOIN chunks
+              ON chunks.chunk_id = signals.chunk_id
+             AND chunks.deleted_at IS NULL
+            LEFT JOIN source_files
+              ON source_files.path = signals.file_path
+            WHERE signals.deleted_at IS NULL
+              AND (
+                chunks.chunk_id IS NULL
+                OR chunks.file_path <> signals.file_path
+                OR source_files.path IS NULL
+              )
+            """
+        ).fetchone()["count"]
+    )
+    if orphan_signals:
+        raise GraphIntegrityError("active signal has no owning source chunk")
+    mismatched_relation_sources = int(
+        connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM code_relations relations
+            JOIN code_signals sources
+              ON sources.signal_id = relations.source_signal_id
+             AND sources.deleted_at IS NULL
+            WHERE relations.deleted_at IS NULL
+              AND (
+                relations.source_chunk_id <> sources.chunk_id
+                OR relations.source_file_path <> sources.file_path
+              )
+            """
+        ).fetchone()["count"]
+    )
+    if mismatched_relation_sources:
+        raise GraphIntegrityError("relation source ownership mismatch")
+    if expected_source_count is not None:
+        source_count = int(
+            connection.execute(
+                "SELECT COUNT(*) AS count FROM source_files"
+            ).fetchone()["count"]
+        )
+        if source_count != expected_source_count:
+            raise GraphIntegrityError("source file count mismatch")
+    if expected_chunk_count is not None:
+        chunk_count = int(
+            connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM chunks
+                WHERE deleted_at IS NULL
+                """
+            ).fetchone()["count"]
+        )
+        if chunk_count != expected_chunk_count:
+            raise GraphIntegrityError("active chunk count mismatch")
+    if expected_embedding_ids is not None:
+        rows = connection.execute(
+            """
+            SELECT embedding_id
+            FROM chunks
+            WHERE deleted_at IS NULL
+              AND embedding_id IS NOT NULL
+            """
+        ).fetchall()
+        actual_ids = {str(row["embedding_id"]) for row in rows}
+        if actual_ids != expected_embedding_ids:
+            raise GraphIntegrityError("active embedding ID mismatch")
+    if expected_producer_resolution_generation is not None:
+        producer_generation = _integer_metadata(
+            connection,
+            PRODUCER_RESOLUTION_GENERATION_KEY,
+        )
+        association_generation = _integer_metadata(
+            connection,
+            TEST_ASSOCIATION_SOURCE_GENERATION_KEY,
+        )
+        if (
+            producer_generation != expected_producer_resolution_generation
+            or association_generation != producer_generation
+        ):
+            raise GraphIntegrityError("test association generation mismatch")
+
+
+class _ConnectionMetadataReader:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+
+    def get_metadata(self, key: str) -> str | None:
+        return _metadata_value(self.connection, key)
+
+
+def _integer_metadata(connection: sqlite3.Connection, key: str) -> int:
+    raw = _metadata_value(connection, key)
+    try:
+        return int(raw) if raw is not None else 0
+    except ValueError as error:
+        raise GraphIntegrityError(f"invalid graph metadata: {key}") from error
+
+
 def _open_connection(
     db_path: Path,
     busy_timeout_ms: int,
@@ -2417,21 +2990,28 @@ def _metadata_value(
     connection: sqlite3.Connection,
     key: str,
 ) -> str | None:
-    table = connection.execute(
-        """
-        SELECT 1
-        FROM sqlite_master
-        WHERE type = 'table'
-          AND name = 'index_metadata'
-        """
-    ).fetchone()
-    if table is None:
+    if not _table_exists(connection, "index_metadata"):
         return None
     row = connection.execute(
         "SELECT value FROM index_metadata WHERE key = ?",
         (key,),
     ).fetchone()
     return str(row["value"]) if row is not None else None
+
+
+def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+    return (
+        connection.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type IN ('table', 'view')
+              AND name = ?
+            """,
+            (table,),
+        ).fetchone()
+        is not None
+    )
 
 
 def _set_metadata_row(

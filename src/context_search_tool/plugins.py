@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Iterable, Protocol, TypeVar
 
 from context_search_tool.models import CodeRelation, CodeSignal, SymbolRef
 
@@ -22,6 +22,27 @@ class LanguagePlugin(Protocol):
 
     def extract(self, path: Path, content: str) -> PluginExtraction:
         ...
+
+
+_GraphPlugin = TypeVar("_GraphPlugin")
+
+
+def ordered_graph_plugins(
+    plugins: Iterable[_GraphPlugin],
+) -> tuple[_GraphPlugin, ...]:
+    values = tuple(plugins)
+    if len({id(plugin) for plugin in values}) != len(values):
+        raise ValueError("graph plugin instances must be unique")
+    return tuple(
+        sorted(
+            values,
+            key=lambda plugin: (
+                type(plugin).__module__,
+                type(plugin).__qualname__,
+                str(getattr(plugin, "name", "")),
+            ),
+        )
+    )
 
 
 def default_plugins() -> list[LanguagePlugin]:

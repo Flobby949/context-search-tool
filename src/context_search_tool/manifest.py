@@ -4,10 +4,14 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from context_search_tool.config import EmbeddingConfig, ToolConfig
-from context_search_tool.paths import ensure_index_layout, index_dir_for
+from context_search_tool.paths import (
+    atomic_write_index_bytes,
+    ensure_index_layout,
+    index_dir_for,
+)
 
 
 SCHEMA_VERSION = 1
@@ -38,6 +42,23 @@ def write_manifest(repo: Path, manifest: Manifest) -> None:
     path.write_text(
         json.dumps(asdict(manifest), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
+    )
+
+
+def write_manifest_v5(
+    repo: Path,
+    manifest: Manifest,
+    *,
+    fault_hook: Callable[[str], None] | None = None,
+) -> None:
+    payload = (
+        json.dumps(asdict(manifest), indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    atomic_write_index_bytes(
+        manifest_path(repo),
+        payload,
+        fault_prefix="manifest",
+        fault_hook=fault_hook,
     )
 
 

@@ -10,6 +10,7 @@ import time
 
 import pytest
 
+from context_search_tool.config import DEFAULT_CONFIG
 from context_search_tool.graph_lifecycle import (
     FULL_REINDEX_REQUIRED_KEY,
     GRAPH_RESOLUTION_STATE_KEY,
@@ -18,6 +19,9 @@ from context_search_tool.graph_lifecycle import (
     read_graph_capability,
 )
 from context_search_tool.index_lock import INDEX_LOCK_FILENAME, exclusive_index_lock
+from context_search_tool.indexer import build_v5_index_snapshot
+from context_search_tool.java_graph import JavaGraphProducer
+from context_search_tool.scanner import scan_workspace_v5
 from context_search_tool.sqlite_store import SQLiteStore
 
 
@@ -290,3 +294,193 @@ def test_v4_reader_observes_complete_old_schema_until_migration_commit(
         assert connection.execute(
             "SELECT value FROM index_metadata WHERE key = 'signal_schema_version'"
         ).fetchone()[0] == "5"
+
+
+@pytest.mark.parametrize(
+    "failure_stage",
+    [
+        "stale_committed",
+        "vectors_temp_write",
+        "vectors_file_fsync",
+        "vectors_rename",
+        "vectors_directory_fsync",
+        "ids_temp_write",
+        "ids_file_fsync",
+        "ids_rename",
+        "ids_directory_fsync",
+        "vectors_prepared",
+        "file_write_started",
+        "chunks_persisted",
+        "signals_persisted",
+        "producer_relations_persisted",
+        "source_hash_persisted",
+        "producer_resolver_complete",
+        "associations_complete",
+        "association_resolver_complete",
+        "descriptor_temp_write",
+        "descriptor_file_fsync",
+        "descriptor_rename",
+        "descriptor_directory_fsync",
+        "vector_descriptor_published",
+        "config_temp_write",
+        "config_file_fsync",
+        "config_rename",
+        "config_directory_fsync",
+        "manifest_temp_write",
+        "manifest_file_fsync",
+        "manifest_rename",
+        "manifest_directory_fsync",
+        "external_artifacts_validated",
+        "final_validation",
+        "before_ready_commit",
+    ],
+)
+def test_v5_index_failure_seams_recover_without_partial_ready(
+    tmp_path: Path,
+    failure_stage: str,
+) -> None:
+    repo = tmp_path / failure_stage
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+
+    def fail(stage: str) -> None:
+        if stage == failure_stage:
+            raise RuntimeError(f"fault:{stage}")
+
+    with pytest.raises(RuntimeError, match=f"fault:{failure_stage}"):
+        build_v5_index_snapshot(
+            repo,
+            DEFAULT_CONFIG,
+            graph_plugins=[JavaGraphProducer()],
+            scanner=scan_workspace_v5,
+            fault_hook=fail,
+        )
+
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "stale"
+    assert store.get_metadata(FULL_REINDEX_REQUIRED_KEY) == "1"
+
+    build_v5_index_snapshot(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+        scanner=scan_workspace_v5,
+    )
+
+    assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "ready"
+    assert store.get_metadata(FULL_REINDEX_REQUIRED_KEY) == "0"
+
+
+def test_failure_after_acknowledged_ready_commit_exposes_complete_noop(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+
+    def fail(stage: str) -> None:
+        if stage == "after_ready_commit":
+            raise RuntimeError("acknowledged ready")
+
+    with pytest.raises(RuntimeError, match="acknowledged ready"):
+        build_v5_index_snapshot(
+            repo,
+            DEFAULT_CONFIG,
+            graph_plugins=[JavaGraphProducer()],
+            scanner=scan_workspace_v5,
+            fault_hook=fail,
+        )
+
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "ready"
+    assert store.get_metadata(FULL_REINDEX_REQUIRED_KEY) == "0"
+    summary = build_v5_index_snapshot(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+        scanner=scan_workspace_v5,
+    )
+    assert summary.files_indexed == 0
+
+
+def test_incremental_failure_after_source_hash_cannot_skip_recovery(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App {}\n", encoding="utf-8")
+    build_v5_index_snapshot(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+        scanner=scan_workspace_v5,
+    )
+    source.write_text("class App { int changed; }\n", encoding="utf-8")
+
+    def fail(stage: str) -> None:
+        if stage == "source_hash_persisted":
+            raise RuntimeError("after source hash")
+
+    with pytest.raises(RuntimeError, match="after source hash"):
+        build_v5_index_snapshot(
+            repo,
+            DEFAULT_CONFIG,
+            graph_plugins=[JavaGraphProducer()],
+            scanner=scan_workspace_v5,
+            fault_hook=fail,
+        )
+
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "stale"
+    assert store.get_metadata(FULL_REINDEX_REQUIRED_KEY) == "0"
+    summary = build_v5_index_snapshot(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+        scanner=scan_workspace_v5,
+    )
+    assert summary.files_indexed == 1
+    assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "ready"
+
+
+def test_incremental_failure_after_deletion_recovers_vectors_and_graph(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "Keep.java").write_text("class Keep {}\n", encoding="utf-8")
+    removed = repo / "Remove.java"
+    removed.write_text("class Remove {}\n", encoding="utf-8")
+    build_v5_index_snapshot(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+        scanner=scan_workspace_v5,
+    )
+    removed.unlink()
+
+    def fail(stage: str) -> None:
+        if stage == "deletion_persisted":
+            raise RuntimeError("after deletion")
+
+    with pytest.raises(RuntimeError, match="after deletion"):
+        build_v5_index_snapshot(
+            repo,
+            DEFAULT_CONFIG,
+            graph_plugins=[JavaGraphProducer()],
+            scanner=scan_workspace_v5,
+            fault_hook=fail,
+        )
+
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "stale"
+    summary = build_v5_index_snapshot(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+        scanner=scan_workspace_v5,
+    )
+    assert summary.files_indexed == 1
+    assert store.source_file_for_path(Path("Remove.java")) is None
+    assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "ready"
