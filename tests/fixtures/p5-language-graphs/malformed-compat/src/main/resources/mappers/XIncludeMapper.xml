@@ -1,0 +1,3 @@
+<mapper xmlns:xi="http://www.w3.org/2001/XInclude" namespace="com.example.broken.BrokenMapper">
+  <xi:include href="outside.xml"/>
+</mapper>

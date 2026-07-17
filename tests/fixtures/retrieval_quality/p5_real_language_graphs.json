@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "profile_configs": {
+    "p5_real_language_graphs": {
+      "retrieval": {
+        "final_top_k": 12
+      },
+      "embedding": {
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384
+      },
+      "query_planner": {
+        "enabled": false
+      }
+    }
+  },
+  "repos": [
+    {
+      "repo_key": "spring_petclinic",
+      "source_url": "https://github.com/spring-projects/spring-petclinic.git",
+      "source_commit": "51045d1648dad955df586150c1a1a6e22ef400c2",
+      "checkout_dir": "spring-petclinic",
+      "profiles": [
+        "p5_real_language_graphs"
+      ],
+      "queries": [
+        {
+          "id": "petclinic-owner-graph",
+          "query": "OwnerController owner flow repository domain tests",
+          "profiles": [
+            "p5_real_language_graphs"
+          ],
+          "mode": "exploration",
+          "tags": [
+            "p5",
+            "real_project",
+            "java_spring"
+          ],
+          "gate": "required",
+          "initial_absent": [
+            "src/main/java/org/springframework/samples/petclinic/owner/OwnerRepository.java",
+            "src/test/java/org/springframework/samples/petclinic/owner/OwnerControllerTests.java"
+          ],
+          "final_present": [
+            "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java",
+            "src/main/java/org/springframework/samples/petclinic/owner/OwnerRepository.java",
+            "src/main/java/org/springframework/samples/petclinic/owner/Owner.java",
+            "src/test/java/org/springframework/samples/petclinic/owner/OwnerControllerTests.java"
+          ],
+          "expected_termination_reason": "satisfied",
+          "maximum_retrieval_call_count": 3,
+          "minimum_goal_gain": 2,
+          "maximum_final_noise_items": 0,
+          "maximum_pack_bytes": 65536
+        }
+      ]
+    },
+    {
+      "repo_key": "program_tool",
+      "snapshot_path": "tests/fixtures/real_projects/program_tool",
+      "profiles": [
+        "p5_real_language_graphs"
+      ],
+      "queries": [
+        {
+          "id": "program-tool-qrcode-graph",
+          "query": "QRCode page route service type",
+          "profiles": [
+            "p5_real_language_graphs"
+          ],
+          "mode": "exploration",
+          "tags": [
+            "p5",
+            "real_project",
+            "frontend"
+          ],
+          "gate": "required",
+          "initial_absent": [
+            "src/router/index.ts",
+            "src/utils/qrcodeUtils.ts"
+          ],
+          "final_present": [
+            "src/router/index.ts"
+          ],
+          "final_at_least": {
+            "matchers": [
+              "src/views/qrcode/QRCodeTool.vue",
+              "src/utils/qrcodeUtils.ts",
+              "src/types/qrcode-reader.d.ts"
+            ],
+            "min_matches": 2
+          },
+          "final_forbidden": [
+            "package-lock.json",
+            "pnpm-lock.yaml"
+          ],
+          "final_noise_matchers": [
+            "package-lock.json",
+            "pnpm-lock.yaml"
+          ],
+          "expected_termination_reason": "satisfied",
+          "maximum_retrieval_call_count": 3,
+          "minimum_goal_gain": 2,
+          "maximum_final_noise_items": 0,
+          "maximum_pack_bytes": 65536
+        }
+      ]
+    }
+  ]
+}

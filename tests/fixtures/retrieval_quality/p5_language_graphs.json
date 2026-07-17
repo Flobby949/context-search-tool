@@ -1,0 +1,357 @@
+{
+  "schema_version": 1,
+  "profile_configs": {
+    "p5_language_graphs": {
+      "retrieval": {
+        "final_top_k": 12
+      },
+      "embedding": {
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384
+      },
+      "query_planner": {
+        "enabled": false
+      }
+    }
+  },
+  "repos": [
+    {
+      "repo_key": "p5_java_spring",
+      "snapshot_path": "tests/fixtures/p5-language-graphs/java-spring",
+      "profiles": [
+        "p5_language_graphs"
+      ],
+      "queries": [
+        {
+          "id": "java-owner-flow-results",
+          "query": "OrderController create order business flow",
+          "profiles": [
+            "p5_language_graphs"
+          ],
+          "mode": "results",
+          "tags": [
+            "p5",
+            "java_spring",
+            "graph"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {"path": "src/main/java/com/example/order/OrderController.java", "top_k": 12},
+            {"path": "src/main/java/com/example/order/OrderService.java", "top_k": 12},
+            {"path": "src/main/java/com/example/order/DefaultOrderService.java", "top_k": 12},
+            {"path": "src/main/java/com/example/order/OrderMapper.java", "top_k": 12},
+            {"path": "src/main/resources/mappers/OrderMapper.xml", "top_k": 12},
+            {"path": "src/main/java/com/example/order/Order.java", "top_k": 12},
+            {"path": "src/main/java/com/example/order/OrderDto.java", "top_k": 12}
+          ]
+        },
+        {
+          "id": "java-owner-flow-context",
+          "query": "OrderController create order business flow",
+          "profiles": [
+            "p5_language_graphs"
+          ],
+          "mode": "context_pack",
+          "tags": [
+            "p5",
+            "java_spring",
+            "context_pack"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {"path": "src/main/java/com/example/order/OrderController.java", "top_k": 12},
+            {"path": "src/main/java/com/example/order/OrderService.java", "top_k": 12},
+            {"path": "src/main/java/com/example/order/DefaultOrderService.java", "top_k": 12},
+            {"path": "src/main/java/com/example/order/OrderMapper.java", "top_k": 12},
+            {"path": "src/main/resources/mappers/OrderMapper.xml", "top_k": 12},
+            {"path": "src/main/java/com/example/order/Order.java", "top_k": 12},
+            {"path": "src/main/java/com/example/order/OrderDto.java", "top_k": 12}
+          ],
+          "expected_context_groups": {
+            "entrypoints": [
+              {"path": "src/main/java/com/example/order/OrderController.java"}
+            ],
+            "implementations": [
+              {"path": "src/main/java/com/example/order/DefaultOrderService.java"},
+              {"path": "src/main/java/com/example/order/OrderMapper.java"},
+              {"path": "src/main/resources/mappers/OrderMapper.xml"}
+            ],
+            "related_types": [
+              {"path": "src/main/java/com/example/order/OrderService.java"},
+              {"path": "src/main/java/com/example/order/Order.java"},
+              {"path": "src/main/java/com/example/order/OrderDto.java"}
+            ]
+          },
+          "expected_pack_status": "ready",
+          "minimum_context_confidence": "medium",
+          "maximum_pack_bytes": 65536,
+          "maximum_truncated_items": 0
+        },
+        {
+          "id": "java-owner-test",
+          "query": "OrderController tests",
+          "profiles": [
+            "p5_language_graphs"
+          ],
+          "mode": "results",
+          "tags": [
+            "p5",
+            "java",
+            "test"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {"path": "src/test/java/com/example/order/OrderControllerTests.java", "top_k": 12}
+          ],
+          "absent_top_k": [
+            {"path": "src/test/java/com/example/order/UnrelatedWorkerTests.java", "top_k": 12},
+            {"path": "nested/src/test/java/com/example/check/NestedOwnerCheck.java", "top_k": 12}
+          ]
+        },
+        {
+          "id": "java-overload-ambiguous",
+          "query": "OverloadCaller same arity dispatch",
+          "profiles": [
+            "p5_language_graphs"
+          ],
+          "mode": "results",
+          "tags": [
+            "p5",
+            "java",
+            "ambiguous"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {"path": "src/main/java/com/example/order/OverloadCaller.java", "top_k": 12}
+          ],
+          "notes": "raw graph assertion: OverloadService has no graph_calls_match"
+        },
+        {
+          "id": "java-duplicate-unit",
+          "query": "OrderController service implementation",
+          "profiles": [
+            "p5_language_graphs"
+          ],
+          "mode": "results",
+          "tags": [
+            "p5",
+            "java",
+            "project_unit"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {"path": "src/main/java/com/example/order/OrderService.java", "top_k": 12}
+          ],
+          "absent_top_k": [
+            {"path": "nested/src/main/java/com/example/nested/NestedOnly.java", "top_k": 12}
+          ]
+        }
+      ]
+    },
+    {
+      "repo_key": "p5_vue",
+      "snapshot_path": "tests/fixtures/p5-language-graphs/vue",
+      "profiles": [
+        "p5_language_graphs"
+      ],
+      "queries": [
+        {
+          "id": "vue-route-flow",
+          "query": "orders route view service store type",
+          "profiles": [
+            "p5_language_graphs"
+          ],
+          "mode": "results",
+          "tags": [
+            "p5",
+            "vue",
+            "graph"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {"path": "src/router/index.ts", "top_k": 12},
+            {"path": "src/views/OrdersView.vue", "top_k": 12},
+            {"path": "src/services/orderService.ts", "top_k": 12},
+            {"path": "src/stores/orderStore.ts", "top_k": 12},
+            {"path": "src/types/order.ts", "top_k": 12}
+          ]
+        },
+        {
+          "id": "vue-route-exploration",
+          "query": "orders page route type",
+          "profiles": [
+            "p5_language_graphs"
+          ],
+          "mode": "exploration",
+          "tags": [
+            "p5",
+            "vue",
+            "exploration"
+          ],
+          "gate": "required",
+          "initial_absent": [
+            "src/router/index.ts",
+            "src/types/order.ts"
+          ],
+          "final_present": [
+            "src/router/index.ts",
+            "src/types/order.ts"
+          ],
+          "final_forbidden": [
+            "package-lock.json",
+            "pnpm-lock.yaml"
+          ],
+          "final_noise_matchers": [
+            "package-lock.json",
+            "pnpm-lock.yaml"
+          ],
+          "expected_termination_reason": "satisfied",
+          "maximum_retrieval_call_count": 3,
+          "minimum_goal_gain": 2,
+          "maximum_final_noise_items": 0,
+          "maximum_pack_bytes": 65536
+        },
+        {
+          "id": "frontend-ambiguous-import",
+          "query": "AmbiguousImporter exact dependency",
+          "profiles": [
+            "p5_language_graphs"
+          ],
+          "mode": "results",
+          "tags": [
+            "p5",
+            "frontend",
+            "ambiguous"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {"path": "src/AmbiguousImporter.ts", "top_k": 12}
+          ],
+          "notes": "raw graph assertion: tied targets have no graph_imports_match"
+        }
+      ]
+    },
+    {
+      "repo_key": "p5_react",
+      "snapshot_path": "tests/fixtures/p5-language-graphs/react",
+      "profiles": [
+        "p5_language_graphs"
+      ],
+      "queries": [
+        {
+          "id": "react-route-flow",
+          "query": "orders react route page service type",
+          "profiles": [
+            "p5_language_graphs"
+          ],
+          "mode": "results",
+          "tags": [
+            "p5",
+            "react",
+            "graph"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {"path": "src/routes.tsx", "top_k": 12},
+            {"path": "src/pages/OrdersPage.tsx", "top_k": 12},
+            {"path": "src/services/orderService.ts", "top_k": 12},
+            {"path": "src/types/order.ts", "top_k": 12}
+          ]
+        }
+      ]
+    },
+    {
+      "repo_key": "p5_generic_tests",
+      "snapshot_path": "tests/fixtures/p5-language-graphs/generic-tests",
+      "profiles": [
+        "p5_language_graphs"
+      ],
+      "queries": [
+        {
+          "id": "generic-test-conventions",
+          "query": "tests for cross language payment modules",
+          "profiles": [
+            "p5_language_graphs"
+          ],
+          "mode": "results",
+          "tags": [
+            "p5",
+            "test",
+            "cross_language"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {"path": "java/src/main/java/com/example/payment/PaymentService.java", "top_k": 12},
+            {"path": "java/src/test/java/com/example/payment/PaymentServiceTests.java", "top_k": 12},
+            {"path": "go/payment.go", "top_k": 12},
+            {"path": "go/payment_test.go", "top_k": 12},
+            {"path": "rust/src/payment.rs", "top_k": 12},
+            {"path": "rust/tests/payment.rs", "top_k": 12},
+            {"path": "python/src/payment.py", "top_k": 12},
+            {"path": "python/tests/test_payment.py", "top_k": 12},
+            {"path": "javascript/src/payment.js", "top_k": 12},
+            {"path": "javascript/tests/payment.test.js", "top_k": 12},
+            {"path": "typescript/src/payment.ts", "top_k": 12},
+            {"path": "typescript/src/__tests__/payment.spec.ts", "top_k": 12}
+          ],
+          "absent_top_k": [
+            {"path": "java/src/main/java/com/example/contest/Contest.java", "top_k": 12},
+            {"path": "java/src/main/java/com/example/generated/ArchiveWorker.java", "top_k": 12},
+            {"path": "go/testdata/archive.go", "top_k": 12},
+            {"path": "rust/src/generated/archive.rs", "top_k": 12},
+            {"path": "python/src/generated/archive.py", "top_k": 12},
+            {"path": "javascript/src/generated/archive.js", "top_k": 12},
+            {"path": "typescript/src/generated/archive.ts", "top_k": 12}
+          ]
+        }
+      ]
+    },
+    {
+      "repo_key": "p5_malformed_compat",
+      "snapshot_path": "tests/fixtures/p5-language-graphs/malformed-compat",
+      "profiles": [
+        "p5_language_graphs"
+      ],
+      "queries": [
+        {
+          "id": "malformed-fallback",
+          "query": "MalformedUniqueLexicalToken",
+          "profiles": [
+            "p5_language_graphs"
+          ],
+          "mode": "results",
+          "tags": [
+            "p5",
+            "malformed",
+            "fallback"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {"path": "src/main/java/com/example/broken/MalformedJava.java", "top_k": 1}
+          ],
+          "absent_top_k": [
+            {"path": "src/main/java/com/example/znegative/ParserNeighbour.java", "top_k": 12}
+          ]
+        },
+        {
+          "id": "no-legal-edge-compat",
+          "query": "StandaloneUniqueToken",
+          "profiles": [
+            "p5_language_graphs"
+          ],
+          "mode": "results",
+          "tags": [
+            "p5",
+            "compatibility",
+            "no_edge"
+          ],
+          "gate": "required",
+          "expected_top_k": [
+            {"path": "src/main/java/com/example/standalone/Standalone.java", "top_k": 1}
+          ]
+        }
+      ]
+    }
+  ]
+}

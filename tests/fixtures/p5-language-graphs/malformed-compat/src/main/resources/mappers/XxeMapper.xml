@@ -1,0 +1,4 @@
+<!DOCTYPE mapper [<!ENTITY secret SYSTEM "file:///etc/passwd">]>
+<mapper namespace="com.example.broken.BrokenMapper">
+  <select id="selectBroken">&secret;</select>
+</mapper>

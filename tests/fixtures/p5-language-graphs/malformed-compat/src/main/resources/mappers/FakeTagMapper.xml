@@ -1,0 +1,4 @@
+<mapper namespace="com.example.broken.BrokenMapper">
+  <!-- <select id="commented">select 1</select> -->
+  <![CDATA[<select id="cdata">select 2</select>]]>
+</mapper>

@@ -1,0 +1,4 @@
+<!DOCTYPE mapper [<!ELEMENT mapper ANY>]>
+<mapper namespace="com.example.broken.BrokenMapper">
+  <select id="selectBroken">select 1</select>
+</mapper>

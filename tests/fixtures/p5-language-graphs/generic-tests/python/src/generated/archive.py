@@ -1,0 +1,2 @@
+def store() -> None:
+    pass

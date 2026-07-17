@@ -1,0 +1,3 @@
+<mapper namespace="com.example.broken.BrokenMapper">
+  <select id="selectBroken">
+</mapper>
