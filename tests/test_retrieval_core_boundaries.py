@@ -192,6 +192,11 @@ MODULE_ID_CONSUMERS = {
     "test_association.py",
 }
 
+JAVA_AST_ALLOWED_INTERNAL_IMPORTS = {
+    "context_search_tool.syntax_parsers",
+    "context_search_tool.tokenizer",
+}
+
 
 def _is_p4_public_facade_reference(reference: dict[str, object]) -> bool:
     path = reference["file"]
@@ -358,6 +363,25 @@ def _import_roots(path: Path) -> set[str]:
     return roots
 
 
+def _internal_imports(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imports: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.update(
+                alias.name
+                for alias in node.names
+                if alias.name.startswith("context_search_tool")
+            )
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.module
+            and node.module.startswith("context_search_tool")
+        ):
+            imports.add(node.module)
+    return imports
+
+
 def _reconstructs_core_module_id(path: Path) -> bool:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
@@ -457,6 +481,31 @@ def test_graph_contract_is_pure_and_module_identity_is_shared() -> None:
         path = package / name
         if path.exists():
             assert not _reconstructs_core_module_id(path), path
+
+
+def test_java_ast_imports_are_leaf_only_and_production_registration_is_dormant() -> None:
+    package = ROOT / "src" / "context_search_tool"
+    java_ast = package / "java_ast.py"
+    assert _internal_imports(java_ast) <= JAVA_AST_ALLOWED_INTERNAL_IMPORTS
+
+    for name in ("plugins.py", "indexer.py", "java_plugin.py", "retrieval.py"):
+        assert "context_search_tool.java_ast" not in _internal_imports(package / name)
+
+    plugins_tree = ast.parse((package / "plugins.py").read_text(encoding="utf-8"))
+    default_plugins = next(
+        node
+        for node in plugins_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "default_plugins"
+    )
+    imports = {
+        node.module
+        for node in ast.walk(default_plugins)
+        if isinstance(node, ast.ImportFrom)
+    }
+    returns = [node for node in ast.walk(default_plugins) if isinstance(node, ast.Return)]
+    assert imports == {"context_search_tool.java_plugin"}
+    assert len(returns) == 1
+    assert ast.unparse(returns[0].value) == "[JavaPlugin()]"
 
 
 def test_retrieval_defines_only_the_exact_supported_facade() -> None:
