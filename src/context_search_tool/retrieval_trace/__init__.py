@@ -4,6 +4,17 @@ from context_search_tool.retrieval_trace.collector import (
     StageToken,
     StoppedStage,
 )
+from context_search_tool.retrieval_trace.exploration import (
+    ExplorationGoalRecord,
+    ExplorationLimits,
+    ExplorationProbe,
+    ExplorationRound,
+    ExplorationTrace,
+    ExplorationTraceError,
+    FinalEvidence,
+    canonical_exploration_trace_bytes,
+    exploration_trace_payload,
+)
 from context_search_tool.retrieval_trace.models import (
     RetrievalTrace,
     RetrievalTraceError,
@@ -26,6 +37,13 @@ from context_search_tool.retrieval_trace.serialization import retrieval_trace_pa
 
 __all__ = [
     "CANONICAL_TRACE_STAGES",
+    "ExplorationGoalRecord",
+    "ExplorationLimits",
+    "ExplorationProbe",
+    "ExplorationRound",
+    "ExplorationTrace",
+    "ExplorationTraceError",
+    "FinalEvidence",
     "RetrievalTrace",
     "RetrievalTraceCollector",
     "RetrievalTraceError",
@@ -44,5 +62,7 @@ __all__ = [
     "TraceSelectionReason",
     "TraceStage",
     "TraceTerminationReason",
+    "canonical_exploration_trace_bytes",
+    "exploration_trace_payload",
     "retrieval_trace_payload",
 ]
