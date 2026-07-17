@@ -11,6 +11,7 @@ from p4_exploration_identity import (
     assert_protected_inputs,
     load_input_manifest,
     load_raw_p4_catalog,
+    quality_projection_bytes,
 )
 
 
@@ -63,3 +64,35 @@ def test_frozen_outputs_contain_no_timing_or_absolute_workspace_values() -> None
 
     for payload in payloads:
         visit(payload)
+
+
+def test_quality_projection_bytes_use_the_frozen_pretty_json_format() -> None:
+    report = {
+        "generated_at": "ignored",
+        "profile": "p2_context_pack",
+        "command_args": {"fixture_path": "ignored", "keep": True},
+        "tool": {"git_commit": "ignored", "version": "1"},
+        "fixture": {"path": "ignored", "sha256": "abc"},
+        "repos": [{"key": "fixture", "workspace": "/private/ignored"}],
+        "latency_ms": 1,
+    }
+
+    assert quality_projection_bytes(report) == (
+        b'{\n'
+        b'  "profile": "p2_context_pack",\n'
+        b'  "command_args": {\n'
+        b'    "keep": true\n'
+        b'  },\n'
+        b'  "tool": {\n'
+        b'    "version": "1"\n'
+        b'  },\n'
+        b'  "fixture": {\n'
+        b'    "sha256": "abc"\n'
+        b'  },\n'
+        b'  "repos": [\n'
+        b'    {\n'
+        b'      "key": "fixture"\n'
+        b'    }\n'
+        b'  ]\n'
+        b'}\n'
+    )

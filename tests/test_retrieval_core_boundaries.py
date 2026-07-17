@@ -106,6 +106,53 @@ FINAL_ALLOWED_EDGES = {
     "tracing": {"types", "ordering", "selection", "retrieval_trace"},
 }
 
+EXPECTED_P4_PRODUCTION_DIFF = {
+    "src/context_search_tool/cli.py",
+    "src/context_search_tool/exploration/__init__.py",
+    "src/context_search_tool/exploration/fusion.py",
+    "src/context_search_tool/exploration/goals.py",
+    "src/context_search_tool/exploration/models.py",
+    "src/context_search_tool/exploration/options.py",
+    "src/context_search_tool/exploration/probes.py",
+    "src/context_search_tool/exploration/runner.py",
+    "src/context_search_tool/formatters.py",
+    "src/context_search_tool/mcp_server.py",
+    "src/context_search_tool/mcp_tools.py",
+    "src/context_search_tool/quality/aggregate.py",
+    "src/context_search_tool/quality/cases.py",
+    "src/context_search_tool/quality/compare.py",
+    "src/context_search_tool/quality/metrics.py",
+    "src/context_search_tool/quality/reports.py",
+    "src/context_search_tool/quality/runner.py",
+    "src/context_search_tool/retrieval_trace/__init__.py",
+    "src/context_search_tool/retrieval_trace/exploration.py",
+}
+P4_IMPLEMENTATION_BASELINE = "b827707325d0ee4e9c6b2bcb3dee39955c263822"
+THIS_TEST_PATH = "tests/test_retrieval_core_boundaries.py"
+
+
+def _is_p4_public_facade_reference(reference: dict[str, object]) -> bool:
+    path = reference["file"]
+    return isinstance(path, str) and (
+        path.startswith("tests/test_exploration_")
+        or path == "tests/test_quality_p4.py"
+        or path == "tests/generate_p4_exploration_manifest.py"
+    )
+
+
+def _normalize_current_test_reference(
+    reference: dict[str, object],
+    frozen: list[dict[str, object]],
+) -> dict[str, object]:
+    if reference["file"] != THIS_TEST_PATH:
+        return reference
+    frozen_reference = next(
+        item for item in frozen if item["file"] == THIS_TEST_PATH
+    )
+    assert reference["count"] == frozen_reference["count"]
+    assert reference["syntax_kinds"] == frozen_reference["syntax_kinds"]
+    return frozen_reference
+
 
 def _field_contract(cls: type[object]) -> list[tuple[str, str]]:
     values = []
@@ -344,6 +391,24 @@ def test_migration_ledger_matches_complete_ast_and_dynamic_inventory() -> None:
     for actual_row in actual["rows"]:
         frozen_row = frozen_by_symbol[actual_row["old_symbol"]]
         actual_row["resolved_task"] = frozen_row["resolved_task"]
+        if frozen_row["disposition"] != "supported_facade":
+            continue
+
+        frozen_references = frozen_row["direct_references"]
+        actual_references = [
+            _normalize_current_test_reference(item, frozen_references)
+            for item in actual_row["direct_references"]
+        ]
+        assert all(item in actual_references for item in frozen_references)
+        additions = [
+            item for item in actual_references if item not in frozen_references
+        ]
+        assert all(_is_p4_public_facade_reference(item) for item in additions)
+        assert actual_row["remaining"] == frozen_row["remaining"] + sum(
+            item["count"] for item in additions
+        )
+        actual_row["direct_references"] = frozen_references
+        actual_row["remaining"] = frozen_row["remaining"]
 
     assert actual == frozen
     assert all(row["disposition"] in {"supported_facade", "migrate"} for row in frozen["rows"])
@@ -385,7 +450,7 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
             "git",
             "diff",
             "--name-only",
-            IMPLEMENTATION_COMMIT,
+            P4_IMPLEMENTATION_BASELINE,
             "--",
             "src/context_search_tool",
         ),
@@ -395,11 +460,7 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         text=True,
     ).stdout.splitlines()
 
-    assert all(
-        path == "src/context_search_tool/retrieval.py"
-        or path.startswith("src/context_search_tool/retrieval_core/")
-        for path in changed
-    )
+    assert set(changed) == EXPECTED_P4_PRODUCTION_DIFF
 
     source_status = subprocess.run(
         (
@@ -422,16 +483,19 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
             "git",
             "diff",
             "--exit-code",
-            IMPLEMENTATION_COMMIT,
+            P4_IMPLEMENTATION_BASELINE,
             "--",
-            "src/context_search_tool/retrieval_trace",
+            "src/context_search_tool/retrieval.py",
+            "src/context_search_tool/retrieval_core",
             "src/context_search_tool/context_pack",
-            "src/context_search_tool/quality",
+            "src/context_search_tool/retrieval_trace/models.py",
+            "src/context_search_tool/retrieval_trace/serialization.py",
+            "src/context_search_tool/retrieval_trace/collector.py",
             "src/context_search_tool/models.py",
-            "src/context_search_tool/cli.py",
-            "src/context_search_tool/formatters.py",
-            "src/context_search_tool/mcp_server.py",
-            "src/context_search_tool/mcp_tools.py",
+            "src/context_search_tool/indexer.py",
+            "src/context_search_tool/scanner.py",
+            "src/context_search_tool/chunker.py",
+            "src/context_search_tool/manifest.py",
         ),
         cwd=ROOT,
         check=True,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import subprocess
@@ -297,6 +298,18 @@ def canonical_json_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def quality_projection_bytes(report: dict[str, Any]) -> bytes:
+    return (
+        json.dumps(
+            p0_p3_quality_projection(report),
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=2,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
 def verify_final_junit(path: Path) -> dict[str, int]:
     baseline = json.loads(P3_BASELINE_PATH.read_text(encoding="utf-8"))[
         "test_evidence"
@@ -342,3 +355,29 @@ def verify_final_junit(path: Path) -> dict[str, int]:
         "xfails": len(xfails),
         "p4_tests": p4_tests,
     }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    projection = commands.add_parser("quality-projection")
+    projection.add_argument("--input", required=True, type=Path)
+    projection.add_argument("--output", required=True, type=Path)
+
+    junit = commands.add_parser("verify-junit")
+    junit.add_argument("--candidate", required=True, type=Path)
+    junit.add_argument("--baseline-passed", required=True, type=int)
+
+    args = parser.parse_args()
+    if args.command == "quality-projection":
+        report = json.loads(args.input.read_text(encoding="utf-8"))
+        args.output.write_bytes(quality_projection_bytes(report))
+        return
+    if args.baseline_passed != BASELINE_PASSED:
+        parser.error(f"--baseline-passed must equal {BASELINE_PASSED}")
+    print(json.dumps(verify_final_junit(args.candidate), sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
