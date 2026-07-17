@@ -1,0 +1,297 @@
+{
+  "schema_version": 1,
+  "implementation_baseline": "b827707325d0ee4e9c6b2bcb3dee39955c263822",
+  "p3_baseline_blob": "a0011178b2671af25cb0853260c8fdcf586acee0",
+  "p0_p3_catalog_blob": "8bbe4d560fec1499aa1f436af929b8a6bb6f3eac",
+  "p0_p3_catalog_sha256": "ac7a9789098d088a22b8ddc78fed3128695cbb257923de8686c41fbcfa5824c5",
+  "inputs": [
+    {
+      "path": "tests/fixtures/retrieval_quality/p4_exploration.json",
+      "sha256": "110e806dead64b4270d579a955abc8f56d7ec23d1b1f61a7951e5e4309a9c683"
+    },
+    {
+      "path": "tests/fixtures/p4-exploration-java",
+      "sha256": "e77a9cc13b70c2bc83ce97ab1181a0ed6a32b10ee7041a64bb61250ba2e88fba"
+    },
+    {
+      "path": "tests/fixtures/p4-exploration-duplicate",
+      "sha256": "ad9214c1cef18aa6b205487ac8dba62c565ea1f62edccb29f2394807a1b4a242"
+    },
+    {
+      "path": "tests/fixtures/real_projects/program_tool",
+      "sha256": "d67190cda56426f21bbc26e19fd16ef9b83b6eb1de62dec865c3040b59a7c663"
+    }
+  ],
+  "quality_projections": [
+    {
+      "path": "tests/fixtures/p4_exploration/p0_p3_p2_quality.json",
+      "sha256": "57d42f4c1ef17aa4fe28176c08189cf286a1b8a68baea5b63518515c88d0e1b5"
+    },
+    {
+      "path": "tests/fixtures/p4_exploration/p0_p3_ci_quality.json",
+      "sha256": "5b581b2eb66379a377392c91dad156f6ccff12556a2aa853f368aa41a1b41013"
+    }
+  ],
+  "assays": [
+    {
+      "case_id": "owner-registration-form-test",
+      "repo_key": "p4_exploration_java",
+      "query": "OwnerController owner registration form validation test",
+      "config": {
+        "retrieval": {
+          "final_top_k": 1
+        },
+        "embedding": {
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384
+        },
+        "query_planner": {
+          "enabled": false
+        },
+        "context_lines": null,
+        "full_file": false
+      },
+      "initial": {
+        "result_paths": [
+          "src/main/java/com/example/owner/OwnerController.java"
+        ],
+        "evidence_anchor_paths": [],
+        "context_pack_item_paths": [
+          "src/main/java/com/example/owner/OwnerController.java"
+        ],
+        "context_pack_status": "partial"
+      },
+      "probes": [
+        {
+          "query": "VIEWS_OWNER_CREATE_OR_UPDATE_FORM form template view",
+          "result_paths": [
+            "src/main/java/com/example/owner/OwnerController.java",
+            "src/main/resources/templates/owners/createOrUpdateOwnerForm.html",
+            "src/main/java/com/example/owner/OwnerService.java",
+            "src/main/java/com/example/owner/Owner.java",
+            "src/test/java/com/example/owner/OwnerControllerTests.java"
+          ],
+          "evidence_anchor_paths": []
+        },
+        {
+          "query": "OwnerController test",
+          "result_paths": [
+            "src/main/java/com/example/owner/OwnerController.java",
+            "src/test/java/com/example/owner/OwnerControllerTests.java",
+            "src/main/java/com/example/owner/OwnerService.java",
+            "src/main/java/com/example/owner/Owner.java",
+            "src/main/resources/templates/owners/createOrUpdateOwnerForm.html"
+          ],
+          "evidence_anchor_paths": []
+        }
+      ],
+      "expected_required_goal_classes": [
+        {
+          "token_class": "form/page/view",
+          "category": "entrypoints",
+          "accepted_roles": [
+            "view",
+            "view_page",
+            "layout_component"
+          ]
+        },
+        {
+          "token_class": "test",
+          "category": "tests",
+          "accepted_roles": [
+            "test"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "qrcode-route-service-type",
+      "repo_key": "p4_exploration_frontend",
+      "query": "QRCode page route service type",
+      "config": {
+        "retrieval": {
+          "final_top_k": 1
+        },
+        "embedding": {
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384
+        },
+        "query_planner": {
+          "enabled": false
+        },
+        "context_lines": null,
+        "full_file": false
+      },
+      "initial": {
+        "result_paths": [
+          "src/views/qrcode/QRCodeTool.vue"
+        ],
+        "evidence_anchor_paths": [],
+        "context_pack_item_paths": [
+          "src/views/qrcode/QRCodeTool.vue"
+        ],
+        "context_pack_status": "partial"
+      },
+      "probes": [
+        {
+          "query": "QRCodeTool route controller endpoint",
+          "result_paths": [
+            "src/router/index.ts",
+            "src/views/qrcode/QRCodeTool.vue",
+            "src/views/ai/AiChat.vue",
+            "src/views/json/JsonToEntity.vue",
+            "src/views/communication/MqttTool.vue",
+            "package.json"
+          ],
+          "evidence_anchor_paths": []
+        },
+        {
+          "query": "qrcodeUtils service implementation",
+          "result_paths": [
+            "src/utils/qrcodeUtils.ts",
+            "src/views/qrcode/QRCodeTool.vue",
+            "src/utils/imageUtils.ts",
+            "src/views/ai/AiChat.vue",
+            "src/utils/markdownUtils.ts",
+            "src/views/communication/MqttTool.vue"
+          ],
+          "evidence_anchor_paths": []
+        }
+      ],
+      "expected_required_goal_classes": [
+        {
+          "token_class": "route/controller/entrypoint",
+          "category": "entrypoints",
+          "accepted_roles": [
+            "entrypoint",
+            "router",
+            "command",
+            "handler",
+            "route_config"
+          ]
+        },
+        {
+          "token_class": "implementation/service/repository",
+          "category": "implementations",
+          "accepted_roles": [
+            "service_impl",
+            "executor",
+            "engine",
+            "middleware",
+            "storage",
+            "service",
+            "repository",
+            "source_adapter",
+            "state_store",
+            "composable",
+            "scheduler",
+            "utility",
+            "store",
+            "shared_component"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "owner-controller-exact",
+      "repo_key": "p4_exploration_java",
+      "query": "OwnerController",
+      "config": {
+        "retrieval": {
+          "final_top_k": 1
+        },
+        "embedding": {
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384
+        },
+        "query_planner": {
+          "enabled": false
+        },
+        "context_lines": null,
+        "full_file": false
+      },
+      "initial": {
+        "result_paths": [
+          "src/main/java/com/example/owner/OwnerController.java"
+        ],
+        "evidence_anchor_paths": [],
+        "context_pack_item_paths": [
+          "src/main/java/com/example/owner/OwnerController.java"
+        ],
+        "context_pack_status": "ready"
+      },
+      "probes": [],
+      "expected_required_goal_classes": [
+        {
+          "token_class": "route/controller/entrypoint",
+          "category": "entrypoints",
+          "accepted_roles": [
+            "entrypoint",
+            "router",
+            "command",
+            "handler",
+            "route_config"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "solo-controller-no-gain",
+      "repo_key": "p4_exploration_duplicate",
+      "query": "SoloController test",
+      "config": {
+        "retrieval": {
+          "final_top_k": 1
+        },
+        "embedding": {
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384
+        },
+        "query_planner": {
+          "enabled": false
+        },
+        "context_lines": null,
+        "full_file": false
+      },
+      "initial": {
+        "result_paths": [
+          "src/main/java/com/example/solo/SoloController.java"
+        ],
+        "evidence_anchor_paths": [],
+        "context_pack_item_paths": [
+          "src/main/java/com/example/solo/SoloController.java"
+        ],
+        "context_pack_status": "partial"
+      },
+      "probes": [
+        {
+          "query": "SOLO_VIEW test",
+          "result_paths": [
+            "src/main/java/com/example/solo/SoloController.java"
+          ],
+          "evidence_anchor_paths": []
+        },
+        {
+          "query": "showSolo test",
+          "result_paths": [
+            "src/main/java/com/example/solo/SoloController.java"
+          ],
+          "evidence_anchor_paths": []
+        }
+      ],
+      "expected_required_goal_classes": [
+        {
+          "token_class": "test",
+          "category": "tests",
+          "accepted_roles": [
+            "test"
+          ]
+        }
+      ]
+    }
+  ]
+}

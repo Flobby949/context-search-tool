@@ -1,0 +1,227 @@
+{
+  "schema_version": 1,
+  "profile_configs": {
+    "p4_exploration": {
+      "embedding": {
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384
+      },
+      "query_planner": {
+        "enabled": false
+      }
+    },
+    "p4_real_exploration": {
+      "retrieval": {
+        "final_top_k": 12
+      },
+      "embedding": {
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384
+      },
+      "query_planner": {
+        "enabled": false
+      }
+    }
+  },
+  "repos": [
+    {
+      "repo_key": "p4_exploration_java",
+      "snapshot_path": "tests/fixtures/p4-exploration-java",
+      "profiles": [
+        "p4_exploration"
+      ],
+      "default_config": {
+        "retrieval": {
+          "final_top_k": 1
+        }
+      },
+      "queries": [
+        {
+          "id": "owner-registration-form-test",
+          "query": "OwnerController owner registration form validation test",
+          "profiles": [
+            "p4_exploration"
+          ],
+          "mode": "exploration",
+          "tags": [
+            "p4",
+            "java_spring",
+            "gain"
+          ],
+          "gate": "required",
+          "initial_absent": [
+            "src/test/java/com/example/owner/OwnerControllerTests.java",
+            "src/main/resources/templates/owners/createOrUpdateOwnerForm.html"
+          ],
+          "final_present": [
+            "src/test/java/com/example/owner/OwnerControllerTests.java",
+            "src/main/resources/templates/owners/createOrUpdateOwnerForm.html"
+          ],
+          "expected_termination_reason": "satisfied",
+          "maximum_retrieval_call_count": 3,
+          "minimum_goal_gain": 2,
+          "maximum_final_noise_items": 0,
+          "maximum_pack_bytes": 65536
+        },
+        {
+          "id": "owner-controller-exact",
+          "query": "OwnerController",
+          "profiles": [
+            "p4_exploration"
+          ],
+          "mode": "exploration",
+          "tags": [
+            "p4",
+            "java_spring",
+            "exact"
+          ],
+          "gate": "required",
+          "final_present": [
+            "src/main/java/com/example/owner/OwnerController.java"
+          ],
+          "expected_termination_reason": "exact_satisfied",
+          "expected_retrieval_call_count": 1,
+          "maximum_retrieval_call_count": 1,
+          "minimum_goal_gain": 0,
+          "maximum_final_noise_items": 0,
+          "maximum_pack_bytes": 65536
+        }
+      ]
+    },
+    {
+      "repo_key": "p4_exploration_frontend",
+      "snapshot_path": "tests/fixtures/real_projects/program_tool",
+      "profiles": [
+        "p4_exploration"
+      ],
+      "default_config": {
+        "retrieval": {
+          "final_top_k": 1
+        }
+      },
+      "queries": [
+        {
+          "id": "qrcode-route-service-type",
+          "query": "QRCode page route service type",
+          "profiles": [
+            "p4_exploration"
+          ],
+          "mode": "exploration",
+          "tags": [
+            "p4",
+            "frontend",
+            "gain"
+          ],
+          "gate": "required",
+          "initial_absent": [
+            "src/router/index.ts",
+            "src/utils/qrcodeUtils.ts"
+          ],
+          "final_at_least": {
+            "matchers": [
+              "src/router/index.ts",
+              "src/utils/qrcodeUtils.ts",
+              "src/types/qrcode-reader.d.ts"
+            ],
+            "min_matches": 2
+          },
+          "final_forbidden": [
+            "package-lock.json",
+            "pnpm-lock.yaml"
+          ],
+          "final_noise_matchers": [
+            "package-lock.json",
+            "pnpm-lock.yaml"
+          ],
+          "expected_termination_reason": "satisfied",
+          "maximum_retrieval_call_count": 3,
+          "minimum_goal_gain": 2,
+          "maximum_final_noise_items": 0,
+          "maximum_pack_bytes": 65536
+        }
+      ]
+    },
+    {
+      "repo_key": "p4_exploration_duplicate",
+      "snapshot_path": "tests/fixtures/p4-exploration-duplicate",
+      "profiles": [
+        "p4_exploration"
+      ],
+      "default_config": {
+        "retrieval": {
+          "final_top_k": 1
+        }
+      },
+      "queries": [
+        {
+          "id": "solo-controller-no-gain",
+          "query": "SoloController test",
+          "profiles": [
+            "p4_exploration"
+          ],
+          "mode": "exploration",
+          "tags": [
+            "p4",
+            "java_spring",
+            "no_gain"
+          ],
+          "gate": "required",
+          "final_present": [
+            "src/main/java/com/example/solo/SoloController.java"
+          ],
+          "final_forbidden": [
+            "src/test/**/SoloControllerTest.java"
+          ],
+          "expected_termination_reason": "no_marginal_gain",
+          "expected_retrieval_call_count": 2,
+          "maximum_retrieval_call_count": 2,
+          "minimum_goal_gain": 0,
+          "maximum_final_noise_items": 0,
+          "maximum_pack_bytes": 65536
+        }
+      ]
+    },
+    {
+      "repo_key": "spring_petclinic",
+      "source_url": "https://github.com/spring-projects/spring-petclinic.git",
+      "source_commit": "51045d1648dad955df586150c1a1a6e22ef400c2",
+      "checkout_dir": "spring-petclinic",
+      "profiles": [
+        "p4_real_exploration"
+      ],
+      "queries": [
+        {
+          "id": "owner-registration-form-validation",
+          "query": "owner registration form validation flow",
+          "profiles": [
+            "p4_real_exploration"
+          ],
+          "mode": "exploration",
+          "tags": [
+            "p4",
+            "real_project",
+            "java_spring"
+          ],
+          "gate": "required",
+          "initial_absent": [
+            "src/test/java/org/springframework/samples/petclinic/owner/OwnerControllerTests.java",
+            "src/main/resources/templates/owners/createOrUpdateOwnerForm.html"
+          ],
+          "final_present": [
+            "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java",
+            "src/main/java/org/springframework/samples/petclinic/owner/Owner.java",
+            "src/test/java/org/springframework/samples/petclinic/owner/OwnerControllerTests.java",
+            "src/main/resources/templates/owners/createOrUpdateOwnerForm.html"
+          ],
+          "expected_termination_reason": "satisfied",
+          "maximum_retrieval_call_count": 3,
+          "minimum_goal_gain": 2,
+          "maximum_final_noise_items": 0,
+          "maximum_pack_bytes": 65536
+        }
+      ]
+    }
+  ]
+}

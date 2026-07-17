@@ -1,0 +1,2881 @@
+{
+  "schema_version": 2,
+  "command_args": {
+    "profile": "p2_context_pack"
+  },
+  "tool": {
+    "name": "context-search-tool"
+  },
+  "fixture": {
+    "sha256": "sha256:ac7a9789098d088a22b8ddc78fed3128695cbb257923de8686c41fbcfa5824c5",
+    "schema_version": 1,
+    "fixture_case_count": 53,
+    "run_case_count": 5
+  },
+  "profile": "p2_context_pack",
+  "config": {
+    "config_hash": "sha256:1d7f6c7dfb6155f88766c9a51f491309bf2e9cfe5a6f63d8b9844bdb0ce68a09",
+    "embedding": {
+      "provider": "hash",
+      "model": "hash-v1",
+      "dimensions": 384,
+      "base_url": null,
+      "api_key_env": null
+    }
+  },
+  "planner": {
+    "enabled": false,
+    "provider": "ollama",
+    "model": "qwen3.5:4b-mlx",
+    "base_url": "http://localhost:11434",
+    "use_system_proxy": false,
+    "timeout_seconds": 8.0,
+    "max_rewritten_queries": 4,
+    "max_keywords": 12,
+    "max_symbol_hints": 8
+  },
+  "aggregate": {
+    "total": 5,
+    "selected": 5,
+    "attempted": 5,
+    "executed": 5,
+    "passed": 5,
+    "failed": 0,
+    "skipped": 0,
+    "known_gaps": 0,
+    "informational": 0,
+    "errors": 0,
+    "metrics": {
+      "overall": {
+        "content_bytes": {
+          "count": 5,
+          "mean": 4145.2
+        },
+        "context_completeness": {
+          "count": 5,
+          "mean": 1.0
+        },
+        "evidence_need_completeness": {
+          "count": 5,
+          "mean": 0.8
+        },
+        "evidence_need_count": {
+          "count": 5,
+          "mean": 2.6
+        },
+        "expected_coverage_top5_ratio": {
+          "count": 4,
+          "mean": 1.0
+        },
+        "hit_at_1": {
+          "successes": 4,
+          "total": 4,
+          "rate": 1.0
+        },
+        "hit_at_10": {
+          "successes": 4,
+          "total": 4,
+          "rate": 1.0
+        },
+        "hit_at_3": {
+          "successes": 4,
+          "total": 4,
+          "rate": 1.0
+        },
+        "hit_at_5": {
+          "successes": 4,
+          "total": 4,
+          "rate": 1.0
+        },
+        "matched_required_need_count": {
+          "count": 5,
+          "mean": 1.6
+        },
+        "mrr": {
+          "count": 5,
+          "mean": 0.8
+        },
+        "noise_top10": {
+          "count": 5,
+          "mean": 0.0
+        },
+        "noise_top5": {
+          "count": 5,
+          "mean": 0.0
+        },
+        "omitted_item_count": {
+          "count": 5,
+          "mean": 0.0
+        },
+        "pack_bytes": {
+          "count": 5,
+          "mean": 8040.4
+        },
+        "preferred_rank_pass": {
+          "successes": 5,
+          "total": 5,
+          "rate": 1.0
+        },
+        "recall_at_10": {
+          "count": 4,
+          "mean": 1.0
+        },
+        "recall_at_5": {
+          "count": 4,
+          "mean": 1.0
+        },
+        "required_need_count": {
+          "count": 5,
+          "mean": 1.8
+        },
+        "result_count": {
+          "count": 5,
+          "mean": 4.8
+        },
+        "top_score": {
+          "count": 4,
+          "mean": 1.6837499999999999
+        },
+        "truncated_item_count": {
+          "count": 5,
+          "mean": 0.0
+        }
+      },
+      "by_repository": {
+        "context_pack_docs": {
+          "content_bytes": {
+            "count": 1,
+            "mean": 93.0
+          },
+          "context_completeness": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "evidence_need_completeness": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "evidence_need_count": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "matched_required_need_count": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "mrr": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "noise_top10": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "noise_top5": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "omitted_item_count": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "pack_bytes": {
+            "count": 1,
+            "mean": 1460.0
+          },
+          "preferred_rank_pass": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "required_need_count": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "result_count": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "truncated_item_count": {
+            "count": 1,
+            "mean": 0.0
+          }
+        },
+        "context_pack_frontend": {
+          "content_bytes": {
+            "count": 1,
+            "mean": 16610.0
+          },
+          "context_completeness": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "evidence_need_completeness": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "evidence_need_count": {
+            "count": 1,
+            "mean": 4.0
+          },
+          "expected_coverage_top5_ratio": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "hit_at_1": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_10": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_3": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_5": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "matched_required_need_count": {
+            "count": 1,
+            "mean": 3.0
+          },
+          "mrr": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "noise_top10": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "noise_top5": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "omitted_item_count": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "pack_bytes": {
+            "count": 1,
+            "mean": 24483.0
+          },
+          "preferred_rank_pass": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "recall_at_10": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "recall_at_5": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "required_need_count": {
+            "count": 1,
+            "mean": 3.0
+          },
+          "result_count": {
+            "count": 1,
+            "mean": 12.0
+          },
+          "top_score": {
+            "count": 1,
+            "mean": 1.885
+          },
+          "truncated_item_count": {
+            "count": 1,
+            "mean": 0.0
+          }
+        },
+        "context_pack_java": {
+          "content_bytes": {
+            "count": 3,
+            "mean": 1341.0
+          },
+          "context_completeness": {
+            "count": 3,
+            "mean": 1.0
+          },
+          "evidence_need_completeness": {
+            "count": 3,
+            "mean": 0.6666666666666666
+          },
+          "evidence_need_count": {
+            "count": 3,
+            "mean": 2.6666666666666665
+          },
+          "expected_coverage_top5_ratio": {
+            "count": 3,
+            "mean": 1.0
+          },
+          "hit_at_1": {
+            "successes": 3,
+            "total": 3,
+            "rate": 1.0
+          },
+          "hit_at_10": {
+            "successes": 3,
+            "total": 3,
+            "rate": 1.0
+          },
+          "hit_at_3": {
+            "successes": 3,
+            "total": 3,
+            "rate": 1.0
+          },
+          "hit_at_5": {
+            "successes": 3,
+            "total": 3,
+            "rate": 1.0
+          },
+          "matched_required_need_count": {
+            "count": 3,
+            "mean": 1.3333333333333333
+          },
+          "mrr": {
+            "count": 3,
+            "mean": 1.0
+          },
+          "noise_top10": {
+            "count": 3,
+            "mean": 0.0
+          },
+          "noise_top5": {
+            "count": 3,
+            "mean": 0.0
+          },
+          "omitted_item_count": {
+            "count": 3,
+            "mean": 0.0
+          },
+          "pack_bytes": {
+            "count": 3,
+            "mean": 4753.0
+          },
+          "preferred_rank_pass": {
+            "successes": 3,
+            "total": 3,
+            "rate": 1.0
+          },
+          "recall_at_10": {
+            "count": 3,
+            "mean": 1.0
+          },
+          "recall_at_5": {
+            "count": 3,
+            "mean": 1.0
+          },
+          "required_need_count": {
+            "count": 3,
+            "mean": 1.6666666666666667
+          },
+          "result_count": {
+            "count": 3,
+            "mean": 4.0
+          },
+          "top_score": {
+            "count": 3,
+            "mean": 1.6166666666666667
+          },
+          "truncated_item_count": {
+            "count": 3,
+            "mean": 0.0
+          }
+        }
+      },
+      "by_tag": {
+        "context_pack": {
+          "content_bytes": {
+            "count": 5,
+            "mean": 4145.2
+          },
+          "context_completeness": {
+            "count": 5,
+            "mean": 1.0
+          },
+          "evidence_need_completeness": {
+            "count": 5,
+            "mean": 0.8
+          },
+          "evidence_need_count": {
+            "count": 5,
+            "mean": 2.6
+          },
+          "expected_coverage_top5_ratio": {
+            "count": 4,
+            "mean": 1.0
+          },
+          "hit_at_1": {
+            "successes": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "hit_at_10": {
+            "successes": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "hit_at_3": {
+            "successes": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "hit_at_5": {
+            "successes": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "matched_required_need_count": {
+            "count": 5,
+            "mean": 1.6
+          },
+          "mrr": {
+            "count": 5,
+            "mean": 0.8
+          },
+          "noise_top10": {
+            "count": 5,
+            "mean": 0.0
+          },
+          "noise_top5": {
+            "count": 5,
+            "mean": 0.0
+          },
+          "omitted_item_count": {
+            "count": 5,
+            "mean": 0.0
+          },
+          "pack_bytes": {
+            "count": 5,
+            "mean": 8040.4
+          },
+          "preferred_rank_pass": {
+            "successes": 5,
+            "total": 5,
+            "rate": 1.0
+          },
+          "recall_at_10": {
+            "count": 4,
+            "mean": 1.0
+          },
+          "recall_at_5": {
+            "count": 4,
+            "mean": 1.0
+          },
+          "required_need_count": {
+            "count": 5,
+            "mean": 1.8
+          },
+          "result_count": {
+            "count": 5,
+            "mean": 4.8
+          },
+          "top_score": {
+            "count": 4,
+            "mean": 1.6837499999999999
+          },
+          "truncated_item_count": {
+            "count": 5,
+            "mean": 0.0
+          }
+        },
+        "documentation": {
+          "content_bytes": {
+            "count": 1,
+            "mean": 93.0
+          },
+          "context_completeness": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "evidence_need_completeness": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "evidence_need_count": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "matched_required_need_count": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "mrr": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "noise_top10": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "noise_top5": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "omitted_item_count": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "pack_bytes": {
+            "count": 1,
+            "mean": 1460.0
+          },
+          "preferred_rank_pass": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "required_need_count": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "result_count": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "truncated_item_count": {
+            "count": 1,
+            "mean": 0.0
+          }
+        },
+        "exact_symbol": {
+          "content_bytes": {
+            "count": 1,
+            "mean": 1341.0
+          },
+          "context_completeness": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "evidence_need_completeness": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "evidence_need_count": {
+            "count": 1,
+            "mean": 3.0
+          },
+          "expected_coverage_top5_ratio": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "hit_at_1": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_10": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_3": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_5": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "matched_required_need_count": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "mrr": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "noise_top10": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "noise_top5": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "omitted_item_count": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "pack_bytes": {
+            "count": 1,
+            "mean": 5048.0
+          },
+          "preferred_rank_pass": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "recall_at_10": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "recall_at_5": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "required_need_count": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "result_count": {
+            "count": 1,
+            "mean": 4.0
+          },
+          "top_score": {
+            "count": 1,
+            "mean": 1.9399999999999997
+          },
+          "truncated_item_count": {
+            "count": 1,
+            "mean": 0.0
+          }
+        },
+        "frontend": {
+          "content_bytes": {
+            "count": 1,
+            "mean": 16610.0
+          },
+          "context_completeness": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "evidence_need_completeness": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "evidence_need_count": {
+            "count": 1,
+            "mean": 4.0
+          },
+          "expected_coverage_top5_ratio": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "hit_at_1": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_10": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_3": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_5": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "matched_required_need_count": {
+            "count": 1,
+            "mean": 3.0
+          },
+          "mrr": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "noise_top10": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "noise_top5": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "omitted_item_count": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "pack_bytes": {
+            "count": 1,
+            "mean": 24483.0
+          },
+          "preferred_rank_pass": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "recall_at_10": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "recall_at_5": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "required_need_count": {
+            "count": 1,
+            "mean": 3.0
+          },
+          "result_count": {
+            "count": 1,
+            "mean": 12.0
+          },
+          "top_score": {
+            "count": 1,
+            "mean": 1.885
+          },
+          "truncated_item_count": {
+            "count": 1,
+            "mean": 0.0
+          }
+        },
+        "java": {
+          "content_bytes": {
+            "count": 2,
+            "mean": 1341.0
+          },
+          "context_completeness": {
+            "count": 2,
+            "mean": 1.0
+          },
+          "evidence_need_completeness": {
+            "count": 2,
+            "mean": 0.5
+          },
+          "evidence_need_count": {
+            "count": 2,
+            "mean": 2.0
+          },
+          "expected_coverage_top5_ratio": {
+            "count": 2,
+            "mean": 1.0
+          },
+          "hit_at_1": {
+            "successes": 2,
+            "total": 2,
+            "rate": 1.0
+          },
+          "hit_at_10": {
+            "successes": 2,
+            "total": 2,
+            "rate": 1.0
+          },
+          "hit_at_3": {
+            "successes": 2,
+            "total": 2,
+            "rate": 1.0
+          },
+          "hit_at_5": {
+            "successes": 2,
+            "total": 2,
+            "rate": 1.0
+          },
+          "matched_required_need_count": {
+            "count": 2,
+            "mean": 0.5
+          },
+          "mrr": {
+            "count": 2,
+            "mean": 1.0
+          },
+          "noise_top10": {
+            "count": 2,
+            "mean": 0.0
+          },
+          "noise_top5": {
+            "count": 2,
+            "mean": 0.0
+          },
+          "omitted_item_count": {
+            "count": 2,
+            "mean": 0.0
+          },
+          "pack_bytes": {
+            "count": 2,
+            "mean": 4723.5
+          },
+          "preferred_rank_pass": {
+            "successes": 2,
+            "total": 2,
+            "rate": 1.0
+          },
+          "recall_at_10": {
+            "count": 2,
+            "mean": 1.0
+          },
+          "recall_at_5": {
+            "count": 2,
+            "mean": 1.0
+          },
+          "required_need_count": {
+            "count": 2,
+            "mean": 1.0
+          },
+          "result_count": {
+            "count": 2,
+            "mean": 4.0
+          },
+          "top_score": {
+            "count": 2,
+            "mean": 1.5299999999999998
+          },
+          "truncated_item_count": {
+            "count": 2,
+            "mean": 0.0
+          }
+        },
+        "java_spring": {
+          "content_bytes": {
+            "count": 1,
+            "mean": 1341.0
+          },
+          "context_completeness": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "evidence_need_completeness": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "evidence_need_count": {
+            "count": 1,
+            "mean": 4.0
+          },
+          "expected_coverage_top5_ratio": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "hit_at_1": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_10": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_3": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_5": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "matched_required_need_count": {
+            "count": 1,
+            "mean": 3.0
+          },
+          "mrr": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "noise_top10": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "noise_top5": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "omitted_item_count": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "pack_bytes": {
+            "count": 1,
+            "mean": 4812.0
+          },
+          "preferred_rank_pass": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "recall_at_10": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "recall_at_5": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "required_need_count": {
+            "count": 1,
+            "mean": 3.0
+          },
+          "result_count": {
+            "count": 1,
+            "mean": 4.0
+          },
+          "top_score": {
+            "count": 1,
+            "mean": 1.79
+          },
+          "truncated_item_count": {
+            "count": 1,
+            "mean": 0.0
+          }
+        },
+        "p2": {
+          "content_bytes": {
+            "count": 5,
+            "mean": 4145.2
+          },
+          "context_completeness": {
+            "count": 5,
+            "mean": 1.0
+          },
+          "evidence_need_completeness": {
+            "count": 5,
+            "mean": 0.8
+          },
+          "evidence_need_count": {
+            "count": 5,
+            "mean": 2.6
+          },
+          "expected_coverage_top5_ratio": {
+            "count": 4,
+            "mean": 1.0
+          },
+          "hit_at_1": {
+            "successes": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "hit_at_10": {
+            "successes": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "hit_at_3": {
+            "successes": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "hit_at_5": {
+            "successes": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "matched_required_need_count": {
+            "count": 5,
+            "mean": 1.6
+          },
+          "mrr": {
+            "count": 5,
+            "mean": 0.8
+          },
+          "noise_top10": {
+            "count": 5,
+            "mean": 0.0
+          },
+          "noise_top5": {
+            "count": 5,
+            "mean": 0.0
+          },
+          "omitted_item_count": {
+            "count": 5,
+            "mean": 0.0
+          },
+          "pack_bytes": {
+            "count": 5,
+            "mean": 8040.4
+          },
+          "preferred_rank_pass": {
+            "successes": 5,
+            "total": 5,
+            "rate": 1.0
+          },
+          "recall_at_10": {
+            "count": 4,
+            "mean": 1.0
+          },
+          "recall_at_5": {
+            "count": 4,
+            "mean": 1.0
+          },
+          "required_need_count": {
+            "count": 5,
+            "mean": 1.8
+          },
+          "result_count": {
+            "count": 5,
+            "mean": 4.8
+          },
+          "top_score": {
+            "count": 4,
+            "mean": 1.6837499999999999
+          },
+          "truncated_item_count": {
+            "count": 5,
+            "mean": 0.0
+          }
+        },
+        "test": {
+          "content_bytes": {
+            "count": 1,
+            "mean": 1341.0
+          },
+          "context_completeness": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "evidence_need_completeness": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "evidence_need_count": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "expected_coverage_top5_ratio": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "hit_at_1": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_10": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_3": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_5": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "matched_required_need_count": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "mrr": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "noise_top10": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "noise_top5": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "omitted_item_count": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "pack_bytes": {
+            "count": 1,
+            "mean": 4399.0
+          },
+          "preferred_rank_pass": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "recall_at_10": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "recall_at_5": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "required_need_count": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "result_count": {
+            "count": 1,
+            "mean": 4.0
+          },
+          "top_score": {
+            "count": 1,
+            "mean": 1.12
+          },
+          "truncated_item_count": {
+            "count": 1,
+            "mean": 0.0
+          }
+        },
+        "vue": {
+          "content_bytes": {
+            "count": 1,
+            "mean": 16610.0
+          },
+          "context_completeness": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "evidence_need_completeness": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "evidence_need_count": {
+            "count": 1,
+            "mean": 4.0
+          },
+          "expected_coverage_top5_ratio": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "hit_at_1": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_10": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_3": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "hit_at_5": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "matched_required_need_count": {
+            "count": 1,
+            "mean": 3.0
+          },
+          "mrr": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "noise_top10": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "noise_top5": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "omitted_item_count": {
+            "count": 1,
+            "mean": 0.0
+          },
+          "pack_bytes": {
+            "count": 1,
+            "mean": 24483.0
+          },
+          "preferred_rank_pass": {
+            "successes": 1,
+            "total": 1,
+            "rate": 1.0
+          },
+          "recall_at_10": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "recall_at_5": {
+            "count": 1,
+            "mean": 1.0
+          },
+          "required_need_count": {
+            "count": 1,
+            "mean": 3.0
+          },
+          "result_count": {
+            "count": 1,
+            "mean": 12.0
+          },
+          "top_score": {
+            "count": 1,
+            "mean": 1.885
+          },
+          "truncated_item_count": {
+            "count": 1,
+            "mean": 0.0
+          }
+        }
+      },
+      "by_profile": {
+        "p2_context_pack": {
+          "content_bytes": {
+            "count": 5,
+            "mean": 4145.2
+          },
+          "context_completeness": {
+            "count": 5,
+            "mean": 1.0
+          },
+          "evidence_need_completeness": {
+            "count": 5,
+            "mean": 0.8
+          },
+          "evidence_need_count": {
+            "count": 5,
+            "mean": 2.6
+          },
+          "expected_coverage_top5_ratio": {
+            "count": 4,
+            "mean": 1.0
+          },
+          "hit_at_1": {
+            "successes": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "hit_at_10": {
+            "successes": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "hit_at_3": {
+            "successes": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "hit_at_5": {
+            "successes": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "matched_required_need_count": {
+            "count": 5,
+            "mean": 1.6
+          },
+          "mrr": {
+            "count": 5,
+            "mean": 0.8
+          },
+          "noise_top10": {
+            "count": 5,
+            "mean": 0.0
+          },
+          "noise_top5": {
+            "count": 5,
+            "mean": 0.0
+          },
+          "omitted_item_count": {
+            "count": 5,
+            "mean": 0.0
+          },
+          "pack_bytes": {
+            "count": 5,
+            "mean": 8040.4
+          },
+          "preferred_rank_pass": {
+            "successes": 5,
+            "total": 5,
+            "rate": 1.0
+          },
+          "recall_at_10": {
+            "count": 4,
+            "mean": 1.0
+          },
+          "recall_at_5": {
+            "count": 4,
+            "mean": 1.0
+          },
+          "required_need_count": {
+            "count": 5,
+            "mean": 1.8
+          },
+          "result_count": {
+            "count": 5,
+            "mean": 4.8
+          },
+          "top_score": {
+            "count": 4,
+            "mean": 1.6837499999999999
+          },
+          "truncated_item_count": {
+            "count": 5,
+            "mean": 0.0
+          }
+        }
+      },
+      "by_embedding": {
+        "hash/hash-v1": {
+          "content_bytes": {
+            "count": 5,
+            "mean": 4145.2
+          },
+          "context_completeness": {
+            "count": 5,
+            "mean": 1.0
+          },
+          "evidence_need_completeness": {
+            "count": 5,
+            "mean": 0.8
+          },
+          "evidence_need_count": {
+            "count": 5,
+            "mean": 2.6
+          },
+          "expected_coverage_top5_ratio": {
+            "count": 4,
+            "mean": 1.0
+          },
+          "hit_at_1": {
+            "successes": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "hit_at_10": {
+            "successes": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "hit_at_3": {
+            "successes": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "hit_at_5": {
+            "successes": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "matched_required_need_count": {
+            "count": 5,
+            "mean": 1.6
+          },
+          "mrr": {
+            "count": 5,
+            "mean": 0.8
+          },
+          "noise_top10": {
+            "count": 5,
+            "mean": 0.0
+          },
+          "noise_top5": {
+            "count": 5,
+            "mean": 0.0
+          },
+          "omitted_item_count": {
+            "count": 5,
+            "mean": 0.0
+          },
+          "pack_bytes": {
+            "count": 5,
+            "mean": 8040.4
+          },
+          "preferred_rank_pass": {
+            "successes": 5,
+            "total": 5,
+            "rate": 1.0
+          },
+          "recall_at_10": {
+            "count": 4,
+            "mean": 1.0
+          },
+          "recall_at_5": {
+            "count": 4,
+            "mean": 1.0
+          },
+          "required_need_count": {
+            "count": 5,
+            "mean": 1.8
+          },
+          "result_count": {
+            "count": 5,
+            "mean": 4.8
+          },
+          "top_score": {
+            "count": 4,
+            "mean": 1.6837499999999999
+          },
+          "truncated_item_count": {
+            "count": 5,
+            "mean": 0.0
+          }
+        }
+      }
+    }
+  },
+  "repos": [
+    {
+      "repo_key": "context_pack_java",
+      "source": {
+        "type": "snapshot_path",
+        "locator": "tests/fixtures/context-pack-java",
+        "git_commit": null,
+        "content_hash": "sha256:e633ce49d7c638a789f08010ba2a51d04a5e2e4c8a78357a889c138ed9b696c5"
+      },
+      "config": {
+        "config_hash": "sha256:1d7f6c7dfb6155f88766c9a51f491309bf2e9cfe5a6f63d8b9844bdb0ce68a09",
+        "index": {
+          "include": [],
+          "exclude": [],
+          "max_file_bytes": 500000,
+          "max_full_file_bytes": 200000
+        },
+        "retrieval": {
+          "semantic_top_k": 80,
+          "lexical_top_k": 80,
+          "final_top_k": 12,
+          "context_before_lines": 8,
+          "context_after_lines": 12
+        },
+        "embedding": {
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "base_url": null,
+          "api_key_env": null
+        },
+        "query_planner": {
+          "enabled": false,
+          "provider": "ollama",
+          "model": "qwen3.5:4b-mlx",
+          "base_url": "http://localhost:11434",
+          "use_system_proxy": false,
+          "timeout_seconds": 8.0,
+          "max_rewritten_queries": 4,
+          "max_keywords": 12,
+          "max_symbol_hints": 8
+        }
+      },
+      "index": {
+        "status": "ok",
+        "manifest_schema_version": 1,
+        "embedding_config_hash": "5ab1cee713aff995519814538508a44cece92c285a746094e1cab8b86c7745be",
+        "config_hash": "sha256:1d7f6c7dfb6155f88766c9a51f491309bf2e9cfe5a6f63d8b9844bdb0ce68a09",
+        "files_indexed": 4,
+        "chunks_indexed": 4
+      }
+    },
+    {
+      "repo_key": "context_pack_frontend",
+      "source": {
+        "type": "snapshot_path",
+        "locator": "tests/fixtures/real_projects/program_tool",
+        "git_commit": null,
+        "content_hash": "sha256:c58ea2acbee02a811d199effb0f21fb2199bcd65334398cbb052659f2006b1b1"
+      },
+      "config": {
+        "config_hash": "sha256:1d7f6c7dfb6155f88766c9a51f491309bf2e9cfe5a6f63d8b9844bdb0ce68a09",
+        "index": {
+          "include": [],
+          "exclude": [],
+          "max_file_bytes": 500000,
+          "max_full_file_bytes": 200000
+        },
+        "retrieval": {
+          "semantic_top_k": 80,
+          "lexical_top_k": 80,
+          "final_top_k": 12,
+          "context_before_lines": 8,
+          "context_after_lines": 12
+        },
+        "embedding": {
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "base_url": null,
+          "api_key_env": null
+        },
+        "query_planner": {
+          "enabled": false,
+          "provider": "ollama",
+          "model": "qwen3.5:4b-mlx",
+          "base_url": "http://localhost:11434",
+          "use_system_proxy": false,
+          "timeout_seconds": 8.0,
+          "max_rewritten_queries": 4,
+          "max_keywords": 12,
+          "max_symbol_hints": 8
+        }
+      },
+      "index": {
+        "status": "ok",
+        "manifest_schema_version": 1,
+        "embedding_config_hash": "5ab1cee713aff995519814538508a44cece92c285a746094e1cab8b86c7745be",
+        "config_hash": "sha256:1d7f6c7dfb6155f88766c9a51f491309bf2e9cfe5a6f63d8b9844bdb0ce68a09",
+        "files_indexed": 19,
+        "chunks_indexed": 22
+      }
+    },
+    {
+      "repo_key": "context_pack_docs",
+      "source": {
+        "type": "snapshot_path",
+        "locator": "tests/fixtures/context-pack-docs",
+        "git_commit": null,
+        "content_hash": "sha256:c30ce7756ee3608f7acaa74369738ba5ff8f5c6986ddbfe4921dc63c67b7b592"
+      },
+      "config": {
+        "config_hash": "sha256:1d7f6c7dfb6155f88766c9a51f491309bf2e9cfe5a6f63d8b9844bdb0ce68a09",
+        "index": {
+          "include": [],
+          "exclude": [],
+          "max_file_bytes": 500000,
+          "max_full_file_bytes": 200000
+        },
+        "retrieval": {
+          "semantic_top_k": 80,
+          "lexical_top_k": 80,
+          "final_top_k": 12,
+          "context_before_lines": 8,
+          "context_after_lines": 12
+        },
+        "embedding": {
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "base_url": null,
+          "api_key_env": null
+        },
+        "query_planner": {
+          "enabled": false,
+          "provider": "ollama",
+          "model": "qwen3.5:4b-mlx",
+          "base_url": "http://localhost:11434",
+          "use_system_proxy": false,
+          "timeout_seconds": 8.0,
+          "max_rewritten_queries": 4,
+          "max_keywords": 12,
+          "max_symbol_hints": 8
+        }
+      },
+      "index": {
+        "status": "ok",
+        "manifest_schema_version": 1,
+        "embedding_config_hash": "5ab1cee713aff995519814538508a44cece92c285a746094e1cab8b86c7745be",
+        "config_hash": "sha256:1d7f6c7dfb6155f88766c9a51f491309bf2e9cfe5a6f63d8b9844bdb0ce68a09",
+        "files_indexed": 1,
+        "chunks_indexed": 1
+      }
+    }
+  ],
+  "cases": [
+    {
+      "repo_key": "context_pack_java",
+      "case_id": "workspace-page-flow",
+      "query": "workspace page flow controller service dto",
+      "tags": [
+        "p2",
+        "java_spring",
+        "context_pack"
+      ],
+      "gate": "required",
+      "attempted": true,
+      "known_gap_reason": "",
+      "expanded_tokens": [
+        "workspace",
+        "page",
+        "flow",
+        "controller",
+        "service",
+        "dto"
+      ],
+      "planner": {
+        "status": "disabled",
+        "rewritten_queries": [],
+        "grep_keywords": [],
+        "symbol_hints": [],
+        "discarded_hints": [],
+        "provider": "",
+        "model": "",
+        "prompt_version": "",
+        "prompt_hash": "",
+        "repo_profile_hash": "",
+        "repo_profile_truncated": false
+      },
+      "query_variants": [
+        {
+          "variant_id": "original",
+          "text": "workspace page flow controller service dto",
+          "source": "original"
+        }
+      ],
+      "variant_retrieval_status": "original_only",
+      "context_pack": {
+        "status": "ready",
+        "confidence": "high"
+      },
+      "status": "pass",
+      "metrics": {
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "hit_at_5": true,
+        "hit_at_10": true,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr": 1.0,
+        "expected_coverage_top5": {
+          "count": 3,
+          "ratio": 1.0
+        },
+        "preferred_rank_pass": true,
+        "noise_top5": 0,
+        "noise_top10": 0,
+        "entrypoint_rank": null,
+        "cross_language_success": null,
+        "result_count": 4,
+        "top_score": 1.79,
+        "context_completeness": 1.0,
+        "evidence_need_count": 4,
+        "required_need_count": 3,
+        "matched_required_need_count": 3,
+        "evidence_need_completeness": 1.0,
+        "pack_bytes": 4812,
+        "content_bytes": 1341,
+        "truncated_item_count": 0,
+        "omitted_item_count": 0
+      },
+      "top_results": [
+        {
+          "rank": 1,
+          "path": "src/main/java/com/example/workspace/controller/WorkspaceController.java",
+          "score": 1.79,
+          "score_parts": {
+            "semantic": 0.176336407661438,
+            "lexical": 4.999992729470702,
+            "path_symbol": 4.25,
+            "direct_text": 0.8333333333333334,
+            "direct_text_hits": 5.0,
+            "signal": 0.6666666666666666,
+            "token_coverage": 0.8333333333333334,
+            "plugin_boost": 0.03,
+            "file_role_source_boost": 0.03,
+            "path_role_hint_boost": 0.14,
+            "effective_semantic": 0.176336407661438,
+            "role_boost": 0.18,
+            "role_exact_match_boost": 0.12,
+            "combined_score": 2.742816539914799,
+            "rerank_score": 1.79,
+            "evidence_priority": 0.0,
+            "role_priority": 0.0
+          },
+          "reasons": [
+            "rerank_score=1.79 (original_direct)",
+            "semantic match",
+            "lexical match",
+            "path/symbol match",
+            "signal match",
+            "direct text match",
+            "business role boost",
+            "role exact match boost",
+            "path role hint match",
+            "token coverage",
+            "java plugin boost",
+            "source file role boost",
+            "endpoint signal match",
+            "implementation chain match"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.176336407661438
+            }
+          ]
+        },
+        {
+          "rank": 2,
+          "path": "src/main/java/com/example/workspace/service/impl/WorkspaceServiceImpl.java",
+          "score": 1.442909356123235,
+          "score_parts": {
+            "semantic": 0.20254789292812347,
+            "lexical": 3.9999935503333983,
+            "path_symbol": 3.25,
+            "direct_text": 0.6666666666666666,
+            "direct_text_hits": 4.0,
+            "signal": 0.5,
+            "token_coverage": 0.6666666666666666,
+            "plugin_boost": 0.03,
+            "file_role_source_boost": 0.03,
+            "path_role_hint_boost": 0.14,
+            "effective_semantic": 0.20254789292812347,
+            "role_boost": 0.12,
+            "impl_match_boost": 0.18,
+            "combined_score": 2.20223306202715,
+            "rerank_score": 1.442909356123235,
+            "evidence_priority": 0.0,
+            "role_priority": 1.0
+          },
+          "reasons": [
+            "rerank_score=1.44 (original_direct)",
+            "semantic match",
+            "lexical match",
+            "path/symbol match",
+            "signal match",
+            "direct text match",
+            "business role boost",
+            "path role hint match",
+            "service implementation exact match boost",
+            "token coverage",
+            "java plugin boost",
+            "source file role boost",
+            "implementation chain match"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.20254789292812347
+            }
+          ]
+        },
+        {
+          "rank": 3,
+          "path": "src/main/java/com/example/workspace/dto/WorkspaceDto.java",
+          "score": 1.2027673520606101,
+          "score_parts": {
+            "semantic": 0.08804509788751602,
+            "lexical": 1.999996513264232,
+            "path_symbol": 2.0,
+            "direct_text": 0.6,
+            "direct_text_hits": 2.0,
+            "signal": 0.3333333333333333,
+            "token_coverage": 0.3333333333333333,
+            "plugin_boost": 0.03,
+            "file_role_source_boost": 0.03,
+            "java_field_context_match": 0.12,
+            "java_method_context_match": 0.14,
+            "path_role_hint_boost": 0.14,
+            "effective_semantic": 0.08804509788751602,
+            "role_boost": 0.04,
+            "role_exact_match_boost": 0.24,
+            "combined_score": 1.5984239321541918,
+            "rerank_score": 1.2027673520606101,
+            "evidence_priority": 0.0,
+            "role_priority": 3.0
+          },
+          "reasons": [
+            "rerank_score=1.20 (original_direct)",
+            "semantic match",
+            "lexical match",
+            "path/symbol match",
+            "signal match",
+            "direct text match",
+            "business role boost",
+            "role exact match boost",
+            "path role hint match",
+            "token coverage",
+            "java method context match",
+            "java field context match",
+            "java plugin boost",
+            "source file role boost",
+            "possibly legacy: no active usage signal found"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.08804509788751602
+            }
+          ]
+        },
+        {
+          "rank": 4,
+          "path": "src/test/java/com/example/workspace/controller/WorkspaceControllerTest.java",
+          "score": 0.3120789737609024,
+          "score_parts": {
+            "semantic": 0.2201927751302719,
+            "lexical": 2.999995211365096,
+            "path_symbol": 3.0,
+            "direct_text": 0.6,
+            "direct_text_hits": 3.0,
+            "signal": 0.5,
+            "token_coverage": 0.5,
+            "plugin_boost": 0.03,
+            "penalty": -0.1,
+            "test_penalty": -0.1,
+            "path_role_mismatch_penalty": -0.08,
+            "effective_semantic": 0.2201927751302719,
+            "non_source_artifact_penalty": -0.25,
+            "artifact_display_test_penalty": -0.25,
+            "combined_score": 1.7611048291629234,
+            "rerank_score": 0.3120789737609024,
+            "evidence_priority": 0.0,
+            "role_priority": 5.0,
+            "role_boost": 0.0
+          },
+          "reasons": [
+            "rerank_score=0.31 (original_direct)",
+            "semantic match",
+            "lexical match",
+            "path/symbol match",
+            "signal match",
+            "direct text match",
+            "path role mismatch penalty",
+            "token coverage",
+            "java plugin boost",
+            "test penalty",
+            "generated/test penalty"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.2201927751302719
+            }
+          ]
+        }
+      ],
+      "failures": []
+    },
+    {
+      "repo_key": "context_pack_java",
+      "case_id": "workspace-test-file",
+      "query": "workspace test file",
+      "tags": [
+        "p2",
+        "java",
+        "test",
+        "context_pack"
+      ],
+      "gate": "required",
+      "attempted": true,
+      "known_gap_reason": "",
+      "expanded_tokens": [
+        "workspace",
+        "test",
+        "file"
+      ],
+      "planner": {
+        "status": "disabled",
+        "rewritten_queries": [],
+        "grep_keywords": [],
+        "symbol_hints": [],
+        "discarded_hints": [],
+        "provider": "",
+        "model": "",
+        "prompt_version": "",
+        "prompt_hash": "",
+        "repo_profile_hash": "",
+        "repo_profile_truncated": false
+      },
+      "query_variants": [
+        {
+          "variant_id": "original",
+          "text": "workspace test file",
+          "source": "original"
+        }
+      ],
+      "variant_retrieval_status": "original_only",
+      "context_pack": {
+        "status": "partial",
+        "confidence": "low"
+      },
+      "status": "pass",
+      "metrics": {
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "hit_at_5": true,
+        "hit_at_10": true,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr": 1.0,
+        "expected_coverage_top5": {
+          "count": 1,
+          "ratio": 1.0
+        },
+        "preferred_rank_pass": true,
+        "noise_top5": 0,
+        "noise_top10": 0,
+        "entrypoint_rank": null,
+        "cross_language_success": null,
+        "result_count": 4,
+        "top_score": 1.12,
+        "context_completeness": 1.0,
+        "evidence_need_count": 1,
+        "required_need_count": 1,
+        "matched_required_need_count": 0,
+        "evidence_need_completeness": 0.0,
+        "pack_bytes": 4399,
+        "content_bytes": 1341,
+        "truncated_item_count": 0,
+        "omitted_item_count": 0
+      },
+      "top_results": [
+        {
+          "rank": 1,
+          "path": "src/test/java/com/example/workspace/controller/WorkspaceControllerTest.java",
+          "score": 1.12,
+          "score_parts": {
+            "semantic": 0.3113996386528015,
+            "lexical": 0.27020730775950735,
+            "path_symbol": 2.25,
+            "direct_text": 1.0,
+            "direct_text_hits": 4.0,
+            "signal": 0.6666666666666666,
+            "token_coverage": 1.0,
+            "plugin_boost": 0.03,
+            "penalty": -0.1,
+            "test_penalty": -0.1,
+            "test_artifact_boost": 0.12,
+            "effective_semantic": 0.3113996386528015,
+            "combined_score": 1.5529882948655842,
+            "rerank_score": 1.12,
+            "evidence_priority": 0.0,
+            "role_priority": 5.0,
+            "role_boost": 0.0
+          },
+          "reasons": [
+            "rerank_score=1.12 (original_direct)",
+            "semantic match",
+            "lexical match",
+            "path/symbol match",
+            "signal match",
+            "direct text match",
+            "token coverage",
+            "java plugin boost",
+            "test penalty",
+            "generated/test penalty"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.3113996386528015
+            }
+          ]
+        },
+        {
+          "rank": 2,
+          "path": "src/main/java/com/example/workspace/controller/WorkspaceController.java",
+          "score": 1.0547064782195195,
+          "score_parts": {
+            "semantic": 0.09975094348192215,
+            "path_symbol": 1.0,
+            "direct_text": 0.6,
+            "direct_text_hits": 1.0,
+            "signal": 0.3333333333333333,
+            "token_coverage": 0.3333333333333333,
+            "plugin_boost": 0.03,
+            "file_role_source_boost": 0.03,
+            "effective_semantic": 0.09975094348192215,
+            "role_boost": 0.18,
+            "combined_score": 0.8148630189150572,
+            "rerank_score": 1.0547064782195195,
+            "evidence_priority": 0.0,
+            "role_priority": 0.0
+          },
+          "reasons": [
+            "rerank_score=1.05 (original_direct)",
+            "semantic match",
+            "path/symbol match",
+            "signal match",
+            "direct text match",
+            "business role boost",
+            "token coverage",
+            "java plugin boost",
+            "source file role boost",
+            "endpoint signal match",
+            "implementation chain match"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.09975094348192215
+            }
+          ]
+        },
+        {
+          "rank": 3,
+          "path": "src/main/java/com/example/workspace/service/impl/WorkspaceServiceImpl.java",
+          "score": 1.0401023600638934,
+          "score_parts": {
+            "semantic": 0.14322298765182495,
+            "path_symbol": 1.0,
+            "direct_text": 0.6,
+            "direct_text_hits": 1.0,
+            "signal": 0.3333333333333333,
+            "token_coverage": 0.3333333333333333,
+            "plugin_boost": 0.03,
+            "file_role_source_boost": 0.03,
+            "effective_semantic": 0.14322298765182495,
+            "role_boost": 0.12,
+            "impl_match_boost": 0.18,
+            "combined_score": 0.8387726432085038,
+            "rerank_score": 1.0401023600638934,
+            "evidence_priority": 0.0,
+            "role_priority": 1.0
+          },
+          "reasons": [
+            "rerank_score=1.04 (original_direct)",
+            "semantic match",
+            "path/symbol match",
+            "signal match",
+            "direct text match",
+            "business role boost",
+            "service implementation exact match boost",
+            "token coverage",
+            "java plugin boost",
+            "source file role boost",
+            "implementation chain match"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.14322298765182495
+            }
+          ]
+        },
+        {
+          "rank": 4,
+          "path": "src/main/java/com/example/workspace/dto/WorkspaceDto.java",
+          "score": 0.7734766640008774,
+          "score_parts": {
+            "semantic": 0.12451457232236862,
+            "path_symbol": 1.0,
+            "direct_text": 0.6,
+            "direct_text_hits": 1.0,
+            "signal": 0.3333333333333333,
+            "token_coverage": 0.3333333333333333,
+            "plugin_boost": 0.03,
+            "file_role_source_boost": 0.03,
+            "effective_semantic": 0.12451457232236862,
+            "role_boost": 0.04,
+            "combined_score": 0.8284830147773028,
+            "rerank_score": 0.7734766640008774,
+            "evidence_priority": 0.0,
+            "role_priority": 3.0
+          },
+          "reasons": [
+            "rerank_score=0.77 (original_direct)",
+            "semantic match",
+            "path/symbol match",
+            "signal match",
+            "direct text match",
+            "business role boost",
+            "token coverage",
+            "java plugin boost",
+            "source file role boost",
+            "possibly legacy: no active usage signal found"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.12451457232236862
+            }
+          ]
+        }
+      ],
+      "failures": []
+    },
+    {
+      "repo_key": "context_pack_java",
+      "case_id": "workspace-service-symbol",
+      "query": "WorkspaceServiceImpl",
+      "tags": [
+        "p2",
+        "java",
+        "exact_symbol",
+        "context_pack"
+      ],
+      "gate": "required",
+      "attempted": true,
+      "known_gap_reason": "",
+      "expanded_tokens": [
+        "workspace",
+        "service",
+        "impl"
+      ],
+      "planner": {
+        "status": "disabled",
+        "rewritten_queries": [],
+        "grep_keywords": [],
+        "symbol_hints": [],
+        "discarded_hints": [],
+        "provider": "",
+        "model": "",
+        "prompt_version": "",
+        "prompt_hash": "",
+        "repo_profile_hash": "",
+        "repo_profile_truncated": false
+      },
+      "query_variants": [
+        {
+          "variant_id": "original",
+          "text": "WorkspaceServiceImpl",
+          "source": "original"
+        }
+      ],
+      "variant_retrieval_status": "original_only",
+      "context_pack": {
+        "status": "ready",
+        "confidence": "medium"
+      },
+      "status": "pass",
+      "metrics": {
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "hit_at_5": true,
+        "hit_at_10": true,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr": 1.0,
+        "expected_coverage_top5": {
+          "count": 1,
+          "ratio": 1.0
+        },
+        "preferred_rank_pass": true,
+        "noise_top5": 0,
+        "noise_top10": 0,
+        "entrypoint_rank": null,
+        "cross_language_success": null,
+        "result_count": 4,
+        "top_score": 1.9399999999999997,
+        "context_completeness": 1.0,
+        "evidence_need_count": 3,
+        "required_need_count": 1,
+        "matched_required_need_count": 1,
+        "evidence_need_completeness": 1.0,
+        "pack_bytes": 5048,
+        "content_bytes": 1341,
+        "truncated_item_count": 0,
+        "omitted_item_count": 0
+      },
+      "top_results": [
+        {
+          "rank": 1,
+          "path": "src/main/java/com/example/workspace/service/impl/WorkspaceServiceImpl.java",
+          "score": 1.9399999999999997,
+          "score_parts": {
+            "semantic": 0.12403474003076553,
+            "lexical": 0.9999946944106982,
+            "path_symbol": 3.0,
+            "direct_text": 1.0,
+            "direct_text_hits": 4.0,
+            "signal": 1.0,
+            "token_coverage": 1.0,
+            "plugin_boost": 0.03,
+            "file_role_source_boost": 0.03,
+            "identifier_exact_match_boost": 0.3,
+            "path_role_hint_boost": 0.14,
+            "effective_semantic": 0.12403474003076553,
+            "role_boost": 0.12,
+            "impl_match_boost": 0.18,
+            "combined_score": 2.118217780619595,
+            "rerank_score": 1.9399999999999997,
+            "evidence_priority": 0.0,
+            "role_priority": 1.0
+          },
+          "reasons": [
+            "rerank_score=1.94 (original_direct)",
+            "semantic match",
+            "lexical match",
+            "path/symbol match",
+            "signal match",
+            "direct text match",
+            "business role boost",
+            "explicit identifier match",
+            "path role hint match",
+            "service implementation exact match boost",
+            "token coverage",
+            "java plugin boost",
+            "source file role boost",
+            "implementation chain match"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.12403474003076553
+            }
+          ]
+        },
+        {
+          "rank": 2,
+          "path": "src/main/java/com/example/workspace/controller/WorkspaceController.java",
+          "score": 1.709602641367782,
+          "score_parts": {
+            "semantic": 0.08638684451580048,
+            "lexical": 0.9999958736138693,
+            "path_symbol": 2.25,
+            "direct_text": 1.0,
+            "direct_text_hits": 4.0,
+            "signal": 1.0,
+            "token_coverage": 1.0,
+            "plugin_boost": 0.03,
+            "file_role_source_boost": 0.03,
+            "identifier_exact_match_boost": 0.2,
+            "effective_semantic": 0.08638684451580048,
+            "role_boost": 0.18,
+            "combined_score": 2.075011732887157,
+            "rerank_score": 1.709602641367782,
+            "evidence_priority": 0.0,
+            "role_priority": 0.0
+          },
+          "reasons": [
+            "rerank_score=1.71 (original_direct)",
+            "semantic match",
+            "lexical match",
+            "path/symbol match",
+            "signal match",
+            "direct text match",
+            "business role boost",
+            "explicit identifier match",
+            "token coverage",
+            "java plugin boost",
+            "source file role boost",
+            "endpoint signal match",
+            "implementation chain match"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.08638684451580048
+            }
+          ]
+        },
+        {
+          "rank": 3,
+          "path": "src/main/java/com/example/workspace/dto/WorkspaceDto.java",
+          "score": 0.5187921916969719,
+          "score_parts": {
+            "semantic": 0.0,
+            "path_symbol": 1.0,
+            "direct_text": 0.6,
+            "direct_text_hits": 1.0,
+            "signal": 0.3333333333333333,
+            "token_coverage": 0.3333333333333333,
+            "plugin_boost": 0.03,
+            "file_role_source_boost": 0.03,
+            "path_role_mismatch_penalty": -0.08,
+            "effective_semantic": 0.0,
+            "role_boost": 0.04,
+            "combined_score": 0.76,
+            "rerank_score": 0.5187921916969719,
+            "evidence_priority": 0.0,
+            "role_priority": 3.0
+          },
+          "reasons": [
+            "rerank_score=0.52 (original_direct)",
+            "path/symbol match",
+            "signal match",
+            "direct text match",
+            "business role boost",
+            "path role mismatch penalty",
+            "token coverage",
+            "java plugin boost",
+            "source file role boost",
+            "possibly legacy: no active usage signal found"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.0
+            }
+          ]
+        },
+        {
+          "rank": 4,
+          "path": "src/test/java/com/example/workspace/controller/WorkspaceControllerTest.java",
+          "score": -0.03258015688277337,
+          "score_parts": {
+            "semantic": 0.0,
+            "path_symbol": 1.0,
+            "direct_text": 0.6,
+            "direct_text_hits": 1.0,
+            "signal": 0.3333333333333333,
+            "token_coverage": 0.3333333333333333,
+            "plugin_boost": 0.03,
+            "penalty": -0.1,
+            "test_penalty": -0.1,
+            "path_role_mismatch_penalty": -0.08,
+            "effective_semantic": 0.0,
+            "non_source_artifact_penalty": -0.25,
+            "artifact_display_test_penalty": -0.25,
+            "combined_score": 0.63,
+            "rerank_score": -0.03258015688277337,
+            "evidence_priority": 0.0,
+            "role_priority": 5.0,
+            "role_boost": 0.0
+          },
+          "reasons": [
+            "rerank_score=-0.03 (original_direct)",
+            "path/symbol match",
+            "signal match",
+            "direct text match",
+            "path role mismatch penalty",
+            "token coverage",
+            "java plugin boost",
+            "test penalty",
+            "generated/test penalty"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.0
+            }
+          ]
+        }
+      ],
+      "failures": []
+    },
+    {
+      "repo_key": "context_pack_frontend",
+      "case_id": "qrcode-feature-context",
+      "query": "QRCode page route service type",
+      "tags": [
+        "p2",
+        "frontend",
+        "vue",
+        "context_pack"
+      ],
+      "gate": "required",
+      "attempted": true,
+      "known_gap_reason": "",
+      "expanded_tokens": [
+        "qr",
+        "code",
+        "page",
+        "route",
+        "service",
+        "type"
+      ],
+      "planner": {
+        "status": "disabled",
+        "rewritten_queries": [],
+        "grep_keywords": [],
+        "symbol_hints": [],
+        "discarded_hints": [],
+        "provider": "",
+        "model": "",
+        "prompt_version": "",
+        "prompt_hash": "",
+        "repo_profile_hash": "",
+        "repo_profile_truncated": false
+      },
+      "query_variants": [
+        {
+          "variant_id": "original",
+          "text": "QRCode page route service type",
+          "source": "original"
+        }
+      ],
+      "variant_retrieval_status": "original_only",
+      "context_pack": {
+        "status": "ready",
+        "confidence": "medium"
+      },
+      "status": "pass",
+      "metrics": {
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "hit_at_5": true,
+        "hit_at_10": true,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr": 1.0,
+        "expected_coverage_top5": {
+          "count": 4,
+          "ratio": 1.0
+        },
+        "preferred_rank_pass": true,
+        "noise_top5": 0,
+        "noise_top10": 0,
+        "entrypoint_rank": null,
+        "cross_language_success": null,
+        "result_count": 12,
+        "top_score": 1.885,
+        "context_completeness": 1.0,
+        "evidence_need_count": 4,
+        "required_need_count": 3,
+        "matched_required_need_count": 3,
+        "evidence_need_completeness": 1.0,
+        "pack_bytes": 24483,
+        "content_bytes": 16610,
+        "truncated_item_count": 0,
+        "omitted_item_count": 0
+      },
+      "top_results": [
+        {
+          "rank": 1,
+          "path": "src/views/qrcode/QRCodeTool.vue",
+          "score": 1.885,
+          "score_parts": {
+            "semantic": 0.03566315025091171,
+            "lexical": 1.991222308253884,
+            "path_symbol": 2.25,
+            "direct_text": 0.5,
+            "direct_text_hits": 3.0,
+            "token_coverage": 0.5,
+            "file_role_source_boost": 0.03,
+            "identifier_exact_match_boost": 0.3,
+            "path_role_hint_boost": 0.14,
+            "frontend_entrypoint_boost": 0.24499999999999997,
+            "effective_semantic": 0.03566315025091171,
+            "combined_score": 1.1849203097014724,
+            "rerank_score": 1.885,
+            "evidence_priority": 0.0,
+            "role_priority": 5.0,
+            "role_boost": 0.0
+          },
+          "reasons": [
+            "rerank_score=1.89 (original_direct)",
+            "semantic match",
+            "lexical match",
+            "path/symbol match",
+            "direct text match",
+            "explicit identifier match",
+            "path role hint match",
+            "token coverage",
+            "source file role boost",
+            "frontend entrypoint boost"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.03566315025091171
+            }
+          ]
+        },
+        {
+          "rank": 2,
+          "path": "src/router/index.ts",
+          "score": 1.3386449430590126,
+          "score_parts": {
+            "semantic": 0.09676413983106613,
+            "lexical": 1.125774678788989,
+            "path_symbol": 1.5,
+            "direct_text": 0.5,
+            "direct_text_hits": 3.0,
+            "token_coverage": 0.3333333333333333,
+            "file_role_source_boost": 0.03,
+            "identifier_exact_match_boost": 0.2,
+            "path_role_hint_boost": 0.14,
+            "frontend_entrypoint_boost": 0.24499999999999997,
+            "effective_semantic": 0.09676413983106613,
+            "combined_score": 0.9463306132710003,
+            "rerank_score": 1.3386449430590126,
+            "evidence_priority": 0.0,
+            "role_priority": 5.0,
+            "role_boost": 0.0
+          },
+          "reasons": [
+            "rerank_score=1.34 (original_direct)",
+            "semantic match",
+            "lexical match",
+            "path/symbol match",
+            "direct text match",
+            "explicit identifier match",
+            "path role hint match",
+            "token coverage",
+            "source file role boost",
+            "frontend entrypoint boost"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.09676413983106613
+            }
+          ]
+        },
+        {
+          "rank": 3,
+          "path": "src/types/qrcode-reader.d.ts",
+          "score": 1.0734592217064631,
+          "score_parts": {
+            "semantic": 0.049690403044223785,
+            "lexical": 0.4257744447594881,
+            "path_symbol": 3.0,
+            "direct_text": 0.5,
+            "direct_text_hits": 3.0,
+            "token_coverage": 0.16666666666666666,
+            "file_role_source_boost": 0.03,
+            "identifier_exact_match_boost": 0.3,
+            "path_role_hint_boost": 0.14,
+            "frontend_support_boost": 0.12,
+            "effective_semantic": 0.049690403044223785,
+            "role_penalty": -0.1,
+            "combined_score": 0.6321066661975285,
+            "rerank_score": 1.0734592217064631,
+            "evidence_priority": 0.0,
+            "role_priority": 5.0,
+            "role_boost": 0.0
+          },
+          "reasons": [
+            "rerank_score=1.07 (original_direct)",
+            "semantic match",
+            "lexical match",
+            "path/symbol match",
+            "direct text match",
+            "detail role penalty",
+            "explicit identifier match",
+            "path role hint match",
+            "token coverage",
+            "source file role boost",
+            "frontend support boost"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.049690403044223785
+            }
+          ]
+        },
+        {
+          "rank": 4,
+          "path": "src/views/json/JsonToEntity.vue",
+          "score": 1.0649615318966195,
+          "score_parts": {
+            "semantic": -0.06425294280052185,
+            "lexical": 1.5507763790808653,
+            "path_symbol": 0.5,
+            "direct_text": 0.3333333333333333,
+            "direct_text_hits": 2.0,
+            "token_coverage": 0.3333333333333333,
+            "file_role_source_boost": 0.03,
+            "path_role_hint_boost": 0.14,
+            "frontend_entrypoint_boost": 0.24499999999999997,
+            "effective_semantic": -0.06425294280052185,
+            "combined_score": 0.859021642896596,
+            "rerank_score": 1.0649615318966195,
+            "evidence_priority": 0.0,
+            "role_priority": 5.0,
+            "role_boost": 0.0
+          },
+          "reasons": [
+            "rerank_score=1.06 (original_direct)",
+            "lexical match",
+            "path/symbol match",
+            "direct text match",
+            "path role hint match",
+            "token coverage",
+            "source file role boost",
+            "frontend entrypoint boost",
+            "possibly legacy: no active usage signal found"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": -0.06425294280052185
+            }
+          ]
+        },
+        {
+          "rank": 5,
+          "path": "src/utils/qrcodeUtils.ts",
+          "score": 0.9299407517338676,
+          "score_parts": {
+            "semantic": 0.02579840086400509,
+            "lexical": 1.2283270901042245,
+            "path_symbol": 2.0,
+            "direct_text": 0.3333333333333333,
+            "direct_text_hits": 2.0,
+            "token_coverage": 0.3333333333333333,
+            "file_role_source_boost": 0.03,
+            "identifier_exact_match_boost": 0.3,
+            "effective_semantic": 0.02579840086400509,
+            "role_penalty": -0.1,
+            "combined_score": 0.6279375596679256,
+            "rerank_score": 0.9299407517338676,
+            "evidence_priority": 0.0,
+            "role_priority": 5.0,
+            "role_boost": 0.0
+          },
+          "reasons": [
+            "rerank_score=0.93 (original_direct)",
+            "semantic match",
+            "lexical match",
+            "path/symbol match",
+            "direct text match",
+            "detail role penalty",
+            "explicit identifier match",
+            "token coverage",
+            "source file role boost"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.02579840086400509
+            }
+          ]
+        },
+        {
+          "rank": 6,
+          "path": "package.json",
+          "score": 0.7115095418992778,
+          "score_parts": {
+            "semantic": -0.04048881679773331,
+            "lexical": 1.406800909498549,
+            "path_symbol": 0.5,
+            "direct_text": 0.5,
+            "direct_text_hits": 4.0,
+            "token_coverage": 0.3333333333333333,
+            "penalty": -0.03,
+            "config_penalty": -0.03,
+            "identifier_exact_match_boost": 0.2,
+            "effective_semantic": -0.04048881679773331,
+            "combined_score": 0.6060980448025506,
+            "rerank_score": 0.7115095418992778,
+            "evidence_priority": 0.0,
+            "role_priority": 5.0,
+            "role_boost": 0.0
+          },
+          "reasons": [
+            "rerank_score=0.71 (original_direct)",
+            "lexical match",
+            "path/symbol match",
+            "direct text match",
+            "explicit identifier match",
+            "token coverage",
+            "config penalty",
+            "generated/test penalty"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": -0.04048881679773331
+            }
+          ]
+        },
+        {
+          "rank": 7,
+          "path": "src/types/index.ts",
+          "score": 0.6841272640109373,
+          "score_parts": {
+            "semantic": 0.021128859370946884,
+            "lexical": 0.9999984617015307,
+            "path_symbol": 1.0,
+            "direct_text": 0.16666666666666666,
+            "direct_text_hits": 1.0,
+            "token_coverage": 0.16666666666666666,
+            "file_role_source_boost": 0.03,
+            "path_role_hint_boost": 0.14,
+            "frontend_support_boost": 0.12,
+            "effective_semantic": 0.021128859370946884,
+            "role_penalty": -0.12,
+            "combined_score": 0.5499538214127367,
+            "rerank_score": 0.6841272640109373,
+            "evidence_priority": 0.0,
+            "role_priority": 6.0,
+            "role_boost": 0.0
+          },
+          "reasons": [
+            "rerank_score=0.68 (original_direct)",
+            "semantic match",
+            "lexical match",
+            "path/symbol match",
+            "direct text match",
+            "detail role penalty",
+            "path role hint match",
+            "token coverage",
+            "source file role boost",
+            "frontend support boost"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.021128859370946884
+            }
+          ]
+        },
+        {
+          "rank": 8,
+          "path": "src/services/watermarkDetection.ts",
+          "score": 0.6663669267832197,
+          "score_parts": {
+            "semantic": 0.051047660410404205,
+            "lexical": 0.9999987622616463,
+            "path_symbol": 1.25,
+            "direct_text": 0.3333333333333333,
+            "direct_text_hits": 2.0,
+            "token_coverage": 0.16666666666666666,
+            "file_role_source_boost": 0.03,
+            "path_role_hint_boost": 0.14,
+            "effective_semantic": 0.051047660410404205,
+            "role_penalty": -0.12,
+            "combined_score": 0.5289092371244672,
+            "rerank_score": 0.6663669267832197,
+            "evidence_priority": 0.0,
+            "role_priority": 6.0,
+            "role_boost": 0.0
+          },
+          "reasons": [
+            "rerank_score=0.67 (original_direct)",
+            "semantic match",
+            "lexical match",
+            "path/symbol match",
+            "direct text match",
+            "detail role penalty",
+            "path role hint match",
+            "token coverage",
+            "source file role boost"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.051047660410404205
+            }
+          ]
+        },
+        {
+          "rank": 9,
+          "path": "src/utils/jsonToEntity.ts",
+          "score": 0.15000015000000003,
+          "score_parts": {
+            "semantic": 0.02024959772825241,
+            "lexical": 0.9999984191376068,
+            "path_symbol": 0.25,
+            "direct_text": 0.16666666666666666,
+            "direct_text_hits": 1.0,
+            "token_coverage": 0.16666666666666666,
+            "file_role_source_boost": 0.03,
+            "path_role_mismatch_penalty": -0.08,
+            "effective_semantic": 0.02024959772825241,
+            "combined_score": 0.40697021686827384,
+            "rerank_score": 0.15000015000000003,
+            "evidence_priority": 1.0,
+            "role_priority": 5.0,
+            "role_boost": 0.0,
+            "frontend_import_support_boost": 0.3
+          },
+          "reasons": [
+            "rerank_score=0.15 (weak_original_direct)",
+            "semantic match",
+            "lexical match",
+            "path/symbol match",
+            "direct text match",
+            "path role mismatch penalty",
+            "token coverage",
+            "source file role boost",
+            "frontend import support boost",
+            "possibly legacy: no active usage signal found"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.02024959772825241
+            }
+          ]
+        },
+        {
+          "rank": 10,
+          "path": "temp/entityToMock.js",
+          "score": -0.08,
+          "score_parts": {
+            "semantic": 0.022332781925797462,
+            "lexical": 1.6394944156749554,
+            "path_symbol": 0.5,
+            "direct_text": 0.3333333333333333,
+            "direct_text_hits": 2.0,
+            "token_coverage": 0.3333333333333333,
+            "file_role_source_boost": 0.03,
+            "path_role_mismatch_penalty": -0.08,
+            "frontend_scratch_temp_penalty": -1.0,
+            "penalty": -1.0,
+            "effective_semantic": 0.022332781925797462,
+            "combined_score": -0.3161766993554058,
+            "rerank_score": -0.08,
+            "evidence_priority": 0.0,
+            "role_priority": 5.0,
+            "role_boost": 0.0
+          },
+          "reasons": [
+            "rerank_score=-0.08 (original_direct)",
+            "semantic match",
+            "lexical match",
+            "path/symbol match",
+            "direct text match",
+            "path role mismatch penalty",
+            "token coverage",
+            "source file role boost",
+            "frontend scratch temp penalty",
+            "generated/test penalty"
+          ],
+          "semantic_matches": [
+            {
+              "variant_id": "original",
+              "score": 0.022332781925797462
+            }
+          ]
+        }
+      ],
+      "failures": []
+    },
+    {
+      "repo_key": "context_pack_docs",
+      "case_id": "program-tool-developer-docs",
+      "query": "Program Tool Developer Setup documentation",
+      "tags": [
+        "p2",
+        "documentation",
+        "context_pack"
+      ],
+      "gate": "required",
+      "attempted": true,
+      "known_gap_reason": "",
+      "expanded_tokens": [
+        "program",
+        "tool",
+        "developer",
+        "setup",
+        "documentation"
+      ],
+      "planner": {
+        "status": "disabled",
+        "rewritten_queries": [],
+        "grep_keywords": [],
+        "symbol_hints": [],
+        "discarded_hints": [],
+        "provider": "",
+        "model": "",
+        "prompt_version": "",
+        "prompt_hash": "",
+        "repo_profile_hash": "",
+        "repo_profile_truncated": false
+      },
+      "query_variants": [
+        {
+          "variant_id": "original",
+          "text": "Program Tool Developer Setup documentation",
+          "source": "original"
+        }
+      ],
+      "variant_retrieval_status": "original_only",
+      "context_pack": {
+        "status": "ready",
+        "confidence": "medium"
+      },
+      "status": "pass",
+      "metrics": {
+        "hit_at_1": null,
+        "hit_at_3": null,
+        "hit_at_5": null,
+        "hit_at_10": null,
+        "recall_at_5": null,
+        "recall_at_10": null,
+        "mrr": 0.0,
+        "expected_coverage_top5": {
+          "count": 0,
+          "ratio": null
+        },
+        "preferred_rank_pass": true,
+        "noise_top5": 0,
+        "noise_top10": 0,
+        "entrypoint_rank": null,
+        "cross_language_success": null,
+        "result_count": 0,
+        "top_score": null,
+        "context_completeness": 1.0,
+        "evidence_need_count": 1,
+        "required_need_count": 1,
+        "matched_required_need_count": 1,
+        "evidence_need_completeness": 1.0,
+        "pack_bytes": 1460,
+        "content_bytes": 93,
+        "truncated_item_count": 0,
+        "omitted_item_count": 0
+      },
+      "top_results": [],
+      "failures": []
+    }
+  ]
+}
