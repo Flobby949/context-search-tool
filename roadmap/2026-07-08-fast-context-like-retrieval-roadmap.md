@@ -3,7 +3,7 @@
 Date: 2026-07-08
 Status: Long-term roadmap
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
-Next-stage review: Phase 5 language and framework graph design review
+Next-stage review: Phase 5 implementation authorization
 
 ## Summary
 
@@ -288,7 +288,8 @@ Acceptance evidence:
   recorded honestly and remained non-gating.
 
 Phase statuses remain independent. Phase 1 is still 6/7 and pending; Phase 4
-does not reclassify it. Phase 5 is the next design review and has not started.
+does not reclassify it. Phase 5's design and implementation plan are
+agent-reviewed; implementation has not started.
 
 Goal: approximate fast-context's exploratory strength in a deterministic, bounded local engine.
 
@@ -307,6 +308,12 @@ Success signal:
 - Multi-round mode improves difficult exploratory queries without slowing exact queries unnecessarily.
 
 ### Phase 5: Language And Framework Graphs
+
+Status: Design and implementation plan approved by agent review on 2026-07-17;
+implementation not started.
+
+Design: `docs/superpowers/specs/2026-07-17-p5-language-framework-graphs-design.md`
+Plan: `docs/superpowers/plans/2026-07-17-p5-language-framework-graphs.md`
 
 Goal: make relation expansion more precise for high-value ecosystems.
 
