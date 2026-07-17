@@ -776,7 +776,8 @@ characterization test before commit.
   - indexed endpoint/route/usage/relation targets attached to those origins;
   - SourceFile.metadata["plugin"]["imports"] for Java;
   - extract_static_imports/resolve_frontend_import for returned frontend content
-    or bounded selected-file headers;
+    or bounded selected-file headers, plus the reviewed P4-local lexical guard
+    for multiline named imports omitted by the shared line parser;
   - fixed suffixes.
 
   Mutation/sentinel cases reject comments, arbitrary literals, full lines,
@@ -807,8 +808,10 @@ characterization test before commit.
   - no symlink/repository escape;
   - no recursively discovered file.
 
-  Reuse extract_static_imports and resolve_frontend_import. Tests count every
-  stat/read and prove count/byte ceilings exactly.
+  Reuse extract_static_imports and resolve_frontend_import first. A P4-local
+  lexical guard may add only multiline named imports while rejecting comments
+  and string/template literals; it must not change the shared parser. Tests
+  count every stat/read and prove count/byte ceilings exactly.
 
 - [ ] **Step 4: Implement text construction and deduplication**
 
@@ -819,15 +822,21 @@ characterization test before commit.
   A duplicate retains the first source/purpose and ordered-unions goal IDs and
   seed paths within caps. Planned candidates are capped at eight.
 
+  When at least two retained required goals are unsatisfied, add exactly one
+  bounded composite candidate from the original query plus their ordered unique
+  fixed suffixes. It represents all of those required goal IDs and adds no new
+  seed source.
+
 - [ ] **Step 5: Implement priority and fairness**
 
   Sort by:
 
   1. requiredness;
   2. frozen goal order;
-  3. relation, symbol, endpoint/route, static import, path stem, next_query;
-  4. initial source rank;
-  5. normalized text.
+  3. descending represented-goal count;
+  4. relation, symbol, endpoint/route, static import, path stem, next_query;
+  5. initial source rank;
+  6. normalized text.
 
   Perform one goal-order fairness sweep, then append remaining priority order.
   Tests prove one goal cannot consume both executable slots before another

@@ -10,11 +10,17 @@ import requests
 
 from context_search_tool import exploration
 from context_search_tool.config import RetrievalConfig, ToolConfig
-from context_search_tool.context_pack import ContextPackError, ContextPackOptions
+from context_search_tool.context_pack import (
+    ContextPackError,
+    ContextPackOptions,
+    ReadinessConfidence,
+    build_context_pack,
+)
 from context_search_tool.exploration.models import (
     ExploredContext,
     ExplorationError,
     ExplorationGoal,
+    FusedEvidenceState,
     FrozenGoals,
     ProbeCandidate,
 )
@@ -554,6 +560,39 @@ def test_successful_probe_satisfies_goal_disables_planner_and_preserves_snapshot
     )
     assert result.initial_pack is not result.final_pack
     assert result.initial_pack.groups is not result.final_pack.groups
+
+
+def test_followup_satisfaction_requires_and_accepts_all_required_goals() -> None:
+    from context_search_tool.exploration import runner
+
+    required = _goal("goal-test", "tests")
+    recommended = _goal(
+        "goal-implementation",
+        "implementations",
+        required=False,
+    )
+    pack = build_context_pack(
+        _bundle(_result("src/OwnerController.java", "owner controller")),
+        _options(_config()),
+    )
+    medium_pack = replace(
+        pack,
+        confidence=ReadinessConfidence(
+            "medium",
+            ("recommended implementations are missing",),
+        ),
+    )
+
+    assert runner._satisfied(
+        _frozen(required, recommended),
+        FusedEvidenceState(_bundle(), (), (required.id,)),
+        medium_pack,
+    )
+    assert not runner._satisfied(
+        _frozen(recommended),
+        FusedEvidenceState(_bundle(), (), ()),
+        medium_pack,
+    )
 
 
 def test_empty_no_candidates_and_zero_novel_path_stop_as_no_marginal_gain(

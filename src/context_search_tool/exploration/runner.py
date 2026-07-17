@@ -401,13 +401,13 @@ def _initial_stop(
 def _satisfied(
     frozen: FrozenGoals,
     state: FusedEvidenceState,
-    pack: ContextPack,
+    _pack: ContextPack,
 ) -> bool:
     satisfied = set(state.satisfied_goal_ids)
     if len(satisfied) == len(frozen.goals):
         return True
     required = {goal.id for goal in frozen.goals if goal.required}
-    return pack.confidence.level == "high" and required.issubset(satisfied)
+    return bool(required) and required.issubset(satisfied)
 
 
 def _finish(

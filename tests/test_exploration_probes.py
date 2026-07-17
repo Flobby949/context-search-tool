@@ -440,6 +440,55 @@ def test_relation_symbol_route_import_path_and_next_query_priority_is_fixed(
     ]
 
 
+def test_multi_required_goal_composite_precedes_single_goal_candidates() -> None:
+    implementation = _goal(
+        "goal-implementation",
+        category="implementations",
+        roles=("service", "utility"),
+    )
+    related_type = _goal(
+        "goal-type",
+        category="related_types",
+        roles=("type_decl",),
+    )
+    route = _goal(
+        "goal-route",
+        category="entrypoints",
+        roles=("router", "route_config"),
+    )
+    frozen = _frozen(implementation, related_type, route)
+    composite = probes._required_goal_composite(
+        QueryBundle("QRCode page route service type", [], [], []),
+        frozen,
+    )
+
+    assert composite is not None
+    assert composite.query == (
+        "QRCode page route service type service implementation "
+        "DTO type entity model route controller endpoint"
+    )
+    assert composite.goal_ids == (
+        "goal-implementation",
+        "goal-type",
+        "goal-route",
+    )
+    singles = tuple(
+        ProbeCandidate(
+            query=f"single {goal.id}",
+            source="static_import" if index < 2 else "path_stem",
+            purpose=goal.category,
+            goal_ids=(goal.id,),
+            seed_paths=(),
+            required=True,
+            goal_order=index,
+            source_rank=1,
+        )
+        for index, goal in enumerate(frozen.goals)
+    )
+
+    assert probes.order_probe_candidates((*singles, composite), frozen)[0] == composite
+
+
 def test_view_goal_prefers_a_parser_recognized_view_symbol(tmp_path: Path) -> None:
     repo, store, bundle, pack, _, trace = _java_setup(tmp_path)
     frozen = _frozen(
@@ -617,6 +666,36 @@ def test_frontend_returned_imports_do_not_read_headers(
         store=store,
     )
     assert any("tool service implementation" in item.query for item in planned)
+
+
+def test_p4_multiline_static_imports_ignore_comments_and_literals() -> None:
+    content = """
+const fake = `
+import {
+  COMMENT_SECRET,
+} from '@/utils/template-secret'
+`
+/*
+import {
+  COMMENT_SECRET,
+} from '@/utils/comment-secret'
+*/
+<!--
+import {
+  COMMENT_SECRET,
+} from '@/utils/markup-secret'
+-->
+import single from './single'
+import {
+  generateQRCode,
+  type QRCodeOptions,
+} from '@/utils/qrcodeUtils'
+"""
+
+    assert probes._extract_probe_static_imports(content) == (
+        "./single",
+        "@/utils/qrcodeUtils",
+    )
 
 
 def test_frontend_header_read_is_bounded_regular_and_repo_local(tmp_path: Path) -> None:

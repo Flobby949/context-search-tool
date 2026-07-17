@@ -49,6 +49,12 @@ _MAX_SEEDS_PER_SOURCE = 32
 _MAX_IMPORTS_PER_FILE = 16
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _WHITESPACE_RE = re.compile(r"\s+")
+_MULTILINE_NAMED_IMPORT_RE = re.compile(
+    r"^[ \t]*(?P<keyword>import)[ \t]+(?:type[ \t]+)?\{"
+    r"[A-Za-z0-9_$, \t\r\n]+\}[ \t\r\n]+from[ \t]+"
+    r"(?P<quote>[\"'])(?P<specifier>[^\"'\r\n]+)(?P=quote)",
+    re.MULTILINE,
+)
 
 
 @dataclass(frozen=True)
@@ -101,6 +107,9 @@ def plan_probes(
 
     raw: list[ProbeCandidate] = []
     goal_order = {goal.id: index for index, goal in enumerate(frozen.goals)}
+    composite = _required_goal_composite(initial_bundle, frozen)
+    if composite is not None:
+        raw.append(composite)
     for goal in goals:
         suffix = _goal_suffix(goal)
         for seed in seeds:
@@ -219,6 +228,35 @@ def probe_candidate_is_stale(
 ) -> bool:
     return bool(candidate.goal_ids) and all(
         goal_id in satisfied_goal_ids for goal_id in candidate.goal_ids
+    )
+
+
+def _required_goal_composite(
+    bundle: QueryBundle,
+    frozen: FrozenGoals,
+) -> ProbeCandidate | None:
+    goals = tuple(
+        goal
+        for goal in frozen.goals
+        if goal.required and not goal.initially_satisfied
+    )
+    if len(goals) < 2:
+        return None
+    suffixes = _ordered_union(_goal_suffix(goal) for goal in goals)
+    query = normalize_probe_text(" ".join((bundle.query, *suffixes)))
+    if query is None:
+        return None
+    return ProbeCandidate(
+        query=query,
+        source="next_query",
+        purpose=goals[0].category,
+        goal_ids=tuple(goal.id for goal in goals),
+        seed_paths=(),
+        required=True,
+        goal_order=next(
+            index for index, goal in enumerate(frozen.goals) if goal.id == goals[0].id
+        ),
+        source_rank=0,
     )
 
 
@@ -400,12 +438,12 @@ def _frontend_import_seeds(
         if store.source_file_for_path(Path(item.file_path)) is None:
             raise ValueError("selected frontend source is not indexed")
         content, start_line = windows.get(item.file_path, ("", 2))
-        specifiers = extract_static_imports(content)
+        specifiers = _extract_probe_static_imports(content)
         if not specifiers and start_line > 1 and header_reads < 3:
             header_reads += 1
             header = _read_frontend_header(repo, item.file_path)
             if header is not None:
-                specifiers = extract_static_imports(header)
+                specifiers = _extract_probe_static_imports(header)
         rank = origins.rank_by_path[item.file_path]
         for specifier in specifiers[:_MAX_IMPORTS_PER_FILE]:
             resolved = resolve_frontend_import(repo, item.file_path, specifier)
@@ -424,6 +462,75 @@ def _frontend_import_seeds(
                     )
                 )
     return tuple(seeds)
+
+
+def _extract_probe_static_imports(content: str) -> tuple[str, ...]:
+    specifiers = list(extract_static_imports(content))
+    seen = set(specifiers)
+    code_positions = _javascript_code_positions(content)
+    for match in _MULTILINE_NAMED_IMPORT_RE.finditer(content):
+        if not code_positions[match.start("keyword")]:
+            continue
+        specifier = match.group("specifier")
+        if specifier not in seen:
+            seen.add(specifier)
+            specifiers.append(specifier)
+    return tuple(specifiers)
+
+
+def _javascript_code_positions(content: str) -> bytearray:
+    positions = bytearray(len(content))
+    state = "code"
+    index = 0
+    while index < len(content):
+        if state == "code":
+            if content.startswith("//", index):
+                state = "line_comment"
+                index += 2
+                continue
+            if content.startswith("/*", index):
+                state = "block_comment"
+                index += 2
+                continue
+            if content.startswith("<!--", index):
+                state = "html_comment"
+                index += 4
+                continue
+            character = content[index]
+            if character in {"'", '\"', "`"}:
+                state = character
+                index += 1
+                continue
+            positions[index] = 1
+            index += 1
+            continue
+        if state == "line_comment":
+            if content[index] in "\r\n":
+                state = "code"
+                continue
+            index += 1
+            continue
+        if state == "block_comment":
+            if content.startswith("*/", index):
+                state = "code"
+                index += 2
+            else:
+                index += 1
+            continue
+        if state == "html_comment":
+            if content.startswith("-->", index):
+                state = "code"
+                index += 3
+            else:
+                index += 1
+            continue
+        if content[index] == "\\":
+            index += 2
+            continue
+        if content[index] == state:
+            state = "code"
+        index += 1
+    return positions
 
 
 def _read_frontend_header(repo: Path, relative_path: str) -> str | None:
@@ -559,6 +666,7 @@ def _candidate_priority(candidate: ProbeCandidate) -> tuple[object, ...]:
     return (
         0 if candidate.required else 1,
         candidate.goal_order,
+        -len(candidate.goal_ids),
         _SOURCE_PRIORITY[candidate.source],
         candidate.source_rank,
         candidate.query.casefold(),

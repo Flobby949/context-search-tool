@@ -585,10 +585,11 @@ Probe seeds may come only from:
    origin chunks;
 6. Java imports from the origin chunk's repository-relative path via
    `SourceFile.metadata["plugin"]["imports"]`;
-7. relative static imports parsed with the existing frontend parser from
+7. relative static imports parsed first with the existing frontend parser from
    already-returned content, or, when the retrieval window omits the file
    header, from at most the first 16,384 bytes of up to three selected indexed
-   frontend files;
+   frontend files; a P4-local lexical guard may additionally recognize only
+   multiline named-import declarations that the existing line parser omits;
 8. fixed category/role suffixes.
 
 The Java lookup resolves origin chunk IDs to their indexed file paths, then uses
@@ -639,6 +640,12 @@ as `OwnerController` plus the test suffix yields `OwnerController test`; the
 PetClinic index's actual `VIEWS_OWNER_CREATE_OR_UPDATE_FORM` symbol may be used
 as an exact high-signal UI probe rather than broadening it with generic terms.
 
+When at least two retained required goals are initially unsatisfied, planning
+also creates exactly one composite candidate from the already-allowed original
+query plus the ordered unique fixed suffixes for those goals. Its `goal_ids`
+name every represented required goal. It introduces no new seed source and is
+still subject to the normal 160-code-point bound.
+
 ### Deterministic Priority
 
 Candidate priority is the tuple:
@@ -646,6 +653,7 @@ Candidate priority is the tuple:
 ```text
 requiredness,
 goal order,
+descending represented-goal count,
 seed-source priority,
 initial source rank,
 normalized probe text
@@ -659,7 +667,9 @@ After case-insensitive deduplication, planning performs one fairness sweep over
 unsatisfied goals in goal order, taking the best candidate for each goal not
 already represented by a selected candidate's merged goal IDs. It then appends
 remaining candidates in the priority order above and retains at most eight.
-This prevents two probes for one goal from starving a second required goal.
+The represented-goal count lets the single bounded composite candidate address
+multiple required gaps before a narrower single-goal candidate. This prevents
+two probes for one goal from starving a second required goal.
 Before each execution, the runner skips any planned candidate whose
 `goal_ids` are all already satisfied and chooses the next retained candidate.
 At most two probes execute. The trace records stale-skip and unexecuted counts;
@@ -795,13 +805,21 @@ The runner evaluates conditions in this exact order.
 
 1. `followup_query_failed`: the probe raised a handled retrieval/provider
    error, returned v1 `partial`, or returned `empty/missing_index`;
-2. `satisfied`: every frozen goal is satisfied or the final pack has high
-   confidence with every required goal satisfied;
+2. `satisfied`: every frozen goal is satisfied, or the frozen set contains at
+   least one required goal and every required goal is satisfied;
 3. `no_marginal_gain`: the probe satisfies no new goal and either contributes no
    novel path or has duplicate-path ratio at least 0.80;
 4. skip planned probes whose goals are all satisfied, then execute the next
    remaining selected probe if one exists;
 5. `probe_budget_exhausted`: the two-probe limit is reached with goals remaining.
+
+The 2026-07-17 deterministic-fixture acceptance amendment makes this follow-up
+stop independent of normal ContextPack confidence. Recommended gaps continue to
+affect ContextPack confidence and trace coverage, but do not force an otherwise
+complete required-goal flow into a duplicate probe. The same amendment permits
+the P4-local guarded multiline named-import fallback and the bounded
+multi-required-goal composite candidate above without changing the shared
+frontend parser or retrieval-core behavior.
 
 Duplicate-path ratio is:
 
