@@ -197,6 +197,15 @@ JAVA_AST_ALLOWED_INTERNAL_IMPORTS = {
     "context_search_tool.tokenizer",
 }
 
+FRONTEND_GRAPH_ALLOWED_INTERNAL_IMPORTS = {
+    "context_search_tool.graph_contract",
+    "context_search_tool.syntax_parsers",
+}
+
+MYBATIS_ALLOWED_INTERNAL_IMPORTS = {
+    "context_search_tool.graph_contract",
+}
+
 
 def _is_p4_public_facade_reference(reference: dict[str, object]) -> bool:
     path = reference["file"]
@@ -506,6 +515,35 @@ def test_java_ast_imports_are_leaf_only_and_production_registration_is_dormant()
     assert imports == {"context_search_tool.java_plugin"}
     assert len(returns) == 1
     assert ast.unparse(returns[0].value) == "[JavaPlugin()]"
+
+
+def test_frontend_and_mybatis_fact_modules_are_pure_and_dormant() -> None:
+    package = ROOT / "src" / "context_search_tool"
+    assert _internal_imports(package / "frontend_graph.py") <= (
+        FRONTEND_GRAPH_ALLOWED_INTERNAL_IMPORTS
+    )
+    assert _internal_imports(package / "mybatis_xml.py") <= (
+        MYBATIS_ALLOWED_INTERNAL_IMPORTS
+    )
+
+    for name in ("plugins.py", "indexer.py", "java_plugin.py", "retrieval.py"):
+        imports = _internal_imports(package / name)
+        assert "context_search_tool.frontend_graph" not in imports
+        assert "context_search_tool.mybatis_xml" not in imports
+
+    mybatis_tree = ast.parse(
+        (package / "mybatis_xml.py").read_text(encoding="utf-8")
+    )
+    forbidden_network_roots = {"http", "requests", "socket", "urllib"}
+    assert _import_roots(package / "mybatis_xml.py").isdisjoint(
+        forbidden_network_roots
+    )
+    assert not [
+        node
+        for node in ast.walk(mybatis_tree)
+        if isinstance(node, ast.Attribute)
+        and node.attr.lower() in {"xinclude", "resolve", "resolver"}
+    ]
 
 
 def test_retrieval_defines_only_the_exact_supported_facade() -> None:
