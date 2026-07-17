@@ -696,6 +696,15 @@ post-implementation output locations excluded from the input manifest.
 - Create: `.github/workflows/p5-parser-abi.yml`
 - Create: `src/context_search_tool/syntax_parsers.py`
 - Create: `tests/test_parser_abi.py`
+- Modify: `tests/test_exploration_boundaries.py`
+- Modify: `tests/test_retrieval_core_boundaries.py`
+
+> **User-approved execution amendment (2026-07-17):** Retain the reviewed
+> `syntax_parsers.py` leaf boundary. Let the local P5 venv inherit the already-
+> proven `base` site packages so the protected NumPy/BLAS characterization stays
+> byte-exact, and update only the two phase-scoped production-path inventories
+> needed for incremental P5 work. Dependency pins, remote ABI isolation, P5
+> behavior, and protected baselines remain unchanged.
 
 - [ ] **Step 1: Add failing ABI/import tests**
 
@@ -713,12 +722,15 @@ post-implementation output locations excluded from the input manifest.
 
   ```bash
   test ! -e .quality/p5-runtime
-  conda run --no-capture-output -n base python -m venv .quality/p5-runtime
+  conda run --no-capture-output -n base python -m venv \
+    --system-site-packages .quality/p5-runtime
   export P5_RUNTIME="$PWD/.quality/p5-runtime/bin/python"
   "$P5_RUNTIME" -m pip install '.[dev]'
   "$P5_RUNTIME" -c 'import sqlite3, sys; assert sys.version_info[:2] == (3, 13); assert sqlite3.sqlite_version_info[:2] == (3, 51)'
   ```
 
+  `--system-site-packages` is deliberate: it preserves the exact already-proven
+  local NumPy/BLAS behavior while installing the five P5 pins into the venv.
   `.quality/p5-runtime` is ignored evidence infrastructure, not a committed
   artifact. Every Task-2-through-12 local Python command uses this exact
   `P5_RUNTIME`; Task 0/1 alone use pristine `conda base` for pre-dependency
@@ -760,6 +772,11 @@ post-implementation output locations excluded from the input manifest.
   from the same eight environments and stop for reviewer approval; do not claim
   the matrix from one machine.
 
+  The two boundary tests keep the complete P4 diff mandatory, permit only the
+  exact P5 production paths already named in this plan's responsibility map,
+  and reject every other dirty or changed production path. They do not alter a
+  protected fixture, baseline, schema, or behavioral projection.
+
 - [ ] **Step 6: Commit**
 
   ```bash
@@ -767,7 +784,9 @@ post-implementation output locations excluded from the input manifest.
     pyproject.toml \
     .github/workflows/p5-parser-abi.yml \
     src/context_search_tool/syntax_parsers.py \
-    tests/test_parser_abi.py
+    tests/test_parser_abi.py \
+    tests/test_exploration_boundaries.py \
+    tests/test_retrieval_core_boundaries.py
   git commit -m "build: pin p5 parser dependencies"
   ```
 
@@ -2631,15 +2650,14 @@ Final targeted review bound all three conclusions to plan content SHA-256
 - language/framework ecosystem: PASS, 0 unresolved blockers/majors;
 - public contract/quality/compatibility: PASS, 0 unresolved blockers/majors.
 
-No reviewer reported a remaining minor. The hash predates only this approval
-record/status edit; implementation remains unauthorized and unstarted.
+No reviewer reported a remaining minor. The hash predates this approval
+record/status edit and the later user-approved Task-2 execution amendment. That
+amendment changes only local environment inheritance and phase-scoped path
+inventories; it does not change the reviewed P5 behavior or acceptance scope.
 
 ## Stop Point
 
-This document ends at an implementation plan. It does not implement or activate
-P5. A later explicit user instruction is required before Task 0, branch creation,
-dependency changes, fixture creation, production edits, tests, commits, remote
-CI, or real-repository preparation.
-
-Until that instruction, Phase 5 remains unimplemented, Phase 6 remains out of
-scope, and Phase 1 remains independently pending at 6/7.
+The user explicitly authorized implementation in this thread on 2026-07-17.
+Task 0 and Task 1 are complete and Task 2 is underway; activation remains
+confined to Task 10 and remote CI still requires separate publication authority.
+Phase 6 remains out of scope, and Phase 1 remains independently pending at 6/7.
