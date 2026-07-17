@@ -471,3 +471,137 @@ def test_resolver_failure_rolls_back_every_update(
         store.graph_relation_for_id(relation.relation_id).resolution
         for relation in relations
     ] == ["unresolved", "unresolved"]
+
+
+def test_java_complete_candidate_set_is_unique_or_ambiguous(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    _source(store, unit="app")
+    first_path = "app/src/First.java"
+    second_path = "app/src/Second.java"
+    _add_file(
+        store,
+        first_path,
+        [
+            _module("first-module", "first-chunk", first_path, "app"),
+            _signal(
+                "first-method",
+                "first-chunk",
+                first_path,
+                kind="method",
+                qualified_name="one.Api.run",
+                signature="(demo.Dto)",
+                arity=1,
+                unit="app",
+            ),
+        ],
+    )
+    relations = [
+        CodeRelation(
+            relation_id="candidate-method",
+            source_signal_id="source",
+            target_name="Api.run",
+            kind="implements_method",
+            confidence=1.0,
+            target_kind="method",
+            target_qualified_name="",
+            target_signature="(demo.Dto)",
+            target_arity=1,
+            target_project_unit_key="app",
+            resolution="unresolved",
+            producer="java_ast",
+            producer_confidence=1.0,
+            metadata={
+                "selector_state": "candidates",
+                "candidates": ["one.Api.run", "two.Api.run"],
+            },
+        )
+    ]
+    store.append_graph_relations(relations)
+
+    resolve_graph_relations(store)
+    unique = store.graph_relation_for_id("candidate-method")
+    assert unique is not None
+    assert unique.resolution == "resolved_unique"
+    assert unique.target_signal_id == "first-method"
+    assert unique.resolution_confidence == 0.9
+
+    _add_file(
+        store,
+        second_path,
+        [
+            _module("second-module", "second-chunk", second_path, "app"),
+            _signal(
+                "second-method",
+                "second-chunk",
+                second_path,
+                kind="method",
+                qualified_name="two.Api.run",
+                signature="(demo.Dto)",
+                arity=1,
+                unit="app",
+            ),
+        ],
+    )
+    resolve_graph_relations(store)
+    ambiguous = store.graph_relation_for_id("candidate-method")
+    assert ambiguous is not None
+    assert ambiguous.resolution == "ambiguous"
+    assert ambiguous.target_signal_id == ""
+
+
+@pytest.mark.parametrize(
+    ("basis", "expected_confidence"),
+    [
+        ("exact_test_import", 1.0),
+        ("exact_test_path", 0.95),
+    ],
+)
+def test_test_association_resolution_confidence_depends_on_exact_basis(
+    tmp_path: Path,
+    basis: str,
+    expected_confidence: float,
+) -> None:
+    store = _store(tmp_path)
+    source_path = "app/tests/ServiceTest.java"
+    target_path = "app/src/Service.java"
+    _add_file(
+        store,
+        source_path,
+        [_module("test-module", "test-chunk", source_path, "app")],
+    )
+    _add_file(
+        store,
+        target_path,
+        [_module("production-module", "production-chunk", target_path, "app")],
+    )
+    store.append_graph_relations(
+        [
+            CodeRelation(
+                relation_id="tests",
+                source_signal_id="test-module",
+                target_name=target_path,
+                kind="tests",
+                confidence=1.0,
+                target_kind="module",
+                target_qualified_name=target_path,
+                target_project_unit_key="app",
+                resolution="unresolved",
+                producer="test_association",
+                producer_confidence=1.0,
+                metadata={
+                    "selector_state": "exact",
+                    "candidates": [target_path],
+                    "resolution_basis": basis,
+                },
+            )
+        ]
+    )
+
+    resolve_graph_relations(store, association_only=True)
+    relation = store.graph_relation_for_id("tests")
+    assert relation is not None
+    assert relation.resolution == "resolved_exact"
+    assert relation.resolution_confidence == expected_confidence
+    assert relation.confidence == expected_confidence

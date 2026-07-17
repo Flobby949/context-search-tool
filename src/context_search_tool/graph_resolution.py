@@ -110,9 +110,22 @@ def _classify_relation(
             relation.target_project_unit_key,
         )
         exact = selector_state == "exact"
-        return _from_matches(cleared, matches, exact=exact)
+        exact_confidence = (
+            0.95
+            if relation.metadata.get("resolution_basis") == "exact_test_path"
+            else 1.0
+        )
+        return _from_matches(
+            cleared,
+            matches,
+            exact=exact,
+            exact_confidence=exact_confidence,
+        )
 
-    if not relation.target_kind or not relation.target_qualified_name:
+    qualified_candidates = _string_tuple(relation.metadata.get("candidates"))
+    if not qualified_candidates and relation.target_qualified_name:
+        qualified_candidates = (relation.target_qualified_name,)
+    if not relation.target_kind or not qualified_candidates:
         return cleared
     language_value = relation.metadata.get("target_language")
     if isinstance(language_value, str):
@@ -122,20 +135,24 @@ def _classify_relation(
     else:
         language = None
     if relation.target_signature:
-        matches = session.find_signals(
-            project_unit_key=relation.target_project_unit_key,
-            kind=relation.target_kind,
-            qualified_name=relation.target_qualified_name,
+        matches = _find_signal_matches(
+            session,
+            relation=relation,
+            qualified_candidates=qualified_candidates,
             signature=relation.target_signature,
             arity=None,
             language=language,
         )
-        return _from_matches(cleared, matches, exact=True)
+        return _from_matches(
+            cleared,
+            matches,
+            exact=selector_state != "candidates",
+        )
 
-    matches = session.find_signals(
-        project_unit_key=relation.target_project_unit_key,
-        kind=relation.target_kind,
-        qualified_name=relation.target_qualified_name,
+    matches = _find_signal_matches(
+        session,
+        relation=relation,
+        qualified_candidates=qualified_candidates,
         signature=None,
         arity=relation.target_arity,
         language=language,
@@ -151,6 +168,31 @@ def _classify_relation(
             exact_confidence=0.95,
         )
     return _from_matches(cleared, matches, exact=False)
+
+
+def _find_signal_matches(
+    session: ResolutionSession,
+    *,
+    relation: CodeRelation,
+    qualified_candidates: tuple[str, ...],
+    signature: str | None,
+    arity: int | None,
+    language: str | None,
+) -> tuple[CodeSignal, ...]:
+    matches: dict[str, CodeSignal] = {}
+    for qualified_name in dict.fromkeys(qualified_candidates):
+        for signal in session.find_signals(
+            project_unit_key=relation.target_project_unit_key,
+            kind=relation.target_kind,
+            qualified_name=qualified_name,
+            signature=signature,
+            arity=arity,
+            language=language,
+        ):
+            matches[signal.signal_id] = signal
+            if len(matches) >= 2:
+                return tuple(matches.values())
+    return tuple(matches.values())
 
 
 def _from_matches(
