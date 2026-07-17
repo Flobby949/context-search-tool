@@ -10,12 +10,31 @@ _STATUSES = {"pass", "fail", "known_gap", "informational", "error", "skipped"}
 _GATES = {"required", "known_gap", "informational"}
 _REQUIRED_STATUSES = {"pass", "fail", "error", "skipped"}
 _BOOLEAN_METRICS = {"cross_language_success", "preferred_rank_pass"}
-_RATE_METRICS = {"mrr"}
+_EXPLORATION_RATIO_METRICS = {
+    "exploration_goal_coverage_initial",
+    "exploration_goal_coverage_final",
+    "duplicate_path_ratio",
+    "probe_efficiency",
+    "exploration_trace_coverage",
+    "final_pack_noise_ratio",
+}
+_EXPLORATION_INTEGER_METRICS = {
+    "exploration_goal_gain",
+    "novel_path_count",
+    "executed_probe_count",
+    "retrieval_call_count",
+    "final_pack_noise_count",
+    "exploration_latency_ms",
+}
+_EXPLORATION_METRICS = (
+    _EXPLORATION_RATIO_METRICS | _EXPLORATION_INTEGER_METRICS
+)
+_RATE_METRICS = {"mrr"} | _EXPLORATION_RATIO_METRICS
 _NONNEGATIVE_METRICS = {
     "entrypoint_rank",
     "latency_ms",
     "result_count",
-}
+} | _EXPLORATION_INTEGER_METRICS
 _UNBOUNDED_NUMERIC_METRICS = {"top_score"}
 _AGGREGATE_LEAVES = {"count", "mean", "p50", "p95", "rate", "successes", "total"}
 _AGGREGATE_GROUPS = {
@@ -48,7 +67,12 @@ _HIGHER_IS_BETTER = {
 }
 _LOWER_IS_BETTER_PREFIXES = ("noise_top",)
 _LOWER_IS_BETTER = {"entrypoint_rank"}
-_NEUTRAL = {"latency_ms", "result_count", "top_score"}
+_NEUTRAL = {
+    "latency_ms",
+    "result_count",
+    "top_score",
+    *_EXPLORATION_METRICS,
+}
 _TOLERANCE = 1e-12
 
 _REQUIRED_STATUS_MATRIX = {
@@ -263,6 +287,22 @@ def _validate_case_metrics(
                 _validate_metric_bounds(name, number, owner)
         elif value is not None and type(value) is not bool:
             _finite_number(value, owner)
+    if schema == 2 and _EXPLORATION_METRICS.intersection(metrics):
+        present = _EXPLORATION_METRICS.intersection(metrics)
+        if present != _EXPLORATION_METRICS:
+            missing = sorted(_EXPLORATION_METRICS - present)[0]
+            raise ValueError(
+                f"case {case_key} exploration metrics missing {missing}"
+            )
+        for name in _EXPLORATION_INTEGER_METRICS:
+            _require_nonnegative_integer(
+                metrics[name],
+                f"case {case_key} metric {name}",
+            )
+        probes = metrics["executed_probe_count"]
+        calls = metrics["retrieval_call_count"]
+        if probes > 2 or calls not in {1, 2, 3} or calls != 1 + probes:
+            raise ValueError(f"case {case_key} exploration call counts are invalid")
 
 
 def _validate_expected_coverage(
@@ -412,7 +452,7 @@ def _validate_v2_aggregate_summary(
 ) -> None:
     if metric_name in _AGGREGATE_RATE_METRICS:
         expected_fields = {"successes", "total", "rate"}
-    elif metric_name == "latency_ms":
+    elif metric_name in {"latency_ms", "exploration_latency_ms"}:
         expected_fields = {"count", "mean", "p50", "p95"}
     else:
         expected_fields = {"count", "mean"}
@@ -461,7 +501,7 @@ def _validate_v2_aggregate_summary(
         raise ValueError(
             f"aggregate metrics {label}.count must be a positive integer"
         )
-    if metric_name == "latency_ms":
+    if metric_name in {"latency_ms", "exploration_latency_ms"}:
         mean_owner = f"aggregate metrics {label}.mean"
         mean = _finite_number(summary["mean"], mean_owner)
         _validate_metric_bounds(metric_name, mean, mean_owner)
@@ -774,7 +814,9 @@ def _aggregate_metric_deltas(
             if (payload := _delta_payload(before.get(field), after.get(field)))
             is not None
         }
-        if key != "latency_ms" and set(leaves) in ({"rate"}, {"mean"}):
+        if key not in {"latency_ms", "exploration_latency_ms"} and set(
+            leaves
+        ) in ({"rate"}, {"mean"}):
             output[key] = next(iter(leaves.values()))
             continue
         if leaves:
@@ -793,8 +835,18 @@ def _case_warnings(
     if baseline is None or candidate is None:
         return []
 
-    baseline_latency = _case_metrics(baseline).get("latency_ms")
-    candidate_latency = _case_metrics(candidate).get("latency_ms")
+    baseline_metrics = _case_metrics(baseline)
+    candidate_metrics = _case_metrics(candidate)
+    baseline_latency = baseline_metrics.get("exploration_latency_ms")
+    candidate_latency = candidate_metrics.get("exploration_latency_ms")
+    if not (
+        isinstance(baseline_latency, (int, float))
+        and not isinstance(baseline_latency, bool)
+        and isinstance(candidate_latency, (int, float))
+        and not isinstance(candidate_latency, bool)
+    ):
+        baseline_latency = baseline_metrics.get("latency_ms")
+        candidate_latency = candidate_metrics.get("latency_ms")
     if (
         isinstance(baseline_latency, (int, float))
         and not isinstance(baseline_latency, bool)

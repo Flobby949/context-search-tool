@@ -21,6 +21,29 @@ _BOOLEAN_METRICS = {
     "cross_language_success",
     "preferred_rank_pass",
 }
+_EXPLORATION_METRICS = {
+    "exploration_goal_coverage_initial",
+    "exploration_goal_coverage_final",
+    "exploration_goal_gain",
+    "novel_path_count",
+    "duplicate_path_ratio",
+    "executed_probe_count",
+    "probe_efficiency",
+    "retrieval_call_count",
+    "exploration_trace_coverage",
+    "final_pack_noise_count",
+    "final_pack_noise_ratio",
+    "exploration_latency_ms",
+}
+_EXPLORATION_RATIO_METRICS = {
+    "exploration_goal_coverage_initial",
+    "exploration_goal_coverage_final",
+    "duplicate_path_ratio",
+    "probe_efficiency",
+    "exploration_trace_coverage",
+    "final_pack_noise_ratio",
+}
+_EXPLORATION_INTEGER_METRICS = _EXPLORATION_METRICS - _EXPLORATION_RATIO_METRICS
 
 
 def aggregate_cases(
@@ -50,6 +73,7 @@ def aggregate_cases(
         if reserved_metrics:
             names = ", ".join(repr(name) for name in reserved_metrics)
             raise ValueError(f"case {case_id!r} uses reserved metric name(s): {names}")
+        _validate_exploration_metrics(case.get("metrics", {}), case_id)
 
     statuses = [case.get("status") for case in cases]
     executed = [case for case in cases if case.get("status") in _EXECUTED_STATUSES]
@@ -159,7 +183,7 @@ def _metric_summary(cases: list[dict[str, Any]]) -> dict[str, Any]:
                     numbers.append(number)
         if not numbers:
             continue
-        if name == "latency_ms":
+        if name in {"latency_ms", "exploration_latency_ms"}:
             ordered = sorted(numbers)
             summary[name] = {
                 "count": len(ordered),
@@ -181,6 +205,42 @@ def _metric_summary(cases: list[dict[str, Any]]) -> dict[str, Any]:
                 "rate": successes / len(entrypoint_ranks),
             }
     return summary
+
+
+def _validate_exploration_metrics(metrics: Any, case_id: str) -> None:
+    if not isinstance(metrics, dict):
+        return
+    present = _EXPLORATION_METRICS.intersection(metrics)
+    if not present:
+        return
+    if present != _EXPLORATION_METRICS:
+        missing = sorted(_EXPLORATION_METRICS - present)[0]
+        raise ValueError(
+            f"case {case_id!r} exploration metrics missing {missing!r}"
+        )
+    for name in _EXPLORATION_RATIO_METRICS:
+        value = metrics[name]
+        if value is None:
+            continue
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+            or not 0 <= value <= 1
+        ):
+            raise ValueError(
+                f"case {case_id!r} metric {name!r} must be a ratio or null"
+            )
+    for name in _EXPLORATION_INTEGER_METRICS:
+        value = metrics[name]
+        if type(value) is not int or value < 0:
+            raise ValueError(
+                f"case {case_id!r} metric {name!r} must be a nonnegative integer"
+            )
+    probes = metrics["executed_probe_count"]
+    calls = metrics["retrieval_call_count"]
+    if probes > 2 or calls not in {1, 2, 3} or calls != 1 + probes:
+        raise ValueError(f"case {case_id!r} exploration call counts are invalid")
 
 
 def _nearest_rank(values: list[float], percentile: float) -> float:

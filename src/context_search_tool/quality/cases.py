@@ -29,7 +29,7 @@ _VARIANT_RETRIEVAL_STATUSES = {
     "hybrid",
     "embedding_fallback",
 }
-_QUALITY_MODES = {"results", "context_pack"}
+_QUALITY_MODES = {"results", "context_pack", "exploration"}
 _PACK_STATUSES = {"empty", "partial", "ready"}
 _CONFIDENCE_LEVELS = {"none", "low", "medium", "high"}
 _CONTEXT_ONLY_FIELDS = {
@@ -40,6 +40,59 @@ _CONTEXT_ONLY_FIELDS = {
     "maximum_pack_bytes",
     "maximum_truncated_items",
     "forbidden_next_query_patterns",
+}
+_EXPLORATION_ONLY_FIELDS = {
+    "initial_absent",
+    "final_present",
+    "final_at_least",
+    "final_forbidden",
+    "final_noise_matchers",
+    "expected_termination_reason",
+    "expected_retrieval_call_count",
+    "maximum_retrieval_call_count",
+    "minimum_goal_gain",
+    "maximum_final_noise_items",
+}
+_EXPLORATION_TERMINATION_REASONS = {
+    "initial_missing_index",
+    "initial_empty",
+    "initial_retrieval_incomplete",
+    "context_budget_zero",
+    "exact_satisfied",
+    "initial_satisfied",
+    "no_grounded_probe",
+    "followup_query_failed",
+    "satisfied",
+    "no_marginal_gain",
+    "probe_budget_exhausted",
+}
+_KNOWN_EXPLORATION_CASE_FIELDS = _CONTEXT_ONLY_FIELDS | _EXPLORATION_ONLY_FIELDS | {
+    "id",
+    "query",
+    "profiles",
+    "tags",
+    "mode",
+    "gate",
+    "metric_k",
+    "relevance_matchers",
+    "noise_matchers",
+    "expected_top_k",
+    "required_top3",
+    "expected_any_top_k",
+    "expected_at_least_top_k",
+    "expected_core",
+    "expected_top5_min",
+    "preferred_rank",
+    "absent_top_k",
+    "forbidden_top3",
+    "outranks",
+    "forbidden_above",
+    "anchor_expected",
+    "known_gap_reason",
+    "known_gap",
+    "notes",
+    "legacy",
+    "profile_expectations",
 }
 _MAX_FORBIDDEN_NEXT_QUERY_PATTERN_CODEPOINTS = 160
 _UNSAFE_REGEX_METACHARS = frozenset(".^$*+?{}[]|()")
@@ -140,6 +193,12 @@ class AtLeastTopKGroup:
 
 
 @dataclass(frozen=True)
+class FinalAtLeast:
+    matchers: tuple[Matcher, ...]
+    min_matches: int
+
+
+@dataclass(frozen=True)
 class PreferredRank:
     matcher: Matcher
     top_k: int
@@ -207,6 +266,16 @@ class QualityCase:
     maximum_pack_bytes: int | None = None
     maximum_truncated_items: int | None = None
     forbidden_next_query_patterns: tuple[str, ...] = ()
+    initial_absent: tuple[Matcher, ...] = ()
+    final_present: tuple[Matcher, ...] = ()
+    final_at_least: FinalAtLeast | None = None
+    final_forbidden: tuple[Matcher, ...] = ()
+    final_noise_matchers: tuple[Matcher, ...] = ()
+    expected_termination_reason: str | None = None
+    expected_retrieval_call_count: int | None = None
+    maximum_retrieval_call_count: int | None = None
+    minimum_goal_gain: int | None = None
+    maximum_final_noise_items: int | None = None
 
 
 @dataclass(frozen=True)
@@ -364,6 +433,32 @@ def validate_profile_compatible(
             raise ValueError("planner profile requires the query planner enabled")
         if config.query_planner.provider != "ollama":
             raise ValueError("planner profile requires the Ollama planner")
+        return
+    if profile in {"p4_exploration", "p4_real_exploration"}:
+        if (
+            config.embedding.provider != "hash"
+            or config.embedding.model != "hash-v1"
+            or config.embedding.dimensions != 384
+        ):
+            raise ValueError(
+                f"{profile} profile requires hash-v1 embeddings at 384 dimensions"
+            )
+        if config.query_planner.enabled:
+            raise ValueError(f"{profile} profile requires the query planner disabled")
+        if (
+            config.embedding.api_key_env is not None
+            or config.embedding.base_url is not None
+        ):
+            raise ValueError(
+                f"{profile} profile does not allow remote embedding settings"
+            )
+        if (
+            profile == "p4_real_exploration"
+            and config.retrieval.final_top_k != 12
+        ):
+            raise ValueError(
+                "p4_real_exploration profile requires final_top_k 12"
+            )
         return
     if profile in {"p1_vector_bge", "p1_hybrid_bge"}:
         if (
@@ -590,6 +685,16 @@ def _validate_fixture_profiles(
         for profile in repo.profiles:
             if profile not in profile_configs:
                 raise ValueError(f"unknown profile: {profile}")
+        if "p4_exploration" in repo.profiles and (
+            repo.source_url or not repo.snapshot_path
+        ):
+            raise ValueError(
+                "p4_exploration profile requires a local snapshot source"
+            )
+        if "p4_real_exploration" in repo.profiles and not repo.source_url:
+            raise ValueError(
+                "p4_real_exploration profile requires a pinned remote source"
+            )
         case_ids: set[str] = set()
         for case in repo.queries:
             if case.case_id in case_ids:
@@ -599,6 +704,16 @@ def _validate_fixture_profiles(
                 if profile not in repo.profiles or profile not in profile_configs:
                     raise ValueError(f"unknown profile: {profile}")
             selected_profiles = case.profiles or repo.profiles
+            if case.mode == "exploration" and any(
+                profile not in {"p4_exploration", "p4_real_exploration"}
+                for profile in selected_profiles
+            ):
+                raise ValueError("exploration mode requires a P4 exploration profile")
+            if any(
+                profile in {"p4_exploration", "p4_real_exploration"}
+                for profile in selected_profiles
+            ) and case.mode != "exploration":
+                raise ValueError("P4 exploration profiles require exploration mode")
             for expectation_profile in case.profile_expectations:
                 if expectation_profile not in selected_profiles:
                     raise ValueError(
@@ -656,7 +771,15 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
     query = _require_non_empty_str(raw.get("query", ""), "query")
     mode = _require_str(raw.get("mode", "results"), "mode")
     if mode not in _QUALITY_MODES:
-        raise ValueError("mode must be results or context_pack")
+        raise ValueError("mode must be results, context_pack, or exploration")
+    exploration_fields = _EXPLORATION_ONLY_FIELDS.intersection(raw)
+    if mode != "exploration" and exploration_fields:
+        field_name = sorted(exploration_fields)[0]
+        raise ValueError(f"{field_name} is only valid for exploration mode")
+    if mode == "exploration":
+        unknown = set(raw) - _KNOWN_EXPLORATION_CASE_FIELDS
+        if unknown:
+            raise ValueError(f"unknown exploration field: {sorted(unknown)[0]}")
     if mode == "results":
         context_fields = _CONTEXT_ONLY_FIELDS.intersection(raw)
         if context_fields:
@@ -705,6 +828,66 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         forbidden_next_query_patterns = _parse_forbidden_next_query_patterns(
             raw.get("forbidden_next_query_patterns", ())
         )
+    if mode == "exploration":
+        initial_absent = _parse_unique_matchers(
+            raw.get("initial_absent", ()),
+            "initial_absent",
+        )
+        final_present = _parse_unique_matchers(
+            raw.get("final_present", ()),
+            "final_present",
+        )
+        final_at_least = _parse_final_at_least(raw.get("final_at_least"))
+        final_forbidden = _parse_unique_matchers(
+            raw.get("final_forbidden", ()),
+            "final_forbidden",
+        )
+        final_noise_matchers = _parse_unique_matchers(
+            raw.get("final_noise_matchers", ()),
+            "final_noise_matchers",
+        )
+        expected_termination_reason = _parse_exploration_termination(raw)
+        expected_retrieval_call_count = _parse_optional_call_count(
+            raw,
+            "expected_retrieval_call_count",
+        )
+        maximum_retrieval_call_count = _parse_optional_call_count(
+            raw,
+            "maximum_retrieval_call_count",
+        )
+        if (
+            expected_retrieval_call_count is not None
+            and maximum_retrieval_call_count is not None
+            and expected_retrieval_call_count > maximum_retrieval_call_count
+        ):
+            raise ValueError(
+                "expected_retrieval_call_count cannot exceed "
+                "maximum_retrieval_call_count"
+            )
+        minimum_goal_gain = (
+            _require_non_negative_int(raw["minimum_goal_gain"], "minimum_goal_gain")
+            if "minimum_goal_gain" in raw
+            else None
+        )
+        maximum_final_noise_items = (
+            _require_non_negative_int(
+                raw["maximum_final_noise_items"],
+                "maximum_final_noise_items",
+            )
+            if "maximum_final_noise_items" in raw
+            else None
+        )
+    else:
+        initial_absent = ()
+        final_present = ()
+        final_at_least = None
+        final_forbidden = ()
+        final_noise_matchers = ()
+        expected_termination_reason = None
+        expected_retrieval_call_count = None
+        maximum_retrieval_call_count = None
+        minimum_goal_gain = None
+        maximum_final_noise_items = None
     gate = _require_str(raw.get("gate", Gate.REQUIRED.value), "gate")
     raw_legacy = raw.get("legacy")
     legacy = None
@@ -817,7 +1000,71 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         maximum_pack_bytes=maximum_pack_bytes,
         maximum_truncated_items=maximum_truncated_items,
         forbidden_next_query_patterns=forbidden_next_query_patterns,
+        initial_absent=initial_absent,
+        final_present=final_present,
+        final_at_least=final_at_least,
+        final_forbidden=final_forbidden,
+        final_noise_matchers=final_noise_matchers,
+        expected_termination_reason=expected_termination_reason,
+        expected_retrieval_call_count=expected_retrieval_call_count,
+        maximum_retrieval_call_count=maximum_retrieval_call_count,
+        minimum_goal_gain=minimum_goal_gain,
+        maximum_final_noise_items=maximum_final_noise_items,
     )
+
+
+def _parse_unique_matchers(raw: Any, field_name: str) -> tuple[Matcher, ...]:
+    values = _require_sequence(raw, field_name)
+    try:
+        matchers = tuple(Matcher.from_raw(item) for item in values)
+    except ValueError as exc:
+        raise ValueError(f"{field_name}: {exc}") from None
+    if len({_matcher_identity(matcher) for matcher in matchers}) != len(matchers):
+        raise ValueError(f"{field_name} has duplicate matcher")
+    return matchers
+
+
+def _parse_final_at_least(raw: Any) -> FinalAtLeast | None:
+    if raw is None:
+        return None
+    value = _require_dict(raw, "final_at_least")
+    unknown = set(value) - {"matchers", "min_matches"}
+    if unknown:
+        raise ValueError(f"unknown final_at_least field: {sorted(unknown)[0]}")
+    matchers = _parse_unique_matchers(value.get("matchers"), "final_at_least.matchers")
+    if not matchers:
+        raise ValueError("final_at_least requires matchers")
+    minimum = _require_non_negative_int(
+        value.get("min_matches"),
+        "final_at_least.min_matches",
+    )
+    if minimum > len(matchers):
+        raise ValueError("final_at_least min_matches cannot exceed matcher count")
+    return FinalAtLeast(matchers, minimum)
+
+
+def _parse_exploration_termination(raw: dict[str, Any]) -> str | None:
+    if "expected_termination_reason" not in raw:
+        return None
+    value = _require_str(
+        raw["expected_termination_reason"],
+        "expected_termination_reason",
+    )
+    if value not in _EXPLORATION_TERMINATION_REASONS:
+        raise ValueError("invalid expected_termination_reason")
+    return value
+
+
+def _parse_optional_call_count(
+    raw: dict[str, Any],
+    field_name: str,
+) -> int | None:
+    if field_name not in raw:
+        return None
+    value = _require_positive_int(raw[field_name], field_name)
+    if value > 3:
+        raise ValueError(f"{field_name} must be between 1 and 3")
+    return value
 
 
 def _parse_expected_need_matches(raw: Any) -> tuple[ExpectedNeedMatch, ...]:

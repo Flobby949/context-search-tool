@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from context_search_tool.context_pack import (
     CONTEXT_GROUPS,
@@ -18,6 +18,9 @@ from context_search_tool.quality.cases import (
     _normalize_public_subject,
     normalize_result_path,
 )
+
+if TYPE_CHECKING:
+    from context_search_tool.exploration.models import ExploredContext
 
 
 @dataclass(frozen=True)
@@ -315,6 +318,218 @@ def evaluate_context_pack(
         status=_status(case.gate, failures),
         metrics=metrics,
         failures=failures,
+    )
+
+
+def evaluate_exploration(
+    case: QualityCase,
+    explored: ExploredContext,
+    evaluation: CaseEvaluation,
+) -> CaseEvaluation:
+    trace = explored.trace
+    if trace.retrieval_call_count != 1 + trace.executed_probe_count:
+        raise ValueError(
+            "exploration retrieval_call_count must equal 1 + executed_probe_count"
+        )
+    if not (
+        0
+        <= trace.initial_satisfied_goal_count
+        <= trace.final_satisfied_goal_count
+        <= trace.retained_goal_count
+    ):
+        raise ValueError("exploration goal counts are inconsistent")
+
+    followup_probes = tuple(
+        probe
+        for round_record in trace.rounds[1:]
+        for probe in round_record.probes
+    )
+    if len(followup_probes) != trace.executed_probe_count:
+        raise ValueError("exploration executed_probe_count is inconsistent")
+
+    preview_valid_count = sum(
+        _valid_final_evidence_origin(item) for item in trace.final_evidence
+    )
+    if preview_valid_count != len(trace.final_evidence):
+        raise ValueError("exploration final evidence contains an invalid origin")
+    complete_valid_origin_count = (
+        preview_valid_count + trace.final_evidence_omitted_count
+    )
+    if complete_valid_origin_count != trace.final_evidence_count:
+        raise ValueError("exploration final_evidence_count is inconsistent")
+
+    initial_paths = _bundle_path_union(explored.initial_bundle)
+    fused_paths = _bundle_path_union(explored.fused_bundle)
+    initial_pack_paths = _pack_paths(explored.initial_pack)
+    final_pack_paths = _pack_paths(explored.final_pack)
+    if trace.final_evidence_count != len(final_pack_paths):
+        raise ValueError(
+            "exploration final_evidence_count must equal final pack item count"
+        )
+
+    retained_goal_count = trace.retained_goal_count
+    duplicate_path_count = sum(
+        probe.duplicate_path_count for probe in followup_probes
+    )
+    returned_path_count = sum(
+        probe.unique_path_count for probe in followup_probes
+    )
+    efficient_probe_count = sum(
+        bool(probe.novel_path_count or probe.newly_satisfied_goal_ids)
+        for probe in followup_probes
+    )
+    final_noise_paths = {
+        path
+        for path in final_pack_paths
+        if any(matcher.matches(path) for matcher in case.final_noise_matchers)
+    }
+
+    exploration_metrics = {
+        "exploration_goal_coverage_initial": (
+            trace.initial_satisfied_goal_count / retained_goal_count
+            if retained_goal_count
+            else None
+        ),
+        "exploration_goal_coverage_final": (
+            trace.final_satisfied_goal_count / retained_goal_count
+            if retained_goal_count
+            else None
+        ),
+        "exploration_goal_gain": (
+            trace.final_satisfied_goal_count
+            - trace.initial_satisfied_goal_count
+        ),
+        "novel_path_count": len(fused_paths - initial_paths),
+        "duplicate_path_ratio": (
+            duplicate_path_count / returned_path_count
+            if returned_path_count
+            else None
+        ),
+        "executed_probe_count": trace.executed_probe_count,
+        "probe_efficiency": (
+            efficient_probe_count / trace.executed_probe_count
+            if trace.executed_probe_count
+            else None
+        ),
+        "retrieval_call_count": trace.retrieval_call_count,
+        "exploration_trace_coverage": (
+            complete_valid_origin_count / len(final_pack_paths)
+            if final_pack_paths
+            else None
+        ),
+        "final_pack_noise_count": len(final_noise_paths),
+        "final_pack_noise_ratio": (
+            len(final_noise_paths) / len(final_pack_paths)
+            if final_pack_paths
+            else None
+        ),
+        "exploration_latency_ms": trace.duration_ms,
+    }
+
+    failures = list(evaluation.failures)
+    for matcher in case.initial_absent:
+        if any(matcher.matches(path) for path in initial_pack_paths):
+            failures.append(
+                f"initial_absent present: {_matcher_label(matcher)}"
+            )
+    for matcher in case.final_present:
+        if not any(matcher.matches(path) for path in final_pack_paths):
+            failures.append(
+                f"final_present missing: {_matcher_label(matcher)}"
+            )
+    if case.final_at_least is not None:
+        match_count = sum(
+            any(matcher.matches(path) for path in final_pack_paths)
+            for matcher in case.final_at_least.matchers
+        )
+        if match_count < case.final_at_least.min_matches:
+            failures.append(
+                "final_at_least expected "
+                f"{case.final_at_least.min_matches}, found {match_count}"
+            )
+    for matcher in case.final_forbidden:
+        if any(matcher.matches(path) for path in final_pack_paths):
+            failures.append(
+                f"final_forbidden present: {_matcher_label(matcher)}"
+            )
+
+    if (
+        case.expected_termination_reason is not None
+        and trace.termination_reason != case.expected_termination_reason
+    ):
+        failures.append(
+            "expected_termination_reason expected "
+            f"{case.expected_termination_reason}, got {trace.termination_reason}"
+        )
+    if (
+        case.expected_retrieval_call_count is not None
+        and trace.retrieval_call_count != case.expected_retrieval_call_count
+    ):
+        failures.append(
+            "expected_retrieval_call_count expected "
+            f"{case.expected_retrieval_call_count}, got "
+            f"{trace.retrieval_call_count}"
+        )
+    if (
+        case.maximum_retrieval_call_count is not None
+        and trace.retrieval_call_count > case.maximum_retrieval_call_count
+    ):
+        failures.append(
+            "maximum_retrieval_call_count exceeded: "
+            f"{trace.retrieval_call_count} > "
+            f"{case.maximum_retrieval_call_count}"
+        )
+    goal_gain = exploration_metrics["exploration_goal_gain"]
+    if case.minimum_goal_gain is not None and goal_gain < case.minimum_goal_gain:
+        failures.append(
+            f"minimum_goal_gain expected {case.minimum_goal_gain}, got {goal_gain}"
+        )
+    noise_count = exploration_metrics["final_pack_noise_count"]
+    if (
+        case.maximum_final_noise_items is not None
+        and noise_count > case.maximum_final_noise_items
+    ):
+        failures.append(
+            "maximum_final_noise_items exceeded: "
+            f"{noise_count} > {case.maximum_final_noise_items}"
+        )
+    trace_coverage = exploration_metrics["exploration_trace_coverage"]
+    if final_pack_paths and trace_coverage != 1.0:
+        failures.append(
+            f"exploration_trace_coverage expected 1.0, got {trace_coverage}"
+        )
+
+    metrics = dict(evaluation.metrics)
+    metrics.update(exploration_metrics)
+    return replace(
+        evaluation,
+        status=_status(case.gate, failures),
+        metrics=metrics,
+        failures=failures,
+    )
+
+
+def _bundle_path_union(bundle: Any) -> set[str]:
+    return {
+        normalize_result_path(item.file_path.as_posix())
+        for item in (*bundle.results, *bundle.evidence_anchors)
+    }
+
+
+def _pack_paths(pack: ContextPack) -> tuple[str, ...]:
+    return tuple(normalize_result_path(item.file_path) for item in pack.items)
+
+
+def _valid_final_evidence_origin(item: Any) -> bool:
+    return bool(
+        type(getattr(item, "source_round", None)) is int
+        and item.source_round >= 0
+        and isinstance(getattr(item, "probe_id", None), str)
+        and item.probe_id
+        and type(getattr(item, "probe_rank", None)) is int
+        and item.probe_rank > 0
+        and isinstance(getattr(item, "selection_reason", None), str)
+        and item.selection_reason
     )
 
 

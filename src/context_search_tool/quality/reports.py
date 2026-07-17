@@ -47,6 +47,15 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     else:
         lines.append("No metrics.")
 
+    exploration_cases = [
+        case
+        for case in report.get("cases", [])
+        if "retrieval_call_count" in case.get("metrics", {})
+    ]
+    if exploration_cases:
+        lines.extend(["", "## Exploration Cases", ""])
+        lines.extend(_exploration_case_table(exploration_cases))
+
     lines.extend(["", "## Failures", ""])
 
     failures = [
@@ -146,6 +155,28 @@ def _value_table(rows: list[tuple[str, Any]]) -> list[str]:
             for name, value in rows
         ),
     ]
+
+
+def _exploration_case_table(cases: list[dict[str, Any]]) -> list[str]:
+    lines = [
+        "| case | status | calls | goal gain | trace coverage | noise | latency ms |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for case in sorted(cases, key=_case_key):
+        metrics = case.get("metrics", {})
+        values = (
+            _case_key(case),
+            case.get("status", ""),
+            metrics.get("retrieval_call_count"),
+            metrics.get("exploration_goal_gain"),
+            metrics.get("exploration_trace_coverage"),
+            metrics.get("final_pack_noise_count"),
+            metrics.get("exploration_latency_ms"),
+        )
+        lines.append(
+            "| " + " | ".join(_escape_markdown_text(value) for value in values) + " |"
+        )
+    return lines
 
 
 def _flatten_metric_values(

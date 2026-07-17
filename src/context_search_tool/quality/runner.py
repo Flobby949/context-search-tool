@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import ntpath
 import os
@@ -47,6 +48,7 @@ from context_search_tool.quality.metrics import (
     CaseEvaluation,
     evaluate_case,
     evaluate_context_pack,
+    evaluate_exploration,
 )
 from context_search_tool.quality.prepare import validate_prepared_repo
 from context_search_tool.retrieval import (
@@ -261,8 +263,26 @@ def run_quality_fixture(
             }
 
             for case in selected_cases:
-                started = time.perf_counter()
                 try:
+                    if case.mode == "exploration":
+                        explored, evaluation = _run_exploration_case(
+                            workspace,
+                            case,
+                            profile,
+                            repo_config,
+                        )
+                        cases.append(
+                            _case_record(
+                                repo.repo_key,
+                                case,
+                                evaluation,
+                                explored.initial_bundle,
+                                pack=explored.final_pack,
+                            )
+                        )
+                        continue
+
+                    started = time.perf_counter()
                     bundle = query_repository(workspace, case.query, repo_config)
                     latency_ms = int((time.perf_counter() - started) * 1000)
                     evaluation = evaluate_case(
@@ -336,6 +356,56 @@ def run_quality_fixture(
                     "Additional temporary workspace cleanup failure: "
                     f"{cleanup_error}"
                 )
+
+
+def _run_exploration_case(
+    workspace: Path,
+    case: QualityCase,
+    profile: str,
+    repo_config: ToolConfig,
+) -> tuple[Any, CaseEvaluation]:
+    exploration = importlib.import_module("context_search_tool.exploration")
+
+    pack_options = exploration.resolve_explore_pack_options(
+        repo_config,
+        context_lines=None,
+    )
+    explored = exploration.explore_repository(
+        workspace,
+        case.query,
+        repo_config,
+        pack_options,
+    )
+    return explored, _evaluate_explored_case(case, profile, explored)
+
+
+def _evaluate_explored_case(
+    case: QualityCase,
+    profile: str,
+    explored: Any,
+) -> CaseEvaluation:
+    initial_probe = explored.trace.rounds[0].probes[0]
+    evaluation = evaluate_case(
+        case,
+        explored.initial_bundle.results,
+        latency_ms=initial_probe.duration_ms,
+        anchor_paths=[
+            anchor.file_path.as_posix()
+            for anchor in explored.initial_bundle.evidence_anchors
+        ],
+    )
+    evaluation = _apply_profile_expectations(
+        case,
+        profile,
+        explored.initial_bundle,
+        evaluation,
+    )
+    evaluation = evaluate_context_pack(
+        case,
+        explored.final_pack,
+        evaluation,
+    )
+    return evaluate_exploration(case, explored, evaluation)
 
 
 def _apply_config_sections(
