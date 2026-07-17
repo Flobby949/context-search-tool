@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from bisect import bisect_right
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 import re
 from typing import Any, Iterator
@@ -9,7 +9,15 @@ from typing import Any, Iterator
 from context_search_tool.graph_contract import (
     MAX_FRONTEND_IMPORTS_PER_FILE,
     MAX_ROUTES_PER_ROUTER_FILE,
+    generate_v5_relation_id,
+    generate_v5_signal_id,
 )
+from context_search_tool.graph_plugins import (
+    MaterializedGraph,
+    ParsedGraphFacts,
+    PluginContext,
+)
+from context_search_tool.models import CodeRelation, CodeSignal, DocumentChunk
 from context_search_tool.syntax_parsers import (
     parse_javascript,
     parse_jsx,
@@ -67,6 +75,8 @@ _SCOPE_TYPES = frozenset(
 _RELEVANT_ERROR_RE = re.compile(
     rb"\b(?:import|export|createRouter|createBrowserRouter|useRoutes|Route|routes|path|component|Component|element|lazy)\b"
 )
+_GRAPH_PRODUCER = "frontend_graph"
+_GRAPH_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 @dataclass(frozen=True)
@@ -152,6 +162,146 @@ class _BindingTarget:
 class _ConstArray:
     node: Any
     scope_key: tuple[str, int, int]
+
+
+class FrontendGraphProducer:
+    def supports(self, context: PluginContext) -> bool:
+        return context.file_path.suffix.lower() in {
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            ".vue",
+        }
+
+    def parse(self, context: PluginContext, content: bytes) -> ParsedGraphFacts:
+        if not self.supports(context):
+            raise ValueError("FrontendGraphProducer received an unsupported source")
+        facts = extract_frontend_facts(context.file_path.as_posix(), content)
+        tokens: list[str] = []
+        for fact in facts.imports:
+            _add_graph_tokens(tokens, fact.specifier)
+            for binding in fact.bindings:
+                _add_graph_tokens(tokens, binding.local_name)
+                _add_graph_tokens(tokens, binding.imported_name)
+        for route in facts.routes:
+            _add_graph_tokens(tokens, route.path)
+        return ParsedGraphFacts(
+            facts=facts,
+            lexical_tokens=tuple(tokens),
+            metadata={
+                "graph_parse_status": (
+                    "ast" if facts.persistent_facts_allowed else "rejected"
+                ),
+                "graph_diagnostics": {
+                    item.code: item.count for item in facts.diagnostics
+                },
+            },
+        )
+
+    def materialize(
+        self,
+        context: PluginContext,
+        parsed: ParsedGraphFacts,
+        chunks: tuple[DocumentChunk, ...],
+        module_signal: CodeSignal,
+    ) -> MaterializedGraph:
+        facts = parsed.facts
+        if (
+            not isinstance(facts, FrontendFactSet)
+            or not facts.persistent_facts_allowed
+        ):
+            return MaterializedGraph(metadata=parsed.metadata)
+        if module_signal.file_path != context.file_path:
+            raise ValueError("module signal does not belong to the plugin context")
+
+        ordered_chunks = tuple(
+            sorted(
+                chunks,
+                key=lambda item: (
+                    item.start_line,
+                    item.end_line,
+                    item.chunk_id,
+                ),
+            )
+        )
+        route_chunks = [
+            _graph_containing_chunk(ordered_chunks, route.source_range.start_line)
+            for route in facts.routes
+        ]
+        if any(chunk is None for chunk in route_chunks):
+            metadata = dict(parsed.metadata)
+            metadata["graph_materialize_status"] = "missing_chunk"
+            return MaterializedGraph(metadata=metadata)
+
+        signals: list[CodeSignal] = []
+        relations: dict[str, CodeRelation] = {}
+        for fact in facts.imports:
+            relation = _frontend_relation(
+                context=context,
+                source=module_signal,
+                kind="imports",
+                selector=fact.selector,
+                source_range=fact.source_range,
+                target_name=fact.specifier,
+                extra_metadata={
+                    "import_kind": fact.kind,
+                    "bindings": [
+                        {
+                            "local_name": binding.local_name,
+                            "imported_name": binding.imported_name,
+                            "kind": binding.kind,
+                            "is_type_only": binding.is_type_only,
+                        }
+                        for binding in fact.bindings
+                    ],
+                },
+            )
+            _merge_frontend_relation(relations, relation)
+
+        for route, chunk in zip(facts.routes, route_chunks):
+            assert chunk is not None
+            signal = _frontend_route_signal(context, route, chunk)
+            signals.append(signal)
+            relation = _frontend_relation(
+                context=context,
+                source=signal,
+                kind="routes_to",
+                selector=route.component,
+                source_range=route.source_range,
+                target_name=route.component.specifier,
+                extra_metadata={
+                    "framework": route.framework,
+                    "path": route.path,
+                },
+            )
+            _merge_frontend_relation(relations, relation)
+
+        signals.sort(
+            key=lambda item: (
+                item.start_line,
+                item.start_column,
+                item.qualified_name,
+                item.signal_id,
+            )
+        )
+        materialized_relations = tuple(
+            sorted(
+                relations.values(),
+                key=lambda item: (
+                    int(item.metadata.get("first_source_line", 0)),
+                    int(item.metadata.get("first_source_column", 0)),
+                    item.kind,
+                    item.target_qualified_name,
+                    item.relation_id,
+                ),
+            )
+        )
+        return MaterializedGraph(
+            signals=tuple(signals),
+            relations=materialized_relations,
+            metadata=parsed.metadata,
+        )
 
 
 def lex_vue_script_ranges(source: bytes) -> tuple[VueScriptRange, ...]:
@@ -1392,3 +1542,151 @@ def _add_diagnostic(
             diagnostics[index] = FactDiagnostic(code, item.count + count)
             return
     diagnostics.append(FactDiagnostic(code, count))
+
+
+def _frontend_route_signal(
+    context: PluginContext,
+    route: FrontendRouteFact,
+    chunk: DocumentChunk,
+) -> CodeSignal:
+    qualified_name = f"{context.file_path.as_posix()}#{route.framework}:{route.path}"
+    source_range = route.source_range
+    signal_id = generate_v5_signal_id(
+        file_path=context.file_path.as_posix(),
+        kind="route",
+        qualified_name=qualified_name,
+        signature="",
+        start_line=source_range.start_line,
+        start_column=source_range.start_column,
+        end_line=source_range.end_line,
+        end_column=source_range.end_column,
+        producer=_GRAPH_PRODUCER,
+    )
+    return CodeSignal(
+        signal_id=signal_id,
+        chunk_id=chunk.chunk_id,
+        file_path=context.file_path,
+        kind="route",
+        name=route.path,
+        start_line=source_range.start_line,
+        end_line=source_range.end_line,
+        language=context.language,
+        tokens=[],
+        metadata={
+            "framework": route.framework,
+            "path": route.path,
+            "component_specifier": route.component.specifier,
+        },
+        qualified_name=qualified_name,
+        project_unit_key=context.project_unit_key,
+        producer=_GRAPH_PRODUCER,
+        start_column=source_range.start_column,
+        end_column=source_range.end_column,
+        recallable=False,
+    )
+
+
+def _frontend_relation(
+    *,
+    context: PluginContext,
+    source: CodeSignal,
+    kind: str,
+    selector: ModuleSelector,
+    source_range: SourceRange,
+    target_name: str,
+    extra_metadata: dict[str, object],
+) -> CodeRelation:
+    active = {path.as_posix() for path in context.active_paths}
+    active_candidates = tuple(
+        candidate for candidate in selector.candidates if candidate in active
+    )
+    target_project_unit_key = context.project_unit_key
+    if selector.state == "exact" and selector.candidates:
+        target_project_unit_key = context.project_unit_for_path(
+            selector.candidates[0]
+        )
+    elif selector.state == "candidates":
+        active_candidates = tuple(
+            candidate
+            for candidate in active_candidates
+            if context.project_unit_for_path(candidate) == context.project_unit_key
+        )
+
+    target_qualified_name = (
+        selector.candidates[0] if selector.candidates else selector.specifier
+    )
+    relation_id = generate_v5_relation_id(
+        source_signal_id=source.signal_id,
+        kind=kind,
+        target_kind="module",
+        target_qualified_name=target_qualified_name,
+        target_signature="",
+        target_arity=None,
+        target_project_unit_key=target_project_unit_key,
+        producer=_GRAPH_PRODUCER,
+    )
+    metadata = {
+        **extra_metadata,
+        "selector_state": selector.state,
+        "specifier": selector.specifier,
+        "source_kind": selector.source_kind,
+        "candidates": active_candidates,
+        "first_source_line": source_range.start_line,
+        "first_source_column": source_range.start_column,
+        "occurrence_count": 1,
+    }
+    return CodeRelation(
+        relation_id=relation_id,
+        source_signal_id=source.signal_id,
+        target_name=target_name,
+        kind=kind,
+        confidence=1.0,
+        metadata=metadata,
+        target_kind="module",
+        target_qualified_name=target_qualified_name,
+        target_project_unit_key=target_project_unit_key,
+        resolution="unresolved",
+        producer=_GRAPH_PRODUCER,
+        producer_confidence=1.0,
+    )
+
+
+def _merge_frontend_relation(
+    relations: dict[str, CodeRelation], relation: CodeRelation
+) -> None:
+    existing = relations.get(relation.relation_id)
+    if existing is None:
+        relations[relation.relation_id] = relation
+        return
+    existing_position = (
+        int(existing.metadata.get("first_source_line", 0)),
+        int(existing.metadata.get("first_source_column", 0)),
+    )
+    next_position = (
+        int(relation.metadata.get("first_source_line", 0)),
+        int(relation.metadata.get("first_source_column", 0)),
+    )
+    selected = (
+        relation.metadata if next_position < existing_position else existing.metadata
+    )
+    metadata = dict(selected)
+    metadata["occurrence_count"] = int(
+        existing.metadata.get("occurrence_count", 1)
+    ) + int(relation.metadata.get("occurrence_count", 1))
+    relations[relation.relation_id] = replace(existing, metadata=metadata)
+
+
+def _graph_containing_chunk(
+    chunks: tuple[DocumentChunk, ...], line: int
+) -> DocumentChunk | None:
+    return next(
+        (chunk for chunk in chunks if chunk.start_line <= line <= chunk.end_line),
+        None,
+    )
+
+
+def _add_graph_tokens(tokens: list[str], value: str) -> None:
+    for match in _GRAPH_TOKEN_RE.finditer(value):
+        token = match.group(0).lower()
+        if token not in tokens:
+            tokens.append(token)

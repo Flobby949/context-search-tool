@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from context_search_tool.java_ast import extract_java_facts
+from context_search_tool.graph_contract import generate_core_module_signal_id
+from context_search_tool.graph_plugins import PluginContext
+from context_search_tool.java_graph import JavaGraphProducer
 from context_search_tool.java_plugin import JavaPlugin
+from context_search_tool.models import CodeSignal, DocumentChunk
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -571,3 +575,139 @@ def test_malformed_fixture_requires_ast_fallback_but_legacy_output_remains() -> 
     _assert_no_structural_facts(facts)
     assert "MalformedJava" in {symbol.name for symbol in legacy.symbols}
     assert "MalformedUniqueLexicalToken" in source.decode("utf-8")
+
+
+def _graph_chunk(path: Path, source: bytes) -> DocumentChunk:
+    line_count = source.count(b"\n") + 1
+    return DocumentChunk(
+        chunk_id="java-chunk",
+        file_path=path,
+        start_line=1,
+        end_line=line_count,
+        content=source.decode("utf-8"),
+        chunk_type="java",
+    )
+
+
+def _module_signal(path: Path, chunk: DocumentChunk, language: str) -> CodeSignal:
+    signal_id = generate_core_module_signal_id(
+        file_path=path.as_posix(),
+        start_line=chunk.start_line,
+        start_column=0,
+        end_line=chunk.end_line,
+        end_column=0,
+    )
+    return CodeSignal(
+        signal_id=signal_id,
+        chunk_id=chunk.chunk_id,
+        file_path=path,
+        kind="module",
+        name=path.as_posix(),
+        start_line=chunk.start_line,
+        end_line=chunk.end_line,
+        language=language,
+        qualified_name=path.as_posix(),
+        project_unit_key="",
+        producer="core_module",
+        recallable=False,
+    )
+
+
+def test_java_graph_producer_materializes_v5_declarations_and_edges() -> None:
+    path = Path("src/main/java/demo/OrderController.java")
+    source = b'''package demo;
+import product.Dto;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+interface OrderApi { Dto load(Dto dto); }
+class Repository { Dto load(Dto dto) { return dto; } }
+@RestController
+@RequestMapping("/api")
+class OrderController implements OrderApi {
+    Repository repository;
+    @GetMapping("/orders")
+    public Dto load(Dto dto) {
+        repository.load(dto);
+        repository.load(dto);
+        return dto;
+    }
+}
+'''
+    context = PluginContext(path, "java", "", {}, (path,))
+    chunk = _graph_chunk(path, source)
+    module = _module_signal(path, chunk, "java")
+    producer = JavaGraphProducer()
+
+    parsed = producer.parse(context, source)
+    graph = producer.materialize(context, parsed, (chunk,), module)
+
+    assert parsed.fallback_required is False
+    assert parsed.metadata["graph_parse_status"] == "ast"
+    assert all(signal.signal_id.startswith("s5:") for signal in graph.signals)
+    assert all(signal.producer == "java_ast" for signal in graph.signals)
+    assert all(signal.recallable for signal in graph.signals)
+    by_kind = {kind: [item for item in graph.signals if item.kind == kind] for kind in {
+        "type", "field", "method", "endpoint"
+    }}
+    assert {item.qualified_name for item in by_kind["type"]} >= {
+        "demo.OrderApi",
+        "demo.Repository",
+        "demo.OrderController",
+    }
+    load = next(
+        item
+        for item in by_kind["method"]
+        if item.qualified_name == "demo.OrderController.load"
+    )
+    assert load.signature == "(product.Dto)"
+    [endpoint] = by_kind["endpoint"]
+    assert endpoint.name == "GET /api/orders"
+    assert endpoint.metadata["method_qualified_name"] == "demo.OrderController.load"
+
+    assert all(relation.relation_id.startswith("r5:") for relation in graph.relations)
+    assert {relation.kind for relation in graph.relations} >= {
+        "implements",
+        "implements_method",
+        "calls",
+        "uses_type",
+        "imports_type",
+    }
+    implements_method = next(
+        item for item in graph.relations if item.kind == "implements_method"
+    )
+    assert implements_method.target_qualified_name == "demo.OrderApi.load"
+    assert implements_method.target_signature == "(product.Dto)"
+    call = next(item for item in graph.relations if item.kind == "calls")
+    assert call.source_signal_id == endpoint.signal_id
+    assert call.target_qualified_name == "demo.Repository.load"
+    assert call.target_signature == "(product.Dto)"
+    assert call.target_arity == 1
+    assert call.metadata["occurrence_count"] == 2
+    imports = [item for item in graph.relations if item.kind == "imports_type"]
+    assert all(item.source_signal_id == module.signal_id for item in imports)
+    assert {item.target_qualified_name for item in imports} >= {"product.Dto"}
+    assert all(item.resolution == "unresolved" for item in graph.relations)
+
+
+def test_java_graph_fallback_is_marker_only_and_never_calls_legacy() -> None:
+    path = Path("src/main/java/demo/Broken.java")
+    source = b"package demo; class Broken { void run( { }"
+    context = PluginContext(path, "java", "", {}, (path,))
+    chunk = _graph_chunk(path, source)
+    producer = JavaGraphProducer()
+
+    parsed = producer.parse(context, source)
+    graph = producer.materialize(
+        context,
+        parsed,
+        (chunk,),
+        _module_signal(path, chunk, "java"),
+    )
+
+    assert parsed.fallback_required is True
+    assert parsed.symbols == ()
+    assert parsed.lexical_tokens == ()
+    assert graph.signals == ()
+    assert graph.relations == ()
+    assert JavaPlugin().extract(path, source.decode()).symbols

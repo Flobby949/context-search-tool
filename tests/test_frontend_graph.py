@@ -5,9 +5,13 @@ from pathlib import Path
 import pytest
 
 from context_search_tool.frontend_graph import (
+    FrontendGraphProducer,
     extract_frontend_facts,
     lex_vue_script_ranges,
 )
+from context_search_tool.graph_contract import generate_core_module_signal_id
+from context_search_tool.graph_plugins import PluginContext
+from context_search_tool.models import CodeSignal, DocumentChunk
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -326,3 +330,106 @@ def test_frozen_vue_and_react_routes_are_positive_while_shadowed_are_negative() 
         path = FIXTURES / relative
         facts = extract_frontend_facts(relative.split("/", 1)[1], path.read_bytes())
         assert facts.routes == ()
+
+
+def _frontend_module(path: Path, chunk: DocumentChunk) -> CodeSignal:
+    return CodeSignal(
+        signal_id=generate_core_module_signal_id(
+            file_path=path.as_posix(),
+            start_line=chunk.start_line,
+            start_column=0,
+            end_line=chunk.end_line,
+            end_column=0,
+        ),
+        chunk_id=chunk.chunk_id,
+        file_path=path,
+        kind="module",
+        name=path.as_posix(),
+        start_line=chunk.start_line,
+        end_line=chunk.end_line,
+        language="typescript",
+        qualified_name=path.as_posix(),
+        project_unit_key="",
+        producer="core_module",
+        recallable=False,
+    )
+
+
+def test_frontend_graph_uses_the_complete_active_candidate_set() -> None:
+    path = Path("src/routes.tsx")
+    source = b'''import { createBrowserRouter } from "react-router-dom";
+import View from "./View";
+createBrowserRouter([{ path: "/view", Component: View }]);
+'''
+    chunk = DocumentChunk(
+        "frontend-chunk",
+        path,
+        1,
+        3,
+        source.decode(),
+        "code",
+    )
+    context = PluginContext(
+        path,
+        "typescript",
+        "",
+        {},
+        (path, Path("src/View.ts"), Path("src/View.js")),
+    )
+    producer = FrontendGraphProducer()
+
+    parsed = producer.parse(context, source)
+    graph = producer.materialize(
+        context,
+        parsed,
+        (chunk,),
+        _frontend_module(path, chunk),
+    )
+
+    [route] = graph.signals
+    assert route.kind == "route"
+    assert route.name == "/view"
+    assert route.recallable is False
+    view_relations = [
+        relation
+        for relation in graph.relations
+        if relation.target_name == "./View"
+    ]
+    assert {relation.kind for relation in view_relations} == {
+        "imports",
+        "routes_to",
+    }
+    assert all(
+        relation.metadata["candidates"] == ("src/View.ts", "src/View.js")
+        for relation in view_relations
+    )
+    assert all(relation.resolution == "unresolved" for relation in graph.relations)
+
+
+def test_frontend_graph_missing_route_chunk_fails_the_producer_closed() -> None:
+    path = Path("src/routes.tsx")
+    source = b'''import { createBrowserRouter } from "react-router-dom";
+import View from "./View.ts";
+createBrowserRouter([{ path: "/view", Component: View }]);
+'''
+    chunk = DocumentChunk("first", path, 1, 1, source.decode(), "code")
+    context = PluginContext(
+        path,
+        "typescript",
+        "",
+        {},
+        (path, Path("src/View.ts")),
+    )
+    producer = FrontendGraphProducer()
+    parsed = producer.parse(context, source)
+
+    graph = producer.materialize(
+        context,
+        parsed,
+        (chunk,),
+        _frontend_module(path, chunk),
+    )
+
+    assert graph.signals == ()
+    assert graph.relations == ()
+    assert graph.metadata["graph_materialize_status"] == "missing_chunk"

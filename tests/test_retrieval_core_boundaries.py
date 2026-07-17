@@ -199,11 +199,32 @@ JAVA_AST_ALLOWED_INTERNAL_IMPORTS = {
 
 FRONTEND_GRAPH_ALLOWED_INTERNAL_IMPORTS = {
     "context_search_tool.graph_contract",
+    "context_search_tool.graph_plugins",
+    "context_search_tool.models",
     "context_search_tool.syntax_parsers",
 }
 
 MYBATIS_ALLOWED_INTERNAL_IMPORTS = {
     "context_search_tool.graph_contract",
+    "context_search_tool.graph_plugins",
+    "context_search_tool.models",
+}
+
+GRAPH_PLUGINS_ALLOWED_INTERNAL_IMPORTS = {
+    "context_search_tool.models",
+}
+
+JAVA_GRAPH_ALLOWED_INTERNAL_IMPORTS = {
+    "context_search_tool.graph_contract",
+    "context_search_tool.graph_plugins",
+    "context_search_tool.java_ast",
+    "context_search_tool.models",
+}
+
+TEST_ASSOCIATION_ALLOWED_INTERNAL_IMPORTS = {
+    "context_search_tool.graph_contract",
+    "context_search_tool.models",
+    "context_search_tool.test_paths",
 }
 
 GRAPH_LIFECYCLE_ALLOWED_INTERNAL_IMPORTS = {
@@ -557,6 +578,30 @@ def test_frontend_and_mybatis_fact_modules_are_pure_and_dormant() -> None:
         if isinstance(node, ast.Attribute)
         and node.attr.lower() in {"xinclude", "resolve", "resolver"}
     ]
+
+
+def test_graph_producer_protocol_adapters_and_test_paths_are_leaf_bounded() -> None:
+    package = ROOT / "src" / "context_search_tool"
+    assert _internal_imports(package / "graph_plugins.py") <= (
+        GRAPH_PLUGINS_ALLOWED_INTERNAL_IMPORTS
+    )
+    assert _internal_imports(package / "java_graph.py") <= (
+        JAVA_GRAPH_ALLOWED_INTERNAL_IMPORTS
+    )
+    assert _internal_imports(package / "test_association.py") <= (
+        TEST_ASSOCIATION_ALLOWED_INTERNAL_IMPORTS
+    )
+    assert not _internal_imports(package / "test_paths.py")
+
+    graph_plugins = (package / "graph_plugins.py").read_text(encoding="utf-8")
+    assert "JavaGraphProducer" not in graph_plugins
+    assert "FrontendGraphProducer" not in graph_plugins
+    assert "MyBatisGraphProducer" not in graph_plugins
+
+    for name in ("plugins.py", "indexer.py", "java_plugin.py", "retrieval.py"):
+        imports = _internal_imports(package / name)
+        assert "context_search_tool.java_graph" not in imports
+        assert "context_search_tool.test_association" not in imports
 
 
 def test_graph_lifecycle_primitives_are_leaf_bounded_and_not_activated() -> None:

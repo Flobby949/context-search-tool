@@ -8,7 +8,17 @@ from typing import Any
 from defusedxml import ElementTree
 from defusedxml.common import DefusedXmlException
 
-from context_search_tool.graph_contract import MAX_SIGNALS_PER_FILE
+from context_search_tool.graph_contract import (
+    MAX_SIGNALS_PER_FILE,
+    generate_v5_relation_id,
+    generate_v5_signal_id,
+)
+from context_search_tool.graph_plugins import (
+    MaterializedGraph,
+    ParsedGraphFacts,
+    PluginContext,
+)
+from context_search_tool.models import CodeRelation, CodeSignal, DocumentChunk
 
 
 _STATEMENT_TAGS = frozenset({"select", "insert", "update", "delete"})
@@ -71,6 +81,10 @@ _TYPE_ALIASES = {
     "short": "java.lang.Short",
     "string": "java.lang.String",
 }
+_GRAPH_PRODUCER = "mybatis_xml"
+_JAVA_FQCN_RE = re.compile(
+    r"(?:[A-Za-z_$][A-Za-z0-9_$]*\.)+[A-Za-z_$][A-Za-z0-9_$]*(?:\[\])*$"
+)
 
 
 @dataclass(frozen=True)
@@ -121,6 +135,74 @@ class _OpenTag:
     start_byte: int
     direct_statement_tag: str
     statement_id: str
+
+
+class MyBatisGraphProducer:
+    def supports(self, context: PluginContext) -> bool:
+        return context.file_path.suffix.lower() == ".xml"
+
+    def parse(self, context: PluginContext, content: bytes) -> ParsedGraphFacts:
+        if not self.supports(context):
+            raise ValueError("MyBatisGraphProducer received an unsupported source")
+        facts = extract_mybatis_facts(content)
+        return ParsedGraphFacts(
+            facts=facts,
+            lexical_tokens=facts.lexical_tokens,
+            metadata={
+                "graph_parse_status": "accepted" if facts.accepted else "rejected",
+                "graph_diagnostics": {
+                    item.code: item.count for item in facts.diagnostics
+                },
+            },
+        )
+
+    def materialize(
+        self,
+        context: PluginContext,
+        parsed: ParsedGraphFacts,
+        chunks: tuple[DocumentChunk, ...],
+        module_signal: CodeSignal,
+    ) -> MaterializedGraph:
+        facts = parsed.facts
+        if not isinstance(facts, MyBatisFactSet) or not facts.accepted:
+            return MaterializedGraph(metadata=parsed.metadata)
+        if module_signal.file_path != context.file_path:
+            raise ValueError("module signal does not belong to the plugin context")
+
+        ordered_chunks = tuple(
+            sorted(
+                chunks,
+                key=lambda item: (
+                    item.start_line,
+                    item.end_line,
+                    item.chunk_id,
+                ),
+            )
+        )
+        attachments = [
+            _mybatis_containing_chunk(ordered_chunks, fact.source_range.start_line)
+            for fact in facts.statements
+        ]
+        if any(chunk is None for chunk in attachments):
+            metadata = dict(parsed.metadata)
+            metadata["graph_materialize_status"] = "missing_chunk"
+            return MaterializedGraph(metadata=metadata)
+
+        signals: list[CodeSignal] = []
+        relations: list[CodeRelation] = []
+        for fact, chunk in zip(facts.statements, attachments):
+            assert chunk is not None
+            signal = _mybatis_statement_signal(context, fact, chunk)
+            signals.append(signal)
+            relations.append(_mybatis_relation(context, signal, fact))
+        return MaterializedGraph(
+            signals=tuple(signals),
+            relations=tuple(relations),
+            metadata=parsed.metadata,
+        )
+
+
+MyBatisXmlGraphProducer = MyBatisGraphProducer
 
 
 def extract_mybatis_facts(source: bytes) -> MyBatisFactSet:
@@ -511,8 +593,12 @@ def _decode_xml_references(value: str) -> str:
 
 def _parameter_signature(parameter_type: str) -> str:
     if not parameter_type:
-        return "()"
-    canonical = _TYPE_ALIASES.get(parameter_type.lower(), parameter_type)
+        return ""
+    canonical = _TYPE_ALIASES.get(parameter_type.lower())
+    if canonical is None:
+        if _JAVA_FQCN_RE.fullmatch(parameter_type) is None:
+            return ""
+        canonical = parameter_type
     return f"({canonical})"
 
 
@@ -571,4 +657,105 @@ def _rejected(code: str) -> MyBatisFactSet:
         statements=(),
         lexical_tokens=(),
         diagnostics=(FactDiagnostic(code),),
+    )
+
+
+def _mybatis_statement_signal(
+    context: PluginContext,
+    fact: MyBatisStatementFact,
+    chunk: DocumentChunk,
+) -> CodeSignal:
+    source_range = fact.source_range
+    arity = 1 if fact.parameter_signature else None
+    signal_id = generate_v5_signal_id(
+        file_path=context.file_path.as_posix(),
+        kind="mybatis_statement",
+        qualified_name=fact.qualified_name,
+        signature=fact.parameter_signature,
+        start_line=source_range.start_line,
+        start_column=source_range.start_column,
+        end_line=source_range.end_line,
+        end_column=source_range.end_column,
+        producer=_GRAPH_PRODUCER,
+    )
+    return CodeSignal(
+        signal_id=signal_id,
+        chunk_id=chunk.chunk_id,
+        file_path=context.file_path,
+        kind="mybatis_statement",
+        name=fact.qualified_name,
+        start_line=source_range.start_line,
+        end_line=source_range.end_line,
+        language="xml",
+        tokens=[],
+        metadata={
+            "statement_tag": fact.tag,
+            "statement_id": fact.statement_id,
+            "namespace": fact.qualified_name.rsplit("#", 1)[0],
+            "sql_utf8_bytes": fact.sql_utf8_bytes,
+        },
+        qualified_name=fact.qualified_name,
+        signature=fact.parameter_signature,
+        arity=arity,
+        project_unit_key=context.project_unit_key,
+        producer=_GRAPH_PRODUCER,
+        start_column=source_range.start_column,
+        end_column=source_range.end_column,
+        recallable=False,
+    )
+
+
+def _mybatis_relation(
+    context: PluginContext,
+    source: CodeSignal,
+    fact: MyBatisStatementFact,
+) -> CodeRelation:
+    namespace = fact.qualified_name.rsplit("#", 1)[0]
+    target_qualified_name = f"{namespace}.{fact.statement_id}"
+    target_arity = 1 if fact.parameter_signature else None
+    relation_id = generate_v5_relation_id(
+        source_signal_id=source.signal_id,
+        kind="mapped_by",
+        target_kind="method",
+        target_qualified_name=target_qualified_name,
+        target_signature=fact.parameter_signature,
+        target_arity=target_arity,
+        target_project_unit_key=context.project_unit_key,
+        producer=_GRAPH_PRODUCER,
+    )
+    return CodeRelation(
+        relation_id=relation_id,
+        source_signal_id=source.signal_id,
+        target_name=fact.qualified_name,
+        kind="mapped_by",
+        confidence=1.0,
+        metadata={
+            "selector": fact.qualified_name,
+            "resolution_basis": (
+                "mybatis_exact_signature"
+                if fact.parameter_signature
+                else "mybatis_namespace_id"
+            ),
+            "target_language": "java",
+            "first_source_line": fact.source_range.start_line,
+            "first_source_column": fact.source_range.start_column,
+            "occurrence_count": 1,
+        },
+        target_kind="method",
+        target_qualified_name=target_qualified_name,
+        target_signature=fact.parameter_signature,
+        target_arity=target_arity,
+        target_project_unit_key=context.project_unit_key,
+        resolution="unresolved",
+        producer=_GRAPH_PRODUCER,
+        producer_confidence=1.0,
+    )
+
+
+def _mybatis_containing_chunk(
+    chunks: tuple[DocumentChunk, ...], line: int
+) -> DocumentChunk | None:
+    return next(
+        (chunk for chunk in chunks if chunk.start_line <= line <= chunk.end_line),
+        None,
     )

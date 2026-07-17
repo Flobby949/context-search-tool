@@ -7,9 +7,13 @@ import pytest
 
 import context_search_tool.mybatis_xml as mybatis_xml
 from context_search_tool.mybatis_xml import (
+    MyBatisGraphProducer,
     extract_mybatis_facts,
     lex_mybatis_statement_ranges,
 )
+from context_search_tool.graph_contract import generate_core_module_signal_id
+from context_search_tool.graph_plugins import PluginContext
+from context_search_tool.models import CodeSignal, DocumentChunk
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -249,3 +253,94 @@ def test_frozen_order_mapper_is_accepted_and_security_negatives_fail_closed() ->
         name: extract_mybatis_facts((malformed / name).read_bytes()).accepted
         for name in expected
     } == expected
+
+
+def _xml_module(path: Path, chunk: DocumentChunk) -> CodeSignal:
+    return CodeSignal(
+        signal_id=generate_core_module_signal_id(
+            file_path=path.as_posix(),
+            start_line=chunk.start_line,
+            start_column=0,
+            end_line=chunk.end_line,
+            end_column=0,
+        ),
+        chunk_id=chunk.chunk_id,
+        file_path=path,
+        kind="module",
+        name=path.as_posix(),
+        start_line=chunk.start_line,
+        end_line=chunk.end_line,
+        language="xml",
+        qualified_name=path.as_posix(),
+        project_unit_key="",
+        producer="core_module",
+        recallable=False,
+    )
+
+
+def test_mybatis_graph_attaches_each_statement_to_its_containing_chunk() -> None:
+    path = Path("src/main/resources/mappers/OrderMapper.xml")
+    source = b'''<mapper namespace="demo.OrderMapper">
+  <select id="early">select 1</select>
+
+
+
+
+  <insert id="late" parameterType="string">
+    insert into orders values (#{value})
+  </insert>
+</mapper>'''
+    first = DocumentChunk("xml-first", path, 1, 4, source.decode(), "xml")
+    second = DocumentChunk("xml-second", path, 5, 10, source.decode(), "xml")
+    context = PluginContext(path, "xml", "", {}, (path,))
+    producer = MyBatisGraphProducer()
+    parsed = producer.parse(context, source)
+
+    graph = producer.materialize(
+        context,
+        parsed,
+        (first, second),
+        _xml_module(path, first),
+    )
+
+    assert [(signal.name, signal.chunk_id) for signal in graph.signals] == [
+        ("demo.OrderMapper#early", "xml-first"),
+        ("demo.OrderMapper#late", "xml-second"),
+    ]
+    assert all(signal.kind == "mybatis_statement" for signal in graph.signals)
+    assert all(signal.recallable is False for signal in graph.signals)
+    by_target = {relation.target_name: relation for relation in graph.relations}
+    exact = by_target["demo.OrderMapper#late"]
+    assert exact.kind == "mapped_by"
+    assert exact.target_qualified_name == "demo.OrderMapper.late"
+    assert exact.target_signature == "(java.lang.String)"
+    assert exact.target_arity == 1
+    assert exact.resolution == "unresolved"
+    unique = by_target["demo.OrderMapper#early"]
+    assert unique.target_signature == ""
+    assert unique.target_arity is None
+
+
+def test_mybatis_graph_missing_statement_chunk_fails_closed() -> None:
+    path = Path("src/main/resources/mappers/OrderMapper.xml")
+    source = b'''<mapper namespace="demo.OrderMapper">
+  <select id="early">select 1</select>
+
+
+  <insert id="late">insert 1</insert>
+</mapper>'''
+    first = DocumentChunk("xml-first", path, 1, 3, source.decode(), "xml")
+    context = PluginContext(path, "xml", "", {}, (path,))
+    producer = MyBatisGraphProducer()
+    parsed = producer.parse(context, source)
+
+    graph = producer.materialize(
+        context,
+        parsed,
+        (first,),
+        _xml_module(path, first),
+    )
+
+    assert graph.signals == ()
+    assert graph.relations == ()
+    assert graph.metadata["graph_materialize_status"] == "missing_chunk"
