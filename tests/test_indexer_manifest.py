@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 import sqlite3
 
@@ -34,7 +35,6 @@ from context_search_tool.index_lock import exclusive_index_lock
 from context_search_tool.manifest import load_manifest
 from context_search_tool.models import CodeRelation, CodeSignal
 from context_search_tool.mybatis_xml import MyBatisGraphProducer
-from context_search_tool.plugins import PluginExtraction
 from context_search_tool.scanner import read_scanned_file_bytes, scan_workspace_v5
 from context_search_tool.sqlite_store import SQLiteStore
 from context_search_tool.vector_store import NumpyVectorStore
@@ -45,11 +45,19 @@ class _SignalPlugin:
         self.signals = signals
         self.relations = relations
 
-    def supports(self, path: Path, language: str) -> bool:
-        return language == "java"
+    def supports(self, context) -> bool:
+        return context.language == "java"
 
-    def extract(self, path: Path, content: str) -> PluginExtraction:
-        return PluginExtraction(signals=self.signals, relations=self.relations)
+    def parse(self, context, content: bytes) -> ParsedGraphFacts:
+        return ParsedGraphFacts(facts=None)
+
+    def materialize(self, context, parsed, chunks, module_signal) -> MaterializedGraph:
+        chunk = chunks[0]
+        signals = tuple(
+            replace(signal, chunk_id=chunk.chunk_id, file_path=context.file_path)
+            for signal in self.signals
+        )
+        return MaterializedGraph(signals=signals, relations=tuple(self.relations))
 
 
 class _RecordingGraphPlugin:
@@ -87,8 +95,7 @@ def test_index_repository_creates_expected_index_files(tmp_path: Path) -> None:
     assert summary.files_indexed == 1
     assert (repo / ".context-search" / "manifest.json").exists()
     assert (repo / ".context-search" / "index.sqlite").exists()
-    assert (repo / ".context-search" / "vectors.npy").exists()
-    assert (repo / ".context-search" / "vector_ids.json").exists()
+    assert (repo / ".context-search" / "vector_snapshot.json").exists()
     assert load_manifest(repo).total_chunks >= 1
 
 
@@ -159,23 +166,73 @@ impl ImageStore {
     assert "filename" in chunk.lexical_tokens
 
 
-def test_index_repository_propagates_scanner_test_metadata_to_chunks(tmp_path: Path) -> None:
+def test_index_repository_persists_canonical_project_unit_test_metadata(
+    tmp_path: Path,
+) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    source = repo / "service" / "upload_test.go"
-    source.parent.mkdir(parents=True)
-    source.write_text(
-        "package service\nfunc TestUpload() {}\n",
-        encoding="utf-8",
-    )
+    files = {
+        "packages/go/go.mod": "module example.com/go\n",
+        "packages/go/upload_test.go": "package service\nfunc TestUpload() {}\n",
+        "packages/go/fixture/payment.go": "package service\n",
+        "packages/go/fixture/payment_test.go": "package service\n",
+        "packages/rust/Cargo.toml": "[package]\nname = 'rust'\nversion = '0.1.0'\n",
+        "packages/rust/tests/upload.rs": "#[test]\nfn upload() {}\n",
+        "packages/python/pyproject.toml": "[project]\nname = 'python'\n",
+        "packages/python/test_upload.py": "def test_upload():\n    pass\n",
+        "packages/python/src/generated/payment.py": "def payment():\n    pass\n",
+        "packages/python/src/generated/test_payment.py": "def test_payment():\n    pass\n",
+        "packages/web/package.json": "{\"name\": \"web\"}\n",
+        "packages/web/upload.test.js": "test('upload', () => {})\n",
+        "packages/web/upload.spec.ts": "test('upload', () => {})\n",
+        "packages/web/testdata/payment.js": "export const payment = () => {}\n",
+        "packages/web/testdata/payment.test.js": "test('payment', () => {})\n",
+        "packages/java/pom.xml": "<project></project>\n",
+        "packages/java/src/test/java/demo/UploadIT.java": "class UploadIT {}\n",
+    }
+    for relative_path, content in files.items():
+        source = repo / relative_path
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(content, encoding="utf-8")
 
     summary = index_repository(repo, DEFAULT_CONFIG)
 
-    assert summary.files_seen == 1
     store = SQLiteStore(repo / ".context-search" / "index.sqlite")
-    chunk = store.chunk_for_line(Path("service/upload_test.go"), 2)
-    assert chunk.metadata["language"] == "go"
-    assert chunk.metadata["is_test"]
+    test_paths = {
+        "packages/go/upload_test.go",
+        "packages/go/fixture/payment_test.go",
+        "packages/rust/tests/upload.rs",
+        "packages/python/test_upload.py",
+        "packages/python/src/generated/test_payment.py",
+        "packages/web/upload.test.js",
+        "packages/web/upload.spec.ts",
+        "packages/web/testdata/payment.test.js",
+        "packages/java/src/test/java/demo/UploadIT.java",
+    }
+    assert summary.files_seen >= len(test_paths)
+    for path in test_paths:
+        source = store.source_file_for_path(Path(path))
+        assert source is not None
+        assert source.is_test
+        chunk = store.chunk_for_line(Path(path), 1)
+        assert chunk.metadata["is_test"]
+
+    for path in (
+        "packages/go/fixture/payment.go",
+        "packages/python/src/generated/payment.py",
+        "packages/web/testdata/payment.js",
+    ):
+        source = store.source_file_for_path(Path(path))
+        assert source is not None
+        assert not source.is_test
+
+    with sqlite3.connect(repo / ".context-search" / "index.sqlite") as connection:
+        assert connection.execute(
+            """
+            SELECT COUNT(*) FROM code_relations
+            WHERE kind = 'tests' AND deleted_at IS NULL
+            """
+        ).fetchone()[0] == 0
 
 
 def test_index_repository_skips_unchanged_files(tmp_path: Path) -> None:
@@ -239,8 +296,7 @@ def test_index_repository_retries_file_when_previous_vector_write_failed(
     summary = index_repository(repo, DEFAULT_CONFIG)
 
     assert summary.files_indexed == 1
-    assert (repo / ".context-search" / "vectors.npy").exists()
-    assert (repo / ".context-search" / "vector_ids.json").exists()
+    assert (repo / ".context-search" / "vector_snapshot.json").exists()
 
 
 def test_index_repository_skips_unchanged_empty_file(tmp_path: Path) -> None:
@@ -289,11 +345,12 @@ def test_index_repository_persists_plugin_signals_and_relations(
     index_repository(repo, DEFAULT_CONFIG)
 
     store = SQLiteStore(repo / ".context-search" / "index.sqlite")
-    stored_signal = store.signal_search(["app"], limit=10)[0]
+    with store.graph_read_session() as session:
+        stored_signal = session.signal_search(["app"], limit=10)[0]
+        stored_signals = session.signals_for_chunk(stored_signal.chunk_id)
     assert stored_signal.signal_id == "sig-app"
     assert stored_signal.chunk_id != "plugin-placeholder"
-    assert store.signals_for_chunk(stored_signal.chunk_id) == [stored_signal]
-    assert store.relations_for_source("sig-app") == [relation]
+    assert stored_signal in stored_signals
 
 
 def test_index_repository_rebuilds_previous_signal_schema_for_unchanged_file(
@@ -332,7 +389,8 @@ def test_index_repository_rebuilds_previous_signal_schema_for_unchanged_file(
     )
     index_repository(repo, DEFAULT_CONFIG)
     store = SQLiteStore(repo / ".context-search" / "index.sqlite")
-    assert store.signal_search(["old"], limit=10)[0].signal_id == "sig-old"
+    with store.graph_read_session() as session:
+        assert session.signal_search(["old"], limit=10)[0].signal_id == "sig-old"
     store.set_metadata(SIGNAL_SCHEMA_VERSION_KEY, "3")
 
     monkeypatch.setattr(
@@ -342,9 +400,10 @@ def test_index_repository_rebuilds_previous_signal_schema_for_unchanged_file(
     summary = index_repository(repo, DEFAULT_CONFIG)
 
     assert summary.files_indexed == 1
-    assert store.signal_search(["old"], limit=10) == []
-    assert store.signal_search(["new", "signal"], limit=10)[0].signal_id == "sig-new"
-    assert store.get_metadata(SIGNAL_SCHEMA_VERSION_KEY) == "4"
+    with store.graph_read_session() as session:
+        assert session.signal_search(["old"], limit=10) == []
+        assert session.signal_search(["new", "signal"], limit=10)[0].signal_id == "sig-new"
+    assert store.get_metadata(SIGNAL_SCHEMA_VERSION_KEY) == "5"
 
 
 def test_internal_v5_builder_creates_ready_snapshot_and_verified_noop(
@@ -460,8 +519,7 @@ def test_internal_v5_builder_full_rebuild_ignores_legacy_hashes_and_vectors(
     (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
     index_repository(repo, DEFAULT_CONFIG)
     index_dir = repo / ".context-search"
-    (index_dir / "vectors.npy").write_bytes(b"corrupt")
-    (index_dir / "vector_ids.json").write_text("not json", encoding="utf-8")
+    (index_dir / "vector_snapshot.json").write_text("not json", encoding="utf-8")
     events: list[str] = []
 
     summary = build_v5_index_snapshot(

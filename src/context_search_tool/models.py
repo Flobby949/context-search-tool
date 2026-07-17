@@ -178,6 +178,7 @@ class RetrievalResult:
     semantic_matches: list[SemanticMatch] = field(default_factory=list)
     spans: tuple[RetrievalSpan, ...] = ()
     _context_content: str | None = field(default=None, repr=False, compare=False)
+    _context_role_hint: str | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)

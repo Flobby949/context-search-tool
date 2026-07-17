@@ -210,6 +210,12 @@ def assemble_query_output(
             semantic_matches=item.semantic_matches,
             spans=item.spans,
             _context_content=item._context_content,
+            _context_role_hint=(
+                "mybatis_repository"
+                if graph_session is not None
+                and graph_session.has_accepted_mybatis_statement(item.file_path)
+                else None
+            ),
         )
         for index, item in enumerate(visible_results)
     ]

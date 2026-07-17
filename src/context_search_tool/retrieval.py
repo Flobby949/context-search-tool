@@ -14,7 +14,8 @@ from context_search_tool import (
     sqlite_store,
     tokenizer,
 )
-from context_search_tool.config import ToolConfig
+from context_search_tool.config import ToolConfig, read_config
+from context_search_tool.graph_lifecycle import GraphIntegrityError
 from context_search_tool.models import (
     EvidenceAnchor,
     QueryPlan,
@@ -100,7 +101,7 @@ def query_repository(
     *,
     trace_collector: RetrievalTraceCollector | None = None,
 ) -> QueryBundle:
-    return _query_repository_impl(
+    return _query_repository_v5(
         repo,
         query,
         config,
@@ -135,6 +136,7 @@ def _query_repository_v5(
             full_file=full_file,
             planner=planner,
             trace_collector=trace_collector,
+            index_exists=False,
         )
 
     store = sqlite_store.SQLiteStore(db_path)
@@ -145,7 +147,21 @@ def _query_repository_v5(
     )
     graph_fault: str | None = None
     with session_context as graph_session:
+        if graph_session.capability.status == "legacy":
+            return _query_repository_impl(
+                resolved_repo,
+                query,
+                config,
+                context_lines=context_lines,
+                full_file=full_file,
+                planner=planner,
+                trace_collector=trace_collector,
+            )
         graph_session.validate_ready_targets()
+        if graph_session.capability.status == "stale":
+            logging.getLogger("context_search_tool.retrieval").warning(
+                "graph_index_stale"
+            )
         if vector_snapshot_loader is not None:
             vector_snapshot = vector_snapshot_loader(
                 resolved_repo,
@@ -153,16 +169,33 @@ def _query_repository_v5(
                 graph_session,
             )
         else:
-            _descriptor, vector_snapshot = (
-                candidates.NumpyVectorStore.load_published_snapshot(
-                    index_dir,
-                    expected_embedding_identity=manifest.embedding_config_hash(
-                        config.embedding
-                    ),
+            from context_search_tool.indexer import read_v5_vector_snapshot
+
+            try:
+                indexed_config = read_config(resolved_repo)
+            except (OSError, ValueError) as error:
+                if graph_session.capability.status == "ready":
+                    raise GraphIntegrityError("vector_snapshot_mismatch") from error
+                logging.getLogger("context_search_tool.retrieval").warning(
+                    "vector_snapshot_mismatch"
                 )
-            )
-            if set(vector_snapshot.ids) != graph_session.active_embedding_ids():
-                raise ValueError("vector snapshot does not match graph snapshot")
+                vector_snapshot = None
+            else:
+                if indexed_config.embedding != config.embedding:
+                    if graph_session.capability.status == "ready":
+                        raise ValueError(
+                            "incompatible vector snapshot embedding configuration"
+                        )
+                    logging.getLogger("context_search_tool.retrieval").warning(
+                        "vector_snapshot_mismatch"
+                    )
+                    vector_snapshot = None
+                else:
+                    vector_snapshot = read_v5_vector_snapshot(
+                        resolved_repo,
+                        indexed_config,
+                        graph_session,
+                    )
         bundle = _query_repository_impl(
             resolved_repo,
             query,
@@ -198,6 +231,7 @@ def _query_repository_impl(
     trace_collector: RetrievalTraceCollector | None = None,
     graph_session: sqlite_store.GraphReadSession | None = None,
     vector_snapshot: candidates.NumpyVectorStore | None = None,
+    index_exists: bool | None = None,
 ) -> QueryBundle:
     repo = repo.resolve()
     original_tokens = ordering.dedupe_lowered(tokenizer.tokenize_query(query))
@@ -207,7 +241,7 @@ def _query_repository_impl(
     variant_retrieval_status = "original_only"
     index_dir = index_dir_for(repo)
     db_path = index_dir / "index.sqlite"
-    if not db_path.exists():
+    if index_exists is False or not db_path.exists():
         bundle = QueryBundle(
             query=query,
             expanded_tokens=tokens,

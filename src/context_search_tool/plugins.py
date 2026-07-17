@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Protocol, TypeVar
 
+from context_search_tool.graph_plugins import GraphLanguagePlugin
 from context_search_tool.models import CodeRelation, CodeSignal, SymbolRef
 
 
@@ -45,7 +46,9 @@ def ordered_graph_plugins(
     )
 
 
-def default_plugins() -> list[LanguagePlugin]:
+def default_plugins() -> list[GraphLanguagePlugin]:
     from context_search_tool.java_plugin import JavaPlugin
+    from context_search_tool.frontend_graph import FrontendGraphProducer
+    from context_search_tool.mybatis_xml import MyBatisGraphProducer
 
-    return [JavaPlugin()]
+    return [JavaPlugin(), FrontendGraphProducer(), MyBatisGraphProducer()]

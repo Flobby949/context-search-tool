@@ -13,9 +13,13 @@ from typing import Any, Callable
 from context_search_tool.graph_contract import (
     EDGE_QUERY_LIMIT,
     MAX_EDGES_PER_SIGNAL_DIRECTION,
+    MAX_EXPLAIN_INCOMING,
+    MAX_EXPLAIN_OUTGOING,
+    MAX_EXPLAIN_SIGNALS,
     MAX_GRAPH_SEED_SIGNALS,
     MAX_SIGNALS_PER_FILE,
     RESOLUTION_STATES,
+    effective_relation_confidence,
 )
 from context_search_tool.graph_lifecycle import (
     FULL_REINDEX_REQUIRED_KEY,
@@ -1886,6 +1890,24 @@ class GraphReadSession:
     def chunk_for_id(self, chunk_id: str) -> DocumentChunk | None:
         return self.chunks_for_ids([chunk_id]).get(chunk_id)
 
+    def chunk_for_line(self, file_path: Path, line: int) -> DocumentChunk | None:
+        row = self._require_connection().execute(
+            """
+            SELECT *
+            FROM chunks
+            WHERE file_path = ?
+              AND start_line <= ?
+              AND end_line >= ?
+              AND deleted_at IS NULL
+            ORDER BY start_line, end_line, chunk_id
+            LIMIT 1
+            """,
+            (_path_key(file_path), line, line),
+        ).fetchone()
+        if row is None:
+            return None
+        return SQLiteStore(self.db_path)._chunk_from_row(self._require_connection(), row)
+
     def deleted_chunk_ids(self) -> set[str]:
         rows = self._require_connection().execute(
             "SELECT chunk_id FROM chunks WHERE deleted_at IS NOT NULL"
@@ -2168,6 +2190,184 @@ class GraphReadSession:
             (*chunk_ids, *chunk_ids, bounded_limit),
         ).fetchall()
         return [_signal_from_row(row) for row in rows]
+
+    def has_accepted_mybatis_statement(self, file_path: Path) -> bool:
+        if (
+            self.graph_fault is not None
+            or self.capability.status != "ready"
+            or not self.capability.structured
+        ):
+            return False
+        row = self._require_connection().execute(
+            """
+            SELECT 1
+            FROM code_signals
+            WHERE file_path = ?
+              AND kind = 'mybatis_statement'
+              AND producer = 'mybatis_xml'
+              AND deleted_at IS NULL
+            LIMIT 1
+            """,
+            (_path_key(file_path),),
+        ).fetchone()
+        return row is not None
+
+    def explain_projection(self, chunk: DocumentChunk) -> dict[str, object]:
+        capability = self.capability
+        projection: dict[str, object] = {
+            "status": capability.status,
+            "schema_version": capability.schema_version,
+            "signals": [],
+            "outgoing": [],
+            "incoming": [],
+            "omitted_signal_count": 0,
+            "omitted_outgoing_count": 0,
+            "omitted_incoming_count": 0,
+        }
+        if capability.status != "ready" or not capability.structured:
+            return projection
+
+        connection = self._require_connection()
+        membership = """
+            deleted_at IS NULL
+            AND (
+              chunk_id = ?
+              OR (
+                kind = 'module'
+                AND producer = 'core_module'
+                AND file_path = ?
+              )
+            )
+        """
+        parameters = (chunk.chunk_id, _path_key(chunk.file_path))
+        signal_count = int(
+            connection.execute(
+                f"SELECT COUNT(DISTINCT signal_id) AS count "
+                f"FROM code_signals WHERE {membership}",
+                parameters,
+            ).fetchone()["count"]
+        )
+        signal_rows = connection.execute(
+            f"""
+            SELECT *
+            FROM code_signals
+            WHERE {membership}
+            ORDER BY start_line, end_line, kind, signal_id
+            LIMIT ?
+            """,
+            (*parameters, MAX_EXPLAIN_SIGNALS),
+        ).fetchall()
+        projection["signals"] = [
+            _explain_signal(_signal_from_row(row)) for row in signal_rows
+        ]
+        projection["omitted_signal_count"] = max(
+            0,
+            signal_count - MAX_EXPLAIN_SIGNALS,
+        )
+        if signal_count == 0:
+            return projection
+
+        member_cte = f"""
+            WITH member_signals AS (
+              SELECT DISTINCT signal_id
+              FROM code_signals
+              WHERE {membership}
+            )
+        """
+        outgoing_count = int(
+            connection.execute(
+                f"""
+                {member_cte}
+                SELECT COUNT(DISTINCT relations.relation_id) AS count
+                FROM code_relations AS relations
+                JOIN member_signals
+                  ON member_signals.signal_id = relations.source_signal_id
+                JOIN code_signals AS sources
+                  ON sources.signal_id = relations.source_signal_id
+                 AND sources.deleted_at IS NULL
+                WHERE relations.deleted_at IS NULL
+                """,
+                parameters,
+            ).fetchone()["count"]
+        )
+        incoming_count = int(
+            connection.execute(
+                f"""
+                {member_cte}
+                SELECT COUNT(DISTINCT relations.relation_id) AS count
+                FROM code_relations AS relations
+                JOIN member_signals
+                  ON member_signals.signal_id = relations.target_signal_id
+                JOIN code_signals AS sources
+                  ON sources.signal_id = relations.source_signal_id
+                 AND sources.deleted_at IS NULL
+                JOIN code_signals AS targets
+                  ON targets.signal_id = relations.target_signal_id
+                 AND targets.deleted_at IS NULL
+                WHERE relations.deleted_at IS NULL
+                  AND relations.resolution IN ('resolved_exact', 'resolved_unique')
+                """,
+                parameters,
+            ).fetchone()["count"]
+        )
+        outgoing_rows = connection.execute(
+            f"""
+            {member_cte}
+            SELECT relations.*, sources.name AS source_name,
+                   targets.name AS target_signal_name,
+                   targets.file_path AS target_path
+            FROM code_relations AS relations
+            JOIN member_signals
+              ON member_signals.signal_id = relations.source_signal_id
+            JOIN code_signals AS sources
+              ON sources.signal_id = relations.source_signal_id
+             AND sources.deleted_at IS NULL
+            LEFT JOIN code_signals AS targets
+              ON targets.signal_id = relations.target_signal_id
+             AND targets.deleted_at IS NULL
+            WHERE relations.deleted_at IS NULL
+            ORDER BY relations.kind, relations.source_signal_id,
+                     relations.target_signal_id, relations.relation_id
+            LIMIT ?
+            """,
+            (*parameters, MAX_EXPLAIN_OUTGOING),
+        ).fetchall()
+        incoming_rows = connection.execute(
+            f"""
+            {member_cte}
+            SELECT relations.*, sources.name AS source_name,
+                   targets.name AS target_signal_name,
+                   targets.file_path AS target_path
+            FROM code_relations AS relations
+            JOIN member_signals
+              ON member_signals.signal_id = relations.target_signal_id
+            JOIN code_signals AS sources
+              ON sources.signal_id = relations.source_signal_id
+             AND sources.deleted_at IS NULL
+            JOIN code_signals AS targets
+              ON targets.signal_id = relations.target_signal_id
+             AND targets.deleted_at IS NULL
+            WHERE relations.deleted_at IS NULL
+              AND relations.resolution IN ('resolved_exact', 'resolved_unique')
+            ORDER BY relations.kind, relations.source_signal_id,
+                     relations.target_signal_id, relations.relation_id
+            LIMIT ?
+            """,
+            (*parameters, MAX_EXPLAIN_INCOMING),
+        ).fetchall()
+        outgoing = [_explain_relation(row, "outgoing") for row in outgoing_rows]
+        incoming = [_explain_relation(row, "incoming") for row in incoming_rows]
+        projection["outgoing"] = outgoing
+        projection["incoming"] = incoming
+        projection["omitted_outgoing_count"] = max(
+            0,
+            outgoing_count - MAX_EXPLAIN_OUTGOING,
+        )
+        projection["omitted_incoming_count"] = max(
+            0,
+            incoming_count - MAX_EXPLAIN_INCOMING,
+        )
+        return projection
 
     def initial_graph_signals(
         self,
@@ -3396,6 +3596,49 @@ class _ConnectionMetadataReader:
 
     def get_metadata(self, key: str) -> str | None:
         return _metadata_value(self.connection, key)
+
+
+def _explain_signal(signal: CodeSignal) -> dict[str, object]:
+    return {
+        "signal_id": signal.signal_id,
+        "kind": signal.kind,
+        "name": signal.name,
+        "qualified_name": signal.qualified_name,
+        "producer": signal.producer,
+        "start_line": signal.start_line,
+        "end_line": signal.end_line,
+        "recallable": signal.recallable,
+    }
+
+
+def _explain_relation(row: sqlite3.Row, direction: str) -> dict[str, object]:
+    relation = _relation_from_row(row)
+    confidence = effective_relation_confidence(
+        resolution=relation.resolution,
+        target_signal_id=relation.target_signal_id,
+        producer_confidence=relation.producer_confidence,
+        resolution_confidence=relation.resolution_confidence,
+    )
+    target_signal_name = row["target_signal_name"]
+    target_path = row["target_path"]
+    return {
+        "relation_id": relation.relation_id,
+        "kind": relation.kind,
+        "direction": direction,
+        "confidence": confidence,
+        "producer_confidence": relation.producer_confidence,
+        "resolution_confidence": relation.resolution_confidence,
+        "resolution": relation.resolution,
+        "source_signal_id": relation.source_signal_id,
+        "source_name": str(row["source_name"]),
+        "target_signal_id": relation.target_signal_id,
+        "target_name": (
+            str(target_signal_name)
+            if target_signal_name is not None
+            else relation.target_name
+        ),
+        "target_path": str(target_path) if target_path is not None else "",
+    }
 
 
 def _integer_metadata(connection: sqlite3.Connection, key: str) -> int:

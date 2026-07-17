@@ -297,6 +297,12 @@ def _run(
     )
 
 
+def test_public_runner_uses_v5_probe_planner() -> None:
+    from context_search_tool.exploration import probes, runner
+
+    assert runner.plan_probes is probes._plan_probes_v5
+
+
 @pytest.mark.parametrize(
     (
         "initial",

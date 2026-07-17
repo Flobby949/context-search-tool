@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from context_search_tool.graph_plugins import (
+    MaterializedGraph,
+    ParsedGraphFacts,
+    PluginContext,
+)
 from context_search_tool.models import (
     CodeRelation,
     CodeSignal,
@@ -61,8 +67,80 @@ _STATEMENT_PREFIXES = (
 
 
 class JavaPlugin:
-    def supports(self, path: Path, language: str) -> bool:
+    def supports(
+        self,
+        path: Path | PluginContext,
+        language: str | None = None,
+    ) -> bool:
+        if isinstance(path, PluginContext):
+            return (
+                path.language == "java"
+                or path.file_path.suffix.lower() == ".java"
+            )
         return language == "java" or path.suffix.lower() == ".java"
+
+    def parse(self, context: PluginContext, content: bytes) -> ParsedGraphFacts:
+        from context_search_tool.java_graph import JavaGraphProducer
+
+        parsed = JavaGraphProducer().parse(context, content)
+        legacy = self.extract(
+            context.file_path,
+            content.decode("utf-8", errors="replace"),
+        )
+        if not parsed.fallback_required:
+            return ParsedGraphFacts(
+                facts=parsed.facts,
+                symbols=tuple(legacy.symbols),
+                lexical_tokens=tuple(legacy.lexical_tokens),
+                metadata=parsed.metadata,
+            )
+        return ParsedGraphFacts(
+            facts=(parsed.facts, legacy),
+            symbols=tuple(legacy.symbols),
+            lexical_tokens=tuple(legacy.lexical_tokens),
+            metadata=parsed.metadata,
+            fallback_required=True,
+        )
+
+    def materialize(
+        self,
+        context: PluginContext,
+        parsed: ParsedGraphFacts,
+        chunks: tuple,
+        module_signal: CodeSignal,
+    ) -> MaterializedGraph:
+        from context_search_tool.java_graph import JavaGraphProducer
+
+        if not parsed.fallback_required:
+            return JavaGraphProducer().materialize(
+                context,
+                parsed,
+                chunks,
+                module_signal,
+            )
+        _facts, legacy = parsed.facts
+        signals: list[CodeSignal] = []
+        for signal in legacy.signals:
+            chunk = next(
+                (
+                    item
+                    for item in chunks
+                    if item.start_line <= signal.start_line <= item.end_line
+                ),
+                None,
+            )
+            signals.append(
+                replace(
+                    signal,
+                    file_path=context.file_path,
+                    chunk_id=chunk.chunk_id if chunk is not None else signal.chunk_id,
+                )
+            )
+        return MaterializedGraph(
+            signals=tuple(signals),
+            relations=tuple(legacy.relations),
+            metadata=parsed.metadata,
+        )
 
     def extract(self, path: Path, content: str) -> PluginExtraction:
         scrubbed_content = _strip_comments(content)

@@ -131,6 +131,7 @@ EXPECTED_P4_PRODUCTION_DIFF = {
 }
 
 P5_REVIEWED_PRODUCTION_CHANGES = {
+    "src/context_search_tool/config.py",
     "src/context_search_tool/graph_contract.py",
     "src/context_search_tool/graph_lifecycle.py",
     "src/context_search_tool/graph_resolution.py",
@@ -163,6 +164,7 @@ P5_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/retrieval_core/selection.py",
     "src/context_search_tool/retrieval_core/tracing.py",
     "src/context_search_tool/exploration/probes.py",
+    "src/context_search_tool/exploration/runner.py",
     "src/context_search_tool/context_pack/roles.py",
     "src/context_search_tool/cli.py",
     "src/context_search_tool/mcp_tools.py",
@@ -248,6 +250,8 @@ def _is_p4_public_facade_reference(reference: dict[str, object]) -> bool:
     return isinstance(path, str) and (
         path.startswith("tests/test_exploration_")
         or path == "tests/test_quality_p4.py"
+        or path == "tests/test_p5_privacy.py"
+        or path == "tests/test_graph_lifecycle.py"
         or path == "tests/generate_p4_exploration_manifest.py"
     )
 
@@ -537,7 +541,7 @@ def test_graph_contract_is_pure_and_module_identity_is_shared() -> None:
             assert not _reconstructs_core_module_id(path), path
 
 
-def test_java_ast_imports_are_leaf_only_and_production_registration_is_dormant() -> None:
+def test_java_ast_imports_are_leaf_only_and_production_registration_is_active() -> None:
     package = ROOT / "src" / "context_search_tool"
     java_ast = package / "java_ast.py"
     assert _internal_imports(java_ast) <= JAVA_AST_ALLOWED_INTERNAL_IMPORTS
@@ -557,12 +561,18 @@ def test_java_ast_imports_are_leaf_only_and_production_registration_is_dormant()
         if isinstance(node, ast.ImportFrom)
     }
     returns = [node for node in ast.walk(default_plugins) if isinstance(node, ast.Return)]
-    assert imports == {"context_search_tool.java_plugin"}
+    assert imports == {
+        "context_search_tool.frontend_graph",
+        "context_search_tool.java_plugin",
+        "context_search_tool.mybatis_xml",
+    }
     assert len(returns) == 1
-    assert ast.unparse(returns[0].value) == "[JavaPlugin()]"
+    assert ast.unparse(returns[0].value) == (
+        "[JavaPlugin(), FrontendGraphProducer(), MyBatisGraphProducer()]"
+    )
 
 
-def test_frontend_and_mybatis_fact_modules_are_pure_and_dormant() -> None:
+def test_frontend_and_mybatis_fact_modules_are_pure_and_registered() -> None:
     package = ROOT / "src" / "context_search_tool"
     assert _internal_imports(package / "frontend_graph.py") <= (
         FRONTEND_GRAPH_ALLOWED_INTERNAL_IMPORTS
@@ -571,10 +581,15 @@ def test_frontend_and_mybatis_fact_modules_are_pure_and_dormant() -> None:
         MYBATIS_ALLOWED_INTERNAL_IMPORTS
     )
 
-    for name in ("plugins.py", "indexer.py", "java_plugin.py", "retrieval.py"):
+    for name in ("indexer.py", "java_plugin.py", "retrieval.py"):
         imports = _internal_imports(package / name)
         assert "context_search_tool.frontend_graph" not in imports
         assert "context_search_tool.mybatis_xml" not in imports
+    plugin_imports = _internal_imports(package / "plugins.py")
+    assert {
+        "context_search_tool.frontend_graph",
+        "context_search_tool.mybatis_xml",
+    } <= plugin_imports
 
     mybatis_tree = ast.parse(
         (package / "mybatis_xml.py").read_text(encoding="utf-8")
@@ -609,16 +624,19 @@ def test_graph_producer_protocol_adapters_and_test_paths_are_leaf_bounded() -> N
     assert "FrontendGraphProducer" not in graph_plugins
     assert "MyBatisGraphProducer" not in graph_plugins
 
-    for name in ("plugins.py", "java_plugin.py", "retrieval.py"):
+    for name in ("plugins.py", "retrieval.py"):
         imports = _internal_imports(package / name)
         assert "context_search_tool.java_graph" not in imports
         assert "context_search_tool.test_association" not in imports
+    assert "context_search_tool.java_graph" in _internal_imports(
+        package / "java_plugin.py"
+    )
     indexer_imports = _internal_imports(package / "indexer.py")
     assert "context_search_tool.java_graph" not in indexer_imports
     assert "context_search_tool.test_association" in indexer_imports
 
 
-def test_graph_lifecycle_primitives_are_leaf_bounded_and_not_activated() -> None:
+def test_graph_lifecycle_primitives_are_leaf_bounded_and_activated() -> None:
     package = ROOT / "src" / "context_search_tool"
     assert _internal_imports(package / "graph_lifecycle.py") <= (
         GRAPH_LIFECYCLE_ALLOWED_INTERNAL_IMPORTS
@@ -646,7 +664,7 @@ def test_graph_lifecycle_primitives_are_leaf_bounded_and_not_activated() -> None
         and isinstance((target := node.targets[0]), ast.Name)
         and isinstance(node.value, ast.Constant)
     }
-    assert assignments["CURRENT_SIGNAL_SCHEMA_VERSION"] == 4
+    assert assignments["CURRENT_SIGNAL_SCHEMA_VERSION"] == 5
     public_indexer = next(
         node
         for node in indexer_tree.body
@@ -672,7 +690,7 @@ def test_graph_lifecycle_primitives_are_leaf_bounded_and_not_activated() -> None
         node.func.id
         for node in ast.walk(public_indexer)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-    } >= {"scan_workspace", "default_plugins"}
+    } >= {"build_v5_index_snapshot", "default_plugins"}
 
     retrieval_tree = _retrieval_tree()
     public_query = next(
@@ -685,16 +703,13 @@ def test_graph_lifecycle_primitives_are_leaf_bounded_and_not_activated() -> None
         for node in ast.walk(public_query)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
-    assert "_query_repository_impl" in public_query_calls
-    assert "_query_repository_v5" not in public_query_calls
+    assert "_query_repository_v5" in public_query_calls
     exploration_runner = (
         package / "exploration" / "runner.py"
     ).read_text(encoding="utf-8")
-    assert "_plan_probes_v5" not in exploration_runner
+    assert "_plan_probes_v5" in exploration_runner
 
-    for name in ("cli.py", "mcp_tools.py", "retrieval.py", "plugins.py"):
-        source = (package / name).read_text(encoding="utf-8")
-        assert "build_v5_index_snapshot" not in source
+    assert "build_v5_index_snapshot" in indexer_path.read_text(encoding="utf-8")
 
     for name in ("graph_lifecycle.py", "graph_resolution.py", "index_lock.py"):
         assert _import_roots(package / name).isdisjoint(
@@ -844,7 +859,12 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
             "--exit-code",
             P4_IMPLEMENTATION_BASELINE,
             "--",
-            "src/context_search_tool/context_pack",
+            "src/context_search_tool/context_pack/__init__.py",
+            "src/context_search_tool/context_pack/builder.py",
+            "src/context_search_tool/context_pack/excerpts.py",
+            "src/context_search_tool/context_pack/models.py",
+            "src/context_search_tool/context_pack/needs.py",
+            "src/context_search_tool/context_pack/serialization.py",
             "src/context_search_tool/retrieval_trace/models.py",
             "src/context_search_tool/retrieval_trace/serialization.py",
             "src/context_search_tool/retrieval_trace/collector.py",

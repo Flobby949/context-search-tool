@@ -39,6 +39,7 @@ ALLOWED_PRODUCTION_CHANGES = {
 }
 
 P5_REVIEWED_PRODUCTION_CHANGES = {
+    "src/context_search_tool/config.py",
     "src/context_search_tool/graph_contract.py",
     "src/context_search_tool/graph_lifecycle.py",
     "src/context_search_tool/graph_resolution.py",

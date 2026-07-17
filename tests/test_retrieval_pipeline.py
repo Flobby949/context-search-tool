@@ -190,7 +190,7 @@ def _controlled_semantic_repo(
             ),
         ]
     )
-    vector_store.persist()
+    _persist_legacy_snapshot(vector_store, store)
     return repo, config, ids
 
 
@@ -631,7 +631,7 @@ def test_query_repository_evidence_anchor_preserves_retrieval_semantic_matches(
         ),
     )
     index_repository(repo, config)
-    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+    store = _legacy_store(index_dir_for(repo) / "index.sqlite")
     readme_id = store.chunk_for_line(Path("README.md"), 1).chunk_id
     provider = CapturingEmbeddingProvider([[1, 0], [0, 1]])
     vector_store = CapturingVectorStore(
@@ -1846,7 +1846,7 @@ def test_workflow_alias_query_prefers_process_endpoint_over_generic_api(
     repo.mkdir()
     (repo / "HealthCheckController.java").write_text(
         """
-@RequestMapping("/health")
+import org.springframework.web.bind.annotation.GetMapping; import org.springframework.web.bind.annotation.RequestMapping; @RequestMapping("/health")
 class HealthCheckController {
   /**
    * 健康检查接口
@@ -1859,7 +1859,7 @@ class HealthCheckController {
     )
     (repo / "ProcessOpenController.java").write_text(
         """
-/**
+import org.springframework.web.bind.annotation.PostMapping; import org.springframework.web.bind.annotation.RequestMapping; /**
  * 对外开放的流程处理控制器，专门用于 APAAS 系统间集成的接口
  */
 @RequestMapping("/openapi/process")
@@ -6856,7 +6856,7 @@ def test_reasons_include_frontend_score_part_diagnostics() -> None:
     assert "frontend type declaration penalty" in reasons
 
 
-def test_query_repository_boosts_frontend_direct_import_cohort_without_adding_candidates(
+def test_query_repository_adds_resolved_frontend_import_evidence(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
@@ -6930,7 +6930,7 @@ export function normalizeCanvasMask() {
     assert service_index < utility_index
     assert service_result.score_parts["frontend_import_support_boost"] == pytest.approx(0.30)
     assert "frontend import support boost" in service_result.reasons
-    assert "src/services/sessionApi.ts" not in paths
+    _assert_resolved_frontend_import(bundle)
 
 
 def test_generic_noise_generated_schema_demotes_below_source(
@@ -11634,9 +11634,35 @@ def test_returned_bundle_spans_trigger_no_followup_store_or_file_access(
     assert bundle.results
     assert all(result.spans for result in bundle.results)
     assert counts_at_return["lexical_search"] == 1
-    assert counts_at_return["chunks_for_ids"] == 1
+    assert counts_at_return["chunks_for_ids"] == 0
     assert counts_at_return["read_text"] >= 1
 
     payload = query_payload(bundle)
     assert all("spans" not in result for result in payload["results"])
     assert counts == counts_at_return
+
+
+def _assert_resolved_frontend_import(bundle) -> None:
+    result = next(
+        item
+        for item in bundle.results
+        if item.file_path.as_posix() == "src/services/sessionApi.ts"
+    )
+    assert "graph_imports_match" in result.score_parts
+    assert "frontend import dependency" in result.reasons
+    assert result.score_parts["graph_seed_original"] == pytest.approx(1.0)
+    assert result.spans[0].sources == ("relation",)
+
+
+def _persist_legacy_snapshot(
+    vector_store: candidates.NumpyVectorStore,
+    store: SQLiteStore,
+) -> None:
+    vector_store.persist()
+    store.set_metadata("signal_schema_version", "4")
+
+
+def _legacy_store(db_path: Path) -> SQLiteStore:
+    store = SQLiteStore(db_path)
+    store.set_metadata("signal_schema_version", "4")
+    return store

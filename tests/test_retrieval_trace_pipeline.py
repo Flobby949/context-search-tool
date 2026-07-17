@@ -76,14 +76,14 @@ def test_trace_repository_runs_query_once_and_preserves_raw_and_pack_payloads(
     repo, config = _indexed_repo(tmp_path)
     plain = retrieval.query_repository(repo, "INVOLVED_BY_ME", config)
     calls = 0
-    original = candidates.semantic_candidates
+    original = candidates.semantic_candidates_from_snapshot
 
     def counted(*args, **kwargs):
         nonlocal calls
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(candidates, "semantic_candidates", counted)
+    monkeypatch.setattr(candidates, "semantic_candidates_from_snapshot", counted)
     traced = retrieval.trace_repository(repo, "INVOLVED_BY_ME", config)
 
     assert calls == 1
@@ -214,7 +214,7 @@ def test_trace_repository_reports_store_read_error_before_stages(
     def forbidden(*args, **kwargs):
         raise AssertionError("store-read early return crossed into planning")
 
-    monkeypatch.setattr(sqlite_store.SQLiteStore, "deleted_chunk_ids", fail_store_read)
+    monkeypatch.setattr(sqlite_store.GraphReadSession, "deleted_chunk_ids", fail_store_read)
     monkeypatch.setattr(query_planner, "planner_from_config", forbidden)
     plain = retrieval.query_repository(repo, "audit", config)
     traced = retrieval.trace_repository(repo, "audit", config)
@@ -547,7 +547,7 @@ def test_deleted_id_handler_does_not_catch_broader_exceptions(
     def fail(self):
         raise RuntimeError("BROAD_ERROR_SENTINEL")
 
-    monkeypatch.setattr(sqlite_store.SQLiteStore, "deleted_chunk_ids", fail)
+    monkeypatch.setattr(sqlite_store.GraphReadSession, "deleted_chunk_ids", fail)
     target = (
         retrieval.query_repository
         if entrypoint == "plain"
@@ -717,10 +717,10 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
     for method_name in (
         "chunk_for_id",
         "signals_for_chunk",
-        "relations_for_source",
-        "relations_targeting",
+        "outgoing_relations",
+        "incoming_relations",
     ):
-        original_method = getattr(SQLiteStore, method_name)
+        original_method = getattr(sqlite_store.GraphReadSession, method_name)
 
         def make_store_read(method):
             def wrapped(*args, **kwargs):
@@ -731,7 +731,7 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
             return wrapped
 
         monkeypatch.setattr(
-            SQLiteStore,
+            sqlite_store.GraphReadSession,
             method_name,
             make_store_read(original_method),
         )
@@ -784,7 +784,7 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
     ):
         mark_operation(expansion, name)
     for name in (
-        "semantic_candidates",
+        "semantic_candidates_from_snapshot",
         "lexical_candidates",
         "path_symbol_candidates",
         "direct_text_candidates",
@@ -972,7 +972,7 @@ def test_mcp_trace_success_early_return_and_error_never_write_feedback(
 
     with monkeypatch.context() as store_error_patch:
         store_error_patch.setattr(
-            sqlite_store.SQLiteStore,
+                sqlite_store.GraphReadSession,
             "deleted_chunk_ids",
             lambda self: (_ for _ in ()).throw(sqlite3.Error("STORE_ERROR")),
         )

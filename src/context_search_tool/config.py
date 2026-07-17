@@ -10,7 +10,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - compatibility for the task venv
     tomllib = None  # type: ignore[assignment]
 
-from context_search_tool.paths import ensure_index_layout
+from context_search_tool.paths import ensure_index_layout, index_dir_for
 
 
 @dataclass(frozen=True)
@@ -135,10 +135,18 @@ def render_config(config: ToolConfig) -> str:
 
 
 def load_config(repo: Path) -> ToolConfig:
-    config_path = ensure_index_layout(repo) / "config.toml"
+    config_path = index_dir_for(repo) / "config.toml"
     if not config_path.exists():
+        config_path = ensure_index_layout(repo) / "config.toml"
         config_path.write_text(render_default_config(), encoding="utf-8")
         return DEFAULT_CONFIG
+
+    return read_config(repo)
+
+
+def read_config(repo: Path) -> ToolConfig:
+    """Read persisted configuration without creating or modifying repository files."""
+    config_path = index_dir_for(repo) / "config.toml"
 
     data = _load_toml(config_path)
     return ToolConfig(
@@ -161,6 +169,8 @@ def _load_toml(path: Path) -> dict[str, Any]:
 
 
 def _build_section(config_type: type[Any], values: dict[str, Any]) -> Any:
+    if not isinstance(values, dict):
+        raise ValueError("configuration sections must be TOML tables")
     allowed = set(config_type.__dataclass_fields__)
     return config_type(**{key: value for key, value in values.items() if key in allowed})
 

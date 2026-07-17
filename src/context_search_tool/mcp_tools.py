@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -27,6 +28,11 @@ from context_search_tool.indexer import (
     IncompatibleIndexError,
     index_repository,
     signal_schema_is_current,
+)
+from context_search_tool.graph_lifecycle import (
+    IncompatibleSignalSchemaError,
+    IndexBusyError,
+    read_graph_capability,
 )
 from context_search_tool.manifest import embedding_config_hash, load_manifest
 from context_search_tool.models import (
@@ -59,11 +65,15 @@ _EXPLORE_FAILED_MESSAGE = "Controlled exploration failed"
 def context_search_index_tool(repo: str) -> dict[str, Any]:
     try:
         resolved_repo = find_repo_root(Path(repo))
+        _reject_future_signal_schema(resolved_repo)
         config = load_config(resolved_repo)
         summary = index_repository(resolved_repo, config)
+    except IncompatibleSignalSchemaError as exc:
+        return _error(exc.code, str(exc))
     except (
         RepositoryNotFoundError,
         IncompatibleIndexError,
+        IndexBusyError,
         ValueError,
         requests.HTTPError,
     ) as exc:
@@ -102,6 +112,7 @@ def context_search_query_tool(
         )
 
     try:
+        _reject_future_signal_schema(resolved_repo)
         config = _load_query_config(resolved_repo, final_top_k)
         bundle = query_repository(
             resolved_repo,
@@ -123,6 +134,8 @@ def context_search_query_tool(
             final_top_k=final_top_k,
         )
         return payload
+    except IncompatibleSignalSchemaError as exc:
+        return _error(exc.code, str(exc))
     except (ValueError, requests.HTTPError) as exc:
         error_payload = _error("query_failed", str(exc))
         _try_append_query_feedback(
@@ -156,6 +169,7 @@ def context_search_trace_tool(
         )
 
     try:
+        _reject_future_signal_schema(resolved_repo)
         config = _load_query_config(resolved_repo, final_top_k)
         traced = trace_repository(
             resolved_repo,
@@ -165,6 +179,8 @@ def context_search_trace_tool(
             full_file=full_file,
         )
         return trace_payload(resolved_repo, query, traced.trace)
+    except IncompatibleSignalSchemaError as exc:
+        return _error(exc.code, str(exc))
     except RetrievalTraceError:
         return _error("trace_failed", "Retrieval trace failed")
     except (ValueError, requests.HTTPError) as exc:
@@ -195,7 +211,10 @@ def context_search_context_tool(
         )
 
     try:
+        _reject_future_signal_schema(resolved_repo)
         config = _load_query_config(resolved_repo, final_top_k)
+    except IncompatibleSignalSchemaError as exc:
+        return _error(exc.code, str(exc))
     except ValueError as exc:
         payload = _error("query_failed", str(exc))
         _try_append_query_feedback(
@@ -238,6 +257,8 @@ def context_search_context_tool(
             context_lines=context_lines,
             full_file=full_file,
         )
+    except IncompatibleSignalSchemaError as exc:
+        return _error(exc.code, str(exc))
     except (ValueError, requests.HTTPError) as exc:
         payload = _error("query_failed", str(exc))
         _try_append_query_feedback(
@@ -291,6 +312,11 @@ def context_search_explore_tool(
             "missing_index",
             f"Missing index for {resolved_repo}. Run context_search_index first.",
         )
+
+    try:
+        _reject_future_signal_schema(resolved_repo)
+    except IncompatibleSignalSchemaError as exc:
+        return _error(exc.code, str(exc))
 
     from context_search_tool.exploration import (
         explore_repository,
@@ -469,6 +495,14 @@ def context_search_stats_tool(repo: str) -> dict[str, Any]:
             f"Missing index for {resolved_repo}. Run context_search_index first.",
         )
 
+    try:
+        capability = _graph_capability(resolved_repo)
+    except IncompatibleSignalSchemaError as exc:
+        return _error(exc.code, str(exc))
+    if capability.status == "stale":
+        logging.getLogger("context_search_tool.mcp_tools").warning(
+            "graph_index_stale"
+        )
     config = load_config(resolved_repo)
     store = SQLiteStore(index_dir / "index.sqlite")
     counts = store.stats()
@@ -515,19 +549,29 @@ def context_search_explain_tool(repo: str, location: str) -> dict[str, Any]:
             f"Missing index for {resolved_repo}. Run context_search_index first.",
         )
 
-    store = SQLiteStore(index_dir / "index.sqlite")
     try:
-        chunk = store.chunk_for_line(file_path, line)
+        store = SQLiteStore(index_dir / "index.sqlite")
+        with store.graph_read_session() as graph_session:
+            chunk = graph_session.chunk_for_line(file_path, line)
+            if chunk is None:
+                raise KeyError(file_path)
+            graph = graph_session.explain_projection(chunk)
     except KeyError:
         return _error(
             "chunk_not_found",
             f"No indexed chunk covers {file_path.as_posix()}:{line}.",
         )
+    except IncompatibleSignalSchemaError as exc:
+        return _error(exc.code, str(exc))
+
+    if graph["status"] == "stale":
+        logging.getLogger("context_search_tool.mcp_tools").warning("graph_index_stale")
 
     return {
         "ok": True,
         "repo": str(resolved_repo),
         "chunk": _chunk_payload(chunk),
+        "graph": graph,
     }
 
 
@@ -540,6 +584,18 @@ def _load_query_config(repo: Path, final_top_k: int | None) -> ToolConfig:
     return replace(
         config,
         retrieval=replace(config.retrieval, final_top_k=final_top_k),
+    )
+
+
+def _reject_future_signal_schema(repo: Path) -> None:
+    db_path = index_dir_for(repo) / "index.sqlite"
+    if db_path.exists():
+        _graph_capability(repo)
+
+
+def _graph_capability(repo: Path):
+    return read_graph_capability(
+        SQLiteStore(index_dir_for(repo) / "index.sqlite")
     )
 
 

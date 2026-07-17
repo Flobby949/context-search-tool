@@ -74,7 +74,7 @@ def _write_index_marker(repo: Path) -> None:
     repo.mkdir()
     index_dir = repo / ".context-search"
     index_dir.mkdir()
-    (index_dir / "index.sqlite").touch()
+    mcp_tools.SQLiteStore(index_dir / "index.sqlite").initialize()
 
 
 def _deterministic_bundle(
@@ -1656,3 +1656,93 @@ def test_mcp_context_feedback_rejects_forged_budget_metadata(
         )
     )
     assert "context_pack" not in event
+
+
+def test_future_schema_all_mcp_operations_fail_before_config_feedback_or_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from context_search_tool.sqlite_store import GraphReadSession
+
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    assert context_search_index_tool(str(repo))["ok"] is True
+    store = mcp_tools.SQLiteStore(repo / ".context-search" / "index.sqlite")
+    store.set_metadata("signal_schema_version", "6")
+    config_path = repo / ".context-search" / "config.toml"
+    config_path.unlink()
+    before = store.db_path.read_bytes()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("future MCP operation crossed preflight")
+
+    monkeypatch.setattr(mcp_tools, "load_config", forbidden)
+    monkeypatch.setattr(mcp_tools, "index_repository", forbidden)
+    monkeypatch.setattr(mcp_tools, "query_repository", forbidden)
+    monkeypatch.setattr(mcp_tools, "trace_repository", forbidden)
+    monkeypatch.setattr(mcp_tools, "_try_append_query_feedback", forbidden)
+    monkeypatch.setattr(mcp_tools, "_record_explore_feedback", forbidden)
+    monkeypatch.setattr(GraphReadSession, "chunk_for_line", forbidden)
+
+    calls = (
+        lambda: context_search_index_tool(str(repo)),
+        lambda: context_search_query_tool(str(repo), "future query"),
+        lambda: context_search_trace_tool(str(repo), "future query"),
+        lambda: context_search_context_tool(str(repo), "future query"),
+        lambda: mcp_tools.context_search_explore_tool(str(repo), "future query"),
+        lambda: context_search_stats_tool(str(repo)),
+        lambda: context_search_explain_tool(str(repo), "App.java:1"),
+    )
+    expected = {
+        "ok": False,
+        "error": {
+            "code": "incompatible_signal_schema",
+            "message": "incompatible signal schema 6",
+        },
+    }
+
+    assert [call() for call in calls] == [expected] * len(calls)
+    assert not config_path.exists()
+    assert store.db_path.read_bytes() == before
+
+
+def test_mcp_index_maps_busy_to_existing_index_failed_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from context_search_tool.graph_lifecycle import IndexBusyError
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(
+        mcp_tools,
+        "index_repository",
+        lambda *args, **kwargs: (_ for _ in ()).throw(IndexBusyError()),
+    )
+
+    assert context_search_index_tool(str(repo)) == {
+        "ok": False,
+        "error": {
+            "code": "index_failed",
+            "message": "index already in progress for repository",
+        },
+    }
+
+
+def test_mcp_stats_logs_stale_without_changing_payload(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    assert context_search_index_tool(str(repo))["ok"] is True
+    mcp_tools.SQLiteStore(repo / ".context-search" / "index.sqlite").set_metadata(
+        "graph_resolution_state",
+        "stale",
+    )
+
+    payload = context_search_stats_tool(str(repo))
+
+    assert payload["ok"] is True
+    assert "warning" not in payload
+    assert caplog.messages.count("graph_index_stale") == 1

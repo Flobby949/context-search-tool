@@ -299,12 +299,12 @@ def test_query_warns_when_signal_schema_is_stale(tmp_path: Path) -> None:
     index_result = runner.invoke(app, ["index", str(repo)])
     assert index_result.exit_code == 0
     store = SQLiteStore(repo / ".context-search" / "index.sqlite")
-    store.set_metadata("signal_schema_version", "1")
+    _mark_stale_schema(store)
 
     result = runner.invoke(app, ["query", str(repo), "App"])
 
     assert result.exit_code == 0
-    assert "Warning: index signal schema is older than this version" in result.output
+    assert "Warning: P5 graph index is stale; signal and relation evidence was skipped." in result.output
 
 
 @pytest.mark.parametrize("command", ["query", "trace", "context"])
@@ -793,3 +793,111 @@ def _assert_missing_index_error(output: str, exit_code: int, repo: Path) -> None
     lowered = output.lower()
     assert "missing index" in lowered or "not indexed" in lowered
     assert not (repo / ".context-search").exists()
+
+
+def _mark_stale_schema(store: SQLiteStore) -> None:
+    store.set_metadata("signal_schema_version", "1")
+    store.set_metadata("graph_resolution_state", "stale")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("index",),
+        ("query", "future query"),
+        ("trace", "future query"),
+        ("context", "future query"),
+        ("explore", "future query"),
+        ("stats",),
+        ("explain", "App.java:1"),
+    ],
+)
+def test_future_schema_cli_operations_fail_before_config_or_public_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: tuple[str, ...],
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    runner = CliRunner()
+    assert runner.invoke(app, ["index", str(repo)]).exit_code == 0
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    store.set_metadata("signal_schema_version", "6")
+    config_path = repo / ".context-search" / "config.toml"
+    config_path.unlink()
+    before = store.db_path.read_bytes()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("future CLI operation crossed preflight")
+
+    monkeypatch.setattr(cli, "load_config", forbidden)
+    monkeypatch.setattr(cli, "index_repository", forbidden)
+    monkeypatch.setattr(cli, "query_repository", forbidden)
+    monkeypatch.setattr(cli, "trace_repository", forbidden)
+    from context_search_tool.sqlite_store import GraphReadSession
+
+    monkeypatch.setattr(GraphReadSession, "chunk_for_line", forbidden)
+
+    result = runner.invoke(app, [arguments[0], str(repo), *arguments[1:]])
+
+    assert result.exit_code == 1
+    assert result.output == "Error: incompatible signal schema 6\n"
+    assert not config_path.exists()
+    assert store.db_path.read_bytes() == before
+
+
+def test_cli_index_maps_busy_without_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from context_search_tool.graph_lifecycle import IndexBusyError
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(
+        cli,
+        "index_repository",
+        lambda *args, **kwargs: (_ for _ in ()).throw(IndexBusyError()),
+    )
+
+    result = CliRunner().invoke(app, ["index", str(repo)])
+
+    assert result.exit_code == 1
+    assert result.output == "Error: index already in progress for repository\n"
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("query", "App"),
+        ("trace", "App"),
+        ("context", "App"),
+        ("explore", "App"),
+        ("stats",),
+        ("explain", "App.java:1"),
+    ],
+)
+def test_stale_cli_consumers_warn_exactly_once(
+    tmp_path: Path,
+    arguments: tuple[str, ...],
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    runner = CliRunner()
+    assert runner.invoke(app, ["index", str(repo)]).exit_code == 0
+    SQLiteStore(repo / ".context-search" / "index.sqlite").set_metadata(
+        "graph_resolution_state",
+        "stale",
+    )
+
+    result = runner.invoke(app, [arguments[0], str(repo), *arguments[1:]])
+
+    warning = (
+        "Warning: P5 graph index is stale; "
+        "signal and relation evidence was skipped."
+    )
+    assert result.exit_code == 0
+    assert result.output.count(warning) == 1

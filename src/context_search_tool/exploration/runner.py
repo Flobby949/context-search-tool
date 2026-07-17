@@ -37,7 +37,7 @@ from context_search_tool.exploration.options import (
     validate_library_explore_options,
 )
 from context_search_tool.exploration.probes import (
-    plan_probes,
+    _plan_probes_v5,
     probe_candidate_is_stale,
 )
 from context_search_tool.query_planner import DisabledQueryPlanner
@@ -58,6 +58,9 @@ if TYPE_CHECKING:
 
 
 _Clock = Callable[[], int]
+
+# Kept as an injected seam for runner tests; public exploration is v5-only.
+plan_probes = _plan_probes_v5
 
 
 def explore_repository(

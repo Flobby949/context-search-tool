@@ -107,7 +107,10 @@ def normalize_candidates(bundle: QueryBundle) -> tuple[ContextCandidate, ...]:
 def _result_candidate(raw_result: Any, result_index: int) -> ContextCandidate:
     path = raw_result.file_path
     key = path.as_posix()
-    group, role, basis = _classify_candidate(path, raw_result.content)
+    if getattr(raw_result, "_context_role_hint", None) == "mybatis_repository":
+        group, role, basis = "implementations", "repository", "content"
+    else:
+        group, role, basis = _classify_candidate(path, raw_result.content)
     reasons = _bounded_reasons(raw_result.reasons)
     score_parts = dict(raw_result.score_parts)
     context_content = getattr(raw_result, "_context_content", None)

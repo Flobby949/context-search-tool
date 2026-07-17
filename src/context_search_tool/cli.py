@@ -30,7 +30,11 @@ from context_search_tool.formatters import (
 from context_search_tool.indexer import (
     IncompatibleIndexError,
     index_repository,
-    signal_schema_is_current,
+)
+from context_search_tool.graph_lifecycle import (
+    IncompatibleSignalSchemaError,
+    IndexBusyError,
+    read_graph_capability,
 )
 from context_search_tool.manifest import load_manifest
 from context_search_tool.models import SymbolRef
@@ -67,10 +71,17 @@ def main() -> None:
 @app.command()
 def index(repo: Optional[Path] = typer.Argument(None)) -> None:
     resolved_repo = _resolve_repo(repo)
+    _reject_future_signal_schema(resolved_repo)
     config = load_config(resolved_repo)
     try:
         summary = index_repository(resolved_repo, config)
-    except (IncompatibleIndexError, ValueError, requests.HTTPError) as exc:
+    except (
+        IncompatibleIndexError,
+        IncompatibleSignalSchemaError,
+        IndexBusyError,
+        ValueError,
+        requests.HTTPError,
+    ) as exc:
         _exit_with_error(exc)
 
     typer.echo(
@@ -377,6 +388,7 @@ def status(repo: Optional[Path] = typer.Argument(None)) -> None:
 def stats(repo: Optional[Path] = typer.Argument(None)) -> None:
     resolved_repo = _resolve_repo(repo)
     index_dir = _require_index(resolved_repo)
+    _warn_if_signal_schema_stale(resolved_repo)
     config = load_config(resolved_repo)
     store = SQLiteStore(index_dir / "index.sqlite")
     counts = store.stats()
@@ -423,16 +435,23 @@ def explain(
         location_text = location
     file_path, line = _parse_location(location_text, resolved_repo)
     index_dir = _require_index(resolved_repo)
+    _warn_if_signal_schema_stale(resolved_repo)
     store = SQLiteStore(index_dir / "index.sqlite")
 
     try:
-        chunk = store.chunk_for_line(file_path, line)
+        with store.graph_read_session() as graph_session:
+            chunk = graph_session.chunk_for_line(file_path, line)
+            if chunk is None:
+                raise KeyError(file_path)
+            graph = graph_session.explain_projection(chunk)
     except KeyError as exc:
         typer.echo(
             f"Error: no indexed chunk covers {file_path.as_posix()}:{line}",
             err=True,
         )
         raise typer.Exit(code=1) from exc
+    except IncompatibleSignalSchemaError as exc:
+        _exit_with_error(exc)
 
     typer.echo(f"File: {chunk.file_path.as_posix()}")
     typer.echo(f"Chunk ID: {chunk.chunk_id}")
@@ -442,6 +461,35 @@ def explain(
     typer.echo(f"Lexical tokens: {_format_list(chunk.lexical_tokens)}")
     typer.echo(f"Embedding ID: {chunk.embedding_id or '(none)'}")
     typer.echo(f"Metadata: {chunk.metadata}")
+    typer.echo(
+        f"Graph: {graph['status']} (signal schema {graph['schema_version']})"
+    )
+    typer.echo(
+        f"Graph signals: {len(graph['signals'])} "
+        f"(omitted {graph['omitted_signal_count']})"
+    )
+    typer.echo(
+        f"Graph outgoing: {len(graph['outgoing'])} "
+        f"(omitted {graph['omitted_outgoing_count']})"
+    )
+    typer.echo(
+        f"Graph incoming: {len(graph['incoming'])} "
+        f"(omitted {graph['omitted_incoming_count']})"
+    )
+    for signal in graph["signals"]:
+        name = signal["qualified_name"] or signal["name"]
+        typer.echo(
+            f"Signal: {signal['kind']} {name} [{signal['producer']}] "
+            f"{signal['start_line']}-{signal['end_line']}"
+        )
+    for direction, rows in (("Outgoing", graph["outgoing"]), ("Incoming", graph["incoming"])):
+        for relation in rows:
+            source = relation["source_name"] or relation["source_signal_id"]
+            target = relation["target_name"] or relation["target_signal_id"]
+            typer.echo(
+                f"{direction}: {relation['kind']} {relation['resolution']} "
+                f"{source} -> {target} ({relation['confidence']:.6g})"
+            )
 
 
 @app.command()
@@ -467,19 +515,19 @@ def _prepare_query_command(
         repo = _resolve_repo(Path(repo_or_question))
         query_text = question
     _require_index(repo)
-    config = load_config(repo)
     if planner and no_planner:
         typer.echo(
             "Error: --planner and --no-planner cannot be used together",
             err=True,
         )
         raise typer.Exit(code=1)
+    _warn_if_signal_schema_stale(repo)
+    config = load_config(repo)
     if planner or no_planner:
         config = replace(
             config,
             query_planner=replace(config.query_planner, enabled=planner),
         )
-    _warn_if_signal_schema_stale(repo)
     return repo, query_text, config
 
 
@@ -503,15 +551,27 @@ def _require_index(repo: Path) -> Path:
 
 
 def _warn_if_signal_schema_stale(repo: Path) -> None:
-    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
-    store.initialize()
-    if signal_schema_is_current(store):
+    capability = _graph_capability(repo)
+    if capability.status != "stale":
         return
     typer.echo(
-        "Warning: index signal schema is older than this version. "
-        "Run index again for signal-aware retrieval.",
+        "Warning: P5 graph index is stale; signal and relation evidence was skipped.",
         err=True,
     )
+
+
+def _reject_future_signal_schema(repo: Path) -> None:
+    db_path = index_dir_for(repo) / "index.sqlite"
+    if db_path.exists():
+        _graph_capability(repo)
+
+
+def _graph_capability(repo: Path):
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+    try:
+        return read_graph_capability(store)
+    except IncompatibleSignalSchemaError as exc:
+        _exit_with_error(exc)
 
 
 def _exit_with_error(exc: Exception) -> None:

@@ -484,3 +484,257 @@ def test_incremental_failure_after_deletion_recovers_vectors_and_graph(
     assert summary.files_indexed == 1
     assert store.source_file_for_path(Path("Remove.java")) is None
     assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "ready"
+
+
+def test_public_query_and_index_use_complete_rollback_journal_snapshots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from context_search_tool.indexer import index_repository
+    from context_search_tool.retrieval import query_repository
+    from context_search_tool.retrieval_core import candidates, selection
+    from context_search_tool.sqlite_store import FILE_WRITE_IN_PROGRESS_KEY
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "SnapshotService.java"
+    source.write_text(
+        'class SnapshotService { String oldSnapshotToken() { return "oldSnapshotToken"; } }\n',
+        encoding="utf-8",
+    )
+    index_repository(repo, DEFAULT_CONFIG)
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    old_embedding_ids = store.active_embedding_ids()
+    assert len(old_embedding_ids) == 1
+
+    ready_query_at_end = threading.Event()
+    release_ready_query = threading.Event()
+    stale_before_commit = threading.Event()
+    stale_committed = threading.Event()
+    first_v5_write = threading.Event()
+    allow_v5_writes = threading.Event()
+
+    original_assemble = selection.assemble_query_output
+
+    def hold_first_query_snapshot(*args, **kwargs):
+        if not ready_query_at_end.is_set():
+            ready_query_at_end.set()
+            if not release_ready_query.wait(timeout=5):
+                raise AssertionError("timed out holding the ready query snapshot")
+        return original_assemble(*args, **kwargs)
+
+    monkeypatch.setattr(selection, "assemble_query_output", hold_first_query_snapshot)
+    original_mark_stale = SQLiteStore.mark_graph_stale
+
+    def observe_stale_commit(self, reason: str, **kwargs) -> None:
+        def before_commit() -> None:
+            stale_before_commit.set()
+
+        original_mark_stale(self, reason, before_commit=before_commit, **kwargs)
+        stale_committed.set()
+
+    monkeypatch.setattr(SQLiteStore, "mark_graph_stale", observe_stale_commit)
+    original_set_metadata = SQLiteStore.set_metadata
+
+    def pause_before_first_v5_write(self, key: str, value: str) -> None:
+        if key == FILE_WRITE_IN_PROGRESS_KEY and not first_v5_write.is_set():
+            assert stale_committed.is_set()
+            first_v5_write.set()
+            if not allow_v5_writes.wait(timeout=5):
+                raise AssertionError("timed out holding the first v5 write")
+        original_set_metadata(self, key, value)
+
+    monkeypatch.setattr(SQLiteStore, "set_metadata", pause_before_first_v5_write)
+    stale_semantic_ids: set[str] = set()
+    stale_lexical_ids: set[str] = set()
+    original_semantic = candidates.semantic_candidates_from_snapshot
+    original_lexical = candidates.lexical_candidates
+
+    def capture_stale_semantic(vector_store, *args, **kwargs):
+        result = original_semantic(vector_store, *args, **kwargs)
+        if first_v5_write.is_set() and not allow_v5_writes.is_set():
+            stale_semantic_ids.update(item.chunk_id for item in result[0])
+        return result
+
+    def capture_stale_lexical(*args, **kwargs):
+        result = original_lexical(*args, **kwargs)
+        if first_v5_write.is_set() and not allow_v5_writes.is_set():
+            stale_lexical_ids.update(item.chunk_id for item in result)
+        return result
+
+    monkeypatch.setattr(
+        candidates,
+        "semantic_candidates_from_snapshot",
+        capture_stale_semantic,
+    )
+    monkeypatch.setattr(candidates, "lexical_candidates", capture_stale_lexical)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        ready_future = executor.submit(
+            query_repository,
+            repo,
+            "oldSnapshotToken",
+            DEFAULT_CONFIG,
+        )
+        index_future = None
+        try:
+            assert ready_query_at_end.wait(timeout=5)
+            source.write_text(
+                'class SnapshotService { String newSnapshotToken() { return "newSnapshotToken"; } }\n',
+                encoding="utf-8",
+            )
+            index_future = executor.submit(index_repository, repo, DEFAULT_CONFIG)
+            assert stale_before_commit.wait(timeout=5)
+            assert not stale_committed.wait(timeout=0.05)
+            assert not first_v5_write.is_set()
+
+            release_ready_query.set()
+            ready_bundle = ready_future.result(timeout=5)
+            assert "oldSnapshotToken" in ready_bundle.results[0].content
+            assert stale_committed.wait(timeout=5)
+            assert first_v5_write.wait(timeout=5)
+            assert read_graph_capability(store).status == "stale"
+            assert store.active_embedding_ids() == old_embedding_ids
+
+            stale_bundle = query_repository(repo, "oldSnapshotToken", DEFAULT_CONFIG)
+            assert stale_bundle.results
+            stale_result = stale_bundle.results[0]
+            assert stale_semantic_ids == old_embedding_ids
+            assert stale_lexical_ids == old_embedding_ids
+            assert {"semantic", "lexical"} <= stale_result.score_parts.keys()
+            assert "signal" not in stale_result.score_parts
+            assert not any(
+                key.startswith("graph_")
+                or key in {"relation", "resolved_relation"}
+                for key in stale_result.score_parts
+            )
+
+            allow_v5_writes.set()
+            assert index_future.result(timeout=5).files_indexed == 1
+        finally:
+            release_ready_query.set()
+            allow_v5_writes.set()
+
+    assert read_graph_capability(store).status == "ready"
+    assert store.active_embedding_ids() != old_embedding_ids
+    final_bundle = query_repository(repo, "newSnapshotToken", DEFAULT_CONFIG)
+    assert final_bundle.results
+    assert "newSnapshotToken" in final_bundle.results[0].content
+
+
+def test_public_index_uses_stable_error_at_shortened_busy_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from context_search_tool.indexer import index_repository
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App {}\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    source.write_text("class App { int changed; }\n", encoding="utf-8")
+
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    original_mark_stale = SQLiteStore.mark_graph_stale
+
+    def mark_stale_with_short_timeout(self, reason: str, **kwargs) -> None:
+        kwargs["busy_timeout_ms"] = 25
+        original_mark_stale(self, reason, **kwargs)
+
+    monkeypatch.setattr(
+        SQLiteStore,
+        "mark_graph_stale",
+        mark_stale_with_short_timeout,
+    )
+
+    with store.graph_read_session():
+        with pytest.raises(IndexBusyError) as caught:
+            index_repository(repo, DEFAULT_CONFIG)
+
+    assert str(caught.value) == "index already in progress for repository"
+    assert read_graph_capability(store).status == "ready"
+    assert index_repository(repo, DEFAULT_CONFIG).files_indexed == 1
+    assert read_graph_capability(store).status == "ready"
+
+
+@pytest.mark.parametrize("damage", ["missing", "invalid", "wrong_type"])
+def test_stale_query_treats_persisted_config_damage_as_vector_mismatch(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    damage: str,
+) -> None:
+    from context_search_tool.indexer import index_repository
+    from context_search_tool.retrieval import query_repository
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "SearchService.java").write_text(
+        "class SearchService { void stableLexicalToken() {} }\n",
+        encoding="utf-8",
+    )
+    index_repository(repo, DEFAULT_CONFIG)
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    store.mark_graph_stale("test_config_damage")
+    config_path = repo / ".context-search" / "config.toml"
+    if damage == "missing":
+        config_path.unlink()
+        expected_bytes = None
+    elif damage == "invalid":
+        config_path.write_bytes(b"invalid = [")
+        expected_bytes = config_path.read_bytes()
+    else:
+        config_path.write_bytes(b"embedding = []\n")
+        expected_bytes = config_path.read_bytes()
+
+    caplog.set_level("WARNING")
+    bundle = query_repository(repo, "stableLexicalToken", DEFAULT_CONFIG)
+
+    assert bundle.results
+    assert "lexical" in bundle.results[0].score_parts
+    assert all("semantic" not in result.score_parts for result in bundle.results)
+    assert [record.message for record in caplog.records].count(
+        "vector_snapshot_mismatch"
+    ) == 1
+    if expected_bytes is None:
+        assert not config_path.exists()
+    else:
+        assert config_path.read_bytes() == expected_bytes
+
+
+@pytest.mark.parametrize("damage", ["missing", "invalid", "wrong_type"])
+def test_ready_query_rejects_persisted_config_damage_without_mutation(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    from context_search_tool.graph_lifecycle import GraphIntegrityError
+    from context_search_tool.indexer import index_repository
+    from context_search_tool.retrieval import query_repository
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "SearchService.java").write_text(
+        "class SearchService {}\n",
+        encoding="utf-8",
+    )
+    index_repository(repo, DEFAULT_CONFIG)
+    config_path = repo / ".context-search" / "config.toml"
+    if damage == "missing":
+        config_path.unlink()
+        expected_bytes = None
+    elif damage == "invalid":
+        config_path.write_bytes(b"invalid = [")
+        expected_bytes = config_path.read_bytes()
+    else:
+        config_path.write_bytes(b"embedding = []\n")
+        expected_bytes = config_path.read_bytes()
+
+    with pytest.raises(GraphIntegrityError, match="vector_snapshot_mismatch"):
+        query_repository(repo, "SearchService", DEFAULT_CONFIG)
+
+    if expected_bytes is None:
+        assert not config_path.exists()
+    else:
+        assert config_path.read_bytes() == expected_bytes

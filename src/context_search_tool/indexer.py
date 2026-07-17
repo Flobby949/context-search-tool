@@ -65,8 +65,10 @@ from context_search_tool.scanner import (
     ScannedFile,
     read_scanned_file_bytes,
     scan_workspace,
+    scan_workspace_v5,
 )
 from context_search_tool.sqlite_store import FILE_WRITE_IN_PROGRESS_KEY, SQLiteStore
+from context_search_tool.test_paths import is_test_path
 from context_search_tool.vector_store import NumpyVectorStore
 from context_search_tool.test_association import regenerate_test_associations
 
@@ -78,7 +80,7 @@ class IncompatibleIndexError(RuntimeError):
     pass
 
 
-CURRENT_SIGNAL_SCHEMA_VERSION = 4
+CURRENT_SIGNAL_SCHEMA_VERSION = 5
 SIGNAL_SCHEMA_VERSION_KEY = "signal_schema_version"
 
 
@@ -100,103 +102,11 @@ class _PreparedFile:
 
 
 def index_repository(repo: Path, config: ToolConfig) -> IndexSummary:
-    repo = repo.resolve()
-    index_dir = ensure_index_layout(repo)
-    try:
-        assert_manifest_compatible(repo, config)
-    except ValueError as exc:
-        raise IncompatibleIndexError(str(exc)) from exc
-
-    store = SQLiteStore(index_dir / "index.sqlite")
-    store.initialize()
-    stale_signal_schema = not signal_schema_is_current(store)
-    stale_project_scope_metadata = not project_scope_metadata_is_current(store)
-    if stale_signal_schema:
-        store.clear_signal_data()
-
-    scanned_files = scan_workspace(repo, config)
-    project_units = detect_project_units(
+    return build_v5_index_snapshot(
         repo,
-        [scanned_file.path for scanned_file in scanned_files],
-    )
-    scanned_paths = {scanned_file.path for scanned_file in scanned_files}
-    indexed_paths = store.source_file_paths()
-    deleted_paths = indexed_paths - scanned_paths
-
-    plugins = default_plugins()
-    prepared_files: list[_PreparedFile] = []
-    changed_chunks: list[DocumentChunk] = []
-    files_skipped = 0
-
-    for scanned_file in scanned_files:
-        existing = store.source_file_for_path(scanned_file.path)
-        if (
-            not stale_signal_schema
-            and not stale_project_scope_metadata
-            and existing is not None
-            and existing.sha256 == scanned_file.sha256
-        ):
-            files_skipped += 1
-            continue
-
-        prepared_file = _prepare_file(
-            scanned_file,
-            plugins,
-            unit_for_path(scanned_file.path, project_units),
-        )
-        prepared_files.append(prepared_file)
-        changed_chunks.extend(prepared_file.chunks)
-
-    if changed_chunks:
-        provider = provider_from_config(config.embedding)
-        vectors = provider.embed_texts(
-            [_embedding_text_for_chunk(chunk) for chunk in changed_chunks]
-        )
-        vector_store = NumpyVectorStore(index_dir)
-        vector_store.upsert_many(
-            [
-                (chunk.embedding_id or chunk.chunk_id, vector)
-                for chunk, vector in zip(changed_chunks, vectors)
-            ]
-        )
-        vector_store.persist()
-
-    for path in sorted(deleted_paths, key=lambda item: item.as_posix()):
-        store.mark_file_deleted(path)
-
-    for prepared_file in prepared_files:
-        store.upsert_source_file(prepared_file.source_file)
-        store.replace_chunks(prepared_file.source_file.path, prepared_file.chunks)
-        store.replace_signals(prepared_file.source_file.path, prepared_file.signals)
-        store.replace_relations(prepared_file.source_file.path, prepared_file.relations)
-
-    _ensure_config_file(index_dir, config)
-    store.set_metadata(SIGNAL_SCHEMA_VERSION_KEY, str(CURRENT_SIGNAL_SCHEMA_VERSION))
-    store.set_metadata(
-        PROJECT_SCOPE_METADATA_VERSION_KEY,
-        str(PROJECT_SCOPE_METADATA_VERSION),
-    )
-    store.set_metadata("indexed_at", str(int(time.time())))
-
-    stats = store.stats()
-    write_manifest(
-        repo,
-        Manifest(
-            embedding_config_hash=embedding_config_hash(config.embedding),
-            embedding_provider=config.embedding.provider,
-            embedding_model=config.embedding.model,
-            embedding_dimensions=config.embedding.dimensions,
-            total_files=len(scanned_files),
-            total_chunks=stats["active_chunks"],
-        ),
-    )
-
-    return IndexSummary(
-        files_seen=len(scanned_files),
-        files_indexed=len(prepared_files),
-        files_skipped=files_skipped,
-        files_deleted=len(deleted_paths),
-        chunks_indexed=len(changed_chunks),
+        config,
+        graph_plugins=default_plugins(),
+        scanner=scan_workspace_v5,
     )
 
 
@@ -248,6 +158,17 @@ def build_v5_index_snapshot(
             scanned.path: unit_for_path(scanned.path, units)
             for scanned in scanned_files
         }
+        scanned_files = [
+            replace(
+                scanned,
+                is_test=is_test_path(
+                    scanned.path,
+                    scanned.language,
+                    _project_unit_key(unit_by_path[scanned.path]),
+                ),
+            )
+            for scanned in scanned_files
+        ]
         changed_paths = {
             scanned.path
             for scanned in scanned_files
@@ -272,6 +193,10 @@ def build_v5_index_snapshot(
             stored_version == TARGET_SIGNAL_SCHEMA_VERSION
             and stored_topology != topology_fingerprint
         )
+        project_scope_metadata_current = (
+            stored_version < TARGET_SIGNAL_SCHEMA_VERSION
+            or project_scope_metadata_is_current(store)
+        )
         embedding_identity = embedding_config_hash(config.embedding)
         vector_snapshot_valid = False
         if (
@@ -295,6 +220,7 @@ def build_v5_index_snapshot(
             and entry_state == "ready"
             and not entry_full_reindex
             and not topology_changed
+            and project_scope_metadata_current
             and no_file_changes
             and vector_snapshot_valid
         )
@@ -335,6 +261,7 @@ def build_v5_index_snapshot(
             or not vector_snapshot_valid
             or integrity_failed
             or manifest_integrity_failed
+            or not project_scope_metadata_current
         )
         if stored_version < TARGET_SIGNAL_SCHEMA_VERSION:
             stale_reason = (
@@ -350,6 +277,8 @@ def build_v5_index_snapshot(
             stale_reason = "integrity_check_failed"
         elif topology_changed:
             stale_reason = "topology_changed"
+        elif not project_scope_metadata_current:
+            stale_reason = "project_scope_metadata_changed"
         elif changed_paths or deleted_paths:
             stale_reason = "files_changed"
         else:
@@ -507,6 +436,10 @@ def build_v5_index_snapshot(
         )
         validator()
         _fault(fault_hook, "external_artifacts_validated")
+        store.set_metadata(
+            PROJECT_SCOPE_METADATA_VERSION_KEY,
+            str(PROJECT_SCOPE_METADATA_VERSION),
+        )
         _fault(fault_hook, "final_validation")
         store.mark_graph_ready(
             topology_fingerprint=topology_fingerprint,
@@ -979,7 +912,7 @@ def signal_schema_is_current(store: SQLiteStore) -> bool:
     if version is None:
         return False
     try:
-        return int(version) >= CURRENT_SIGNAL_SCHEMA_VERSION
+        return int(version) == CURRENT_SIGNAL_SCHEMA_VERSION
     except ValueError:
         return False
 

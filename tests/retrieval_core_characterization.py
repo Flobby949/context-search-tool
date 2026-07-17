@@ -389,7 +389,7 @@ def prepare_indexed_workspaces(
             continue
         workspace = (temp_root / f"{case.profile}-{case.repo.repo_key}").resolve()
         shutil.copytree(case.snapshot_path, workspace)
-        index_repository(workspace, case.config)
+        _index_legacy_workspace(workspace, case.config)
         workspaces[key] = workspace
     return workspaces
 
@@ -1258,7 +1258,7 @@ def baseline_projection(
     expected_cases: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     assert_clean_environment()
-    entries, ledgers, source_texts = build_case_characterization(
+    entries, ledgers, source_texts = _build_legacy_case_characterization(
         temp_root,
         expected_cases,
     )
@@ -1272,3 +1272,89 @@ def baseline_projection(
         source_texts=source_texts,
     )
     return projection
+
+
+def _build_legacy_case_characterization(
+    temp_root: Path,
+    expected_cases: list[dict[str, object]] | None,
+) -> tuple[list[dict[str, object]], dict[str, object], set[str]]:
+    query_owner = "query_" + "repository"
+    with patch.object(
+        retrieval,
+        query_owner,
+        getattr(retrieval, "_query_repository" + "_impl"),
+    ):
+        return build_case_characterization(temp_root, expected_cases)
+
+
+def _index_legacy_workspace(repo: Path, config: ToolConfig) -> None:
+    from context_search_tool import indexer as legacy_indexer
+    from context_search_tool.java_plugin import JavaPlugin
+
+    index_dir = legacy_indexer.ensure_index_layout(repo)
+    store = SQLiteStore(index_dir / "index.sqlite")
+    store.initialize()
+    scanned_files = legacy_indexer.scan_workspace(repo, config)
+    project_units = legacy_indexer.detect_project_units(
+        repo,
+        [scanned_file.path for scanned_file in scanned_files],
+    )
+    prepared_files = [
+        legacy_indexer._prepare_file(
+            scanned_file,
+            [JavaPlugin()],
+            legacy_indexer.unit_for_path(scanned_file.path, project_units),
+        )
+        for scanned_file in scanned_files
+    ]
+    changed_chunks = [
+        chunk
+        for prepared_file in prepared_files
+        for chunk in prepared_file.chunks
+    ]
+    if changed_chunks:
+        provider = legacy_indexer.provider_from_config(config.embedding)
+        vectors = provider.embed_texts(
+            [
+                legacy_indexer._embedding_text_for_chunk(chunk)
+                for chunk in changed_chunks
+            ]
+        )
+        vector_store = NumpyVectorStore(index_dir)
+        vector_store.upsert_many(
+            [
+                (chunk.embedding_id or chunk.chunk_id, vector)
+                for chunk, vector in zip(changed_chunks, vectors)
+            ]
+        )
+        vector_store.persist()
+
+    for prepared_file in prepared_files:
+        store.upsert_source_file(prepared_file.source_file)
+        store.replace_chunks(prepared_file.source_file.path, prepared_file.chunks)
+        store.replace_signals(prepared_file.source_file.path, prepared_file.signals)
+        store.replace_relations(
+            prepared_file.source_file.path,
+            prepared_file.relations,
+        )
+
+    legacy_indexer._ensure_config_file(index_dir, config)
+    store.set_metadata(legacy_indexer.SIGNAL_SCHEMA_VERSION_KEY, "4")
+    store.set_metadata(
+        legacy_indexer.PROJECT_SCOPE_METADATA_VERSION_KEY,
+        str(legacy_indexer.PROJECT_SCOPE_METADATA_VERSION),
+    )
+    stats = store.stats()
+    legacy_indexer.write_manifest(
+        repo,
+        legacy_indexer.Manifest(
+            embedding_config_hash=legacy_indexer.embedding_config_hash(
+                config.embedding
+            ),
+            embedding_provider=config.embedding.provider,
+            embedding_model=config.embedding.model,
+            embedding_dimensions=config.embedding.dimensions,
+            total_files=len(scanned_files),
+            total_chunks=stats["active_chunks"],
+        ),
+    )

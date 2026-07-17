@@ -711,3 +711,124 @@ def test_java_graph_fallback_is_marker_only_and_never_calls_legacy() -> None:
     assert graph.signals == ()
     assert graph.relations == ()
     assert JavaPlugin().extract(path, source.decode()).symbols
+
+
+def test_default_plugins_instantiate_the_runtime_graph_producers() -> None:
+    from context_search_tool.frontend_graph import FrontendGraphProducer
+    from context_search_tool.mybatis_xml import MyBatisGraphProducer
+    from context_search_tool.plugins import default_plugins
+
+    plugins = default_plugins()
+
+    assert [type(plugin) for plugin in plugins] == [
+        JavaPlugin,
+        FrontendGraphProducer,
+        MyBatisGraphProducer,
+    ]
+
+
+@pytest.mark.parametrize(
+    "module_order",
+    [
+        ("context_search_tool.plugins", "context_search_tool.java_plugin"),
+        ("context_search_tool.java_plugin", "context_search_tool.plugins"),
+    ],
+)
+def test_java_coordinator_is_import_order_independent(
+    module_order: tuple[str, str],
+) -> None:
+    import subprocess
+    import sys
+
+    script = f"""
+import importlib
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path.cwd() / "src"))
+for module_name in {module_order!r}:
+    importlib.import_module(module_name)
+
+from context_search_tool.graph_plugins import PluginContext
+from context_search_tool.java_plugin import JavaPlugin
+from context_search_tool.plugins import default_plugins
+
+plugins = default_plugins()
+assert type(plugins[0]) is JavaPlugin
+context = PluginContext(Path("App.java"), "java", "")
+parsed = plugins[0].parse(context, b"package demo; class App {{}}")
+assert parsed.fallback_required is False
+"""
+
+    subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_java_coordinator_keeps_legacy_lexical_output_and_clean_ast_graph() -> None:
+    path = Path("src/main/java/demo/AppController.java")
+    source = b'''package demo;
+import org.springframework.web.bind.annotation.GetMapping;
+class AppController {
+    @GetMapping("/apps")
+    String listApps() { return "ok"; }
+}
+'''
+    context = PluginContext(path, "java", "", {}, (path,))
+    chunk = _graph_chunk(path, source)
+    module = _module_signal(path, chunk, "java")
+    coordinator = JavaPlugin()
+    graph_producer = JavaGraphProducer()
+
+    parsed = coordinator.parse(context, source)
+    legacy = coordinator.extract(path, source.decode("utf-8"))
+    ast_parsed = graph_producer.parse(context, source)
+
+    assert parsed.fallback_required is False
+    assert parsed.facts == ast_parsed.facts
+    assert parsed.symbols == tuple(legacy.symbols)
+    assert parsed.lexical_tokens == tuple(legacy.lexical_tokens)
+    assert coordinator.materialize(context, parsed, (chunk,), module) == (
+        graph_producer.materialize(context, ast_parsed, (chunk,), module)
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "fallback_required"),
+    [
+        (b"package demo; class App { void run() {} }", False),
+        (b"package demo; class Broken { void run( { }", True),
+    ],
+)
+def test_java_coordinator_calls_legacy_extractor_once_per_file(
+    source: bytes,
+    fallback_required: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = Path("src/main/java/demo/App.java")
+    context = PluginContext(path, "java", "", {}, (path,))
+    chunk = _graph_chunk(path, source)
+    plugin = JavaPlugin()
+    original_extract = plugin.extract
+    calls: list[Path] = []
+
+    def recording_extract(file_path: Path, content: str):
+        calls.append(file_path)
+        return original_extract(file_path, content)
+
+    monkeypatch.setattr(plugin, "extract", recording_extract)
+
+    parsed = plugin.parse(context, source)
+    plugin.materialize(
+        context,
+        parsed,
+        (chunk,),
+        _module_signal(path, chunk, "java"),
+    )
+
+    assert parsed.fallback_required is fallback_required
+    assert calls == [path]
