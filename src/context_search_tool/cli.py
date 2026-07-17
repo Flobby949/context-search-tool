@@ -18,10 +18,13 @@ from context_search_tool.formatters import (
     context_payload,
     format_context_json,
     format_context_markdown,
+    format_explore_json,
+    format_explore_markdown,
     format_json,
     format_markdown,
     format_trace_json,
     format_trace_markdown,
+    explore_payload,
     trace_payload,
 )
 from context_search_tool.indexer import (
@@ -255,6 +258,105 @@ def context(
 
 
 @app.command()
+def explore(
+    repo_or_question: str,
+    question: Optional[str] = typer.Argument(None),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+    context_lines: Optional[int] = typer.Option(
+        None,
+        "--context-lines",
+        help="Override context lines around each result.",
+    ),
+    full_file: bool = typer.Option(
+        False,
+        "--full-file",
+        help="Return full files when they are below the configured size limit.",
+    ),
+    max_items: Optional[int] = typer.Option(
+        None,
+        "--max-items",
+        help="Override the maximum number of context items.",
+    ),
+    max_context_bytes: Optional[int] = typer.Option(
+        None,
+        "--max-context-bytes",
+        help="Override the canonical JSON context pack byte limit.",
+    ),
+    planner: bool = typer.Option(False, "--planner", help="Force query planner on."),
+    no_planner: bool = typer.Option(
+        False,
+        "--no-planner",
+        help="Force query planner off.",
+    ),
+) -> None:
+    """Return a bounded two-round controlled exploration result."""
+    from context_search_tool.exploration import (
+        explore_repository,
+        resolve_explore_pack_options,
+    )
+    from context_search_tool.exploration.options import resolve_explore_config
+
+    repo, query_text, config = _prepare_query_command(
+        repo_or_question,
+        question,
+        planner=planner,
+        no_planner=no_planner,
+    )
+    try:
+        explore_config, _, effective_initial_top_k = resolve_explore_config(
+            config,
+            final_top_k=None,
+        )
+        pack_options = resolve_explore_pack_options(
+            explore_config,
+            context_lines=context_lines,
+            max_items=max_items,
+            max_pack_bytes=max_context_bytes,
+        )
+    except ContextPackError as exc:
+        _exit_context_error(exc.code, exc.message)
+    except ValueError as exc:
+        _exit_with_error(exc)
+    except Exception:
+        _exit_explore_error()
+
+    try:
+        explored = explore_repository(
+            repo,
+            query_text,
+            explore_config,
+            pack_options,
+            context_lines=context_lines,
+            full_file=full_file,
+        )
+    except (ValueError, requests.HTTPError) as exc:
+        _exit_with_error(exc)
+    except Exception:
+        _exit_explore_error()
+
+    try:
+        envelope = explore_payload(
+            repo,
+            query_text,
+            explored,
+            requested_final_top_k=None,
+        )
+        if (
+            envelope["retrieval"]["effective_initial_top_k"]
+            != effective_initial_top_k
+        ):
+            raise ValueError("exploration limit mismatch")
+        output = (
+            format_explore_json(envelope)
+            if json_output
+            else format_explore_markdown(envelope)
+        )
+    except Exception:
+        _exit_explore_error()
+    typer.echo(output)
+
+
+@app.command()
 def status(repo: Optional[Path] = typer.Argument(None)) -> None:
     resolved_repo = _resolve_repo(repo)
     index_dir = index_dir_for(resolved_repo)
@@ -419,6 +521,11 @@ def _exit_with_error(exc: Exception) -> None:
 
 def _exit_context_error(code: str, message: str) -> None:
     typer.echo(f"Error: {code}: {message}", err=True)
+    raise typer.Exit(code=1) from None
+
+
+def _exit_explore_error() -> None:
+    typer.echo("Controlled exploration failed", err=True)
     raise typer.Exit(code=1) from None
 
 

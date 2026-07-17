@@ -9,6 +9,7 @@ from mcp.server.fastmcp import FastMCP
 from context_search_tool.mcp_tools import (
     context_search_context_tool,
     context_search_explain_tool,
+    context_search_explore_tool,
     context_search_index_tool,
     context_search_query_tool,
     context_search_stats_tool,
@@ -75,6 +76,28 @@ def context_search_context(
 ) -> dict[str, Any]:
     """Return an agent-oriented ContextPack from one bounded retrieval pass."""
     return context_search_context_tool(
+        repo=repo,
+        query=query,
+        context_lines=context_lines,
+        full_file=full_file,
+        final_top_k=final_top_k,
+        max_items=max_items,
+        max_context_bytes=max_context_bytes,
+    )
+
+
+@mcp.tool()
+def context_search_explore(
+    repo: str,
+    query: str,
+    context_lines: int | None = None,
+    full_file: bool = False,
+    final_top_k: int | None = None,
+    max_items: int | None = None,
+    max_context_bytes: int | None = None,
+) -> dict[str, Any]:
+    """Return a bounded controlled exploration and final ContextPack."""
+    return context_search_explore_tool(
         repo=repo,
         query=query,
         context_lines=context_lines,

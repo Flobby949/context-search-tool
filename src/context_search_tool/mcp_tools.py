@@ -17,7 +17,12 @@ from context_search_tool.context_pack import (
     canonical_context_pack_bytes,
     resolve_context_pack_options,
 )
-from context_search_tool.formatters import context_payload, trace_payload
+from context_search_tool.formatters import (
+    context_payload,
+    explore_payload,
+    format_explore_json,
+    trace_payload,
+)
 from context_search_tool.indexer import (
     IncompatibleIndexError,
     index_repository,
@@ -48,6 +53,7 @@ from context_search_tool.sqlite_store import SQLiteStore
 
 _FEEDBACK_LOG_MAX_BYTES = 10 * 1024 * 1024
 _CONTEXT_FAILED_MESSAGE = "Context pack construction failed"
+_EXPLORE_FAILED_MESSAGE = "Controlled exploration failed"
 
 
 def context_search_index_tool(repo: str) -> dict[str, Any]:
@@ -224,7 +230,6 @@ def context_search_context_tool(
             tool="context_search_context",
         )
         return payload
-
     try:
         bundle = query_repository(
             resolved_repo,
@@ -262,6 +267,191 @@ def context_search_context_tool(
         full_file=full_file,
         final_top_k=final_top_k,
         tool="context_search_context",
+    )
+    return payload
+
+
+def context_search_explore_tool(
+    repo: str,
+    query: str,
+    context_lines: int | None = None,
+    full_file: bool = False,
+    final_top_k: int | None = None,
+    max_items: int | None = None,
+    max_context_bytes: int | None = None,
+) -> dict[str, Any]:
+    try:
+        resolved_repo = find_repo_root(Path(repo))
+    except RepositoryNotFoundError as exc:
+        return _error("repo_not_found", str(exc))
+
+    index_dir = index_dir_for(resolved_repo)
+    if not (index_dir / "index.sqlite").exists():
+        return _error(
+            "missing_index",
+            f"Missing index for {resolved_repo}. Run context_search_index first.",
+        )
+
+    from context_search_tool.exploration import (
+        explore_repository,
+        resolve_explore_pack_options,
+    )
+    from context_search_tool.exploration.options import (
+        resolve_explore_config,
+        validate_explore_request_options,
+    )
+
+    effective_initial_top_k: int | None = None
+    embedding: dict[str, Any] | None = None
+    request = {
+        "context_lines": context_lines,
+        "full_file": full_file,
+        "requested_final_top_k": final_top_k,
+        "max_items": max_items,
+        "max_context_bytes": max_context_bytes,
+    }
+    try:
+        validate_explore_request_options(
+            final_top_k=final_top_k,
+            context_lines=context_lines,
+            full_file=full_file,
+            max_items=max_items,
+            max_context_bytes=max_context_bytes,
+        )
+    except ValueError as exc:
+        payload = _error("query_failed", str(exc))
+        _record_explore_feedback(
+            resolved_repo,
+            payload,
+            request,
+            effective_initial_top_k=None,
+            embedding=None,
+        )
+        return payload
+    except ContextPackError as exc:
+        payload = _error(exc.code, exc.message)
+        _record_explore_feedback(
+            resolved_repo,
+            payload,
+            request,
+            effective_initial_top_k=None,
+            embedding=None,
+        )
+        return payload
+    except Exception:
+        payload = _error("explore_failed", _EXPLORE_FAILED_MESSAGE)
+        _record_explore_feedback(
+            resolved_repo,
+            payload,
+            request,
+            effective_initial_top_k=None,
+            embedding=None,
+        )
+        return payload
+
+    try:
+        config = load_config(resolved_repo)
+        explore_config, _, effective_initial_top_k = resolve_explore_config(
+            config,
+            final_top_k=final_top_k,
+        )
+        pack_options = resolve_explore_pack_options(
+            explore_config,
+            context_lines=context_lines,
+            max_items=max_items,
+            max_pack_bytes=max_context_bytes,
+        )
+        embedding = _explore_embedding(explore_config)
+    except ValueError as exc:
+        payload = _error("query_failed", str(exc))
+        _record_explore_feedback(
+            resolved_repo,
+            payload,
+            request,
+            effective_initial_top_k=effective_initial_top_k,
+            embedding=None,
+        )
+        return payload
+    except ContextPackError as exc:
+        payload = _error(exc.code, exc.message)
+        _record_explore_feedback(
+            resolved_repo,
+            payload,
+            request,
+            effective_initial_top_k=effective_initial_top_k,
+            embedding=None,
+        )
+        return payload
+    except Exception:
+        payload = _error("explore_failed", _EXPLORE_FAILED_MESSAGE)
+        _record_explore_feedback(
+            resolved_repo,
+            payload,
+            request,
+            effective_initial_top_k=effective_initial_top_k,
+            embedding=None,
+        )
+        return payload
+
+    try:
+        explored = explore_repository(
+            resolved_repo,
+            query,
+            explore_config,
+            pack_options,
+            context_lines=context_lines,
+            full_file=full_file,
+        )
+    except (ValueError, requests.HTTPError) as exc:
+        payload = _error("query_failed", str(exc))
+        _record_explore_feedback(
+            resolved_repo,
+            payload,
+            request,
+            effective_initial_top_k=effective_initial_top_k,
+            embedding=None,
+        )
+        return payload
+    except Exception:
+        payload = _error("explore_failed", _EXPLORE_FAILED_MESSAGE)
+        _record_explore_feedback(
+            resolved_repo,
+            payload,
+            request,
+            effective_initial_top_k=effective_initial_top_k,
+            embedding=None,
+        )
+        return payload
+
+    try:
+        payload = explore_payload(
+            resolved_repo,
+            query,
+            explored,
+            requested_final_top_k=final_top_k,
+        )
+        if (
+            payload["retrieval"]["effective_initial_top_k"]
+            != effective_initial_top_k
+        ):
+            raise ValueError("exploration limit mismatch")
+    except Exception:
+        payload = _error("explore_failed", _EXPLORE_FAILED_MESSAGE)
+        _record_explore_feedback(
+            resolved_repo,
+            payload,
+            request,
+            effective_initial_top_k=effective_initial_top_k,
+            embedding=None,
+        )
+        return payload
+
+    _record_explore_feedback(
+        resolved_repo,
+        payload,
+        request,
+        effective_initial_top_k=effective_initial_top_k,
+        embedding=embedding,
     )
     return payload
 
@@ -490,6 +680,423 @@ def _index_state(repo: Path, config: ToolConfig) -> dict[str, Any]:
             "dimensions": config.embedding.dimensions,
             "config_hash": embedding_config_hash(config.embedding),
         },
+    }
+
+
+_EXPLORE_PROJECTION_KEYS = (
+    "ok",
+    "error_code",
+    "request",
+    "exploration",
+    "context_pack",
+    "embedding",
+)
+_EXPLORE_REQUEST_KEYS = (
+    "context_lines",
+    "full_file",
+    "requested_final_top_k",
+    "effective_initial_top_k",
+    "max_items",
+    "max_context_bytes",
+)
+_EXPLORE_AGGREGATE_KEYS = (
+    "schema_version",
+    "outcome",
+    "termination_reason",
+    "round_count",
+    "planned_probe_count",
+    "executed_probe_count",
+    "stale_skipped_probe_count",
+    "retrieval_call_count",
+    "initial_satisfied_goal_count",
+    "final_satisfied_goal_count",
+)
+_EXPLORE_PACK_FEEDBACK_KEYS = (
+    "schema_version",
+    "status",
+    "confidence",
+    "included_items",
+    "content_bytes",
+    "pack_bytes",
+    "budget_exhausted",
+)
+_EXPLORE_EMBEDDING_KEYS = (
+    "provider",
+    "model",
+    "dimensions",
+    "config_hash",
+)
+_EXPLORE_ERROR_CODES = {
+    "repo_not_found",
+    "missing_index",
+    "invalid_context_options",
+    "query_failed",
+    "explore_failed",
+}
+_EXPLORE_OUTCOMES = {"complete", "empty", "partial"}
+_EXPLORE_TERMINATIONS = {
+    "context_budget_zero",
+    "exact_satisfied",
+    "initial_satisfied",
+    "no_grounded_probe",
+    "satisfied",
+    "no_marginal_gain",
+    "probe_budget_exhausted",
+    "initial_missing_index",
+    "initial_empty",
+    "initial_retrieval_incomplete",
+    "followup_query_failed",
+}
+_CONTEXT_PACK_STATUSES = {"empty", "partial", "ready"}
+_CONTEXT_PACK_CONFIDENCE = {"none", "low", "medium", "high"}
+_MAX_FEEDBACK_INTEGER = 2_147_483_647
+
+
+def _explore_embedding(config: ToolConfig) -> dict[str, Any]:
+    return {
+        "provider": config.embedding.provider,
+        "model": config.embedding.model,
+        "dimensions": config.embedding.dimensions,
+        "config_hash": embedding_config_hash(config.embedding),
+    }
+
+
+def _record_explore_feedback(
+    repo: Path,
+    payload: dict[str, Any],
+    request: dict[str, Any],
+    *,
+    effective_initial_top_k: int | None,
+    embedding: dict[str, Any] | None,
+) -> None:
+    try:
+        projection = _explore_feedback_projection(
+            payload,
+            context_lines=request.get("context_lines"),
+            full_file=request.get("full_file"),
+            requested_final_top_k=request.get("requested_final_top_k"),
+            effective_initial_top_k=effective_initial_top_k,
+            max_items=request.get("max_items"),
+            max_context_bytes=request.get("max_context_bytes"),
+            embedding=embedding,
+        )
+    except Exception:
+        return
+    _try_append_explore_feedback(repo, projection)
+
+
+def _explore_feedback_projection(
+    payload: dict[str, Any],
+    *,
+    context_lines: Any,
+    full_file: Any,
+    requested_final_top_k: Any,
+    effective_initial_top_k: Any,
+    max_items: Any,
+    max_context_bytes: Any,
+    embedding: dict[str, Any] | None,
+) -> dict[str, Any]:
+    success = payload.get("ok") is True
+    if success:
+        validated = json.loads(format_explore_json(payload))
+        trace = validated["trace"]
+        pack = validated["context_pack"]
+        budget = pack["budget"]
+        validated_embedding = _validated_explore_embedding(embedding)
+        error_code = None
+        exploration = {
+            "schema_version": trace["schema_version"],
+            "outcome": trace["outcome"],
+            "termination_reason": trace["termination_reason"],
+            "round_count": len(trace["rounds"]),
+            "planned_probe_count": trace["planned_probe_count"],
+            "executed_probe_count": trace["executed_probe_count"],
+            "stale_skipped_probe_count": trace["stale_skipped_probe_count"],
+            "retrieval_call_count": trace["retrieval_call_count"],
+            "initial_satisfied_goal_count": trace[
+                "initial_satisfied_goal_count"
+            ],
+            "final_satisfied_goal_count": trace["final_satisfied_goal_count"],
+        }
+        context_pack = {
+            "schema_version": pack["schema_version"],
+            "status": pack["status"],
+            "confidence": pack["confidence"]["level"],
+            "included_items": budget["included_items"],
+            "content_bytes": budget["content_bytes"],
+            "pack_bytes": budget["pack_bytes"],
+            "budget_exhausted": budget["budget_exhausted"],
+        }
+    else:
+        error_code = _validated_explore_error(payload)
+        exploration = {
+            "schema_version": None,
+            "outcome": None,
+            "termination_reason": None,
+            "round_count": 0,
+            "planned_probe_count": 0,
+            "executed_probe_count": 0,
+            "stale_skipped_probe_count": 0,
+            "retrieval_call_count": 0,
+            "initial_satisfied_goal_count": 0,
+            "final_satisfied_goal_count": 0,
+        }
+        context_pack = {
+            "schema_version": None,
+            "status": None,
+            "confidence": None,
+            "included_items": 0,
+            "content_bytes": 0,
+            "pack_bytes": 0,
+            "budget_exhausted": False,
+        }
+        validated_embedding = {
+            "provider": None,
+            "model": None,
+            "dimensions": None,
+            "config_hash": None,
+        }
+
+    projection = {
+        "ok": success,
+        "error_code": error_code,
+        "request": {
+            "context_lines": _bounded_feedback_int(context_lines, minimum=0),
+            "full_file": full_file if type(full_file) is bool else None,
+            "requested_final_top_k": _bounded_feedback_int(
+                requested_final_top_k,
+                minimum=1,
+            ),
+            "effective_initial_top_k": _bounded_feedback_int(
+                effective_initial_top_k,
+                minimum=1,
+                maximum=12,
+            ),
+            "max_items": _bounded_feedback_int(max_items, minimum=1),
+            "max_context_bytes": _bounded_feedback_int(
+                max_context_bytes,
+                minimum=4096,
+            ),
+        },
+        "exploration": exploration,
+        "context_pack": context_pack,
+        "embedding": validated_embedding,
+    }
+    _validated_explore_projection(projection)
+    return projection
+
+
+def _validated_explore_error(payload: object) -> str:
+    if type(payload) is not dict or tuple(payload) != ("ok", "error"):
+        raise ValueError("invalid explore error envelope")
+    error = payload["error"]
+    if payload["ok"] is not False or type(error) is not dict or tuple(error) != (
+        "code",
+        "message",
+    ):
+        raise ValueError("invalid explore error envelope")
+    code = error["code"]
+    if (
+        code not in _EXPLORE_ERROR_CODES
+        or type(error["message"]) is not str
+        or not error["message"]
+    ):
+        raise ValueError("invalid explore error envelope")
+    return code
+
+
+def _validated_explore_embedding(
+    embedding: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if type(embedding) is not dict or tuple(embedding) != _EXPLORE_EMBEDDING_KEYS:
+        raise ValueError("invalid explore embedding projection")
+    provider = embedding["provider"]
+    model = embedding["model"]
+    dimensions = embedding["dimensions"]
+    config_hash = embedding["config_hash"]
+    if (
+        type(provider) is not str
+        or not provider
+        or type(model) is not str
+        or not model
+        or type(dimensions) is not int
+        or dimensions < 1
+        or type(config_hash) is not str
+        or not config_hash
+    ):
+        raise ValueError("invalid explore embedding projection")
+    return dict(embedding)
+
+
+def _bounded_feedback_int(
+    value: Any,
+    *,
+    minimum: int,
+    maximum: int = _MAX_FEEDBACK_INTEGER,
+) -> int | None:
+    if type(value) is not int or not minimum <= value <= maximum:
+        return None
+    return value
+
+
+def _try_append_explore_feedback(
+    repo: Path,
+    projection: dict[str, Any],
+) -> None:
+    try:
+        _append_explore_feedback(repo, projection)
+    except Exception:
+        pass
+
+
+def _append_explore_feedback(
+    repo: Path,
+    projection: dict[str, Any],
+) -> None:
+    validated = _validated_explore_projection(projection)
+    index_dir = index_dir_for(repo)
+    if not index_dir.exists():
+        return
+    timestamp = int(time.time())
+    if timestamp < 0:
+        raise ValueError("invalid explore feedback timestamp")
+    event = {
+        "timestamp": timestamp,
+        "tool": "context_search_explore",
+        "ok": validated["ok"],
+        "error_code": validated["error_code"],
+        "repo_hash": _short_hash(str(repo)),
+        "request": validated["request"],
+        "exploration": validated["exploration"],
+        "context_pack": validated["context_pack"],
+        "embedding": validated["embedding"],
+    }
+    log_path = index_dir / "mcp_calls.jsonl"
+    _rotate_feedback_log(log_path)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                event,
+                ensure_ascii=True,
+                sort_keys=True,
+                allow_nan=False,
+            )
+            + "\n"
+        )
+
+
+def _validated_explore_projection(
+    projection: object,
+) -> dict[str, Any]:
+    if type(projection) is not dict or tuple(projection) != _EXPLORE_PROJECTION_KEYS:
+        raise ValueError("invalid explore feedback projection")
+    if type(projection["ok"]) is not bool:
+        raise ValueError("invalid explore feedback projection")
+    error_code = projection["error_code"]
+    if error_code is not None and error_code not in _EXPLORE_ERROR_CODES:
+        raise ValueError("invalid explore feedback projection")
+    if (projection["ok"] and error_code is not None) or (
+        not projection["ok"] and error_code is None
+    ):
+        raise ValueError("invalid explore feedback projection")
+    for key, expected_keys in (
+        ("request", _EXPLORE_REQUEST_KEYS),
+        ("exploration", _EXPLORE_AGGREGATE_KEYS),
+        ("context_pack", _EXPLORE_PACK_FEEDBACK_KEYS),
+        ("embedding", _EXPLORE_EMBEDDING_KEYS),
+    ):
+        value = projection[key]
+        if type(value) is not dict or tuple(value) != expected_keys:
+            raise ValueError("invalid explore feedback projection")
+
+    request = projection["request"]
+    request_ranges = {
+        "context_lines": (0, _MAX_FEEDBACK_INTEGER),
+        "requested_final_top_k": (1, _MAX_FEEDBACK_INTEGER),
+        "effective_initial_top_k": (1, 12),
+        "max_items": (1, _MAX_FEEDBACK_INTEGER),
+        "max_context_bytes": (4096, _MAX_FEEDBACK_INTEGER),
+    }
+    for key, (minimum, maximum) in request_ranges.items():
+        value = request[key]
+        if value is not None and (
+            type(value) is not int or not minimum <= value <= maximum
+        ):
+            raise ValueError("invalid explore feedback projection")
+    if request["full_file"] is not None and type(request["full_file"]) is not bool:
+        raise ValueError("invalid explore feedback projection")
+
+    exploration = projection["exploration"]
+    context_pack = projection["context_pack"]
+    embedding = projection["embedding"]
+    if projection["ok"]:
+        if (
+            exploration["schema_version"] != 2
+            or exploration["outcome"] not in _EXPLORE_OUTCOMES
+            or exploration["termination_reason"] not in _EXPLORE_TERMINATIONS
+            or type(exploration["round_count"]) is not int
+            or not 1 <= exploration["round_count"] <= 2
+        ):
+            raise ValueError("invalid explore feedback projection")
+        for key in _EXPLORE_AGGREGATE_KEYS[4:]:
+            value = exploration[key]
+            if type(value) is not int or value < 0:
+                raise ValueError("invalid explore feedback projection")
+        if (
+            exploration["executed_probe_count"] > 2
+            or exploration["planned_probe_count"] > 8
+            or exploration["retrieval_call_count"]
+            != 1 + exploration["executed_probe_count"]
+            or exploration["initial_satisfied_goal_count"]
+            > exploration["final_satisfied_goal_count"]
+        ):
+            raise ValueError("invalid explore feedback projection")
+        if (
+            context_pack["schema_version"] != 2
+            or context_pack["status"] not in _CONTEXT_PACK_STATUSES
+            or context_pack["confidence"] not in _CONTEXT_PACK_CONFIDENCE
+        ):
+            raise ValueError("invalid explore feedback projection")
+        for key in ("included_items", "content_bytes", "pack_bytes"):
+            value = context_pack[key]
+            if type(value) is not int or value < 0:
+                raise ValueError("invalid explore feedback projection")
+        if (
+            context_pack["pack_bytes"] < 1
+            or type(context_pack["budget_exhausted"]) is not bool
+        ):
+            raise ValueError("invalid explore feedback projection")
+        _validated_explore_embedding(embedding)
+    else:
+        if exploration != {
+            "schema_version": None,
+            "outcome": None,
+            "termination_reason": None,
+            "round_count": 0,
+            "planned_probe_count": 0,
+            "executed_probe_count": 0,
+            "stale_skipped_probe_count": 0,
+            "retrieval_call_count": 0,
+            "initial_satisfied_goal_count": 0,
+            "final_satisfied_goal_count": 0,
+        } or context_pack != {
+            "schema_version": None,
+            "status": None,
+            "confidence": None,
+            "included_items": 0,
+            "content_bytes": 0,
+            "pack_bytes": 0,
+            "budget_exhausted": False,
+        } or embedding != {
+            "provider": None,
+            "model": None,
+            "dimensions": None,
+            "config_hash": None,
+        }:
+            raise ValueError("invalid explore feedback projection")
+    return {
+        key: dict(value) if type(value) is dict else value
+        for key, value in projection.items()
     }
 
 

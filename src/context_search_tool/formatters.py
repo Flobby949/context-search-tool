@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from context_search_tool.context_pack import (
     ContextPack,
@@ -19,10 +19,21 @@ from context_search_tool.models import (
 from context_search_tool.retrieval import QueryBundle
 from context_search_tool.retrieval_trace import (
     SOURCE_COUNT_KEYS,
+    ExplorationGoalRecord,
+    ExplorationLimits,
+    ExplorationProbe,
+    ExplorationRound,
+    ExplorationTrace,
+    ExplorationTraceError,
+    FinalEvidence,
     RetrievalTrace,
     RetrievalTraceError,
+    exploration_trace_payload,
     retrieval_trace_payload,
 )
+
+if TYPE_CHECKING:
+    from context_search_tool.exploration.models import ExploredContext
 
 
 def format_markdown(bundle: QueryBundle) -> str:
@@ -650,6 +661,504 @@ def format_context_markdown(envelope: dict[str, Any]) -> str:
             "context_failed",
             "Context pack construction failed",
         ) from exc
+
+
+_EXPLORE_KEYS = (
+    "ok",
+    "repo",
+    "query",
+    "retrieval",
+    "context_pack",
+    "trace",
+)
+_EXPLORE_RETRIEVAL_KEYS = (
+    "initial_result_count",
+    "initial_evidence_anchor_count",
+    "fused_result_count",
+    "fused_evidence_anchor_count",
+    "planner_status",
+    "planner_intent",
+    "requested_final_top_k",
+    "effective_initial_top_k",
+)
+_EXPLORATION_TRACE_KEYS = (
+    "schema_version",
+    "mode",
+    "outcome",
+    "termination_reason",
+    "duration_ms",
+    "limits",
+    "initial_evidence_need_count",
+    "candidate_goal_count",
+    "retained_goal_count",
+    "omitted_goal_count",
+    "initial_satisfied_goal_count",
+    "final_satisfied_goal_count",
+    "planned_probe_count",
+    "executed_probe_count",
+    "stale_skipped_probe_count",
+    "unexecuted_probe_count",
+    "retrieval_call_count",
+    "goals",
+    "rounds",
+    "final_evidence_count",
+    "final_evidence_omitted_count",
+    "final_evidence",
+)
+_EXPLORATION_LIMIT_KEYS = (
+    "max_rounds",
+    "max_followup_probes",
+    "max_retrieval_calls",
+    "max_planned_probes",
+    "max_goals",
+    "max_probe_code_points",
+    "max_seed_paths",
+    "max_frontend_import_header_bytes",
+    "max_frontend_import_paths",
+    "effective_initial_top_k",
+    "followup_top_k",
+    "max_fused_results",
+    "max_fused_anchors",
+    "final_evidence_top_k",
+)
+_EXPLORATION_GOAL_KEYS = (
+    "id",
+    "kind",
+    "category",
+    "accepted_roles",
+    "required",
+    "provenance",
+    "initially_satisfied",
+    "finally_satisfied",
+)
+_EXPLORATION_ROUND_KEYS = (
+    "round_index",
+    "kind",
+    "duration_ms",
+    "input_path_count",
+    "output_path_count",
+    "novel_path_count",
+    "duplicate_path_count",
+    "newly_satisfied_goal_ids",
+    "probes",
+)
+_EXPLORATION_PROBE_KEYS = (
+    "id",
+    "query",
+    "purpose",
+    "source",
+    "goal_ids",
+    "seed_paths",
+    "retrieval_outcome",
+    "retrieval_termination_reason",
+    "duration_ms",
+    "result_count",
+    "evidence_anchor_count",
+    "unique_path_count",
+    "duplicate_path_count",
+    "novel_path_count",
+    "newly_satisfied_goal_ids",
+    "source_counts",
+    "final_selection_count",
+)
+_EXPLORATION_EVIDENCE_KEYS = (
+    "item_id",
+    "file_path",
+    "source_round",
+    "probe_id",
+    "probe_rank",
+    "goal_ids",
+    "selection_reason",
+)
+_PLANNER_STATUSES = {"disabled", "ok", "fallback"}
+_PLANNER_INTENTS = {
+    "feature_lookup",
+    "endpoint_lookup",
+    "bug_trace",
+    "data_flow",
+    "symbol_lookup",
+    "unknown",
+}
+
+
+def explore_payload(
+    repo: Path,
+    query: str,
+    explored: ExploredContext,
+    *,
+    requested_final_top_k: int | None,
+) -> dict[str, Any]:
+    """Return the shared bounded controlled-exploration success envelope."""
+    initial = explored.initial_bundle
+    fused = explored.fused_bundle
+    trace = explored.trace
+    if initial.query != query or fused.query != query:
+        raise ExplorationTraceError("exploration query mismatch")
+    envelope = {
+        "ok": True,
+        "repo": str(repo.resolve()),
+        "query": query,
+        "retrieval": {
+            "initial_result_count": len(initial.results),
+            "initial_evidence_anchor_count": len(initial.evidence_anchors),
+            "fused_result_count": len(fused.results),
+            "fused_evidence_anchor_count": len(fused.evidence_anchors),
+            "planner_status": initial.planner.status,
+            "planner_intent": initial.planner.intent,
+            "requested_final_top_k": requested_final_top_k,
+            "effective_initial_top_k": trace.limits.effective_initial_top_k,
+        },
+        "context_pack": context_pack_payload(explored.final_pack),
+        "trace": exploration_trace_payload(trace),
+    }
+    return _validated_explore_payload(envelope)
+
+
+def format_explore_json(envelope: dict[str, Any]) -> str:
+    validated = _validated_explore_payload(envelope)
+    return json.dumps(
+        validated,
+        ensure_ascii=True,
+        indent=2,
+        sort_keys=False,
+        allow_nan=False,
+    )
+
+
+def format_explore_markdown(envelope: dict[str, Any]) -> str:
+    validated = _validated_explore_payload(envelope)
+    trace = validated["trace"]
+    retrieval = validated["retrieval"]
+    lines = [
+        "# Controlled Exploration",
+        "",
+        f"Repository: {validated['repo']}",
+        f"Query: {validated['query']}",
+        "",
+        "## Exploration",
+        f"- Outcome: {trace['outcome']}",
+        f"- Termination: {trace['termination_reason']}",
+        f"- Retrieval calls: {trace['retrieval_call_count']}",
+        f"- Executed probes: {trace['executed_probe_count']}",
+        f"- Duration: {trace['duration_ms']} ms",
+    ]
+    if trace["outcome"] == "partial":
+        lines.extend(
+            [
+                "",
+                "> Warning: exploration is partial; the final ContextPack "
+                "contains the best validated evidence recovered so far.",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Attempted Follow-up Probes",
+            "",
+            "| probe | source | outcome | paths | novel | gained goals | duration ms |",
+            "| --- | --- | --- | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    followup_probes = [
+        probe
+        for round_record in trace["rounds"]
+        if round_record["kind"] == "followup"
+        for probe in round_record["probes"]
+    ]
+    if not followup_probes:
+        lines.append("| (none) | - | - | 0 | 0 | 0 | 0 |")
+    else:
+        for probe in followup_probes:
+            lines.append(
+                f"| {probe['id']} | {probe['source']} | "
+                f"{probe['retrieval_outcome']}/"
+                f"{probe['retrieval_termination_reason']} | "
+                f"{probe['unique_path_count']} | {probe['novel_path_count']} | "
+                f"{len(probe['newly_satisfied_goal_ids'])} | "
+                f"{probe['duration_ms']} |"
+            )
+
+    lines.extend(
+        [
+            "",
+            "## Goal Gain",
+            f"- Initially satisfied: {trace['initial_satisfied_goal_count']}",
+            f"- Finally satisfied: {trace['final_satisfied_goal_count']}",
+            f"- Retained goals: {trace['retained_goal_count']}",
+        ]
+    )
+    gained = [
+        goal
+        for goal in trace["goals"]
+        if not goal["initially_satisfied"] and goal["finally_satisfied"]
+    ]
+    if gained:
+        for goal in gained:
+            lines.append(
+                f"- Gained {goal['id']}: {goal['category']} "
+                f"({goal['provenance']})"
+            )
+    else:
+        lines.append("- Newly satisfied: (none)")
+
+    lines.extend(["", "## Final Evidence Provenance"])
+    if not trace["final_evidence"]:
+        lines.append("- (none)")
+    else:
+        for item in trace["final_evidence"]:
+            goals = ", ".join(item["goal_ids"]) or "(none)"
+            lines.append(
+                f"- {item['item_id']} — {item['file_path']}; "
+                f"round={item['source_round']}; probe={item['probe_id']}; "
+                f"rank={item['probe_rank']}; goals={goals}; "
+                f"selection={item['selection_reason']}"
+            )
+    if trace["final_evidence_omitted_count"]:
+        lines.append(
+            "- Omitted from provenance preview: "
+            f"{trace['final_evidence_omitted_count']}"
+        )
+
+    context_envelope = {
+        "ok": True,
+        "repo": validated["repo"],
+        "query": validated["query"],
+        "retrieval": {
+            "result_count": retrieval["fused_result_count"],
+            "evidence_anchor_count": retrieval["fused_evidence_anchor_count"],
+            "planner_status": retrieval["planner_status"],
+            "planner_intent": retrieval["planner_intent"],
+        },
+        "context_pack": validated["context_pack"],
+    }
+    lines.extend(["", format_context_markdown(context_envelope)])
+    return "\n".join(lines)
+
+
+def _validated_explore_payload(
+    envelope: dict[str, Any],
+) -> dict[str, Any]:
+    _require_ordered_dict(envelope, _EXPLORE_KEYS, "explore envelope")
+    if envelope["ok"] is not True:
+        raise ExplorationTraceError("invalid explore envelope")
+    repo = envelope["repo"]
+    query = envelope["query"]
+    if type(repo) is not str or not repo or not Path(repo).is_absolute():
+        raise ExplorationTraceError("invalid explore repository")
+    if type(query) is not str:
+        raise ExplorationTraceError("invalid explore query")
+
+    retrieval = envelope["retrieval"]
+    _require_ordered_dict(
+        retrieval,
+        _EXPLORE_RETRIEVAL_KEYS,
+        "explore retrieval",
+    )
+    for key in _EXPLORE_RETRIEVAL_KEYS[:4]:
+        _non_negative_payload_int(retrieval[key], key)
+    if retrieval["planner_status"] not in _PLANNER_STATUSES:
+        raise ExplorationTraceError("invalid explore planner status")
+    if retrieval["planner_intent"] not in _PLANNER_INTENTS:
+        raise ExplorationTraceError("invalid explore planner intent")
+    requested = retrieval["requested_final_top_k"]
+    if requested is not None and (type(requested) is not int or requested < 1):
+        raise ExplorationTraceError("invalid requested final top-k")
+    effective = retrieval["effective_initial_top_k"]
+    if type(effective) is not int or not 1 <= effective <= 12:
+        raise ExplorationTraceError("invalid effective initial top-k")
+
+    pack_payload = envelope["context_pack"]
+    encoded_pack = canonical_context_pack_bytes(pack_payload)
+    normalized_pack = json.loads(encoded_pack)
+    if pack_payload != normalized_pack:
+        raise ContextPackError(
+            "context_failed",
+            "Context pack construction failed",
+        )
+    trace = _exploration_trace_from_payload(envelope["trace"])
+    normalized_trace = exploration_trace_payload(trace)
+    if envelope["trace"] != normalized_trace:
+        raise ExplorationTraceError("invalid exploration trace payload")
+
+    initial_probe = normalized_trace["rounds"][0]["probes"][0]
+    if (
+        retrieval["initial_result_count"] != initial_probe["result_count"]
+        or retrieval["initial_evidence_anchor_count"]
+        != initial_probe["evidence_anchor_count"]
+        or retrieval["effective_initial_top_k"]
+        != normalized_trace["limits"]["effective_initial_top_k"]
+        or len(normalized_pack["items"])
+        != normalized_trace["final_evidence_count"]
+        or len(normalized_pack["items"])
+        > retrieval["fused_result_count"]
+        + retrieval["fused_evidence_anchor_count"]
+        or retrieval["fused_result_count"]
+        > normalized_trace["limits"]["max_fused_results"]
+        or retrieval["fused_evidence_anchor_count"]
+        > normalized_trace["limits"]["max_fused_anchors"]
+        or retrieval["fused_result_count"]
+        + retrieval["fused_evidence_anchor_count"]
+        != normalized_trace["rounds"][-1]["output_path_count"]
+    ):
+        raise ExplorationTraceError("inconsistent explore envelope")
+
+    return {
+        "ok": True,
+        "repo": repo,
+        "query": query,
+        "retrieval": dict(retrieval),
+        "context_pack": dict(pack_payload),
+        "trace": normalized_trace,
+    }
+
+
+def _exploration_trace_from_payload(payload: object) -> ExplorationTrace:
+    _require_ordered_dict(payload, _EXPLORATION_TRACE_KEYS, "exploration trace")
+    raw_limits = payload["limits"]
+    _require_ordered_dict(
+        raw_limits,
+        _EXPLORATION_LIMIT_KEYS,
+        "exploration limits",
+    )
+    limits = ExplorationLimits(**raw_limits)
+    goals = tuple(
+        _exploration_goal_from_payload(item)
+        for item in _payload_list(payload["goals"], "exploration goals")
+    )
+    rounds = tuple(
+        _exploration_round_from_payload(item)
+        for item in _payload_list(payload["rounds"], "exploration rounds")
+    )
+    evidence = tuple(
+        _exploration_evidence_from_payload(item)
+        for item in _payload_list(
+            payload["final_evidence"],
+            "final exploration evidence",
+        )
+    )
+    values = {
+        key: payload[key]
+        for key in _EXPLORATION_TRACE_KEYS
+        if key not in {"limits", "goals", "rounds", "final_evidence"}
+    }
+    return ExplorationTrace(
+        **values,
+        limits=limits,
+        goals=goals,
+        rounds=rounds,
+        final_evidence=evidence,
+    )
+
+
+def _exploration_goal_from_payload(payload: object) -> ExplorationGoalRecord:
+    _require_ordered_dict(payload, _EXPLORATION_GOAL_KEYS, "exploration goal")
+    return ExplorationGoalRecord(
+        id=payload["id"],
+        kind=payload["kind"],
+        category=payload["category"],
+        accepted_roles=_payload_string_tuple(
+            payload["accepted_roles"],
+            "accepted roles",
+        ),
+        required=payload["required"],
+        provenance=payload["provenance"],
+        initially_satisfied=payload["initially_satisfied"],
+        finally_satisfied=payload["finally_satisfied"],
+    )
+
+
+def _exploration_round_from_payload(payload: object) -> ExplorationRound:
+    _require_ordered_dict(payload, _EXPLORATION_ROUND_KEYS, "exploration round")
+    return ExplorationRound(
+        round_index=payload["round_index"],
+        kind=payload["kind"],
+        duration_ms=payload["duration_ms"],
+        input_path_count=payload["input_path_count"],
+        output_path_count=payload["output_path_count"],
+        novel_path_count=payload["novel_path_count"],
+        duplicate_path_count=payload["duplicate_path_count"],
+        newly_satisfied_goal_ids=_payload_string_tuple(
+            payload["newly_satisfied_goal_ids"],
+            "round goal gain",
+        ),
+        probes=tuple(
+            _exploration_probe_from_payload(item)
+            for item in _payload_list(payload["probes"], "exploration probes")
+        ),
+    )
+
+
+def _exploration_probe_from_payload(payload: object) -> ExplorationProbe:
+    _require_ordered_dict(payload, _EXPLORATION_PROBE_KEYS, "exploration probe")
+    raw_counts = payload["source_counts"]
+    _require_ordered_dict(raw_counts, SOURCE_COUNT_KEYS, "probe source counts")
+    return ExplorationProbe(
+        id=payload["id"],
+        query=payload["query"],
+        purpose=payload["purpose"],
+        source=payload["source"],
+        goal_ids=_payload_string_tuple(payload["goal_ids"], "probe goals"),
+        seed_paths=_payload_string_tuple(payload["seed_paths"], "seed paths"),
+        retrieval_outcome=payload["retrieval_outcome"],
+        retrieval_termination_reason=payload["retrieval_termination_reason"],
+        duration_ms=payload["duration_ms"],
+        result_count=payload["result_count"],
+        evidence_anchor_count=payload["evidence_anchor_count"],
+        unique_path_count=payload["unique_path_count"],
+        duplicate_path_count=payload["duplicate_path_count"],
+        novel_path_count=payload["novel_path_count"],
+        newly_satisfied_goal_ids=_payload_string_tuple(
+            payload["newly_satisfied_goal_ids"],
+            "probe goal gain",
+        ),
+        source_counts=tuple(raw_counts.items()),
+        final_selection_count=payload["final_selection_count"],
+    )
+
+
+def _exploration_evidence_from_payload(payload: object) -> FinalEvidence:
+    _require_ordered_dict(
+        payload,
+        _EXPLORATION_EVIDENCE_KEYS,
+        "final exploration evidence",
+    )
+    return FinalEvidence(
+        item_id=payload["item_id"],
+        file_path=payload["file_path"],
+        source_round=payload["source_round"],
+        probe_id=payload["probe_id"],
+        probe_rank=payload["probe_rank"],
+        goal_ids=_payload_string_tuple(payload["goal_ids"], "evidence goals"),
+        selection_reason=payload["selection_reason"],
+    )
+
+
+def _require_ordered_dict(
+    value: object,
+    keys: tuple[str, ...],
+    label: str,
+) -> None:
+    if type(value) is not dict or tuple(value) != keys:
+        raise ExplorationTraceError(f"invalid {label}")
+
+
+def _payload_list(value: object, label: str) -> list[Any]:
+    if type(value) is not list:
+        raise ExplorationTraceError(f"invalid {label}")
+    return value
+
+
+def _payload_string_tuple(value: object, label: str) -> tuple[str, ...]:
+    values = _payload_list(value, label)
+    if any(type(item) is not str for item in values):
+        raise ExplorationTraceError(f"invalid {label}")
+    return tuple(values)
+
+
+def _non_negative_payload_int(value: object, label: str) -> None:
+    if type(value) is not int or value < 0:
+        raise ExplorationTraceError(f"invalid {label}")
 
 
 def _validated_context_pack_payload(
