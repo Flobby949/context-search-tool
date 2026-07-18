@@ -342,6 +342,9 @@ def _run_repository_assays(
                 required_graph_paths.remove(
                     "src/main/java/com/example/order/OrderController.java"
                 )
+                required_graph_paths.add(
+                    "src/main/resources/mappers/OrderMapper.xml"
+                )
             elif case["id"] == "vue-route-flow":
                 required_graph_paths.remove("src/views/OrdersView.vue")
             elif case["id"] == "react-route-flow":

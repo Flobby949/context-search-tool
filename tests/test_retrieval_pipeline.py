@@ -11666,3 +11666,34 @@ def _legacy_store(db_path: Path) -> SQLiteStore:
     store = SQLiteStore(db_path)
     store.set_metadata("signal_schema_version", "4")
     return store
+
+
+def test_ready_v5_spring_path_scores_only_the_exact_endpoint(
+    tmp_path: Path,
+) -> None:
+    store, candidates = _spring_path_graph_case(tmp_path)
+    store.set_metadata("signal_schema_version", "5")
+    store.set_metadata("graph_resolution_state", "ready")
+    store.set_metadata("graph_resolution_version", "1")
+
+    with store.graph_read_session() as graph_session:
+        ranked = ranking.rank_chunks(
+            store,
+            candidates,
+            ["app", "catalog", "page", "can", "apply"],
+            "/appCatalog/page canApply",
+            graph_session=graph_session,
+        )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert by_id["exact-controller"].score_parts[
+        "spring_path_endpoint_match"
+    ] == 0.45
+    assert "spring_path_endpoint_match" not in by_id[
+        "sibling-controller"
+    ].score_parts
+    assert "spring_path_service_match" not in by_id["service-impl"].score_parts
+    assert "spring_path_service_interface_match" not in by_id[
+        "service-interface"
+    ].score_parts
+    assert "spring_path_executor_match" not in by_id["executor"].score_parts

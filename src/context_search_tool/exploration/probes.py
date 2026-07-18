@@ -53,6 +53,11 @@ _VIEW_ROLES = {"view", "view_page", "layout_component"}
 _FRONTEND_SUFFIXES = {".astro", ".js", ".jsx", ".svelte", ".ts", ".tsx", ".vue"}
 _IMPORT_GOAL_CATEGORIES = {"implementations", "related_types", "supporting"}
 _RELATION_GOAL_CATEGORIES = {"implementations", "related_types", "supporting"}
+_READY_GRAPH_SEED_SOURCES = {
+    "relation_target",
+    "endpoint_or_route",
+    "static_import",
+}
 _MAX_SEEDS_PER_SOURCE = 32
 _MAX_IMPORTS_PER_FILE = 16
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
@@ -189,6 +194,7 @@ def _plan_probes_v5(
         else active_store.graph_read_session()
     )
     graph_fault: str | None = None
+    ready_graph = False
     seeds: tuple[_Seed, ...] = ()
     try:
         with session_context as graph_session:
@@ -241,6 +247,10 @@ def _plan_probes_v5(
                     ),
                 )
             graph_fault = graph_session.graph_fault
+            ready_graph = (
+                graph_session.capability.status == "ready"
+                and graph_fault is None
+            )
     except (KeyError, OSError, sqlite3.Error, UnicodeError, ValueError):
         return ()
 
@@ -255,7 +265,12 @@ def _plan_probes_v5(
 
     raw: list[ProbeCandidate] = []
     goal_order = {goal.id: index for index, goal in enumerate(frozen.goals)}
-    composite = _required_goal_composite(initial_bundle, frozen)
+    composite = _required_goal_composite_v5(
+        initial_bundle,
+        frozen,
+        seeds,
+        ready_graph=ready_graph,
+    )
     if composite is not None:
         raw.append(composite)
     raw.extend(_single_required_view_composites(seeds, frozen))
@@ -407,6 +422,48 @@ def _required_goal_composite(
         ),
         source_rank=0,
     )
+
+
+def _ready_seeds_cover_required_goals(
+    seeds: Iterable[_Seed],
+    frozen: FrozenGoals,
+) -> bool:
+    required = tuple(
+        goal
+        for goal in frozen.goals
+        if goal.required and not goal.initially_satisfied
+    )
+    if not required:
+        return False
+    retained_seeds = tuple(seeds)
+    if not any(
+        seed.source in _READY_GRAPH_SEED_SOURCES
+        and any(_seed_supports_goal(seed, goal) for goal in required)
+        for seed in retained_seeds
+    ):
+        return False
+    return all(
+        any(_seed_supports_goal(seed, goal) for seed in retained_seeds)
+        for goal in required
+    )
+
+
+def _required_goal_composite_v5(
+    bundle: QueryBundle,
+    frozen: FrozenGoals,
+    seeds: Iterable[_Seed],
+    *,
+    ready_graph: bool,
+) -> ProbeCandidate | None:
+    composite = _required_goal_composite(bundle, frozen)
+    if (
+        composite is not None
+        and ready_graph
+        and len(bundle.results) > 1
+        and _ready_seeds_cover_required_goals(seeds, frozen)
+    ):
+        return None
+    return composite
 
 
 def _single_required_view_composites(

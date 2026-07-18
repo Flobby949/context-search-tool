@@ -18,6 +18,7 @@ from context_search_tool.graph_plugins import (
 from context_search_tool.java_ast import (
     JavaAnnotationFact,
     JavaFactSet,
+    JavaFieldFact,
     JavaTypeRef,
     SourceRange,
     extract_java_facts,
@@ -168,8 +169,9 @@ class _JavaMaterializer:
                 signature="",
                 arity=None,
                 source_range=fact.source_range,
-                tokens=_tokens(fact.name, fact.qualified_name),
+                tokens=_tokens(fact.name),
                 metadata={"declaration_kind": fact.kind},
+                recallable=bool(fact.implements),
             )
             self._remember_declaration("type", fact.qualified_name, "", signal)
         for fact in self.facts.fields:
@@ -181,12 +183,19 @@ class _JavaMaterializer:
                 signature="",
                 arity=None,
                 source_range=fact.source_range,
-                tokens=_tokens(owner_name, fact.name, fact.type_ref.erased),
+                tokens=_tokens(
+                    owner_name,
+                    fact.name,
+                    _simple_java_type(fact.type_ref.erased),
+                ),
                 metadata={
                     "declaration_kind": fact.kind,
-                    "owner_type": fact.owner_qualified_name,
-                    "field_type": _selector_name(fact.type_ref),
+                    "owner_type": owner_name,
+                    "field_type": _simple_java_type(
+                        _selector_name(fact.type_ref)
+                    ),
                 },
+                recallable=_legacy_field_recallable(fact),
             )
             self._remember_declaration("field", fact.qualified_name, "", signal)
         for fact in self.facts.methods:
@@ -199,10 +208,14 @@ class _JavaMaterializer:
                 signature=fact.signature,
                 arity=fact.arity,
                 source_range=fact.source_range,
-                tokens=_tokens(owner_name, display_name, fact.signature),
+                tokens=_tokens(
+                    owner_name,
+                    display_name,
+                    _simple_java_signature(fact.signature),
+                ),
                 metadata={
                     "declaration_kind": fact.kind,
-                    "owner_type": fact.owner_qualified_name,
+                    "owner_type": owner_name,
                     "owner_method": fact.name,
                 },
             )
@@ -222,7 +235,7 @@ class _JavaMaterializer:
                 tokens=list(fact.tokens),
                 metadata={
                     "owner_kind": fact.owner_kind,
-                    "owner_qualified_name": fact.owner_qualified_name,
+                    "owner_qualified_name": owner_name,
                     "text": fact.text,
                 },
             )
@@ -260,6 +273,7 @@ class _JavaMaterializer:
             if not mappings:
                 continue
             parent_paths = type_paths.get(method.owner_qualified_name) or ("",)
+            owner_name = method.owner_qualified_name.rsplit(".", 1)[-1]
             endpoint_signals: list[CodeSignal] = []
             for annotation in mappings:
                 http_method = _HTTP_METHODS.get(annotation.framework_role)
@@ -283,15 +297,17 @@ class _JavaMaterializer:
                                 tokens=_tokens(
                                     http_method,
                                     route,
-                                    method.owner_qualified_name,
+                                    owner_name,
                                     method.name,
                                 ),
                                 metadata={
                                     "http_method": http_method,
                                     "path": route,
-                                    "controller": method.owner_qualified_name,
+                                    "controller": owner_name,
                                     "method": method.name,
-                                    "method_qualified_name": method.qualified_name,
+                                    "method_qualified_name": (
+                                        owner_name + "." + method.name
+                                    ),
                                     "framework_role": annotation.framework_role,
                                 },
                             )
@@ -465,6 +481,7 @@ class _JavaMaterializer:
         source_range: SourceRange,
         tokens: list[str],
         metadata: dict[str, object],
+        recallable: bool = True,
     ) -> CodeSignal:
         chunk = _containing_chunk(self.chunks, source_range.start_line)
         if chunk is None:
@@ -500,7 +517,7 @@ class _JavaMaterializer:
             producer=_PRODUCER,
             start_column=source_range.start_column,
             end_column=source_range.end_column,
-            recallable=True,
+            recallable=recallable,
         )
 
     def _remember_declaration(
@@ -666,7 +683,9 @@ def _selector_qualified_name(target: JavaTypeRef) -> str:
 
 
 def _type_selector_metadata(target: JavaTypeRef) -> dict[str, object]:
-    if target.qualified_name and _is_external_java_name(target.qualified_name):
+    if target.resolution in {"same_package", "local_declaration"}:
+        selector_state = "exact"
+    elif target.qualified_name and _is_external_java_name(target.qualified_name):
         selector_state = "external"
     else:
         selector_state = "candidates" if target.candidates else "exact"
@@ -721,6 +740,27 @@ def _tokens(*values: str) -> list[str]:
                 for match in _TOKEN_PART_RE.findall(piece):
                     _append_unique(output, match.lower())
     return output
+
+
+def _simple_java_type(value: str) -> str:
+    return value.rsplit(".", 1)[-1]
+
+
+def _simple_java_signature(value: str) -> str:
+    return re.sub(
+        r"(?:[A-Za-z_$][\w$]*\.)+([A-Za-z_$][\w$]*)",
+        lambda match: match.group(1),
+        value,
+    )
+
+
+def _legacy_field_recallable(fact: JavaFieldFact) -> bool:
+    source_type = fact.type_ref.source.strip()
+    return (
+        fact.kind != "enum_constant"
+        and bool(source_type)
+        and "A" <= source_type[0] <= "Z"
+    )
 
 
 def _append_unique(values: list[str], value: str) -> None:

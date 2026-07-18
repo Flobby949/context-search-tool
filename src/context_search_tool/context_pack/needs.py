@@ -634,10 +634,45 @@ def _normalized_subject_match_spans(
         }
     )
     if not matches:
+        plural_variant = _simple_ascii_plural_variant(
+            normalized_subject,
+            raw_subject,
+        )
+        if plural_variant:
+            matches = sorted(
+                {
+                    *_token_sequence_spans(
+                        raw_content_spans,
+                        plural_variant,
+                        first_only=first_only,
+                    ),
+                    *_token_sequence_spans(
+                        camel_content_spans,
+                        plural_variant,
+                        first_only=first_only,
+                    ),
+                }
+            )
+    if not matches:
         return ()
     offsets = _casefold_offsets(normalized_content)
     converted = tuple((offsets[start], offsets[end]) for start, end in matches)
     return converted[:1] if first_only else converted
+
+
+def _simple_ascii_plural_variant(
+    normalized_subject: str,
+    raw_subject: tuple[str, ...],
+) -> tuple[str, ...]:
+    if not normalized_subject.isalpha() or len(raw_subject) != 1:
+        return ()
+    token = raw_subject[0]
+    if token.endswith(("ss", "us", "is")):
+        return ()
+    if token.endswith("s"):
+        stem = token[:-1]
+        return (stem,) if len(stem) >= 4 else ()
+    return (f"{token}s",) if len(token) >= 4 else ()
 
 
 def _derive_explicit_specs(

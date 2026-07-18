@@ -722,6 +722,68 @@ def test_candidate_matching_uses_ascii_boundaries_cjk_and_supplied_content() -> 
     )
 
 
+def test_ascii_subject_matching_equates_simple_singular_and_plural_forms() -> None:
+    singular = make_candidate(
+        path="src/types/order.ts",
+        group="related_types",
+        content="export interface Order { id: number }",
+    )
+    plural = make_candidate(
+        path="src/types/model.ts",
+        group="related_types",
+        content="export const orders: unknown[] = []",
+    )
+    order_need = need("related_types", "order")
+    orders_need = need("related_types", "orders")
+    retained = ContextItem(
+        id="item-order",
+        file_path="src/types/order.ts",
+        group="related_types",
+        role="type_decl",
+        classification_basis="path",
+        source_kind="result",
+        retrieval_rank=0,
+        relevance_score=1.0,
+        reasons=("fixture",),
+        matched_need_ids=(),
+        excerpts=(
+            ContextExcerpt(
+                start_line=1,
+                end_line=1,
+                content="export interface Order { id: number }",
+                content_bytes=37,
+                truncated=False,
+            ),
+        ),
+    )
+
+    assert candidate_matches_need(singular, orders_need)
+    assert candidate_matches_need(plural, order_need)
+    assert context_needs.retained_item_matches_need(retained, orders_need)
+
+
+@pytest.mark.parametrize(
+    ("subject", "non_word"),
+    [
+        ("class", "clas"),
+        ("status", "statu"),
+        ("analysis", "analysi"),
+        ("cats", "cat"),
+        ("orders2", "orders"),
+    ],
+)
+def test_ascii_plural_equivalence_rejects_unsafe_or_short_stems(
+    subject: str,
+    non_word: str,
+) -> None:
+    candidate = make_candidate(content=non_word)
+
+    assert not candidate_matches_need(
+        candidate,
+        need("entrypoints", subject),
+    )
+
+
 def test_anchor_reason_provenance_remains_searchable_without_content_duplication() -> None:
     query_bundle = bundle(
         query="PostgreSQL configuration",

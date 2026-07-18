@@ -2112,6 +2112,8 @@ def _eligible_type_use(type_ref: JavaTypeRef) -> bool:
     )
     if not names:
         return False
+    if type_ref.resolution in {"same_package", "local_declaration"}:
+        return True
     return any(
         not name.startswith(_EXTERNAL_TYPE_PREFIXES)
         for name in names

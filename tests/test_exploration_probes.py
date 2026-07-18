@@ -722,6 +722,77 @@ def test_multi_required_goal_composite_precedes_single_goal_candidates() -> None
     assert probes.order_probe_candidates((*singles, composite), frozen)[0] == composite
 
 
+def test_ready_v5_grounded_required_seeds_supersede_generic_composite() -> None:
+    related_type = _goal(
+        "goal-type",
+        category="related_types",
+        roles=("type_decl",),
+    )
+    route = _goal(
+        "goal-route",
+        category="entrypoints",
+        roles=("router", "route_config"),
+    )
+    frozen = _frozen(related_type, route)
+    bundle = QueryBundle(
+        "orders page route type",
+        [],
+        [
+            _result("src/views/OrdersView.vue"),
+            _result("src/types/order.ts"),
+        ],
+        [],
+    )
+    graph_seed = probes._Seed(
+        "order",
+        "static_import",
+        1,
+        ("src/views/OrdersView.vue", "src/types/order.ts"),
+    )
+    route_seed = probes._Seed(
+        "OrdersView",
+        "path_stem",
+        1,
+        ("src/views/OrdersView.vue",),
+    )
+
+    assert probes._required_goal_composite_v5(
+        bundle,
+        frozen,
+        (graph_seed, route_seed),
+        ready_graph=True,
+    ) is None
+    assert probes._required_goal_composite_v5(
+        bundle,
+        frozen,
+        (graph_seed,),
+        ready_graph=True,
+    ) is not None
+    assert probes._required_goal_composite_v5(
+        bundle,
+        frozen,
+        (route_seed,),
+        ready_graph=True,
+    ) is not None
+    assert probes._required_goal_composite_v5(
+        bundle,
+        frozen,
+        (graph_seed, route_seed),
+        ready_graph=False,
+    ) is not None
+    assert probes._required_goal_composite_v5(
+        QueryBundle(
+            bundle.query,
+            [],
+            [_result("src/views/OrdersView.vue")],
+            [],
+        ),
+        frozen,
+        (graph_seed, route_seed),
+        ready_graph=True,
+    ) is not None
+
+
 def test_view_goal_prefers_a_parser_recognized_view_constant_basename(
     tmp_path: Path,
 ) -> None:

@@ -24,6 +24,13 @@ class Gate(str, Enum):
 _WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _GLOB_CHARS = set("*?[")
 _PLANNER_STATUSES = {"disabled", "ok", "fallback"}
+_P4_EXPLORATION_PROFILES = frozenset(
+    {"p4_exploration", "p4_real_exploration"}
+)
+_P5_GRAPH_PROFILES = frozenset(
+    {"p5_language_graphs", "p5_real_language_graphs"}
+)
+_EXPLORATION_PROFILES = _P4_EXPLORATION_PROFILES | _P5_GRAPH_PROFILES
 _VARIANT_RETRIEVAL_STATUSES = {
     "original_only",
     "hybrid",
@@ -434,7 +441,7 @@ def validate_profile_compatible(
         if config.query_planner.provider != "ollama":
             raise ValueError("planner profile requires the Ollama planner")
         return
-    if profile in {"p4_exploration", "p4_real_exploration"}:
+    if profile in _P4_EXPLORATION_PROFILES:
         if (
             config.embedding.provider != "hash"
             or config.embedding.model != "hash-v1"
@@ -458,6 +465,35 @@ def validate_profile_compatible(
         ):
             raise ValueError(
                 "p4_real_exploration profile requires final_top_k 12"
+            )
+        return
+    if profile in _P5_GRAPH_PROFILES:
+        if (
+            config.embedding.provider != "hash"
+            or config.embedding.model != "hash-v1"
+            or config.embedding.dimensions != 384
+        ):
+            raise ValueError(
+                f"{profile} profile requires hash-v1 embeddings at 384 dimensions"
+            )
+        if config.query_planner.enabled:
+            raise ValueError(f"{profile} profile requires the query planner disabled")
+        if (
+            config.embedding.api_key_env is not None
+            or config.embedding.base_url is not None
+        ):
+            raise ValueError(
+                f"{profile} profile does not allow remote embedding settings"
+            )
+        if config.retrieval.final_top_k != 12:
+            raise ValueError(f"{profile} profile requires final_top_k 12")
+        if (
+            config.context.max_items != 12
+            or config.context.max_pack_bytes != 65536
+        ):
+            raise ValueError(
+                f"{profile} profile requires context max_items 12 "
+                "and max_pack_bytes 65536"
             )
         return
     if profile in {"p1_vector_bge", "p1_hybrid_bge"}:
@@ -705,12 +741,14 @@ def _validate_fixture_profiles(
                     raise ValueError(f"unknown profile: {profile}")
             selected_profiles = case.profiles or repo.profiles
             if case.mode == "exploration" and any(
-                profile not in {"p4_exploration", "p4_real_exploration"}
+                profile not in _EXPLORATION_PROFILES
                 for profile in selected_profiles
             ):
-                raise ValueError("exploration mode requires a P4 exploration profile")
+                raise ValueError(
+                    "exploration mode requires an exact P4 or P5 exploration profile"
+                )
             if any(
-                profile in {"p4_exploration", "p4_real_exploration"}
+                profile in _P4_EXPLORATION_PROFILES
                 for profile in selected_profiles
             ) and case.mode != "exploration":
                 raise ValueError("P4 exploration profiles require exploration mode")

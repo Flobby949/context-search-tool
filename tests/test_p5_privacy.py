@@ -31,7 +31,12 @@ from context_search_tool.retrieval import (
     query_repository,
     trace_repository,
 )
-from context_search_tool.retrieval_core import candidates
+from context_search_tool.retrieval_core import (
+    candidates,
+    relation_policy,
+    selection,
+    types as core_types,
+)
 from context_search_tool.sqlite_store import SQLiteStore
 from context_search_tool.config import DEFAULT_CONFIG
 
@@ -150,6 +155,116 @@ def test_real_mapper_role_hint_is_ready_only_and_stays_private(
         ._context_role_hint
         is None
     )
+
+
+def test_ready_graph_role_hints_classify_protected_java_flow(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    copytree(
+        Path(__file__).parent / "fixtures" / "p5-language-graphs" / "java-spring",
+        repo,
+    )
+    index_repository(repo, DEFAULT_CONFIG)
+
+    bundle = query_repository(
+        repo,
+        "OrderController create order business flow",
+        DEFAULT_CONFIG,
+    )
+    results = {item.file_path.as_posix(): item for item in bundle.results}
+    expected_hints = {
+        "src/main/java/com/example/order/DefaultOrderService.java": (
+            "graph_service_impl",
+            "implementations",
+            "service_impl",
+        ),
+        "src/main/java/com/example/order/OrderService.java": (
+            "graph_service_interface",
+            "related_types",
+            "service_interface",
+        ),
+        "src/main/java/com/example/order/OrderMapper.java": (
+            "graph_repository",
+            "implementations",
+            "repository",
+        ),
+        "src/main/java/com/example/order/Order.java": (
+            "graph_data_type",
+            "related_types",
+            "data_type",
+        ),
+    }
+    candidates_by_path = {
+        item.file_path: item for item in normalize_candidates(bundle)
+    }
+
+    for path, (hint, group, role) in expected_hints.items():
+        result = results[path]
+        candidate = candidates_by_path[path]
+        assert result._context_role_hint == hint
+        assert result.score_parts["evidence_priority"] == 0.0
+        assert not set(result.score_parts).intersection(
+            relation_policy.GRAPH_SCORE_KEYS
+        )
+        assert "implementation chain match" not in result.reasons
+        assert (candidate.group, candidate.role) == (group, role)
+
+
+def test_graph_data_type_hint_is_consistent_across_file_chunks(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    source = repo / "src" / "main" / "java" / "demo"
+    source.mkdir(parents=True)
+    (source / "OwnerController.java").write_text(
+        """package demo;
+class OwnerController {
+  private Owner owner;
+  Owner load(Owner value) { return value; }
+}
+""",
+        encoding="utf-8",
+    )
+    filler = "\n".join(f"  // filler {index}" for index in range(150))
+    (source / "Owner.java").write_text(
+        f"""package demo;
+class Owner {{
+{filler}
+  // OWNER_DETAIL_SENTINEL
+  String detail() {{ return "owner"; }}
+}}
+""",
+        encoding="utf-8",
+    )
+    index_repository(repo, DEFAULT_CONFIG)
+
+    owner_path = Path("src/main/java/demo/Owner.java")
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    detail_chunk = next(
+        chunk
+        for chunk in store.chunks_for_file(owner_path, limit=10)
+        if chunk.start_line > 80
+        and "OWNER_DETAIL_SENTINEL" in chunk.content
+    )
+    item = core_types._ExpandedResult(
+        chunk_ids=[detail_chunk.chunk_id],
+        file_path=owner_path,
+        start_line=detail_chunk.start_line,
+        end_line=detail_chunk.end_line,
+        content=detail_chunk.content,
+        score=1.0,
+        score_parts={},
+        reasons=[],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=1.0,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+
+    with store.graph_read_session() as graph_session:
+        assert selection._context_role_hint(graph_session, item) == "graph_data_type"
 
 
 def _result_at(bundle: QueryBundle, path: Path) -> RetrievalResult:

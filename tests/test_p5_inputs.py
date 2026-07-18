@@ -7,6 +7,12 @@ from typing import Any
 import pytest
 
 from generate_p5_graph_manifest import generate
+from generate_p5_graph_expected import (
+    COMPATIBILITY_ALLOWLIST_NAME,
+    EXPECTED_DIRECTORY,
+    EXPECTED_FILE_NAMES,
+    validate_compatibility_allowlist,
+)
 from p5_graph_identity import (
     EXPECTED_CASE_NEGATIVES,
     EXPECTED_CASE_POSITIVES,
@@ -133,6 +139,9 @@ def test_p5_real_catalog_has_exact_pinned_proofs() -> None:
         "min_matches": 2,
     }
     for case in (petclinic, program_tool):
+        assert "initial_absent" not in case
+        assert "expected_termination_reason" not in case
+        assert "minimum_goal_gain" not in case
         assert case["maximum_retrieval_call_count"] == 3
         assert case["maximum_pack_bytes"] == 65536
 
@@ -174,3 +183,24 @@ def test_p5_manifest_excludes_post_implementation_outputs() -> None:
 def test_p5_manifest_generator_refuses_to_refresh_frozen_outputs() -> None:
     with pytest.raises(RuntimeError, match="refusing to overwrite"):
         generate()
+
+
+def test_p5_structural_outputs_are_canonical_and_not_frozen_inputs() -> None:
+    assert EXPECTED_DIRECTORY.is_dir()
+    assert not EXPECTED_DIRECTORY.is_symlink()
+    paths = list(EXPECTED_DIRECTORY.iterdir())
+    assert {path.name for path in paths} == set(EXPECTED_FILE_NAMES)
+    assert all(path.is_file() and not path.is_symlink() for path in paths)
+
+    frozen_paths = {item["path"] for item in load_input_manifest()["inputs"]}
+    for path in paths:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        assert path.read_bytes() == canonical_json_bytes(value)
+        assert path.relative_to(ROOT).as_posix() not in frozen_paths
+        _visit(value)
+    allowlist = json.loads(
+        (EXPECTED_DIRECTORY / COMPATIBILITY_ALLOWLIST_NAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    validate_compatibility_allowlist(allowlist)

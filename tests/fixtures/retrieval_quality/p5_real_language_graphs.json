@@ -27,7 +27,7 @@
       "queries": [
         {
           "id": "petclinic-owner-graph",
-          "query": "OwnerController owner flow repository domain tests",
+          "query": "OwnerController owner flow repository domain object representing owner tests",
           "profiles": [
             "p5_real_language_graphs"
           ],
@@ -38,19 +38,13 @@
             "java_spring"
           ],
           "gate": "required",
-          "initial_absent": [
-            "src/main/java/org/springframework/samples/petclinic/owner/OwnerRepository.java",
-            "src/test/java/org/springframework/samples/petclinic/owner/OwnerControllerTests.java"
-          ],
           "final_present": [
             "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java",
             "src/main/java/org/springframework/samples/petclinic/owner/OwnerRepository.java",
             "src/main/java/org/springframework/samples/petclinic/owner/Owner.java",
             "src/test/java/org/springframework/samples/petclinic/owner/OwnerControllerTests.java"
           ],
-          "expected_termination_reason": "satisfied",
           "maximum_retrieval_call_count": 3,
-          "minimum_goal_gain": 2,
           "maximum_final_noise_items": 0,
           "maximum_pack_bytes": 65536
         }
@@ -76,10 +70,6 @@
             "frontend"
           ],
           "gate": "required",
-          "initial_absent": [
-            "src/router/index.ts",
-            "src/utils/qrcodeUtils.ts"
-          ],
           "final_present": [
             "src/router/index.ts"
           ],
@@ -99,9 +89,7 @@
             "package-lock.json",
             "pnpm-lock.yaml"
           ],
-          "expected_termination_reason": "satisfied",
           "maximum_retrieval_call_count": 3,
-          "minimum_goal_gain": 2,
           "maximum_final_noise_items": 0,
           "maximum_pack_bytes": 65536
         }

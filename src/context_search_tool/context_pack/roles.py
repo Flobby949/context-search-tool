@@ -70,6 +70,13 @@ _ANCHOR_KIND_FALLBACKS = {
     "pom": ("configs_docs", "pom", "fallback"),
 }
 _MAX_REASONS = 4
+_CONTEXT_ROLE_HINTS = {
+    "mybatis_repository": ("implementations", "repository", "content"),
+    "graph_repository": ("implementations", "repository", "content"),
+    "graph_service_impl": ("implementations", "service_impl", "content"),
+    "graph_service_interface": ("related_types", "service_interface", "content"),
+    "graph_data_type": ("related_types", "data_type", "content"),
+}
 
 
 def normalize_candidates(bundle: QueryBundle) -> tuple[ContextCandidate, ...]:
@@ -107,12 +114,32 @@ def normalize_candidates(bundle: QueryBundle) -> tuple[ContextCandidate, ...]:
 def _result_candidate(raw_result: Any, result_index: int) -> ContextCandidate:
     path = raw_result.file_path
     key = path.as_posix()
-    if getattr(raw_result, "_context_role_hint", None) == "mybatis_repository":
+    score_parts = dict(raw_result.score_parts)
+    role_hint = _CONTEXT_ROLE_HINTS.get(
+        getattr(raw_result, "_context_role_hint", None)
+    )
+    if role_hint is not None:
+        group, role, basis = role_hint
+    elif score_parts.get("graph_implements_match", 0.0) > 0:
+        group, role, basis = "implementations", "service_impl", "content"
+    elif score_parts.get("graph_uses_type_match", 0.0) > 0:
+        group, role, basis = "related_types", "data_type", "content"
+    elif (
+        score_parts.get("graph_calls_match", 0.0) > 0
+        and path.suffix.casefold() == ".java"
+        and path.stem.endswith("Mapper")
+    ):
         group, role, basis = "implementations", "repository", "content"
+    elif (
+        score_parts.get("graph_calls_match", 0.0) > 0
+        and path.suffix.casefold() == ".java"
+        and path.stem.endswith("Service")
+        and "interface " in raw_result.content
+    ):
+        group, role, basis = "related_types", "service_interface", "content"
     else:
         group, role, basis = _classify_candidate(path, raw_result.content)
     reasons = _bounded_reasons(raw_result.reasons)
-    score_parts = dict(raw_result.score_parts)
     context_content = getattr(raw_result, "_context_content", None)
     if context_content is None:
         context_content = raw_result.content
@@ -210,10 +237,17 @@ def _merge_candidate(
         ),
     }
     if (
-        existing.source_kind == "result"
-        and incoming.source_kind == "evidence_anchor"
-        and existing.classification_basis == "fallback"
+        existing.classification_basis == "fallback"
         and incoming.classification_basis != "fallback"
+        and (
+            incoming.source_kind == "evidence_anchor"
+            or (
+                existing.source_kind == "result"
+                and incoming.source_kind == "result"
+                and incoming.end_line - incoming.start_line
+                > existing.end_line - existing.start_line
+            )
+        )
     ):
         changes.update(
             group=incoming.group,

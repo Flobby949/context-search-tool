@@ -299,6 +299,7 @@ def _select_candidates(
     selection_priorities: dict[str, tuple[object, ...]] = {}
     unmatched_required = {need.id for need in needs if need.required}
     unmatched_recommended = {need.id for need in needs if not need.required}
+    graph_assisted = any(_has_graph_match(candidate) for candidate in candidates)
 
     def coverage(candidate: ContextCandidate) -> tuple[str, ...]:
         return tuple(
@@ -351,7 +352,12 @@ def _select_candidates(
     reserve(unmatched_required)
     reserve(unmatched_recommended)
     for candidate in sorted(
-        (candidate for candidate in candidates if candidate.key not in selected_keys),
+        (
+            candidate
+            for candidate in candidates
+            if candidate.key not in selected_keys
+            and not _is_default_noise_filler(candidate, graph_assisted)
+        ),
         key=rank,
     ):
         if len(selected) == max_items:
@@ -386,6 +392,25 @@ def _select_candidates(
             excerpts=(),
         )
         for candidate in reading_order
+    )
+
+
+def _has_graph_match(candidate: ContextCandidate) -> bool:
+    return any(
+        key.startswith("graph_") and key.endswith("_match") and value > 0.0
+        for key, value in candidate.score_parts.items()
+    )
+
+
+def _is_default_noise_filler(
+    candidate: ContextCandidate,
+    graph_assisted: bool,
+) -> bool:
+    return (
+        graph_assisted
+        and candidate.source_kind == "result"
+        and candidate.role == "lockfile"
+        and candidate.score_parts.get("explicit_lockfile_query", 0.0) <= 0.0
     )
 
 

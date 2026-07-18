@@ -44,6 +44,7 @@ class _ResolvedState:
     min_confidence: float
     key: _ResolvedPathKey
     seed_key: str
+    root_chunk_id: str
 
 
 @dataclass(frozen=True)
@@ -539,6 +540,7 @@ def _resolved_relation_candidates(
                 min_confidence=1.0,
                 key=key,
                 seed_key=seed_key,
+                root_chunk_id=signal.chunk_id,
             )
         ):
             return []
@@ -608,13 +610,9 @@ def _resolved_relation_candidates(
         for step in steps:
             next_state = step.state
             chunk_id = next_state.signal.chunk_id
-            existing_seed = seeds_by_chunk.get(
-                chunk_id,
-                _RelationSeed(0.0, False, False),
-            )
             should_add = (
                 chunk_id not in protected_chunk_ids
-                and next_state.score > existing_seed.score
+                and chunk_id != next_state.root_chunk_id
             )
             existing = expanded.get(chunk_id)
             if should_add and (existing is None or next_state.key < existing[0]):
@@ -654,6 +652,7 @@ def _resolved_relation_candidates(
                         min_confidence=next_state.min_confidence,
                         key=next_state.key,
                         seed_key=next_state.seed_key,
+                        root_chunk_id=next_state.root_chunk_id,
                     )
                 ):
                     stop_after_item = True
@@ -1032,6 +1031,7 @@ def _resolved_edge(
                 min_confidence=min_confidence,
                 key=key,
                 seed_key=state.seed_key,
+                root_chunk_id=state.root_chunk_id,
             ),
             graph_score_key=graph_score_key,
         ),

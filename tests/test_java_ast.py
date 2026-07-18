@@ -5,12 +5,19 @@ from pathlib import Path
 
 import pytest
 
+from context_search_tool.config import DEFAULT_CONFIG
 from context_search_tool.java_ast import extract_java_facts
-from context_search_tool.graph_contract import generate_core_module_signal_id
+from context_search_tool.graph_contract import (
+    generate_core_module_signal_id,
+    generate_v5_relation_id,
+)
 from context_search_tool.graph_plugins import PluginContext
+from context_search_tool.indexer import index_repository
 from context_search_tool.java_graph import JavaGraphProducer
 from context_search_tool.java_plugin import JavaPlugin
 from context_search_tool.models import CodeSignal, DocumentChunk
+from context_search_tool.retrieval_core import candidates
+from context_search_tool.sqlite_store import SQLiteStore
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -433,6 +440,94 @@ class Example<T> {
     ]
 
 
+def test_framework_prefixed_same_package_types_stay_local_graph_targets(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    owner_package = (
+        repo
+        / "src/main/java/org/springframework/samples/petclinic/owner"
+    )
+    owner_package.mkdir(parents=True)
+    (owner_package / "Owner.java").write_text(
+        """package org.springframework.samples.petclinic.owner;
+final class Owner {}
+""",
+        encoding="utf-8",
+    )
+    (owner_package / "OwnerRepository.java").write_text(
+        """package org.springframework.samples.petclinic.owner;
+final class OwnerRepository {
+    Owner save(Owner owner) { return owner; }
+}
+""",
+        encoding="utf-8",
+    )
+    (owner_package / "OwnerController.java").write_text(
+        """package org.springframework.samples.petclinic.owner;
+import org.springframework.web.bind.annotation.RestController;
+@RestController
+final class OwnerController {
+    private final OwnerRepository repository = new OwnerRepository();
+    Owner load(Owner owner) { return repository.save(owner); }
+}
+""",
+        encoding="utf-8",
+    )
+
+    index_repository(repo, DEFAULT_CONFIG)
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    controller_path = Path(
+        "src/main/java/org/springframework/samples/petclinic/owner/"
+        "OwnerController.java"
+    )
+    with store.graph_read_session() as session:
+        load = next(
+            signal
+            for signal in session.signal_search(["load"], limit=100)
+            if signal.qualified_name
+            == "org.springframework.samples.petclinic.owner.OwnerController.load"
+        )
+        module = session.module_for_path(controller_path)
+        assert module is not None
+        relations = session.outgoing_relations(load.signal_id)
+
+    local_targets = {
+        (relation.kind, relation.target_qualified_name): relation
+        for relation in relations
+    }
+    assert local_targets[
+        (
+            "calls",
+            "org.springframework.samples.petclinic.owner.OwnerRepository.save",
+        )
+    ].resolution == "resolved_exact"
+    for target in (
+        "org.springframework.samples.petclinic.owner.Owner",
+        "org.springframework.samples.petclinic.owner.OwnerRepository",
+    ):
+        relation = local_targets[("uses_type", target)]
+        assert relation.resolution == "resolved_unique"
+        assert relation.target_signal_id
+
+    external_relation_id = generate_v5_relation_id(
+        source_signal_id=module.signal_id,
+        kind="imports_type",
+        target_kind="type",
+        target_qualified_name=(
+            "org.springframework.web.bind.annotation.RestController"
+        ),
+        target_signature="",
+        target_arity=None,
+        target_project_unit_key=module.project_unit_key,
+        producer="java_ast",
+    )
+    external = store.graph_relation_for_id(external_relation_id)
+    assert external is not None
+    assert external.resolution == "external"
+    assert external.target_signal_id == ""
+
+
 def test_explicit_this_field_reference_emits_one_local_type_use() -> None:
     source = b'''package demo;
 import product.Order;
@@ -646,10 +741,22 @@ class OrderController implements OrderApi {
     assert parsed.metadata["graph_parse_status"] == "ast"
     assert all(signal.signal_id.startswith("s5:") for signal in graph.signals)
     assert all(signal.producer == "java_ast" for signal in graph.signals)
-    assert all(signal.recallable for signal in graph.signals)
     by_kind = {kind: [item for item in graph.signals if item.kind == kind] for kind in {
         "type", "field", "method", "endpoint"
     }}
+    assert {
+        item.qualified_name for item in by_kind["type"] if item.recallable
+    } == {"demo.OrderController"}
+    assert all(
+        not item.recallable
+        for item in by_kind["type"]
+        if item.qualified_name in {"demo.OrderApi", "demo.Repository"}
+    )
+    assert all(
+        item.recallable
+        for kind in ("field", "method", "endpoint")
+        for item in by_kind[kind]
+    )
     assert {item.qualified_name for item in by_kind["type"]} >= {
         "demo.OrderApi",
         "demo.Repository",
@@ -663,7 +770,7 @@ class OrderController implements OrderApi {
     assert load.signature == "(product.Dto)"
     [endpoint] = by_kind["endpoint"]
     assert endpoint.name == "GET /api/orders"
-    assert endpoint.metadata["method_qualified_name"] == "demo.OrderController.load"
+    assert endpoint.metadata["method_qualified_name"] == "OrderController.load"
 
     assert all(relation.relation_id.startswith("r5:") for relation in graph.relations)
     assert {relation.kind for relation in graph.relations} >= {
@@ -688,6 +795,100 @@ class OrderController implements OrderApi {
     assert all(item.source_signal_id == module.signal_id for item in imports)
     assert {item.target_qualified_name for item in imports} >= {"product.Dto"}
     assert all(item.resolution == "unresolved" for item in graph.relations)
+
+
+def test_java_graph_recall_payload_excludes_package_qualified_identity() -> None:
+    path = Path("src/test/java/com/example/order/UnrelatedWorkerTests.java")
+    source = b'''package com.example.order;
+final class UnrelatedWorkerTests {
+    private int isolated;
+}
+'''
+    context = PluginContext(path, "java", "", {}, (path,))
+    chunk = _graph_chunk(path, source)
+    producer = JavaGraphProducer()
+    parsed = producer.parse(context, source)
+    graph = producer.materialize(
+        context,
+        parsed,
+        (chunk,),
+        _module_signal(path, chunk, "java"),
+    )
+
+    type_signal = next(item for item in graph.signals if item.kind == "type")
+    field_signal = next(item for item in graph.signals if item.kind == "field")
+    query_tokens = ["order", "controller", "tests"]
+    scores = [
+        candidates._signal_score(
+            item.name,
+            item.tokens,
+            item.metadata,
+            query_tokens,
+        )
+        for item in graph.signals
+    ]
+
+    assert type_signal.qualified_name == "com.example.order.UnrelatedWorkerTests"
+    assert field_signal.qualified_name == (
+        "com.example.order.UnrelatedWorkerTests.isolated"
+    )
+    assert type_signal.tokens == ["unrelated", "worker", "tests"]
+    assert type_signal.recallable is False
+    assert field_signal.metadata["owner_type"] == "UnrelatedWorkerTests"
+    assert field_signal.recallable is False
+    assert all("com.example.order" not in str(item.metadata) for item in graph.signals)
+    assert max(scores) == pytest.approx(1 / 3)
+
+
+def test_java_graph_recall_payload_keeps_simple_type_method_and_field_terms() -> None:
+    path = Path("src/main/java/com/example/order/PaymentWorker.java")
+    source = b'''package com.example.order;
+interface Worker {}
+final class PaymentWorker implements Worker {
+    private OrderController controller;
+    void runPayment() {}
+}
+'''
+    context = PluginContext(path, "java", "", {}, (path,))
+    chunk = _graph_chunk(path, source)
+    producer = JavaGraphProducer()
+    parsed = producer.parse(context, source)
+    graph = producer.materialize(
+        context,
+        parsed,
+        (chunk,),
+        _module_signal(path, chunk, "java"),
+    )
+    by_kind = {item.kind: item for item in graph.signals}
+
+    assert candidates._signal_score(
+        by_kind["type"].name,
+        by_kind["type"].tokens,
+        by_kind["type"].metadata,
+        ["payment", "worker"],
+    ) == 1.0
+    assert candidates._signal_score(
+        by_kind["method"].name,
+        by_kind["method"].tokens,
+        by_kind["method"].metadata,
+        ["run", "payment"],
+    ) == 1.0
+    assert candidates._signal_score(
+        by_kind["field"].name,
+        by_kind["field"].tokens,
+        by_kind["field"].metadata,
+        ["order", "controller"],
+    ) == 1.0
+    assert by_kind["type"].qualified_name == "com.example.order.PaymentWorker"
+    assert by_kind["type"].recallable is True
+    assert by_kind["method"].qualified_name == (
+        "com.example.order.PaymentWorker.runPayment"
+    )
+    assert by_kind["method"].signature == "()"
+    assert by_kind["field"].qualified_name == (
+        "com.example.order.PaymentWorker.controller"
+    )
+    assert by_kind["field"].recallable is True
 
 
 def test_java_graph_fallback_is_marker_only_and_never_calls_legacy() -> None:

@@ -82,8 +82,17 @@ _WINDOWS_RESERVED_NAMES = {
 
 _WINDOWS_INVALID_COMPONENT_CHARS = frozenset('<>:"/\\|?*')
 
+_P5_GRAPH_PROFILES = frozenset(
+    {"p5_language_graphs", "p5_real_language_graphs"}
+)
 _SNAPSHOT_ONLY_PROFILES = frozenset(
-    {"ci", "p1_vector_bge", "p1_hybrid_bge", "p2_context_pack"}
+    {
+        "ci",
+        "p1_vector_bge",
+        "p1_hybrid_bge",
+        "p2_context_pack",
+        *_P5_GRAPH_PROFILES,
+    }
 )
 
 _DESCRIPTOR_COPY_SUPPORTED = (
@@ -289,6 +298,9 @@ def run_quality_fixture(
                         case,
                         bundle.results,
                         latency_ms=latency_ms,
+                        top_result_limit=(
+                            12 if profile in _P5_GRAPH_PROFILES else 10
+                        ),
                         anchor_paths=[
                             anchor.file_path.as_posix()
                             for anchor in bundle.evidence_anchors
@@ -389,6 +401,7 @@ def _evaluate_explored_case(
         case,
         explored.initial_bundle.results,
         latency_ms=initial_probe.duration_ms,
+        top_result_limit=12 if profile in _P5_GRAPH_PROFILES else 10,
         anchor_paths=[
             anchor.file_path.as_posix()
             for anchor in explored.initial_bundle.evidence_anchors

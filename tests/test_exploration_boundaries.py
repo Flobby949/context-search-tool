@@ -72,6 +72,8 @@ P5_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/retrieval_core/selection.py",
     "src/context_search_tool/retrieval_core/tracing.py",
     "src/context_search_tool/exploration/probes.py",
+    "src/context_search_tool/context_pack/builder.py",
+    "src/context_search_tool/context_pack/needs.py",
     "src/context_search_tool/context_pack/roles.py",
     "src/context_search_tool/cli.py",
     "src/context_search_tool/mcp_tools.py",

@@ -160,15 +160,18 @@ def rank_chunks(
     frontend_enabled = frontend_candidate_scope_enabled(
         chunk.file_path for chunk in candidate_chunks.values()
     )
-    spring_path_parts = (
-        {}
-        if graph_session is not None and graph_session.capability.structured
-        else _spring_path_score_parts(
+    if graph_session is not None and graph_session.capability.structured:
+        spring_path_parts = _structured_spring_path_endpoint_score_parts(
+            graph_session,
+            candidate_chunks,
+            query_route,
+        )
+    else:
+        spring_path_parts = _spring_path_score_parts(
             graph_session if graph_session is not None else store,
             candidate_chunks,
             query_route,
         )
-    )
     java_context_tokens = _java_context_query_tokens(tokens, query_route)
 
     def signals_for_ranked_chunk(chunk_id: str) -> list[CodeSignal]:
@@ -215,6 +218,21 @@ def rank_chunks(
             score_parts,
             _generic_noise_score_parts(chunk, query, tokens),
         )
+        if score_parts.get("graph_mapped_by_match", 0.0) > 0:
+            config_penalty = min(score_parts.pop("config_penalty", 0.0), 0.0)
+            if config_penalty:
+                remaining_penalty = min(
+                    score_parts.get("penalty", 0.0) - config_penalty,
+                    0.0,
+                )
+                if remaining_penalty:
+                    score_parts["penalty"] = remaining_penalty
+                else:
+                    score_parts.pop("penalty", None)
+            score_parts["file_role_source_boost"] = max(
+                score_parts.get("file_role_source_boost", 0.0),
+                0.03,
+            )
         path_role = classify_path_role(chunk.file_path, chunk.content)
         score_parts = evidence_merge.merge_score_parts(
             score_parts,
@@ -522,7 +540,7 @@ def _chunk_role(chunk: DocumentChunk) -> _ChunkRole:
         return _ChunkRole("service_interface", 4, 0.06)
     if "/service/" in path:
         return _ChunkRole("service", 2, 0.0)
-    if "/mapper/" in path or "mapper" in names:
+    if "/mapper/" in path or "/mappers/" in path or "mapper" in names:
         return _ChunkRole("mapper", 4, 0.03)
     if any(token in haystack for token in ("handler", "listener", "callback", "connector", "webhook")):
         return _ChunkRole("handler", 5, 0.0, 0.10)
@@ -1849,6 +1867,31 @@ def _spring_path_score_parts(
         frontier = next_frontier
 
     return parts_by_chunk
+
+
+def _structured_spring_path_endpoint_score_parts(
+    session: sqlite_store.GraphReadSession,
+    candidate_chunks: dict[str, DocumentChunk],
+    query_route: str,
+) -> dict[str, dict[str, float]]:
+    if not query_route or not candidate_chunks:
+        return {}
+
+    try:
+        signals_by_chunk = session.signals_for_chunks(list(candidate_chunks))
+    except sqlite3.Error:
+        return {}
+
+    return {
+        chunk_id: {"spring_path_endpoint_match": _SPRING_PATH_ENDPOINT_BOOST}
+        for chunk_id, signals in signals_by_chunk.items()
+        if any(
+            signal.kind == "endpoint"
+            and isinstance(signal.metadata.get("path"), str)
+            and _normalize_route(str(signal.metadata["path"])) == query_route
+            for signal in signals
+        )
+    }
 
 
 def _spring_path_candidate_implementors_by_interface(

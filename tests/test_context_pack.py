@@ -392,6 +392,31 @@ def test_v2_normalize_deduplicates_paths_and_promotes_only_fallback_result_role(
     assert service.reasons == ("service result", "service anchor")
 
 
+def test_v2_normalize_promotes_later_duplicate_result_classification() -> None:
+    first = _v2_result(
+        "src/main/java/com/example/Owner.java",
+        content="return this.telephone;",
+    )
+    richer_duplicate = _v2_result(
+        "src/main/java/com/example/Owner.java",
+        content="@Entity\npublic class Owner {}",
+    )
+    richer_duplicate.start_line = 1
+    richer_duplicate.end_line = 200
+
+    [candidate] = context_pack_v2_roles.normalize_candidates(
+        _v2_bundle([first, richer_duplicate])
+    )
+
+    assert (
+        candidate.group,
+        candidate.role,
+        candidate.classification_basis,
+    ) == ("related_types", "data_type", "content")
+    assert candidate.content == "return this.telephone;"
+    assert candidate.retrieval_rank == 0
+
+
 def test_v2_duplicate_results_preserve_first_result_classification() -> None:
     candidates = context_pack_v2_roles.normalize_candidates(
         _v2_bundle(

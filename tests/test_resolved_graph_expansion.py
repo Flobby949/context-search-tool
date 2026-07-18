@@ -545,6 +545,60 @@ def test_graph_merge_does_not_mutate_a_protected_direct_candidate(
     assert merged[target_chunk.chunk_id] == protected
 
 
+def test_weaker_direct_overlap_can_receive_lower_scoring_graph_proof(
+    tmp_path: Path,
+) -> None:
+    store = _new_store(tmp_path)
+    source_chunk, _source_module, source = _add_node_file(
+        store,
+        path="src/Source.java",
+        chunk_id="source",
+        signal_id="source-signal",
+    )
+    target_chunk, _target_module, target = _add_node_file(
+        store,
+        path="src/Target.java",
+        chunk_id="target",
+        signal_id="target-signal",
+        content="needle target body",
+    )
+    store.replace_graph_facts(
+        source_chunk.file_path,
+        [_module("module-source", source.chunk_id, source_chunk.file_path.as_posix()), source],
+        [_relation("edge", source, target, "calls")],
+    )
+    _ready(store)
+    weak_direct = RetrievalCandidate(
+        chunk_id=target_chunk.chunk_id,
+        score=0.9,
+        source="direct_text",
+        score_parts={"direct_text": 0.2},
+    )
+    seeds = [_seed(source_chunk.chunk_id), weak_direct]
+    protected_ids = ranking.protected_direct_chunk_ids(
+        store,
+        seeds,
+        ["needle", "other", "query", "terms"],
+    )
+
+    with store.graph_read_session() as session:
+        graph = expansion.relation_candidates(
+            store,
+            seeds,
+            DEFAULT_CONFIG,
+            graph_session=session,
+            test_intent=False,
+            protected_chunk_ids=protected_ids,
+        )
+
+    graph_target = next(
+        item for item in graph if item.chunk_id == target_chunk.chunk_id
+    )
+    assert target_chunk.chunk_id not in protected_ids
+    assert graph_target.score < weak_direct.score
+    assert graph_target.score_parts["graph_calls_match"] > 0
+
+
 def test_private_v5_query_keeps_a_protected_direct_result_graph_free(
     tmp_path: Path,
 ) -> None:

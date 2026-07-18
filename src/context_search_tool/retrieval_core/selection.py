@@ -8,6 +8,7 @@ from typing import Literal, overload
 
 from context_search_tool import sqlite_store
 from context_search_tool.graph_contract import effective_relation_confidence
+from context_search_tool.path_roles import classify_path_role
 from context_search_tool.models import (
     CodeSignal,
     DocumentChunk,
@@ -210,16 +211,80 @@ def assemble_query_output(
             semantic_matches=item.semantic_matches,
             spans=item.spans,
             _context_content=item._context_content,
-            _context_role_hint=(
-                "mybatis_repository"
-                if graph_session is not None
-                and graph_session.has_accepted_mybatis_statement(item.file_path)
-                else None
-            ),
+            _context_role_hint=_context_role_hint(graph_session, item),
         )
         for index, item in enumerate(visible_results)
     ]
     return summary, results, _followup_keywords(results)
+
+
+def _context_role_hint(
+    graph_session: sqlite_store.GraphReadSession | None,
+    item: core_types._ExpandedResult,
+) -> str | None:
+    if graph_session is None:
+        return None
+    if graph_session.has_accepted_mybatis_statement(item.file_path):
+        return "mybatis_repository"
+    if (
+        graph_session.capability.status != "ready"
+        or not graph_session.capability.structured
+        or item.file_path.suffix.casefold() != ".java"
+    ):
+        return None
+    if classify_path_role(item.file_path, item.content).basis != "fallback":
+        return None
+
+    outgoing_kinds: set[str] = set()
+    incoming_kinds: set[str] = set()
+    try:
+        for chunk_id in item.chunk_ids:
+            for signal in graph_session.signals_for_chunk(chunk_id):
+                outgoing_kinds.update(
+                    relation.kind
+                    for relation in graph_session.outgoing_relations(
+                        signal.signal_id,
+                        limit=relation_policy.MAX_EDGES_PER_SIGNAL_DIRECTION,
+                    )
+                )
+                incoming_kinds.update(
+                    relation.kind
+                    for relation in graph_session.incoming_relations(
+                        signal.signal_id,
+                        limit=relation_policy.MAX_EDGES_PER_SIGNAL_DIRECTION,
+                    )
+                )
+    except sqlite3.Error:
+        return None
+
+    stem = item.file_path.stem
+    if stem.endswith("Mapper") and (
+        outgoing_kinds or incoming_kinds
+    ):
+        return "graph_repository"
+    if stem.endswith("Service") and outgoing_kinds.intersection(
+        {"implements", "implements_method"}
+    ):
+        return "graph_service_impl"
+    if stem.endswith("Service") and incoming_kinds.intersection(
+        {"implements", "implements_method"}
+    ):
+        return "graph_service_interface"
+    if incoming_kinds.intersection({"calls", "uses_type"}):
+        return "graph_data_type"
+    try:
+        for signal in graph_session.type_signals_for_file(item.file_path):
+            if any(
+                relation.kind == "uses_type"
+                for relation in graph_session.incoming_relations(
+                    signal.signal_id,
+                    limit=relation_policy.MAX_EDGES_PER_SIGNAL_DIRECTION,
+                )
+            ):
+                return "graph_data_type"
+    except sqlite3.Error:
+        return None
+    return None
 
 
 def _result_reasons(reasons: list[str]) -> list[str]:

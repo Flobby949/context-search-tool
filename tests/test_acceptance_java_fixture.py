@@ -52,7 +52,7 @@ def test_java_fixture_indexes_spring_endpoint_signals(tmp_path: Path) -> None:
     assert "GET /apply/audit/stats/wait" in signals
     assert "POST /apply/audit/stats" in signals
     assert signals["GET /apply/audit/stats/wait"].metadata["controller"] == (
-        "com.example.audit.ApplyAuditController"
+        "ApplyAuditController"
     )
     assert signals["POST /apply/audit/stats"].metadata["method"] == "auditStats"
 
@@ -64,6 +64,10 @@ def test_java_fixture_indexes_short_chain_relations(tmp_path: Path) -> None:
 
     index_repository(repo, DEFAULT_CONFIG)
     store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    interface_chunks = store.chunks_for_file(
+        Path("src/main/java/com/example/audit/ApplyAuditController.java"),
+        limit=100,
+    )
     with store.graph_read_session() as session:
         signals = {
             signal.qualified_name: signal
@@ -75,8 +79,19 @@ def test_java_fixture_indexes_short_chain_relations(tmp_path: Path) -> None:
         controller_relations = session.incoming_relations(
             signals["com.example.audit.ResourceAuditService.statsWait"].signal_id
         )
+        signals_by_chunk = session.signals_for_chunks(
+            [chunk.chunk_id for chunk in interface_chunks]
+        )
+        interface = next(
+            signal
+            for chunk_signals in signals_by_chunk.values()
+            for signal in chunk_signals
+            if signal.qualified_name == "com.example.audit.ResourceAuditService"
+        )
+        assert interface.qualified_name == "com.example.audit.ResourceAuditService"
+        assert interface.recallable is False
         implements_relations = session.incoming_relations(
-            signals["com.example.audit.ResourceAuditService"].signal_id
+            interface.signal_id
         )
         executable_relations = session.incoming_relations(
             signals["com.example.audit.EsApplyAuditPageQryExe.statsWait"].signal_id

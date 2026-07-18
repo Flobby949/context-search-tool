@@ -54,6 +54,9 @@ from context_search_tool.quality.runner import (
     run_quality_fixture,
 )
 from context_search_tool.retrieval import QueryBundle, evidence_anchor_top_k
+from context_search_tool.exploration.models import MAX_RETRIEVAL_CALLS
+from context_search_tool.exploration.options import resolve_explore_pack_options
+from types import SimpleNamespace
 
 
 def _write_fixture(tmp_path: Path, data: dict) -> Path:
@@ -224,6 +227,192 @@ def _runtime_bundle(
         planner=QueryPlan("query", status=planner_status),
         variant_retrieval_status=variant_retrieval_status,
     )
+
+
+def test_p5_exploration_runner_delegates_one_owned_baseline_with_fixed_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    explored = object()
+    expected = _passing_evaluation()
+    assert MAX_RETRIEVAL_CALLS == 3
+
+    def fake_resolve(config: ToolConfig, *, context_lines: int | None):
+        calls.append("resolve")
+        options = resolve_explore_pack_options(
+            config,
+            context_lines=context_lines,
+        )
+        assert options.max_items == 12
+        assert options.max_pack_bytes == 65536
+        return options
+
+    def fake_explore(
+        repo: Path,
+        query: str,
+        config: ToolConfig,
+        pack_options: ContextPackOptions,
+    ) -> object:
+        calls.append("explore")
+        assert repo == tmp_path
+        assert query == "orders route"
+        assert config is DEFAULT_CONFIG
+        assert pack_options.max_items == 12
+        assert pack_options.max_pack_bytes == 65536
+        return explored
+
+    fake_module = SimpleNamespace(
+        resolve_explore_pack_options=fake_resolve,
+        explore_repository=fake_explore,
+    )
+    monkeypatch.setattr(
+        quality_runner.importlib,
+        "import_module",
+        lambda name: fake_module,
+    )
+    monkeypatch.setattr(
+        quality_runner,
+        "_evaluate_explored_case",
+        lambda case, profile, actual: expected,
+    )
+
+    def unexpected_direct_query(*args, **kwargs):
+        calls.append("direct-query")
+        raise AssertionError("quality runner issued a second baseline query")
+
+    monkeypatch.setattr(quality_runner, "query_repository", unexpected_direct_query)
+
+    actual = quality_runner._run_exploration_case(
+        tmp_path,
+        QualityCase(
+            case_id="p5-explore",
+            query="orders route",
+            mode="exploration",
+        ),
+        "p5_language_graphs",
+        DEFAULT_CONFIG,
+    )
+
+    assert actual == (explored, expected)
+    assert calls == ["resolve", "explore"]
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected_count"),
+    [
+        ("p5_language_graphs", 12),
+        ("p5_real_language_graphs", 12),
+        ("p5_language_graphs_extra", 10),
+    ],
+)
+def test_only_exact_p5_profiles_retain_twelve_raw_selected_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    profile: str,
+    expected_count: int,
+) -> None:
+    source = _write_source_repo(tmp_path / "fixture-source")
+    profile_config = (
+        {
+            "retrieval": {"final_top_k": 12},
+            "embedding": {
+                "provider": "hash",
+                "model": "hash-v1",
+                "dimensions": 384,
+            },
+            "query_planner": {"enabled": False},
+        }
+        if profile in {"p5_language_graphs", "p5_real_language_graphs"}
+        else {}
+    )
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {profile: profile_config},
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "snapshot_path": str(source),
+                    "profiles": [profile],
+                    "queries": [
+                        {
+                            "id": "raw-results",
+                            "query": "graph evidence",
+                            "profiles": [profile],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    captured: list[tuple[Path, ToolConfig]] = []
+    _patch_runner_dependencies(monkeypatch, captured)
+    results = [_runtime_result(f"src/Result{index}.java") for index in range(13)]
+    for index, result in enumerate(results):
+        result.score_parts[f"graph_part_{index}"] = float(index)
+    monkeypatch.setattr(
+        quality_runner,
+        "query_repository",
+        lambda repo, query, config: QueryBundle(query, [], results, []),
+    )
+
+    report = run_quality_fixture(fixture, profile, None, None)
+
+    top_results = report["cases"][0]["top_results"]
+    assert len(top_results) == expected_count
+    last_index = expected_count - 1
+    assert top_results[-1]["score_parts"] == {
+        f"graph_part_{last_index}": float(last_index)
+    }
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected_count"),
+    [("p5_language_graphs", 12), ("p4_exploration", 10)],
+)
+def test_p5_exploration_retains_all_twelve_initial_raw_results(
+    monkeypatch: pytest.MonkeyPatch,
+    profile: str,
+    expected_count: int,
+) -> None:
+    results = [_runtime_result(f"src/Result{index}.java") for index in range(13)]
+    for index, result in enumerate(results):
+        result.score_parts[f"graph_part_{index}"] = float(index)
+    explored = SimpleNamespace(
+        initial_bundle=QueryBundle("graph evidence", [], results, []),
+        final_pack=object(),
+        trace=SimpleNamespace(
+            rounds=[SimpleNamespace(probes=[SimpleNamespace(duration_ms=1)])]
+        ),
+    )
+    monkeypatch.setattr(
+        quality_runner,
+        "evaluate_context_pack",
+        lambda case, pack, evaluation: evaluation,
+    )
+    monkeypatch.setattr(
+        quality_runner,
+        "evaluate_exploration",
+        lambda case, actual, evaluation: evaluation,
+    )
+
+    evaluation = quality_runner._evaluate_explored_case(
+        QualityCase(
+            case_id="explore",
+            query="graph evidence",
+            mode="exploration",
+        ),
+        profile,
+        explored,
+    )
+
+    assert len(evaluation.top_results) == expected_count
+    last_index = expected_count - 1
+    assert evaluation.top_results[-1]["score_parts"] == {
+        f"graph_part_{last_index}": float(last_index)
+    }
 
 
 def test_profile_expectations_fail_case_when_hybrid_did_not_execute() -> None:
@@ -1914,7 +2103,13 @@ def test_non_ci_source_prefers_existing_env_then_smoke_root_then_snapshot(
 
 @pytest.mark.parametrize(
     "profile",
-    ["p1_vector_bge", "p1_hybrid_bge", "p2_context_pack"],
+    [
+        "p1_vector_bge",
+        "p1_hybrid_bge",
+        "p2_context_pack",
+        "p5_language_graphs",
+        "p5_real_language_graphs",
+    ],
 )
 def test_snapshot_only_source_uses_committed_snapshot_despite_external_sources(
     tmp_path: Path,
@@ -1988,7 +2183,14 @@ def test_non_snapshot_profiles_keep_path_env_precedence_with_committed_snapshot(
 
 @pytest.mark.parametrize(
     "profile",
-    ["ci", "p1_vector_bge", "p1_hybrid_bge", "p2_context_pack"],
+    [
+        "ci",
+        "p1_vector_bge",
+        "p1_hybrid_bge",
+        "p2_context_pack",
+        "p5_language_graphs",
+        "p5_real_language_graphs",
+    ],
 )
 def test_snapshot_only_profile_requires_snapshot_path_with_profile_name(
     tmp_path: Path,
@@ -2006,7 +2208,14 @@ def test_snapshot_only_profile_requires_snapshot_path_with_profile_name(
 
 @pytest.mark.parametrize(
     "profile",
-    ["ci", "p1_vector_bge", "p1_hybrid_bge", "p2_context_pack"],
+    [
+        "ci",
+        "p1_vector_bge",
+        "p1_hybrid_bge",
+        "p2_context_pack",
+        "p5_language_graphs",
+        "p5_real_language_graphs",
+    ],
 )
 def test_snapshot_only_profile_reports_missing_snapshot_with_profile_name(
     tmp_path: Path,

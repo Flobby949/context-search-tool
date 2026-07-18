@@ -165,6 +165,8 @@ P5_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/retrieval_core/tracing.py",
     "src/context_search_tool/exploration/probes.py",
     "src/context_search_tool/exploration/runner.py",
+    "src/context_search_tool/context_pack/builder.py",
+    "src/context_search_tool/context_pack/needs.py",
     "src/context_search_tool/context_pack/roles.py",
     "src/context_search_tool/cli.py",
     "src/context_search_tool/mcp_tools.py",
@@ -253,6 +255,8 @@ def _is_p4_public_facade_reference(reference: dict[str, object]) -> bool:
         or path == "tests/test_p5_privacy.py"
         or path == "tests/test_graph_lifecycle.py"
         or path == "tests/generate_p4_exploration_manifest.py"
+        or path == "tests/test_p5_protected_direct.py"
+        or path == "tests/test_quality_p5.py"
     )
 
 
@@ -858,13 +862,11 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
             "diff",
             "--exit-code",
             P4_IMPLEMENTATION_BASELINE,
-            "--",
-            "src/context_search_tool/context_pack/__init__.py",
-            "src/context_search_tool/context_pack/builder.py",
-            "src/context_search_tool/context_pack/excerpts.py",
-            "src/context_search_tool/context_pack/models.py",
-            "src/context_search_tool/context_pack/needs.py",
-            "src/context_search_tool/context_pack/serialization.py",
+                "--",
+                "src/context_search_tool/context_pack/__init__.py",
+                "src/context_search_tool/context_pack/excerpts.py",
+                "src/context_search_tool/context_pack/models.py",
+                "src/context_search_tool/context_pack/serialization.py",
             "src/context_search_tool/retrieval_trace/models.py",
             "src/context_search_tool/retrieval_trace/serialization.py",
             "src/context_search_tool/retrieval_trace/collector.py",

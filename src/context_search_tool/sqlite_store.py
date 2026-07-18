@@ -2148,6 +2148,35 @@ class GraphReadSession:
         ).fetchall()
         return [_signal_from_row(row) for row in rows]
 
+    def type_signals_for_file(
+        self,
+        file_path: Path,
+        *,
+        limit: int = MAX_SIGNALS_PER_FILE + 1,
+    ) -> list[CodeSignal]:
+        if (
+            self.graph_fault is not None
+            or self.capability.status != "ready"
+            or not self.capability.structured
+        ):
+            return []
+        rows = self._require_connection().execute(
+            """
+            SELECT *
+            FROM code_signals
+            WHERE file_path = ?
+              AND kind = 'type'
+              AND deleted_at IS NULL
+            ORDER BY start_line, start_column, end_line, end_column, signal_id
+            LIMIT ?
+            """,
+            (
+                _path_key(file_path),
+                min(max(limit, 0), MAX_SIGNALS_PER_FILE + 1),
+            ),
+        ).fetchall()
+        return [_signal_from_row(row) for row in rows]
+
     def signals_for_chunks_with_modules(
         self,
         chunk_ids: list[str],

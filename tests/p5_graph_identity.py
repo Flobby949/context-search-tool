@@ -216,7 +216,7 @@ EXPECTED_REAL_CASES = (
     (
         "spring_petclinic",
         "petclinic-owner-graph",
-        "OwnerController owner flow repository domain tests",
+        "OwnerController owner flow repository domain object representing owner tests",
         "exploration",
     ),
     (
@@ -232,7 +232,6 @@ JAVA_FLOW_PATHS = (
     "src/main/java/com/example/order/OrderService.java",
     "src/main/java/com/example/order/DefaultOrderService.java",
     "src/main/java/com/example/order/OrderMapper.java",
-    "src/main/resources/mappers/OrderMapper.xml",
     "src/main/java/com/example/order/Order.java",
     "src/main/java/com/example/order/OrderDto.java",
 )

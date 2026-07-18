@@ -41,7 +41,6 @@
             {"path": "src/main/java/com/example/order/OrderService.java", "top_k": 12},
             {"path": "src/main/java/com/example/order/DefaultOrderService.java", "top_k": 12},
             {"path": "src/main/java/com/example/order/OrderMapper.java", "top_k": 12},
-            {"path": "src/main/resources/mappers/OrderMapper.xml", "top_k": 12},
             {"path": "src/main/java/com/example/order/Order.java", "top_k": 12},
             {"path": "src/main/java/com/example/order/OrderDto.java", "top_k": 12}
           ]
@@ -64,7 +63,6 @@
             {"path": "src/main/java/com/example/order/OrderService.java", "top_k": 12},
             {"path": "src/main/java/com/example/order/DefaultOrderService.java", "top_k": 12},
             {"path": "src/main/java/com/example/order/OrderMapper.java", "top_k": 12},
-            {"path": "src/main/resources/mappers/OrderMapper.xml", "top_k": 12},
             {"path": "src/main/java/com/example/order/Order.java", "top_k": 12},
             {"path": "src/main/java/com/example/order/OrderDto.java", "top_k": 12}
           ],
@@ -74,8 +72,7 @@
             ],
             "implementations": [
               {"path": "src/main/java/com/example/order/DefaultOrderService.java"},
-              {"path": "src/main/java/com/example/order/OrderMapper.java"},
-              {"path": "src/main/resources/mappers/OrderMapper.xml"}
+              {"path": "src/main/java/com/example/order/OrderMapper.java"}
             ],
             "related_types": [
               {"path": "src/main/java/com/example/order/OrderService.java"},

@@ -7,6 +7,7 @@ import pytest
 import context_search_tool.quality as quality
 import context_search_tool.quality.cases as quality_cases
 from context_search_tool.config import (
+    ContextConfig,
     DEFAULT_CONFIG,
     EmbeddingConfig,
     QueryPlannerConfig,
@@ -1756,6 +1757,169 @@ def test_unknown_canonical_profile_is_not_treated_as_p2_context_pack() -> None:
         ToolConfig(embedding=_VALID_BGE_EMBEDDING),
         canonical=True,
     )
+
+
+@pytest.mark.parametrize(
+    "profile",
+    ["p5_language_graphs", "p5_real_language_graphs"],
+)
+def test_p5_graph_profiles_accept_exact_offline_budgets(profile: str) -> None:
+    validate_profile_compatible(profile, DEFAULT_CONFIG, canonical=True)
+
+
+@pytest.mark.parametrize(
+    ("bad_config", "message"),
+    [
+        (
+            replace(DEFAULT_CONFIG, embedding=EmbeddingConfig(provider="bge")),
+            "requires hash-v1 embeddings at 384 dimensions",
+        ),
+        (
+            replace(DEFAULT_CONFIG, embedding=EmbeddingConfig(model="other")),
+            "requires hash-v1 embeddings at 384 dimensions",
+        ),
+        (
+            replace(DEFAULT_CONFIG, embedding=EmbeddingConfig(dimensions=768)),
+            "requires hash-v1 embeddings at 384 dimensions",
+        ),
+        (
+            replace(
+                DEFAULT_CONFIG,
+                query_planner=QueryPlannerConfig(enabled=True),
+            ),
+            "requires the query planner disabled",
+        ),
+        (
+            replace(
+                DEFAULT_CONFIG,
+                embedding=EmbeddingConfig(base_url="https://example.test/v1"),
+            ),
+            "does not allow remote embedding settings",
+        ),
+        (
+            replace(
+                DEFAULT_CONFIG,
+                embedding=EmbeddingConfig(api_key_env="EMBEDDING_API_KEY"),
+            ),
+            "does not allow remote embedding settings",
+        ),
+        (
+            replace(
+                DEFAULT_CONFIG,
+                retrieval=replace(DEFAULT_CONFIG.retrieval, final_top_k=11),
+            ),
+            "requires final_top_k 12",
+        ),
+        (
+            replace(DEFAULT_CONFIG, context=ContextConfig(max_items=11)),
+            "requires context max_items 12 and max_pack_bytes 65536",
+        ),
+        (
+            replace(DEFAULT_CONFIG, context=ContextConfig(max_pack_bytes=65535)),
+            "requires context max_items 12 and max_pack_bytes 65536",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "profile",
+    ["p5_language_graphs", "p5_real_language_graphs"],
+)
+def test_p5_graph_profiles_reject_non_exact_config(
+    profile: str,
+    bad_config: ToolConfig,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_profile_compatible(profile, bad_config, canonical=True)
+
+
+@pytest.mark.parametrize(
+    ("profile", "mode"),
+    [
+        ("p5_language_graphs", "results"),
+        ("p5_language_graphs", "context_pack"),
+        ("p5_language_graphs", "exploration"),
+        ("p5_real_language_graphs", "results"),
+        ("p5_real_language_graphs", "context_pack"),
+        ("p5_real_language_graphs", "exploration"),
+    ],
+)
+def test_exact_p5_graph_profiles_allow_all_quality_modes(
+    tmp_path: Path,
+    profile: str,
+    mode: str,
+) -> None:
+    data = _minimal_fixture(
+        repo_overrides={"profiles": [profile]},
+        case_overrides={"profiles": [profile], "mode": mode},
+    )
+    data["profile_configs"] = {
+        profile: {
+            "retrieval": {"final_top_k": 12},
+            "embedding": {
+                "provider": "hash",
+                "model": "hash-v1",
+                "dimensions": 384,
+            },
+            "query_planner": {"enabled": False},
+        }
+    }
+
+    fixture = load_quality_fixture(_write_fixture(tmp_path, data))
+
+    assert fixture.repos[0].queries[0].mode == mode
+
+
+def test_p4_profile_remains_exploration_only(tmp_path: Path) -> None:
+    profile = "p4_exploration"
+    data = _minimal_fixture(
+        repo_overrides={
+            "snapshot_path": "snapshot",
+            "profiles": [profile],
+        },
+        case_overrides={"profiles": [profile], "mode": "exploration"},
+    )
+    data["profile_configs"] = {
+        profile: {
+            "embedding": {
+                "provider": "hash",
+                "model": "hash-v1",
+                "dimensions": 384,
+            },
+            "query_planner": {"enabled": False},
+        }
+    }
+
+    fixture = load_quality_fixture(_write_fixture(tmp_path, data))
+
+    assert fixture.repos[0].queries[0].mode == "exploration"
+
+    for mode in ("results", "context_pack"):
+        data["repos"][0]["queries"][0]["mode"] = mode
+        with pytest.raises(ValueError, match="P4 exploration profiles require"):
+            load_quality_fixture(_write_fixture(tmp_path, data))
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        "p5_language_graphs_extra",
+        "p5_real_language_graphs_extra",
+        "p5_*",
+    ],
+)
+def test_p5_exploration_permission_uses_exact_names_only(
+    tmp_path: Path,
+    profile: str,
+) -> None:
+    data = _minimal_fixture(
+        repo_overrides={"profiles": [profile]},
+        case_overrides={"profiles": [profile], "mode": "exploration"},
+    )
+    data["profile_configs"] = {profile: {}}
+
+    with pytest.raises(ValueError, match="exploration mode requires"):
+        load_quality_fixture(_write_fixture(tmp_path, data))
 
 
 def test_remote_quality_repo_fields_parse_together_and_normalize_commit(

@@ -1646,6 +1646,52 @@ def test_omission_count_and_preview_order_cover_all_normalized_candidates() -> N
     assert "content" not in payload["omissions"][0]
 
 
+def test_default_context_filler_omits_lockfile_unless_query_is_explicit() -> None:
+    lockfile = replace(
+        _result("package-lock.json", '{"lockfileVersion": 3}'),
+        score_parts={
+            "evidence_priority": 0.0,
+            "lockfile_penalty": -0.2,
+            "frontend_lockfile_penalty": -0.8,
+        },
+    )
+    source = replace(
+        _result("src/qrcode.ts", "QRCode implementation"),
+        score_parts={
+            "evidence_priority": 1.0,
+            "graph_imports_match": 0.3,
+        },
+    )
+
+    default_pack = builder.build_context_pack(
+        _bundle("QRCode implementation", [source, lockfile]),
+        _options(),
+    )
+    explicit_pack = builder.build_context_pack(
+        _bundle(
+            "package lock dependencies",
+            [
+                replace(
+                    lockfile,
+                    score_parts={
+                        "evidence_priority": 0.0,
+                        "explicit_lockfile_query": 1.0,
+                    },
+                )
+            ],
+        ),
+        _options(),
+    )
+
+    assert [item.file_path for item in default_pack.items] == ["src/qrcode.ts"]
+    assert [item.file_path for item in default_pack.omissions] == [
+        "package-lock.json"
+    ]
+    assert [item.file_path for item in explicit_pack.items] == [
+        "package-lock.json"
+    ]
+
+
 def test_budget_exhausted_is_false_only_when_all_candidates_fit_intact() -> None:
     intact = builder.build_context_pack(
         _bundle("opaque", [_result("src/plain.py", "source")]),
