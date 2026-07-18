@@ -1,12 +1,12 @@
 # P5 Language And Framework Graphs v1 Design
 
 Date: 2026-07-17
-Status: Design approved by agent review; implementation not started
+Status: Implemented and accepted on 2026-07-18
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
 Roadmap: `roadmap/2026-07-08-fast-context-like-retrieval-roadmap.md`
 Predecessor: `docs/superpowers/specs/2026-07-16-p4-controlled-multi-round-exploration-design.md`
 Baseline: `319dfedc777b7479e9b542c1e65ddd15814100b1`
-Implementation plan: `docs/superpowers/plans/2026-07-17-p5-language-framework-graphs.md` (approved by agent review; implementation not authorized)
+Implementation plan: `docs/superpowers/plans/2026-07-17-p5-language-framework-graphs.md` (complete)
 
 ## Summary
 
@@ -1602,7 +1602,7 @@ cross-language path rewrites, fixed-profile quality configuration, MyBatis
 position-preserving statement ranges, and explain membership. All reported
 non-blocking wording minors—column coordinates, explicit regressions, and
 missing-schema/fallback rendering—were incorporated. No blocker or major
-remains; implementation is still unauthorized and unstarted.
+remained at the review point; the user subsequently authorized implementation.
 
 The subsequent implementation-plan review also re-reviewed the synchronized
 design clarifications for rollback-journal read snapshots, two-phase immutable
@@ -1617,14 +1617,47 @@ while the frozen baseline uses Python 3.13/SQLite 3.51; it reported 2,178 passed
 9 skipped, and 3 environment-characterization failures unrelated to this
 Markdown-only change. This note does not alter the recorded baseline.
 
-## Stop Point
+## Completion Record
 
-This document stops at the reviewed P5 design boundary. It specifies graph
-identity/lifecycle, Java/Spring/MyBatis, frontend routes/imports, test
-association, retrieval/P4 integration, explain, safety, privacy, and acceptance.
+The user authorized implementation after review. P5 was delivered through the
+focused lineage `1cdb171`, `eef1c22`, `abdfe45`, `ab630a7`, `ecae77f`,
+`418241e`, `ca38856`, `3a62f12`, `de7c433`, `2e7a8a7`, `d931fab`, and
+`9cad09e`. The final documentation commit is intentionally not self-recorded in
+this file.
 
-The implementation plan has now been written and independently approved. The
-design and plan do not authorize production implementation: a subsequent user
-instruction is required before Task 0, dependency changes, fixture creation, or
-production edits begin. Phase 5 remains unimplemented, Phase 6 remains out of
-scope, and Phase 1 remains independently pending at 6/7.
+Acceptance on 2026-07-18 established:
+
+- parser pins exactly matched the five versions in this design, and all eight
+  Linux/macOS x Python 3.11-3.14 jobs passed in GitHub Actions run
+  `29592106267`;
+- structural projections were deterministic in forward/reverse indexing and
+  the compatibility allowlist was `[]`;
+- deterministic P5 passed 12/12; pinned PetClinic plus `program_tool` passed
+  2/2 twice within 3 calls, 12 items, and 65,536 bytes;
+- P4, P2, and raw CI passed 4/4, 5/5, and 8/8; protected-direct objects,
+  no-legal-edge behavior, protected input hashes, and trace contracts stayed
+  exact;
+- the unrestricted suite passed 2,621 tests with the established 9 optional
+  skips and 0 xfails; the local Ollama BGE integration was included;
+- privacy/security, parser no-fetch, XML fail-closed, scanner escape, graph
+  lifecycle/recovery, and feedback disclosure gates passed.
+
+The Task-12 draft's whole-report P2/CI byte comparison was corrected during
+execution because those reports include graph-derived ranks and score parts
+that P5 is expressly designed to change. Keeping that comparison would
+contradict the reviewed legal-delta rule in Task 11. No protected baseline was
+refreshed; compatibility is enforced by immutable input identities,
+protected-direct/no-edge projections, closed graph proofs, and the required
+profile gates.
+
+Index parsing and resolution remain local and perform no runtime fetch. Remote
+embedding disclosure remains honest: a configured provider receives source
+chunks, including a possible full resend during v5 migration, and query/explore
+text may contain graph-derived names or paths; graph objects are not a separate
+remote payload. Stale graph state disables graph evidence while preserving
+other recall. V4-to-v5 requires full reindex and carries no P6 latency promise.
+
+Exact hashes, real-case budgets, skip identities, and the non-gating
+fast-context tenant-privacy rejection are recorded in
+`docs/retrieval-quality.md`. Phase 5 is complete, Phase 1 remains independently
+pending at 6/7, and Phase 6 is next.

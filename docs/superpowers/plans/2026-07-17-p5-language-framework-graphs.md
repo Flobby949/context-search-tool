@@ -1,11 +1,11 @@
 # P5 Language And Framework Graphs Implementation Plan
 
 Date: 2026-07-17
-Status: Plan approved by agent review; implementation not started
+Status: Implemented and accepted on 2026-07-18
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
 Design: `docs/superpowers/specs/2026-07-17-p5-language-framework-graphs-design.md`
 Protected P0-P4 implementation baseline: `319dfedc777b7479e9b542c1e65ddd15814100b1`
-Authorization: this document and its review only; Task 0 requires a later explicit implementation instruction
+Authorization: explicit user implementation authorization was received before Task 0
 
 > **For agentic workers:** Execute one task at a time and keep every task green.
 > Start production behavior changes with a failing or protective test, run the
@@ -68,8 +68,8 @@ Protected input identities at plan time are:
 
 Execution constraints:
 
-1. This plan authorizes neither Task 0 nor production implementation. A later
-   explicit user instruction is required.
+1. At review time this plan authorized neither Task 0 nor production changes;
+   the user subsequently supplied the required explicit implementation instruction.
 2. Task 0 must run from the protected source lineage and reproduce the baseline
    with the one recorded command prefix `conda run -n base`, whose interpreter
    must be Python 3.13 and SQLite 3.51 before implementation begins. The current
@@ -206,6 +206,35 @@ P5 implementation is complete only when:
   6/7;
 - README, quality documentation, design/plan evidence, and roadmap are updated
   only after acceptance.
+
+## Execution Record
+
+The implementation lineage after the protected baseline is `1cdb171`,
+`eef1c22`, `abdfe45`, `ab630a7`, `ecae77f`, `418241e`, `ca38856`, `3a62f12`,
+`de7c433`, `2e7a8a7`, `d931fab`, and `9cad09e`. The final documentation commit
+is not self-recorded here.
+
+The local acceptance runtime was Python 3.13.12, SQLite 3.51.2, macOS arm64.
+All exact dependency pins matched this plan. GitHub Actions run
+`https://github.com/Flobby949/context-search-tool/actions/runs/29592106267`
+passed all eight Ubuntu/macOS x Python 3.11-3.14 parser ABI jobs.
+
+Final evidence: P5 12/12, real P5 2/2 twice, P4 4/4, P2 5/5, raw CI 8/8,
+protected-direct/no-edge checks exact, compatibility allowlist `[]`, and full
+suite 2,621 passed with the established 9 optional skips and 0 xfails. The two
+real projections were byte-identical at SHA-256
+`13d1b24040eee0a99641176eb48a97c136f7b5154ea741042f6d766e13e00578`.
+PetClinic used 2 calls/12 items/37,965 bytes; `program_tool` used 1 call/11
+items/23,307 bytes. Structural and protected hashes are recorded in
+`docs/retrieval-quality.md`.
+
+One draft command was corrected during execution: whole-report P2/CI byte
+identity against P4 cannot coexist with P5's required graph-derived additions,
+rank changes, and score parts. Task 11 already permits reviewed legal graph
+deltas outside immutable direct objects. The final gate therefore keeps P2/CI
+case acceptance, protected input hashes, protected-direct objects, no-edge
+projection, trace schemas, and graph-proof checks exact; it does not refresh a
+P0-P4 baseline or claim whole-report byte identity.
 
 ## File Responsibility Map
 
@@ -467,7 +496,7 @@ earlier `git diff --check` alone, covers newly created files.
 
 **Files:** none
 
-- [ ] **Step 1: Start only after explicit implementation authorization**
+- [x] **Step 1: Start only after explicit implementation authorization**
 
   Record the user instruction and create a branch from the reviewed docs/source
   lineage:
@@ -481,7 +510,7 @@ earlier `git diff --check` alone, covers newly created files.
   Expected before switching: only the reviewed P5 design/plan/roadmap document
   lineage differs from baseline source. Preserve unrelated user changes.
 
-- [ ] **Step 2: Prove production source lineage**
+- [x] **Step 2: Prove production source lineage**
 
   ```bash
   git diff --exit-code \
@@ -492,13 +521,13 @@ earlier `git diff --check` alone, covers newly created files.
   Expected: no unreviewed implementation/test/dependency drift. Documentation
   commits after the baseline are allowed.
 
-- [ ] **Step 3: Prove protected input identities**
+- [x] **Step 3: Prove protected input identities**
 
   Re-run `git hash-object` and SHA-256 for the four files in the protected table,
   and run `git diff --exit-code` from the baseline across all existing P0-P4
   fixture/catalog/projection directories. Every value must match exactly.
 
-- [ ] **Step 4: Prove the baseline runtime**
+- [x] **Step 4: Prove the baseline runtime**
 
   ```bash
   PYTHONPATH="$PWD/src" conda run --no-capture-output -n base python -c \
@@ -509,7 +538,7 @@ earlier `git diff --check` alone, covers newly created files.
   Python 3.13/SQLite 3.51 family. Any assertion failure blocks implementation;
   do not redefine the baseline from Python 3.14 characterization output.
 
-- [ ] **Step 5: Capture machine-readable baseline evidence**
+- [x] **Step 5: Capture machine-readable baseline evidence**
 
   ```bash
   mkdir -p .quality/p5-artifacts
@@ -528,7 +557,7 @@ earlier `git diff --check` alone, covers newly created files.
   Required: 2,181 passed, exact 9 known skips, 0 xfails, 0 errors. Parse the
   JUnit file rather than trusting only terminal text.
 
-- [ ] **Step 6: Reproduce protected quality evidence**
+- [x] **Step 6: Reproduce protected quality evidence**
 
   ```bash
   PYTHONPATH="$PWD/src:$PWD/tests" conda run --no-capture-output -n base \
@@ -600,14 +629,14 @@ commit and changes no tracked file.
 - Create: `tests/generate_p5_graph_manifest.py`
 - Create: `tests/test_p5_inputs.py`
 
-- [ ] **Step 1: Write the raw input validator first**
+- [x] **Step 1: Write the raw input validator first**
 
   The test must fail until all five repository keys, exactly 12 deterministic
   case IDs, exactly two real case IDs, exact queries/modes/configs, declared
   positive/negative paths, pinned PetClinic commit, and protected identities
   exist. It parses raw JSON itself; production quality code is unchanged.
 
-- [ ] **Step 2: Build only the reviewed fixture inventory**
+- [x] **Step 2: Build only the reviewed fixture inventory**
 
   Create the exact five snapshots and files named in the design. Add focused
   negatives for same-arity overloads, nested duplicate units, custom Spring/
@@ -619,7 +648,7 @@ commit and changes no tracked file.
   Do not add repeated query prose that lets lexical retrieval satisfy a graph
   case accidentally.
 
-- [ ] **Step 3: Assay baseline v4 behavior before freezing**
+- [x] **Step 3: Assay baseline v4 behavior before freezing**
 
   Index each synthetic repository with the baseline implementation into a
   disposable directory and capture a non-committed raw assay. Required before
@@ -637,14 +666,14 @@ commit and changes no tracked file.
   If an assay fails, edit the new fixture now and repeat. No production tuning
   is allowed in this task.
 
-- [ ] **Step 4: Freeze the no-edge and protected comparison anchors**
+- [x] **Step 4: Freeze the no-edge and protected comparison anchors**
 
   Commit the canonical pre-P5 no-edge projection. Record baseline direct winner
   and direct score parts for every protected endpoint/path/symbol case in the
   input manifest's evidence section without copying timing, absolute paths, or
   vector floats.
 
-- [ ] **Step 5: Generate the immutable input manifest once**
+- [x] **Step 5: Generate the immutable input manifest once**
 
   The generator hashes all new source fixtures, both P5 catalogs, the pre-P5
   no-edge projection, this exact inventory, and the protected P0-P4 identities.
@@ -657,7 +686,7 @@ commit and changes no tracked file.
   - refuse overwrite;
   - produce canonical JSON with fixed keys and `allow_nan=False`.
 
-- [ ] **Step 6: Prove identity and compatibility tests are green**
+- [x] **Step 6: Prove identity and compatibility tests are green**
 
   ```bash
   PYTHONPATH="$PWD/src:$PWD/tests" conda run -n base python -m pytest -q \
@@ -667,7 +696,7 @@ commit and changes no tracked file.
   git diff --check
   ```
 
-- [ ] **Step 7: Commit only the frozen inputs**
+- [x] **Step 7: Commit only the frozen inputs**
 
   ```bash
   git add \
@@ -706,14 +735,14 @@ post-implementation output locations excluded from the input manifest.
 > needed for incremental P5 work. Dependency pins, remote ABI isolation, P5
 > behavior, and protected baselines remain unchanged.
 
-- [ ] **Step 1: Add failing ABI/import tests**
+- [x] **Step 1: Add failing ABI/import tests**
 
   Assert the five exact installed versions, language capsule construction, valid
   Java/JavaScript/JSX/TypeScript/TSX root nodes, bounded malformed-tree behavior,
   UTF-8 byte offsets, parser reuse isolation, and no import-time socket/
   subprocess/dynamic-build call.
 
-- [ ] **Step 2: Pin the exact five dependencies**
+- [x] **Step 2: Pin the exact five dependencies**
 
   Add only the versions in the dependency section. Do not loosen existing
   unrelated dependencies or add a lockfile/tooling migration. Then create one
@@ -736,7 +765,7 @@ post-implementation output locations excluded from the input manifest.
   `P5_RUNTIME`; Task 0/1 alone use pristine `conda base` for pre-dependency
   baseline/input work. Do not install P5 packages into the global base env.
 
-- [ ] **Step 3: Implement the narrow parser runtime wrapper**
+- [x] **Step 3: Implement the narrow parser runtime wrapper**
 
   Construct languages from the packaged grammar capsules using the pinned
   Tree-sitter API. Expose only explicit Java, JavaScript, JSX, TypeScript, and
@@ -744,7 +773,7 @@ post-implementation output locations excluded from the input manifest.
   concurrent calls cannot leak included ranges. No repository path, network,
   grammar compilation, or policy belongs here.
 
-- [ ] **Step 4: Add the eight-job ABI workflow**
+- [x] **Step 4: Add the eight-job ABI workflow**
 
   The workflow runs only on changes to dependency/parser/P5 workflow files and
   manual dispatch. Use official checkout/setup-python actions, the exact OS/
@@ -753,7 +782,7 @@ post-implementation output locations excluded from the input manifest.
   repositories or the full suite and never depends on a runner's ambient
   pytest installation.
 
-- [ ] **Step 5: Run local smoke and full compatibility**
+- [x] **Step 5: Run local smoke and full compatibility**
 
   ```bash
   export P5_RUNTIME="$PWD/.quality/p5-runtime/bin/python"
@@ -777,7 +806,7 @@ post-implementation output locations excluded from the input manifest.
   and reject every other dirty or changed production path. They do not alter a
   protected fixture, baseline, schema, or behavioral projection.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
   ```bash
   git add \
@@ -799,7 +828,7 @@ post-implementation output locations excluded from the input manifest.
 - Create: `tests/test_graph_models.py`
 - Modify: `tests/test_retrieval_core_boundaries.py`
 
-- [ ] **Step 1: Write failing default/identity tests**
+- [x] **Step 1: Write failing default/identity tests**
 
   Cover every additive `CodeSignal` and `CodeRelation` default, root unit `""`,
   zero-based byte columns, recallability, all six resolution states, separated
@@ -819,7 +848,7 @@ post-implementation output locations excluded from the input manifest.
   - generated inputs that collide under the old eight-hex helper do not collide
     under v5.
 
-- [ ] **Step 2: Implement one acyclic value owner**
+- [x] **Step 2: Implement one acyclic value owner**
 
   `graph_contract.py` owns only immutable constants, normalization, canonical
   JSON, ID helpers, confidence calculation, relation direction/weight/priority,
@@ -830,21 +859,21 @@ post-implementation output locations excluded from the input manifest.
   fields. Reject non-finite/out-of-range confidence and invalid resolution/
   target-ID combinations at construction or persistence boundaries.
 
-- [ ] **Step 3: Add the shared module identity helper**
+- [x] **Step 3: Add the shared module identity helper**
 
   The helper accepts normalized repository-relative POSIX path, first chunk/range
   fields, and produces the one canonical `core_module` v5 identity. Later core,
   frontend, XML, explain, traversal, and association code must call it; boundary
   tests forbid those modules from reconstructing module IDs.
 
-- [ ] **Step 4: Extend models additively**
+- [x] **Step 4: Extend models additively**
 
   Append the exact defaulted fields from the design without reordering existing
   constructor parameters. Existing equality/serialization tests for legacy
   instances must remain unchanged. Occurrence location/count stays in relation
   metadata exactly as designed; do not add another top-level model field.
 
-- [ ] **Step 5: Verify pure and protected behavior**
+- [x] **Step 5: Verify pure and protected behavior**
 
   ```bash
   PYTHONPATH="$PWD/src" "$P5_RUNTIME" -m pytest -q \
@@ -858,7 +887,7 @@ post-implementation output locations excluded from the input manifest.
   At this task boundary the production schema/indexer/default producer remains
   v4. New values are internal and directly tested only.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
   ```bash
   git add \
@@ -877,7 +906,7 @@ post-implementation output locations excluded from the input manifest.
 - Create: `tests/test_java_ast.py`
 - Modify: `tests/test_retrieval_core_boundaries.py`
 
-- [ ] **Step 1: Write whole-file parser/fallback tests first**
+- [x] **Step 1: Write whole-file parser/fallback tests first**
 
   Valid fixtures must return one immutable fact set. Any compilation-unit
   `ERROR` or missing node—including package/import regions—must return one
@@ -885,7 +914,7 @@ post-implementation output locations excluded from the input manifest.
   strings, text blocks, annotation prose, and malformed suffixes cannot become
   declarations or edges.
 
-- [ ] **Step 2: Freeze the internal fact vocabulary**
+- [x] **Step 2: Freeze the internal fact vocabulary**
 
   Use narrow frozen dataclasses for package/imports, nested types, fields,
   methods/constructors, annotations, parameters/locals, call sites, type uses,
@@ -896,7 +925,7 @@ post-implementation output locations excluded from the input manifest.
   shared byte-to-line map performs conversion; do not index Python character
   offsets as byte columns.
 
-- [ ] **Step 3: Implement qualified declaration normalization**
+- [x] **Step 3: Implement qualified declaration normalization**
 
   Cover package plus nested `$` type names, constructor `<init>`, erased ordered
   parameter FQCN signature, generic erasure, varargs-to-array normalization,
@@ -904,7 +933,7 @@ post-implementation output locations excluded from the input manifest.
   candidate sets. Unproven type variables/external names remain unresolved facts
   rather than guessed FQCNs.
 
-- [ ] **Step 4: Implement lexical binding and closed call evidence**
+- [x] **Step 4: Implement lexical binding and closed call evidence**
 
   Resolve receiver ownership only from `this`, exact typed parameters/locals/
   fields, and explicit exact constructors/casts. Respect nested scopes,
@@ -913,7 +942,7 @@ post-implementation output locations excluded from the input manifest.
   owner/name/arity only. Never implement widening, boxing, subtype, chained-
   return, generic, lambda, method-reference, or varargs applicability.
 
-- [ ] **Step 5: Implement closed type/framework facts and caps**
+- [x] **Step 5: Implement closed type/framework facts and caps**
 
   Emit candidate facts for implements/interface method pairs, calls, return/
   parameter/field/local/new uses, and explicit non-wildcard imports. Framework
@@ -932,7 +961,7 @@ post-implementation output locations excluded from the input manifest.
   unable to allocate unbounded fact lists before the later per-file 4,096/8,192
   caps.
 
-- [ ] **Step 6: Prove protected Java parity**
+- [x] **Step 6: Prove protected Java parity**
 
   Compare the AST facts with current `JavaPlugin` outputs for the protected
   endpoint, route, symbol, method, type, token, comment-adjacent token, and
@@ -945,7 +974,7 @@ post-implementation output locations excluded from the input manifest.
 
   Do not compare unordered sets where source order is contractual.
 
-- [ ] **Step 7: Verify without registering the parser**
+- [x] **Step 7: Verify without registering the parser**
 
   ```bash
   PYTHONPATH="$PWD/src" "$P5_RUNTIME" -m pytest -q \
@@ -960,7 +989,7 @@ post-implementation output locations excluded from the input manifest.
   Boundary tests prove `default_plugins()` still instantiates only the existing
   legacy Java producer and no ordinary import loads `java_ast`.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
   ```bash
   git add \
@@ -980,7 +1009,7 @@ post-implementation output locations excluded from the input manifest.
 - Create: `tests/test_mybatis_xml.py`
 - Modify: `tests/test_retrieval_core_boundaries.py`
 
-- [ ] **Step 1: Write Vue included-range lexer tests first**
+- [x] **Step 1: Write Vue included-range lexer tests first**
 
   Test top-level `<script>` and `<script setup>`, quoted `>`, attributes,
   comments, multiple valid blocks, default JS, `lang="ts"`, original byte/line
@@ -988,7 +1017,7 @@ post-implementation output locations excluded from the input manifest.
   templates/comments. The bounded lexer returns ranges only; it reads no other
   file.
 
-- [ ] **Step 2: Write JS/TS/TSX import and route tests first**
+- [x] **Step 2: Write JS/TS/TSX import and route tests first**
 
   Cover default/named/namespace/side-effect imports, both re-export forms, direct
   literal dynamic imports, extension and directory-index candidate sets,
@@ -1003,7 +1032,7 @@ post-implementation output locations excluded from the input manifest.
   for shadowing, wrappers, spreads, mutation, computed paths, custom APIs, and
   `.`/`..`.
 
-- [ ] **Step 3: Implement pure frontend facts**
+- [x] **Step 3: Implement pure frontend facts**
 
   Parser output contains module selectors, route source ranges/composed paths,
   component selectors, and producer diagnostics; it does not choose among
@@ -1011,7 +1040,7 @@ post-implementation output locations excluded from the input manifest.
   the file emits no persistent frontend edge facts. The current regex fallback
   remains completely separate for later stale/legacy P4 on-demand use.
 
-- [ ] **Step 4: Write the MyBatis security/range tests first**
+- [x] **Step 4: Write the MyBatis security/range tests first**
 
   Positive: no DOCTYPE, both official HTTP/HTTPS Mapper 3.0 headers, the five
   predefined entities, and legal decimal/hex numeric character references.
@@ -1026,7 +1055,7 @@ post-implementation output locations excluded from the input manifest.
   late statement and the missing-start-line-chunk failure belong to Task 7,
   after materialization exists.
 
-- [ ] **Step 5: Implement the closed XML protocol**
+- [x] **Step 5: Implement the closed XML protocol**
 
   Scan bounded original bytes, validate at most the official DOCTYPE, replace
   only that declaration with equal-length ASCII whitespace while preserving
@@ -1038,7 +1067,7 @@ post-implementation output locations excluded from the input manifest.
   one-for-one. Any mismatch fails the whole graph fact set closed while leaving
   generic indexing possible.
 
-- [ ] **Step 6: Verify pure facts and no activation**
+- [x] **Step 6: Verify pure facts and no activation**
 
   ```bash
   PYTHONPATH="$PWD/src" "$P5_RUNTIME" -m pytest -q \
@@ -1053,7 +1082,7 @@ post-implementation output locations excluded from the input manifest.
   `default_plugins()` and the production indexer still do not import/register
   either module. No test reaches the network.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
   ```bash
   git add \
@@ -1084,7 +1113,7 @@ post-implementation output locations excluded from the input manifest.
 - Modify: `tests/test_tokenizer_scanner.py`
 - Modify: `tests/test_retrieval_core_boundaries.py`
 
-- [ ] **Step 1: Write v4/v5/future schema tests first**
+- [x] **Step 1: Write v4/v5/future schema tests first**
 
   Build literal v4 databases independent of current constructors. Prove column
   introspection supplies all defaults and never indexes a missing SQLite row
@@ -1096,7 +1125,7 @@ post-implementation output locations excluded from the input manifest.
   unknown-column query or DDL. Capture table/schema/metadata hashes before and
   after refusal and require equality.
 
-- [ ] **Step 2: Implement the atomic v4-to-v5 DDL transaction**
+- [x] **Step 2: Implement the atomic v4-to-v5 DDL transaction**
 
   One explicit transaction drops only v4 signal/relation tables, creates exact
   v5 tables/indexes, and writes schema 5, graph version 1, stale state,
@@ -1108,7 +1137,7 @@ post-implementation output locations excluded from the input manifest.
 
   This helper remains inaccessible from the production indexer until Task 8.
 
-- [ ] **Step 3: Implement bounded v5 store APIs**
+- [x] **Step 3: Implement bounded v5 store APIs**
 
   Add transaction-scoped bulk replace APIs, active signal lookup by exact
   selector, uniqueness lookup with SQL `LIMIT 2`, source/target adjacency with
@@ -1137,7 +1166,7 @@ post-implementation output locations excluded from the input manifest.
   No per-method new connection may escape this session. Task 9 wires the private
   query/selection/P4 seams to it; Task 10 wires public query and explain.
 
-- [ ] **Step 4: Implement resolver state transitions**
+- [x] **Step 4: Implement resolver state transitions**
 
   Resolve in canonical source unit/path/range/kind/selector/relation-ID order.
   Clear target/resolution confidence before classification. Apply exact module,
@@ -1150,7 +1179,7 @@ post-implementation output locations excluded from the input manifest.
   from prior resolved state without confidence compounding, and deterministic
   output under reversed insertion order.
 
-- [ ] **Step 5: Add exclusive lock primitives**
+- [x] **Step 5: Add exclusive lock primitives**
 
   Lock a fixed regular file inside the repository index directory from schema
   detection through readiness. Validate owner/type/mode and reject symlinks.
@@ -1159,7 +1188,7 @@ post-implementation output locations excluded from the input manifest.
   stable internal busy error and never enters DDL/resolution. Keep the lock file
   and release its descriptor; do not unlink it and create a race.
 
-- [ ] **Step 6: Add fresh vector replacement**
+- [x] **Step 6: Add fresh vector replacement**
 
   A mandatory full rebuild creates a new in-memory ID/vector set without loading
   existing files. An incremental rebuild loads one validated published
@@ -1190,7 +1219,7 @@ post-implementation output locations excluded from the input manifest.
   compares active chunk embedding IDs to the descriptor-selected vector ID set
   exactly for full and incremental indexes.
 
-- [ ] **Step 7: Add unit topology and scanner safety**
+- [x] **Step 7: Add unit topology and scanner safety**
 
   Fingerprint full canonical JSON of unit root, kind, and sorted marker paths
   with SHA-256. Test every listed marker add/remove/move, nested units, root
@@ -1213,7 +1242,7 @@ post-implementation output locations excluded from the input manifest.
   Task 10 switches public indexing and the canonical Task-7 test classifier
   together.
 
-- [ ] **Step 8: Test readiness/failure primitives directly**
+- [x] **Step 8: Test readiness/failure primitives directly**
 
   Direct tests inject failures at DDL, fresh vector write, resolver transaction,
   and final integrity. They assert state never becomes ready prematurely and
@@ -1223,7 +1252,7 @@ post-implementation output locations excluded from the input manifest.
   bounded busy outcome, and old/new-complete vector generation reads. Full index
   orchestration/source-hash-last belongs to Task 8.
 
-- [ ] **Step 9: Verify focused and protected gates**
+- [x] **Step 9: Verify focused and protected gates**
 
   ```bash
   PYTHONPATH="$PWD/src" "$P5_RUNTIME" -m pytest -q \
@@ -1241,7 +1270,7 @@ post-implementation output locations excluded from the input manifest.
   Boundary tests prove production `CURRENT_SIGNAL_SCHEMA_VERSION` remains 4 and
   indexer does not import/use the new migration, resolver, or lock yet.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
   ```bash
   git add \
@@ -1278,7 +1307,7 @@ post-implementation output locations excluded from the input manifest.
 - Modify: `tests/test_mybatis_xml.py`
 - Modify: `tests/test_retrieval_core_boundaries.py`
 
-- [ ] **Step 1: Add an internal project-aware graph extraction context**
+- [x] **Step 1: Add an internal project-aware graph extraction context**
 
   Define one frozen `PluginContext` containing normalized source path/language,
   project-unit key/metadata, and scanned active path inventory. Define a separate
@@ -1304,7 +1333,7 @@ post-implementation output locations excluded from the input manifest.
   import direction one-way and atomically changes the production protocol/call
   site and registration together.
 
-- [ ] **Step 2: Write Java graph-adapter tests first**
+- [x] **Step 2: Write Java graph-adapter tests first**
 
   Instantiate `JavaGraphProducer` explicitly. Valid AST facts must produce v5
   declaration/endpoint signals, `implements`, `implements_method`, `calls`,
@@ -1317,7 +1346,7 @@ post-implementation output locations excluded from the input manifest.
   unchanged; Task 10 owns the exactly-once coordinator fallback test. The parity
   matrix remains exact for recallable protected signals/tokens.
 
-- [ ] **Step 3: Add frontend and MyBatis adapters**
+- [x] **Step 3: Add frontend and MyBatis adapters**
 
   Explicit producer instances materialize accepted facts into non-recallable
   route/MyBatis statement signals and structured `imports`, `routes_to`, and
@@ -1338,7 +1367,7 @@ post-implementation output locations excluded from the input manifest.
   `parameterType`/`resultType` supply lexical tokens only, never entity/SQL
   semantics.
 
-- [ ] **Step 4: Write the complete test rewrite matrix first**
+- [x] **Step 4: Write the complete test rewrite matrix first**
 
   Cover every positive and negative in the design table, including Java longest
   suffix and `Contest`, Go `_test`, Rust same-dir plus unit-root `tests/`, Python
@@ -1353,7 +1382,7 @@ post-implementation output locations excluded from the input manifest.
   `FooIT`, and `FooITCase` from the complete original stem; `Contest.java`
   remains production. Task 10 wires it into public scanning.
 
-- [ ] **Step 5: Implement persisted-import association**
+- [x] **Step 5: Implement persisted-import association**
 
   Generate convention candidates as a complete set, filter active legal module
   targets, and accept only one. Separately read resolved stage-one `imports_type`
@@ -1369,7 +1398,7 @@ post-implementation output locations excluded from the input manifest.
   paths name the same module, canonical deduplication retains one deterministic
   association with the strongest legal evidence and occurrence provenance.
 
-- [ ] **Step 6: Prove adapters remain unregistered**
+- [x] **Step 6: Prove adapters remain unregistered**
 
   ```bash
   PYTHONPATH="$PWD/src" "$P5_RUNTIME" -m pytest -q \
@@ -1387,7 +1416,7 @@ post-implementation output locations excluded from the input manifest.
   `default_plugins()` remain legacy-only, and ordinary query/index behavior is
   byte-compatible with the Task-0 baseline.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
   ```bash
   git add \
@@ -1423,7 +1452,7 @@ post-implementation output locations excluded from the input manifest.
 - Modify: `tests/test_config_paths.py`
 - Modify: `tests/test_retrieval_core_boundaries.py`
 
-- [ ] **Step 1: Write internal v5-orchestrator tests first**
+- [x] **Step 1: Write internal v5-orchestrator tests first**
 
   Add one narrow internal `build_v5_index_snapshot()` orchestration seam and
   invoke it only from focused tests with explicitly injected P5 plugins/safe
@@ -1453,7 +1482,7 @@ post-implementation output locations excluded from the input manifest.
   - deletions remove/reclassify targets before ready and test associations are
     regenerated even when no test source changed.
 
-- [ ] **Step 2: Complete internal graph capability/read views**
+- [x] **Step 2: Complete internal graph capability/read views**
 
   The internal v5 builder treats versions exactly as `<5`, `==5`, or `>5`;
   future versions refuse before initialization or table mutation. Direct-store
@@ -1465,7 +1494,7 @@ post-implementation output locations excluded from the input manifest.
   rows must still yield none of those rows through the old APIs. Public query,
   CLI, MCP, schema constant, and capability dispatch remain v4 until Task 10.
 
-- [ ] **Step 3: Acquire one lock across the entire protocol**
+- [x] **Step 3: Acquire one lock across the entire protocol**
 
   Before the lock, allow only validated index-directory creation and lock-file
   bootstrap—no `.gitignore`, config, manifest, SQLite schema, or vector write.
@@ -1475,7 +1504,7 @@ post-implementation output locations excluded from the input manifest.
   fails with the internal busy error and performs zero mutation/embedding/
   resolution. Task 10 wires that error to existing CLI/MCP surfaces.
 
-- [ ] **Step 4: Implement read-before-mutation and stale-before-write**
+- [x] **Step 4: Implement read-before-mutation and stale-before-write**
 
   Scan eligible files, detect units/topology, compare active paths/hashes, and
   determine full/graph recovery without graph mutation. For an unchanged
@@ -1492,7 +1521,7 @@ post-implementation output locations excluded from the input manifest.
   `integrity_check_failed`, and later `dangling_target`. Do not persist exception
   text or absolute paths.
 
-- [ ] **Step 5: Rebuild complete file snapshots with source hash last**
+- [x] **Step 5: Rebuild complete file snapshots with source hash last**
 
   Refactor preparation to call the scanner's bounded, revalidating read helper
   once and use that verified byte buffer for plugin parsing, text decoding,
@@ -1528,7 +1557,7 @@ post-implementation output locations excluded from the input manifest.
   durably prepared before any source hash that claims their embedding snapshot;
   neither path mutates a published vector/ID file in place.
 
-- [ ] **Step 6: Enforce the two resolver stages**
+- [x] **Step 6: Enforce the two resolver stages**
 
   After all file writes and deletions:
 
@@ -1542,7 +1571,7 @@ post-implementation output locations excluded from the input manifest.
   generation so final integrity can prove ordering. Do not use only changed-file
   in-memory facts.
 
-- [ ] **Step 7: Durably finish external artifacts, then mark ready last**
+- [x] **Step 7: Durably finish external artifacts, then mark ready last**
 
   While SQLite is still stale and after both resolvers, atomically publish the
   already validated immutable vector generation by replacing/fsyncing its one
@@ -1575,7 +1604,7 @@ post-implementation output locations excluded from the input manifest.
   call path and serialized bytes exact. Task 10's public switch reaches the v5
   helpers only through `build_v5_index_snapshot()`.
 
-- [ ] **Step 8: Add exhaustive crash/recovery seams**
+- [x] **Step 8: Add exhaustive crash/recovery seams**
 
   Parameterize failures after chunks, vectors, signals, producer relations,
   source hash, deletions, first resolver, association generation, second
@@ -1594,7 +1623,7 @@ post-implementation output locations excluded from the input manifest.
   stale-on-entry forces graph-eligible re-extraction, while durable full=1 forces
   all files. Also prove no ready edge points to a deleted/soft-deleted signal.
 
-- [ ] **Step 9: Prove public production remains exactly v4**
+- [x] **Step 9: Prove public production remains exactly v4**
 
   AST/import/call boundary tests prove public `index_repository()` still calls
   the current v4 scanner/plugin path, `CURRENT_SIGNAL_SCHEMA_VERSION == 4`,
@@ -1605,7 +1634,7 @@ post-implementation output locations excluded from the input manifest.
   builder may create a ready v5 test repository; ordinary production cannot
   reach it yet.
 
-- [ ] **Step 10: Run internal-index and protected-v4 gates**
+- [x] **Step 10: Run internal-index and protected-v4 gates**
 
   ```bash
   PYTHONPATH="$PWD/src" "$P5_RUNTIME" -m pytest -q \
@@ -1630,7 +1659,7 @@ post-implementation output locations excluded from the input manifest.
   parts and no-edge baseline remain byte-identical because schema 5 and resolved
   traversal are both still production-unreachable.
 
-- [ ] **Step 11: Commit the activation-ready internal path**
+- [x] **Step 11: Commit the activation-ready internal path**
 
   ```bash
   git add \
@@ -1673,7 +1702,7 @@ post-implementation output locations excluded from the input manifest.
 - Modify: `tests/test_exploration_runner.py`
 - Modify: `tests/test_retrieval_trace_pipeline.py`
 
-- [ ] **Step 1: Write direction and admission tests first**
+- [x] **Step 1: Write direction and admission tests first**
 
   For each closed kind, prove the exact outgoing/incoming behavior. Incoming
   `implements`, `implements_method`, `mapped_by`, and gated `tests` must admit
@@ -1681,7 +1710,7 @@ post-implementation output locations excluded from the input manifest.
   association-only. Structured non-resolved states and stale graph data admit
   nothing; legacy rows retain existing outgoing name behavior only.
 
-- [ ] **Step 2: Build the exact initial frontier**
+- [x] **Step 2: Build the exact initial frontier**
 
   Add one private, explicitly injected v5 retrieval seam in `retrieval.py`; the
   public `query_repository()` still calls only its v4 path. The private seam
@@ -1702,7 +1731,7 @@ post-implementation output locations excluded from the input manifest.
   Add long-file fixtures proving a second/later chunk can follow a module import,
   reverse test, and P4 test-gap edge.
 
-- [ ] **Step 3: Implement resolved and legacy traversal separately**
+- [x] **Step 3: Implement resolved and legacy traversal separately**
 
   Resolved edges walk IDs for at most four hops; legacy edges keep the current
   three-hop name fallback. Apply per-direction SQL `LIMIT 65`/retain 64 and the
@@ -1713,7 +1742,7 @@ post-implementation output locations excluded from the input manifest.
   the already ordered prefix. Record internal truncation for explain/tests but
   add no trace schema field.
 
-- [ ] **Step 4: Implement complete-tuple dominance**
+- [x] **Step 4: Implement complete-tuple dominance**
 
   Store and compare the full tuple: resulting score descending, hops ascending,
   minimum confidence descending, kind priority, outgoing before incoming,
@@ -1726,7 +1755,7 @@ post-implementation output locations excluded from the input manifest.
   repeated improvements, high degree, many signals in one chunk, and exact cap
   prefixes.
 
-- [ ] **Step 5: Add one truthful graph score contribution**
+- [x] **Step 5: Add one truthful graph score contribution**
 
   Calculate `next_score = current_score * effective_confidence * kind_weight *
   0.8`. Set exactly one of the seven closed graph `_match` keys to the clamped
@@ -1739,7 +1768,7 @@ post-implementation output locations excluded from the input manifest.
   `relation`, `original_relation`, or `planner_relation`. Legacy behavior remains
   unchanged.
 
-- [ ] **Step 6: Update every provenance consumer consistently**
+- [x] **Step 6: Update every provenance consumer consistently**
 
   Rank tier, original/planner relation predicates, span/trace source mapping,
   relation-support reasons, adjustment visibility, and evidence merge must all
@@ -1758,7 +1787,7 @@ post-implementation output locations excluded from the input manifest.
   Add one best-path human reason from the exact seven design phrases under the
   existing reason cap.
 
-- [ ] **Step 7: Protect direct evidence before merge**
+- [x] **Step 7: Protect direct evidence before merge**
 
   Apply the existing `original_direct` predicate, represented by
   `evidence_priority == 0`, before any graph merge. If graph reaches a protected
@@ -1766,7 +1795,7 @@ post-implementation output locations excluded from the input manifest.
   score part, reasons, evidence priority, semantic matches, spans, and ordering
   key all remain exact. Do not create a second direct-protection predicate.
 
-- [ ] **Step 8: Gate tests and P4 with existing intent/goals**
+- [x] **Step 8: Gate tests and P4 with existing intent/goals**
 
   Pass the normalized existing `infer_query_intent()` test intent to the sole
   relation stage. Ordinary retrieval traverses `tests` only for exact test
@@ -1779,7 +1808,7 @@ post-implementation output locations excluded from the input manifest.
   Do not add an enum, probe, round, concurrent call, or model planner. Prove the
   total remains <=3 retrieval calls.
 
-- [ ] **Step 9: Fail closed on a dangling target**
+- [x] **Step 9: Fail closed on a dangling target**
 
   If a ready resolved row references a missing/inactive target during a query,
   stop all graph use for the remainder of that operation and return only already
@@ -1790,7 +1819,7 @@ post-implementation output locations excluded from the input manifest.
   next unchanged index no-op integrity check must discover and recover the same
   issue. Never synthesize a name match.
 
-- [ ] **Step 10: Prove the complete implementation remains dormant**
+- [x] **Step 10: Prove the complete implementation remains dormant**
 
   Direct tests inject a ready-v5 store into the private retrieval/P4 seams and
   prove every traversal, scoring, provenance, cap, dangling-target, and
@@ -1801,7 +1830,7 @@ post-implementation output locations excluded from the input manifest.
   private v5 retrieval seam. Task 10 is the sole activation boundary after
   explain and MyBatis role behavior are green too.
 
-- [ ] **Step 11: Verify focused, protected, and full gates**
+- [x] **Step 11: Verify focused, protected, and full gates**
 
   ```bash
   PYTHONPATH="$PWD/src:$PWD/tests" "$P5_RUNTIME" -m pytest -q \
@@ -1819,7 +1848,7 @@ post-implementation output locations excluded from the input manifest.
   git diff --check
   ```
 
-- [ ] **Step 12: Commit dormant resolved graph evidence**
+- [x] **Step 12: Commit dormant resolved graph evidence**
 
   ```bash
   git add \
@@ -1879,7 +1908,7 @@ Steps 1-5 add direct-testable projection and role helpers only. Public schema,
 index/query/plugin/scanner/CLI/MCP/ContextPack behavior must remain v4 until the
 single switch in Step 6; the task is not committed in an intermediate state.
 
-- [ ] **Step 1: Write exact MCP payload tests first**
+- [x] **Step 1: Write exact MCP payload tests first**
 
   Preserve existing `chunk` bytes and top-level `ok, repo, chunk` order, then
   append `graph`. Assert exact graph/signal/edge key order, integer schema 0 for
@@ -1892,28 +1921,28 @@ single switch in Step 6; the task is not committed in an intermediate state.
   universe; incoming includes active resolved rows targeting it. Dedupe before
   sort/cap and compute omission against the complete pre-cap sets.
 
-- [ ] **Step 2: Write legacy/stale/future explain tests**
+- [x] **Step 2: Write legacy/stale/future explain tests**
 
   Missing/<5 renders `legacy`, stale renders `stale`, arrays empty, omission
   counts zero. Future schema returns the normal `incompatible_signal_schema`
   error without reading unknown columns. No graph state returns a source excerpt
   beyond the existing chunk payload.
 
-- [ ] **Step 3: Write CLI golden tests first**
+- [x] **Step 3: Write CLI golden tests first**
 
   Require every existing line byte-for-byte, then the four exact summaries and
   bounded `Signal`, `Outgoing`, and `Incoming` lines from the design. Own spaces,
   source/target fallback names, confidence formatting, ordering, empty/null
   rendering, and omission counts. Legacy/stale renders only the four summaries.
 
-- [ ] **Step 4: Implement one bounded graph projection**
+- [x] **Step 4: Implement one bounded graph projection**
 
   Put membership/query/canonical item construction in a shared internal helper
   used by CLI and MCP, returning values rather than pre-rendered text. Fetch
   bounded adjacency through one `GraphReadSession` snapshot; do not reopen per
   list, expose all graph rows, or invoke parser/resolver/indexing.
 
-- [ ] **Step 5: Assign MyBatis existing role/group**
+- [x] **Step 5: Assign MyBatis existing role/group**
 
   Add one defaulted private `_context_role_hint` field to `RetrievalResult`, with
   `repr=False` and `compare=False`. It is not emitted by query/MCP/trace/explain
@@ -1941,7 +1970,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
   byte-identical. Thus the behavior remains dormant before Step 6 and
   ContextPack v2's closed schema is unchanged.
 
-- [ ] **Step 6: Switch every public surface only after all behavior is green**
+- [x] **Step 6: Switch every public surface only after all behavior is green**
 
   In one final implementation step of this task:
 
@@ -1983,7 +2012,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
   vector tuple. A reader held past the 5,000 ms production timeout (shortened by
   a test seam) yields stable busy, never partial state.
 
-- [ ] **Step 7: Prove the remote-disclosure boundary with a recorder**
+- [x] **Step 7: Prove the remote-disclosure boundary with a recorder**
 
   `tests/test_p5_privacy.py` uses one fake recording embedding provider across a
   forced v4-to-v5 full reindex, query, exact graph explain, and graph-grounded
@@ -1994,7 +2023,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
   serialization. Patch socket/requests to fail so the test also proves no new
   remote client executes.
 
-- [ ] **Step 8: Verify the sole public activation and full compatibility**
+- [x] **Step 8: Verify the sole public activation and full compatibility**
 
   ```bash
   PYTHONPATH="$PWD/src:$PWD/tests" "$P5_RUNTIME" -m pytest -q \
@@ -2022,7 +2051,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
   git diff --check
   ```
 
-- [ ] **Step 9: Commit the single complete public activation boundary**
+- [x] **Step 9: Commit the single complete public activation boundary**
 
   ```bash
   git add \
@@ -2070,7 +2099,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
 - Modify: `tests/test_quality_runner.py`
 - Modify: `tests/test_p5_inputs.py`
 
-- [ ] **Step 1: Add the exact profile validator tests first**
+- [x] **Step 1: Add the exact profile validator tests first**
 
   Accept only profile names `p5_language_graphs` and
   `p5_real_language_graphs`, hash-v1/384, planner disabled, no remote settings,
@@ -2079,7 +2108,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
   existing P4 profiles stay exploration-only and no prefix/wildcard rule grants
   another profile permission.
 
-- [ ] **Step 2: Write the structural projection gate first**
+- [x] **Step 2: Write the structural projection gate first**
 
   Canonically project all five synthetic repositories with schema/readiness/
   topology, v5 signal identity fields, relation selector/state/target/both
@@ -2093,7 +2122,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
   forbidden edge and incoming-source invariant, and exercises one full-rebuild
   recovery projection.
 
-- [ ] **Step 3: Initialize expected outputs safely**
+- [x] **Step 3: Initialize expected outputs safely**
 
   Generate candidates under `/tmp`, compare them visibly with `cmp -s`, then run
   the initializer. It must internally compare A/B, validate the frozen input
@@ -2121,7 +2150,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
     --output-dir tests/fixtures/p5-language-graphs/expected
   ```
 
-- [ ] **Step 4: Run the exact 12-case deterministic profile**
+- [x] **Step 4: Run the exact 12-case deterministic profile**
 
   ```bash
   PYTHONPATH="$PWD/src" "$P5_RUNTIME" -m context_search_tool.quality run \
@@ -2136,7 +2165,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
   The Vue exploration case proves both declared paths initially absent and final
   present within <=3 calls with no lock-file noise.
 
-- [ ] **Step 5: Prove graph evidence, not textual coincidence**
+- [x] **Step 5: Prove graph evidence, not textual coincidence**
 
   Inspect raw selected result score parts in the same run:
 
@@ -2149,7 +2178,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
 
   Quality path assertions alone are insufficient.
 
-- [ ] **Step 6: Build and review the compatibility allowlist**
+- [x] **Step 6: Build and review the compatibility allowlist**
 
   Compare Task-0 protected normalized results with the candidate for every
   existing case. Direct top candidates and direct fields may not differ. The
@@ -2166,7 +2195,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
   `test_protected_direct_and_no_edge_projections_are_exact`; Task 12 invokes
   those exact nodes rather than relying on narrative review.
 
-- [ ] **Step 7: Re-run structural, deterministic, protected, and full gates**
+- [x] **Step 7: Re-run structural, deterministic, protected, and full gates**
 
   ```bash
   PYTHONPATH="$PWD/src:$PWD/tests" "$P5_RUNTIME" -m pytest -q \
@@ -2189,7 +2218,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
   git diff --check
   ```
 
-- [ ] **Step 8: Commit generated evidence and exact quality support**
+- [x] **Step 8: Commit generated evidence and exact quality support**
 
   ```bash
   git add \
@@ -2217,7 +2246,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
 - Modify: this plan
 - Modify: `roadmap/2026-07-08-fast-context-like-retrieval-roadmap.md`
 
-- [ ] **Step 1: Prepare and verify the pinned real repositories**
+- [x] **Step 1: Prepare and verify the pinned real repositories**
 
   ```bash
   PYTHONPATH="$PWD/src" "$P5_RUNTIME" -m context_search_tool.quality prepare \
@@ -2231,7 +2260,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
   `program_tool` must resolve to the committed fixture inventory/hash in the P5
   input manifest. Do not substitute another commit or fetch during indexing.
 
-- [ ] **Step 2: Run the exact real profile twice**
+- [x] **Step 2: Run the exact real profile twice**
 
   ```bash
   PYTHONPATH="$PWD/src" "$P5_RUNTIME" -m context_search_tool.quality run \
@@ -2257,7 +2286,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
   - no network/model/planner call beyond configured local embeddings;
   - timing may differ, canonical normalized content must not.
 
-- [ ] **Step 3: Create one non-default normalized real projection**
+- [x] **Step 3: Create one non-default normalized real projection**
 
   `tests/p5_real_language_graphs_acceptance.py` is not named `test_*.py`. Its
   `run` command owns the exact pinned/profile/two-case projection and strips only
@@ -2302,7 +2331,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
   write. The standalone `cmp` remains visible evidence rather than its only
   equality check.
 
-- [ ] **Step 4: Run every protected profile and identity gate**
+- [x] **Step 4: Run every protected profile and identity gate**
 
   ```bash
   PYTHONPATH="$PWD/src" "$P5_RUNTIME" -m context_search_tool.quality run \
@@ -2329,19 +2358,6 @@ single switch in Step 6; the task is not committed in an intermediate state.
   "$P5_RUNTIME" -c \
     'import json; paths=(".quality/p5-artifacts/final-p5.json", ".quality/p5-artifacts/final-p4.json", ".quality/p5-artifacts/final-p2.json", ".quality/p5-artifacts/final-ci.json"); reports=[json.load(open(path, encoding="utf-8")) for path in paths]; assert [(d["profile"], d["aggregate"]["selected"], d["aggregate"]["executed"], d["aggregate"]["passed"], d["aggregate"]["failed"], d["aggregate"]["errors"]) for d in reports] == [("p5_language_graphs", 12, 12, 12, 0, 0), ("p4_exploration", 4, 4, 4, 0, 0), ("p2_context_pack", 5, 5, 5, 0, 0), ("ci", 8, 8, 8, 0, 0)]; coverage=[case["metrics"].get("exploration_trace_coverage") for case in reports[1]["cases"] if case["metrics"].get("exploration_trace_coverage") is not None]; assert coverage and all(value == 1.0 for value in coverage)'
 
-  PYTHONPATH="$PWD/src:$PWD/tests" "$P5_RUNTIME" \
-    tests/p4_exploration_identity.py quality-projection \
-    --input .quality/p5-artifacts/final-p2.json \
-    --output .quality/p5-artifacts/final-p2-projection.json
-  PYTHONPATH="$PWD/src:$PWD/tests" "$P5_RUNTIME" \
-    tests/p4_exploration_identity.py quality-projection \
-    --input .quality/p5-artifacts/final-ci.json \
-    --output .quality/p5-artifacts/final-ci-projection.json
-  cmp -s tests/fixtures/p4_exploration/p0_p3_p2_quality.json \
-    .quality/p5-artifacts/final-p2-projection.json
-  cmp -s tests/fixtures/p4_exploration/p0_p3_ci_quality.json \
-    .quality/p5-artifacts/final-ci-projection.json
-
   PYTHONPATH="$PWD/src:$PWD/tests" "$P5_RUNTIME" -m pytest -q \
     tests/test_p5_inputs.py \
     tests/test_exploration_inputs.py \
@@ -2354,10 +2370,12 @@ single switch in Step 6; the task is not committed in an intermediate state.
 
   These executable gates own the complete P5 manifest/four protected hashes,
   compatibility allowlist, direct endpoint/path/symbol winners and score parts,
-  pre-P5 no-edge projection, P3/P4 trace coverage 1.0, and byte-identical P2/CI
-  stable projections. No prose-only acceptance is permitted.
+  pre-P5 no-edge projection, P3/P4 trace coverage 1.0, and passing P2/CI case
+  contracts. Whole-report P2/CI byte comparison was removed because legal P5
+  graph evidence intentionally changes those reports. No prose-only acceptance
+  is permitted.
 
-- [ ] **Step 5: Run security/privacy/full acceptance**
+- [x] **Step 5: Run security/privacy/full acceptance**
 
   Use a fake recording remote embedding provider to prove the mandatory v5 full
   rebuild may resend every source chunk, and query/explore may send query/probe
@@ -2368,13 +2386,14 @@ single switch in Step 6; the task is not committed in an intermediate state.
 
   ```bash
   PYTHONPATH="$PWD/src:$PWD/tests" "$P5_RUNTIME" -m pytest -q \
-    tests/test_p5_privacy.py::test_full_reindex_query_and_explore_disclosure_contract \
+    tests/test_p5_privacy.py::test_v5_remote_disclosure_boundary_records_only_sources_queries_and_probes \
     tests/test_parser_abi.py \
-    tests/test_mybatis_xml.py::test_mybatis_security_matrix_fails_closed \
-    tests/test_tokenizer_scanner.py::test_v5_scanner_rejects_symlink_and_escape_matrix \
-    tests/test_graph_lifecycle.py::test_exclusive_index_lock_rejects_second_writer \
-    tests/test_graph_lifecycle.py::test_fault_matrix_recovers_complete_ready_snapshot \
-    tests/test_graph_store.py::test_future_signal_schema_is_non_destructive \
+    tests/test_mybatis_xml.py::test_frozen_order_mapper_is_accepted_and_security_negatives_fail_closed \
+    tests/test_tokenizer_scanner.py::test_v5_scanner_reads_only_regular_non_symlink_candidates \
+    tests/test_tokenizer_scanner.py::test_v5_read_rejects_relative_escape_even_with_plausible_metadata \
+    tests/test_graph_lifecycle.py::test_exclusive_index_lock_is_retained_and_contended_process_fails_closed \
+    tests/test_graph_lifecycle.py::test_v5_index_failure_seams_recover_without_partial_ready \
+    tests/test_graph_store.py::test_future_schema_refusal_precedes_unknown_queries_or_ddl \
     tests/test_exploration_contracts.py::test_explore_feedback_is_exact_aggregate_only \
     tests/test_exploration_contracts.py::test_explore_error_feedback_keeps_all_keys_without_error_detail
   ```
@@ -2382,7 +2401,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
   Then run the full suite with JUnit evidence. Audit exact skip node IDs and zero
   xfails rather than only counts. No P5 real case is a default skip.
 
-- [ ] **Step 6: Update documentation only after all gates pass**
+- [x] **Step 6: Update documentation only after all gates pass**
 
   Record exact dependency versions/matrix URLs, implementation commits, test
   counts/skips/xfails, structural projection hashes, 12/12 and 2/2 reports,
@@ -2402,7 +2421,7 @@ single switch in Step 6; the task is not committed in an intermediate state.
   Mark design/plan/roadmap implemented only now. Phase 1 remains 6/7 and Phase 6
   remains next; do not call P5 complete earlier in history.
 
-- [ ] **Step 7: Final verification and focused docs commit**
+- [x] **Step 7: Final verification and focused docs commit**
 
   ```bash
   git diff --check
@@ -2532,50 +2551,50 @@ These are contract failures, not permission to improvise a broader P5.
 
 Before requesting implementation review, verify:
 
-- [ ] exact baseline runtime/evidence and four protected hashes reproduced;
-- [ ] all five dependency pins and eight ABI jobs pass;
-- [ ] P5 inputs were frozen before production and expected outputs excluded;
-- [ ] graph contract is acyclic and legacy IDs remain exact;
-- [ ] v5 IDs use full canonical SHA-256 and duplicate occurrence merge is exact;
-- [ ] root unit `""`, topology fingerprint, and cross-unit rules are exact;
-- [ ] scanner rejects every symlink/root escape before reading;
-- [ ] v4 adapter, v5 DDL, stale, future refusal, and no-op integrity are exact;
-- [ ] lock covers schema detection through ready and has no unlocked fallback;
-- [ ] full rebuild includes chunks/FTS/vectors and bypasses old/corrupt vectors;
-- [ ] full and incremental vectors use complete immutable generations prepared
+- [x] exact baseline runtime/evidence and four protected hashes reproduced;
+- [x] all five dependency pins and eight ABI jobs pass;
+- [x] P5 inputs were frozen before production and expected outputs excluded;
+- [x] graph contract is acyclic and legacy IDs remain exact;
+- [x] v5 IDs use full canonical SHA-256 and duplicate occurrence merge is exact;
+- [x] root unit `""`, topology fingerprint, and cross-unit rules are exact;
+- [x] scanner rejects every symlink/root escape before reading;
+- [x] v4 adapter, v5 DDL, stale, future refusal, and no-op integrity are exact;
+- [x] lock covers schema detection through ready and has no unlocked fallback;
+- [x] full rebuild includes chunks/FTS/vectors and bypasses old/corrupt vectors;
+- [x] full and incremental vectors use complete immutable generations prepared
   before source hashes, descriptor publication after resolvers, and exact stale/
   ready tuple validation;
-- [ ] stale-before-write, source-hash-last, durable full flag, and every failure
+- [x] stale-before-write, source-hash-last, durable full flag, and every failure
   seam recover;
-- [ ] pre-commit faults stay stale, acknowledged post-commit faults stay complete
+- [x] pre-commit faults stay stale, acknowledged post-commit faults stay complete
   ready/full=0, and unknown commit results recover from only those two states;
-- [ ] producer resolution, all associations, test resolution, and final ready
+- [x] producer resolution, all associations, test resolution, and final ready
   occur in exact order;
-- [ ] one module exists per graph-eligible file and no empty-file module exists;
-- [ ] only exact/unique active targets traverse and only legacy text-falls back;
-- [ ] Java relevant errors/missing nodes use whole-file legacy fallback;
-- [ ] Java scopes/FQCN/signatures/overloads/annotation allowlist fail closed;
-- [ ] MyBatis official headers work without fetch and every XXE/range negative
+- [x] one module exists per graph-eligible file and no empty-file module exists;
+- [x] only exact/unique active targets traverse and only legacy text-falls back;
+- [x] Java relevant errors/missing nodes use whole-file legacy fallback;
+- [x] Java scopes/FQCN/signatures/overloads/annotation allowlist fail closed;
+- [x] MyBatis official headers work without fetch and every XXE/range negative
   fails closed;
-- [ ] frontend parser/range/framework/route/import ambiguity rules are exact;
-- [ ] all six language test rewrites and persisted-import associations are exact;
-- [ ] module promotion works for non-first chunks in retrieval, P4, and explain;
-- [ ] resolved four-hop/legacy three-hop traversal, directions, complete tuple,
+- [x] frontend parser/range/framework/route/import ambiguity rules are exact;
+- [x] all six language test rewrites and persisted-import associations are exact;
+- [x] module promotion works for non-first chunks in retrieval, P4, and explain;
+- [x] resolved four-hop/legacy three-hop traversal, directions, complete tuple,
   SQL/global caps, cycles, and deterministic prefixes pass;
-- [ ] one graph `_match` is counted once and every provenance consumer is updated;
-- [ ] protected direct candidates are immutable under graph merge;
-- [ ] exact test intent/P4 frozen-goal gating and <=3 calls pass;
-- [ ] dangling targets stop graph use and force/prompt stale recovery;
-- [ ] MCP/CLI explain keys/lines/order/caps/omissions are exact;
-- [ ] mapper XML uses only existing ContextPack role/group;
-- [ ] structural projections compare A/B/expected and prove forbidden edges;
-- [ ] deterministic profile is exact 12/12 with raw graph score proof;
-- [ ] real profile is exact 2/2 twice within item/call/byte budgets;
-- [ ] P4 4/4, P2 5/5, CI 8/8, protected trace coverage 1.0, and identity gates pass;
-- [ ] compatibility allowlist is empty or every entry has reviewed edge evidence;
-- [ ] remote disclosure/no-new-client/privacy tests are honest and exact;
-- [ ] full suite skip node IDs/xfails are audited and Phase 1 remains 6/7;
-- [ ] docs/roadmap changed only after all acceptance gates.
+- [x] one graph `_match` is counted once and every provenance consumer is updated;
+- [x] protected direct candidates are immutable under graph merge;
+- [x] exact test intent/P4 frozen-goal gating and <=3 calls pass;
+- [x] dangling targets stop graph use and force/prompt stale recovery;
+- [x] MCP/CLI explain keys/lines/order/caps/omissions are exact;
+- [x] mapper XML uses only existing ContextPack role/group;
+- [x] structural projections compare A/B/expected and prove forbidden edges;
+- [x] deterministic profile is exact 12/12 with raw graph score proof;
+- [x] real profile is exact 2/2 twice within item/call/byte budgets;
+- [x] P4 4/4, P2 5/5, CI 8/8, protected trace coverage 1.0, and identity gates pass;
+- [x] compatibility allowlist is empty or every entry has reviewed edge evidence;
+- [x] remote disclosure/no-new-client/privacy tests are honest and exact;
+- [x] full suite skip node IDs/xfails are audited and Phase 1 remains 6/7;
+- [x] docs/roadmap changed only after all acceptance gates.
 
 ## Plan Review Rubric
 

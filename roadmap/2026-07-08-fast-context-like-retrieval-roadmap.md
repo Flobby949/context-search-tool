@@ -3,7 +3,7 @@
 Date: 2026-07-08
 Status: Long-term roadmap
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
-Next-stage review: Phase 5 implementation authorization
+Next-stage review: Phase 6 freshness, performance, and large repositories
 
 ## Summary
 
@@ -40,7 +40,8 @@ CST already has a solid base:
 - Generic language baseline across common source suffixes.
 - Explicit bounded controlled exploration with frozen goals, grounded probes,
   path-monotonic fusion, ContextPack v2, and ExplorationTrace v2.
-- Frontend role/cohort reranking work in progress through design docs and fixtures.
+- Schema-v5 language/framework graphs for Java/Spring/MyBatis, Vue/React static
+  routes/imports, and exact six-language test associations.
 - MCP tools for indexing, querying, stats, and explain.
 - Real test coverage and real-project quality fixtures.
 
@@ -51,13 +52,14 @@ The long-term strategy should preserve these advantages instead of replacing the
 The main gaps compared with fast-context-like behavior are:
 
 - Cross-language understanding: Chinese queries such as `数据看板统计图表功能` need to surface English code such as `DashboardController`, `StatisticsService`, and chart-related implementation.
-- Exploration depth: ordinary retrieval intentionally remains single-pass;
-  explicit P4 exploration adds one bounded follow-up round, but does not yet
-  have Phase 5 language/framework graphs or recursive exploration.
-- Context grouping: results are ranked snippets, but not yet packaged as a task-oriented reading set with entrypoints, implementations, types, tests, configs, and missing evidence.
-- Traceability: score parts exist, but there is no complete retrieval trace showing candidate sources, stage counts, rerank decisions, and why a result survived.
-- Architecture pressure: `retrieval.py` has accumulated candidate collection, relation expansion, ranking, formatting support, and explanation logic in one large module.
-- Evaluation fragmentation: metrics, real-project fixtures, calibration, A/B comparisons, and MCP feedback logs exist, but they are not yet one product-quality loop.
+- Exploration depth: ordinary retrieval intentionally remains single-pass and
+  explicit exploration is bounded to one follow-up round; recursive or
+  open-ended model exploration is still out of scope.
+- Ecosystem depth: P5 covers its reviewed Java/Spring/MyBatis and frontend
+  slices, but Go/Rust/Python framework AST plugins are not yet justified.
+- Evaluation breadth: deterministic and pinned-real gates are strong, while
+  more business-domain repositories and a consistently available external
+  fast-context comparator would improve comparative evidence.
 - Large-repository operation: index status, freshness, vector coverage, and incremental behavior can become more explicit before adding service or watch modes.
 
 ## Design Principles
@@ -288,8 +290,7 @@ Acceptance evidence:
   recorded honestly and remained non-gating.
 
 Phase statuses remain independent. Phase 1 is still 6/7 and pending; Phase 4
-does not reclassify it. Phase 5's design and implementation plan are
-agent-reviewed; implementation has not started.
+does not reclassify it. Phase 5 subsequently completed on 2026-07-18.
 
 Goal: approximate fast-context's exploratory strength in a deterministic, bounded local engine.
 
@@ -309,8 +310,7 @@ Success signal:
 
 ### Phase 5: Language And Framework Graphs
 
-Status: Design and implementation plan approved by agent review on 2026-07-17;
-implementation not started.
+Status: Complete (2026-07-18)
 
 Design: `docs/superpowers/specs/2026-07-17-p5-language-framework-graphs-design.md`
 Plan: `docs/superpowers/plans/2026-07-17-p5-language-framework-graphs.md`
@@ -328,6 +328,27 @@ Success signal:
 
 - CST can follow common business flows across framework boundaries instead of relying mostly on textual co-occurrence.
 - Plugins improve depth but are not required for baseline usefulness.
+
+Acceptance evidence:
+
+- exact parser pins and all eight Ubuntu/macOS x Python 3.11-3.14 ABI jobs
+  passed;
+- deterministic P5 passed 12/12 with closed graph score proofs and deterministic
+  structural projections; compatibility allowlist is `[]`;
+- pinned PetClinic plus committed `program_tool` passed 2/2 twice within the
+  3-call, 12-item, and 65,536-byte ceilings; normalized projection SHA-256 is
+  `13d1b24040eee0a99641176eb48a97c136f7b5154ea741042f6d766e13e00578`;
+- P4/P2/raw CI passed 4/4, 5/5, and 8/8; protected-direct/no-edge objects and
+  all protected input hashes remained exact;
+- full suite passed 2,621 tests with the established 9 optional skips and 0
+  xfails, including the local Ollama BGE integration;
+- parsers/resolver are local and no-fetch; remote embedding disclosure and
+  full-v5-reindex cost are documented without making a P6 latency claim;
+- the requested fast-context comparison returned no candidates because the
+  configured service rejected it under tenant privacy policy, so it remains
+  an honest non-gating availability result.
+
+Phase 1 remains independently pending at 6/7. Phase 6 is next.
 
 ### Phase 6: Freshness, Performance, And Large Repositories
 

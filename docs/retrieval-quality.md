@@ -16,6 +16,8 @@
 | `p2_real_context` | explicitly prepared pinned PetClinic checkout | opt-in real-project ContextPack v2 acceptance |
 | `p4_exploration` | committed snapshots and offline `hash-v1` | deterministic controlled-exploration acceptance |
 | `p4_real_exploration` | explicitly prepared pinned PetClinic checkout | opt-in real-project exploration acceptance |
+| `p5_language_graphs` | five committed synthetic repositories and offline `hash-v1` | deterministic language/framework graph acceptance |
+| `p5_real_language_graphs` | pinned PetClinic plus committed `program_tool` snapshot | opt-in real-project graph acceptance |
 
 All commands below assume that `cst` imports `context_search_tool` from the
 current checkout. Editable installs and multiple worktrees can point elsewhere,
@@ -574,6 +576,79 @@ evidence, not a substitute P4 result.
   fields. Generated probes/queries, goal IDs, seed/final paths, source content,
   source-count detail, and exception text are excluded.
 - Phase 1 remains independently pending at `6/7`.
+
+## Phase 5 Language And Framework Graph Acceptance
+
+P5 completed on 2026-07-18. The deterministic `p5_language_graphs` profile
+passed exactly `12/12`; P4, P2, and raw CI remained green at `4/4`, `5/5`, and
+`8/8`. The protected-direct winner/line/direct-score assays and the standalone
+no-legal-edge projection remain exact. The reviewed compatibility allowlist is
+the empty JSON array.
+
+The final unrestricted suite, including the local Ollama BGE integration,
+reported `2,621 passed`, the established `9 skipped`, `0 failures`, `0 errors`,
+and `0 xfails`. The skips are one unconfigured investment-assistant repo, one
+opt-in P1 model acceptance, five unprepared P2 real-repo cases, and two
+unconfigured planner checkout cases. The offline suite reported `2,620 passed`,
+`5 skipped`, and `5` explicitly deselected slow/integration cases.
+
+The parser runtime was Python 3.13.12, SQLite 3.51.2, macOS arm64, with exact
+versions `tree-sitter==0.26.0`, `tree-sitter-java==0.23.5`,
+`tree-sitter-javascript==0.25.0`, `tree-sitter-typescript==0.23.2`, and
+`defusedxml==0.7.1`. The eight Linux/macOS x Python 3.11-3.14 ABI jobs all
+passed in [GitHub Actions run 29592106267](https://github.com/Flobby949/context-search-tool/actions/runs/29592106267).
+
+Structural projection SHA-256 values are:
+
+| projection | SHA-256 |
+| --- | --- |
+| compatibility allowlist (`[]`) | `37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570` |
+| generic tests | `8c1bdbbfc221e187e7e9355bc8adb891c6eacbddb87025e58b65086ac8068586` |
+| Java/Spring/MyBatis | `307a4883929c33cc54e83e0cdced2de77c841a3f4cdb8b28018322ac8a84bfb8` |
+| malformed compatibility | `68a3192aa60e0e9d1a81a48043cea2d724d405d7d2ffb991e8b13a9d18524531` |
+| React | `02e313399c5d0267ef1aea11dde63c0a5239eee958fbcab6d83429a685715bb6` |
+| Vue | `d5cee8b3108311ef68ac98cfcbcf50b94fa34112bf554df215a0f171441aa736` |
+
+The real profile passed `2/2` twice and produced byte-identical normalized
+projections with SHA-256
+`13d1b24040eee0a99641176eb48a97c136f7b5154ea741042f6d766e13e00578`.
+Pinned PetClinic commit `51045d1648dad955df586150c1a1a6e22ef400c2`
+used 2 retrieval calls, 12 final items, 37,965 bytes, trace coverage 1.0, and
+zero configured noise. `program_tool` used 1 call, 11 items, 23,307 bytes,
+trace coverage 1.0, and zero configured noise. Both stayed below the fixed
+3-call, 12-item, and 65,536-byte ceilings.
+
+The draft Task-12 command that compared the entire P2/CI report projection to
+P4 bytes was removed during final execution: those reports include ranks,
+graph score parts, and graph-derived additions that P5 is explicitly designed
+to change, so byte identity conflicts with Task 11's reviewed legal-delta
+contract. Immutable protection remains at the catalog/input hashes,
+protected-direct objects, no-edge projection, trace schemas, and required
+profile gates; no protected baseline was refreshed.
+
+All parsers, XML checks, and graph resolution run locally and perform no fetch
+while indexing. A configured remote embedding provider still receives source
+chunks, including a possible full resend during v4-to-v5 migration. Query and
+explore send their normal query/probe text, which can contain graph-derived
+names or paths; graph objects are not serialized as a separate remote payload.
+When graph state is stale, signal/relation evidence is disabled while other
+recall remains available. Migration requires a full reindex and may be costly;
+P5 makes no P6 latency claim.
+
+The requested fast-context comparison on the same pinned PetClinic checkout
+could not produce a result because the configured service rejected the call
+under its tenant privacy policy. It returned no file/range candidates, so there
+is no honest overlap table; this availability result is recorded as non-gating.
+
+Protected SHA-256 identities stayed:
+`ac7a9789098d088a22b8ddc78fed3128695cbb257923de8686c41fbcfa5824c5`
+for the P0-P3 catalog,
+`110e806dead64b4270d579a955abc8f56d7ec23d1b1f61a7951e5e4309a9c683`
+for the P4 catalog,
+`78e81f1c08c8216dc3355519cb89f07577ed61706e8150c9575e8395141c0b40`
+for the P4 input manifest, and
+`4235ec5539c548005d75b98be4a0c347364d40ec28a79fc45b10d351bcf8bed7`
+for the retrieval-core baseline. Phase 1 remains `6/7`; Phase 6 is next.
 
 ## MCP Feedback Privacy
 
