@@ -82,6 +82,7 @@ class IncompatibleIndexError(RuntimeError):
 
 CURRENT_SIGNAL_SCHEMA_VERSION = 5
 SIGNAL_SCHEMA_VERSION_KEY = "signal_schema_version"
+_PATH_INVENTORY_RELATION_KINDS = ("imports", "routes_to")
 
 
 @dataclass(frozen=True)
@@ -149,6 +150,7 @@ def build_v5_index_snapshot(
         scanned_files = _canonical_scanned_files(scanner(repo, config))
         scanned_paths = {scanned.path for scanned in scanned_files}
         deleted_paths = persisted_paths - scanned_paths
+        path_inventory_changed = scanned_paths != persisted_paths
         units = detect_project_units(
             repo,
             [scanned.path for scanned in scanned_files],
@@ -310,6 +312,15 @@ def build_v5_index_snapshot(
             for scanned in scanned_files:
                 if scanned.size > 0:
                     rebuild_paths.add(scanned.path)
+        elif path_inventory_changed:
+            # Module selectors persist the active candidate set, so path
+            # additions and deletions invalidate their unchanged sources.
+            rebuild_paths.update(
+                store.active_relation_source_paths(
+                    _PATH_INVENTORY_RELATION_KINDS
+                )
+                & scanned_paths
+            )
 
         prepared_files = [
             _prepare_v5_file(

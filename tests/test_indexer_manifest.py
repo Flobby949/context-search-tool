@@ -1,4 +1,5 @@
 from dataclasses import replace
+import json
 from pathlib import Path
 import sqlite3
 
@@ -83,6 +84,30 @@ class _RecordingGraphPlugin:
             f"materialize:{self.name}:{context.file_path.as_posix()}"
         )
         return MaterializedGraph()
+
+
+def _frontend_import_state(
+    database: Path,
+) -> tuple[str, str, tuple[str, ...]]:
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            """
+            SELECT resolution, target_signal_id, metadata
+            FROM code_relations
+            WHERE source_file_path = 'src/Importer.ts'
+              AND kind = 'imports'
+              AND target_name = './Target'
+              AND deleted_at IS NULL
+            """
+        ).fetchone()
+    assert row is not None
+    metadata = json.loads(row["metadata"])
+    return (
+        str(row["resolution"]),
+        str(row["target_signal_id"]),
+        tuple(metadata["candidates"]),
+    )
 
 
 def test_index_repository_creates_expected_index_files(tmp_path: Path) -> None:
@@ -853,6 +878,85 @@ def test_internal_v5_deletion_regenerates_unchanged_test_associations(
             WHERE kind = 'tests' AND deleted_at IS NULL
             """
         ).fetchone()[0] == 0
+    assert SQLiteStore(database).get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "ready"
+
+
+@pytest.mark.parametrize(
+    (
+        "initial_targets",
+        "changed_target",
+        "delete_target",
+        "expected_before",
+        "expected_after",
+        "expected_counts",
+    ),
+    [
+        (
+            (),
+            "Target.ts",
+            False,
+            ("unresolved", False, ()),
+            ("resolved_unique", True, ("src/Target.ts",)),
+            (2, 0),
+        ),
+        (
+            ("Target.ts",),
+            "Target.js",
+            False,
+            ("resolved_unique", True, ("src/Target.ts",)),
+            ("ambiguous", False, ("src/Target.ts", "src/Target.js")),
+            (2, 0),
+        ),
+        (
+            ("Target.ts", "Target.js"),
+            "Target.js",
+            True,
+            ("ambiguous", False, ("src/Target.ts", "src/Target.js")),
+            ("resolved_unique", True, ("src/Target.ts",)),
+            (1, 1),
+        ),
+    ],
+)
+def test_incremental_path_change_rematerializes_frontend_selectors(
+    tmp_path: Path,
+    initial_targets: tuple[str, ...],
+    changed_target: str,
+    delete_target: bool,
+    expected_before: tuple[str, bool, tuple[str, ...]],
+    expected_after: tuple[str, bool, tuple[str, ...]],
+    expected_counts: tuple[int, int],
+) -> None:
+    repo = tmp_path / "repo"
+    source_dir = repo / "src"
+    source_dir.mkdir(parents=True)
+    (source_dir / "Importer.ts").write_text(
+        "import value from './Target';\nexport { value };\n",
+        encoding="utf-8",
+    )
+    for index, target in enumerate(initial_targets, start=1):
+        (source_dir / target).write_text(
+            f"export default {index};\n",
+            encoding="utf-8",
+        )
+
+    index_repository(repo, DEFAULT_CONFIG)
+    database = repo / ".context-search" / "index.sqlite"
+    before_resolution, before_target, before_candidates = _frontend_import_state(
+        database
+    )
+    assert (before_resolution, bool(before_target), before_candidates) == expected_before
+
+    changed_path = source_dir / changed_target
+    if delete_target:
+        changed_path.unlink()
+    else:
+        changed_path.write_text("export default 3;\n", encoding="utf-8")
+    summary = index_repository(repo, DEFAULT_CONFIG)
+
+    after_resolution, after_target, after_candidates = _frontend_import_state(database)
+    assert (after_resolution, bool(after_target), after_candidates) == expected_after
+    assert (summary.files_indexed, summary.files_deleted) == expected_counts
+    assert SQLiteStore(database).graph_integrity().ok
     assert SQLiteStore(database).get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "ready"
 
 

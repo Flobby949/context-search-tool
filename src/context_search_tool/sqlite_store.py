@@ -289,6 +289,27 @@ class SQLiteStore:
             _require_v5_tables(connection)
             return _graph_integrity(connection)
 
+    def active_relation_source_paths(self, kinds: tuple[str, ...]) -> set[Path]:
+        normalized = _dedupe_values(list(kinds))
+        if not normalized:
+            return set()
+        with self._connect() as connection:
+            _require_v5_tables(connection)
+            rows = connection.execute(
+                _in_query(
+                    """
+                    SELECT DISTINCT source_file_path
+                    FROM code_relations
+                    WHERE kind IN ({placeholders})
+                      AND deleted_at IS NULL
+                    ORDER BY source_file_path
+                    """,
+                    normalized,
+                ),
+                normalized,
+            ).fetchall()
+        return {Path(str(row["source_file_path"])) for row in rows}
+
     def mark_graph_stale(
         self,
         reason: str,
