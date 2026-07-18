@@ -564,6 +564,7 @@ def test_java_complete_candidate_set_is_unique_or_ambiguous(
     unique = store.graph_relation_for_id("candidate-method")
     assert unique is not None
     assert unique.resolution == "resolved_unique"
+    assert unique.target_qualified_name == "one.Api.run"
     assert unique.target_signal_id == "first-method"
     assert unique.resolution_confidence == 0.9
 

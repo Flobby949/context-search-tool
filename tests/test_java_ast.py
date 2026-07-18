@@ -528,6 +528,55 @@ final class OwnerController {
     assert external.target_signal_id == ""
 
 
+def test_wildcard_candidate_resolution_normalizes_target_before_integrity_check(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    service_package = repo / "src/main/java/demo/service"
+    implementation_package = repo / "src/main/java/demo/impl"
+    service_package.mkdir(parents=True)
+    implementation_package.mkdir(parents=True)
+    (service_package / "Api.java").write_text(
+        """package demo.service;
+public interface Api {}
+""",
+        encoding="utf-8",
+    )
+    (implementation_package / "ServiceImpl.java").write_text(
+        """package demo.impl;
+import demo.service.*;
+public final class ServiceImpl implements Api {}
+""",
+        encoding="utf-8",
+    )
+
+    index_repository(repo, DEFAULT_CONFIG)
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    assert store.graph_integrity().ok is True
+
+    with store.graph_read_session() as session:
+        assert session.capability.status == "ready"
+        source = next(
+            signal
+            for signal in session.signal_search(["ServiceImpl"], limit=20)
+            if signal.qualified_name == "demo.impl.ServiceImpl"
+        )
+        relation = next(
+            item
+            for item in session.outgoing_relations(source.signal_id)
+            if item.kind == "implements"
+        )
+
+    target = store.graph_signal_for_id(relation.target_signal_id)
+    assert tuple(relation.metadata["candidates"]) == (
+        "demo.impl.Api",
+        "demo.service.Api",
+    )
+    assert relation.resolution == "resolved_unique"
+    assert target is not None
+    assert relation.target_qualified_name == target.qualified_name == "demo.service.Api"
+
+
 def test_explicit_this_field_reference_emits_one_local_type_use() -> None:
     source = b'''package demo;
 import product.Order;

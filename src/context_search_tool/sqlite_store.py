@@ -2881,7 +2881,8 @@ class _SQLiteResolutionSession:
         self.connection.execute(
             """
             UPDATE code_relations
-            SET target_signal_id = ?,
+            SET target_qualified_name = ?,
+                target_signal_id = ?,
                 resolution = ?,
                 confidence = ?,
                 producer_confidence = ?,
@@ -2890,6 +2891,7 @@ class _SQLiteResolutionSession:
               AND deleted_at IS NULL
             """,
             (
+                relation.target_qualified_name,
                 relation.target_signal_id,
                 relation.resolution,
                 relation.confidence,

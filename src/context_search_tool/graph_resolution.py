@@ -218,6 +218,11 @@ def _from_matches(
     )
     return replace(
         relation,
+        target_qualified_name=(
+            target.qualified_name
+            if relation.target_kind != "module"
+            else relation.target_qualified_name
+        ),
         target_signal_id=target.signal_id,
         resolution=resolution,
         confidence=confidence,
