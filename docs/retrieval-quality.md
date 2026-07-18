@@ -635,10 +635,24 @@ When graph state is stale, signal/relation evidence is disabled while other
 recall remains available. Migration requires a full reindex and may be costly;
 P5 makes no P6 latency claim.
 
-The requested fast-context comparison on the same pinned PetClinic checkout
-could not produce a result because the configured service rejected the call
-under its tenant privacy policy. It returned no file/range candidates, so there
-is no honest overlap table; this availability result is recorded as non-gating.
+A later explicitly authorized fast-context rerun on the same pinned PetClinic
+checkout and exact query succeeded. The service used `tree_depth=1`,
+`hotspot_depth=3`, `max_turns=3`, and `max_results=12`; it returned 12 paths,
+with 4 selected by the model search and 8 added by grep expansion. Its result
+and the 12-path CST final pack shared 7 paths: 58.3% coverage from either side
+and a 41.2% Jaccard overlap across the 17-path union. All four model-selected
+fast-context paths were present in the CST pack: `OwnerControllerTests.java`,
+`OwnerController.java`, `Owner.java`, and `OwnerRepository.java`.
+
+Both systems therefore covered the controller, repository, owner domain type,
+and controller test explicitly requested by the query. Fast-context concentrated
+those four files at ranks 1-4 and uniquely added `package-info.java`,
+`PetType.java`, `ClinicServiceTests.java`, `ownersList.html`, and
+`ownerDetails.html`. CST uniquely added `VetController.java`,
+`PetTypeRepository.java`, `VetRepository.java`, `Pet.java`, and
+`CacheConfiguration.java`, reflecting a broader backend graph expansion. This
+comparison remains qualitative and non-gating because the external service does
+not expose CST's context-pack, budget, role, or trace contract.
 
 Protected SHA-256 identities stayed:
 `ac7a9789098d088a22b8ddc78fed3128695cbb257923de8686c41fbcfa5824c5`

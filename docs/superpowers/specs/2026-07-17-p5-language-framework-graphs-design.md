@@ -1658,6 +1658,7 @@ remote payload. Stale graph state disables graph evidence while preserving
 other recall. V4-to-v5 requires full reindex and carries no P6 latency promise.
 
 Exact hashes, real-case budgets, skip identities, and the non-gating
-fast-context tenant-privacy rejection are recorded in
-`docs/retrieval-quality.md`. Phase 5 is complete, Phase 1 remains independently
-pending at 6/7, and Phase 6 is next.
+fast-context comparison are recorded in `docs/retrieval-quality.md`. The same
+12-path PetClinic query shared 7 paths, including all four paths selected by
+fast-context's model search, before its grep expansion. Phase 5 is complete,
+Phase 1 remains independently pending at 6/7, and Phase 6 is next.

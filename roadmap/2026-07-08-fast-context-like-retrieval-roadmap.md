@@ -344,9 +344,10 @@ Acceptance evidence:
   xfails, including the local Ollama BGE integration;
 - parsers/resolver are local and no-fetch; remote embedding disclosure and
   full-v5-reindex cost are documented without making a P6 latency claim;
-- the requested fast-context comparison returned no candidates because the
-  configured service rejected it under tenant privacy policy, so it remains
-  an honest non-gating availability result.
+- the same-query fast-context comparison returned 12 paths; the 12-path CST
+  final pack shared 7 (58.3% each-side coverage, 41.2% Jaccard), including all
+  four model-selected fast-context paths before grep expansion; the comparison
+  remains qualitative and non-gating.
 
 Phase 1 remains independently pending at 6/7. Phase 6 is next.
 
