@@ -241,13 +241,16 @@ cst stats /path/to/repo
 
 ### `explain`
 
-解释某个 `file:line` 命中了哪个 chunk。
+解释某个 `file:line` 命中的索引 chunk，并返回以该 chunk 为中心的有界图投影。
 
 ```bash
 cst explain /path/to/repo src/main/java/App.java:42
 ```
 
-输出包括 chunk id、chunk 类型、行号范围、符号、lexical tokens、embedding id 和 metadata。
+输出包括 chunk id、chunk 类型、行号范围、符号、lexical tokens、embedding id 和
+metadata；图投影包括图状态、signal schema 版本、signals、incoming/outgoing relations，
+以及三类结果各自的 omission count。图投影有固定上限，omission count 大于 0 表示仍有
+未返回的图数据。
 
 ### `clean`
 
@@ -269,7 +272,9 @@ Available tools:
 - `context_search_context(repo, query, context_lines, full_file, final_top_k, max_items, max_context_bytes)` returns a self-contained ContextPack schema version 2 from one raw retrieval pass while preserving the raw query string and bounded retrieval counts.
 - `context_search_explore(repo, query, context_lines, full_file, final_top_k, max_items, max_context_bytes)` explicitly runs bounded controlled exploration and returns the same final ContextPack v2 plus ExplorationTrace v2.
 - `context_search_stats(repo)` returns index counts and embedding configuration.
-- `context_search_explain(repo, location)` explains the chunk covering a `file:line` location.
+- `context_search_explain(repo, location)` returns the indexed chunk covering a `file:line` location plus a bounded graph projection with graph status/schema, signals, incoming/outgoing relations, and omission counts.
+
+Recommended progressive flow: use `context_search_query` or `context_search_context` to find candidate locations, call `context_search_explain` only for selected `file:line` locations, then inspect the graph status/schema and omission counts before following the returned relations.
 
 The MCP server intentionally does not expose `clean`, because deleting index state is too destructive for an agent-facing default tool.
 

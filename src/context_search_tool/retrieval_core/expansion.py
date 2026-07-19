@@ -87,32 +87,44 @@ def anchor_candidates(
     expanded: dict[str, RetrievalCandidate] = {}
     seed_ids = {candidate.chunk_id for candidate in direct_seeds}
     query_tokens = tokens or []
-
-    for candidate in sorted(
+    sorted_direct_seeds = sorted(
         direct_seeds,
         key=lambda item: (
             -item.score_parts.get("direct_text", item.score),
             item.chunk_id,
         ),
-    ):
-        try:
-            anchor_chunk = store.chunk_for_id(candidate.chunk_id)
-        except KeyError:
+    )
+    chunks_by_id = store.chunks_for_ids(
+        [candidate.chunk_id for candidate in sorted_direct_seeds]
+    )
+    expanded_files: set[Path] = set()
+    expanded_directories: set[Path] = set()
+
+    for candidate in sorted_direct_seeds:
+        anchor_chunk = chunks_by_id.get(candidate.chunk_id)
+        if anchor_chunk is None:
             continue
         anchor_score = evidence_merge.bounded_score(
             candidate.score_parts.get("direct_text", candidate.score)
         )
-        _add_same_file_anchor_candidates(
-            store,
-            expanded,
-            seed_ids,
-            anchor_chunk,
-            anchor_score,
-            limit,
-            query,
-            query_tokens,
-        )
-        if _is_document_or_config_anchor(anchor_chunk.file_path):
+        if anchor_chunk.file_path not in expanded_files:
+            expanded_files.add(anchor_chunk.file_path)
+            _add_same_file_anchor_candidates(
+                store,
+                expanded,
+                seed_ids,
+                anchor_chunk,
+                anchor_score,
+                limit,
+                query,
+                query_tokens,
+            )
+        directory = anchor_chunk.file_path.parent
+        if (
+            _is_document_or_config_anchor(anchor_chunk.file_path)
+            and directory not in expanded_directories
+        ):
+            expanded_directories.add(directory)
             _add_directory_anchor_candidates(
                 store,
                 expanded,

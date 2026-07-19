@@ -116,7 +116,7 @@ def context_search_stats(repo: str) -> dict[str, Any]:
 
 @mcp.tool()
 def context_search_explain(repo: str, location: str) -> dict[str, Any]:
-    """Explain which indexed chunk covers a file:line location."""
+    """Return the indexed chunk and bounded graph projection for a file:line location."""
     return context_search_explain_tool(repo, location)
 
 

@@ -9289,6 +9289,124 @@ def test_evidence_anchors_do_not_contribute_to_summary(tmp_path: Path) -> None:
     assert followup_keywords == []
 
 
+def _anchor_test_chunk(
+    chunk_id: str,
+    file_path: str,
+    start_line: int = 1,
+) -> DocumentChunk:
+    path = Path(file_path)
+    return DocumentChunk(
+        chunk_id=chunk_id,
+        file_path=path,
+        start_line=start_line,
+        end_line=start_line + 9,
+        content=chunk_id.replace("-", " "),
+        chunk_type="file" if path.suffix.lower() == ".md" else "symbol",
+        lexical_tokens=chunk_id.split("-"),
+    )
+
+
+def _direct_text_seed(chunk_id: str, score: float) -> RetrievalCandidate:
+    return RetrievalCandidate(
+        chunk_id=chunk_id,
+        score=score,
+        source="direct_text",
+        score_parts={"direct_text": score},
+    )
+
+
+def _expected_anchor(
+    chunk_id: str,
+    score: float,
+    anchor_key: str,
+) -> tuple[str, float, str, dict[str, float]]:
+    return (
+        chunk_id,
+        score,
+        "anchored_relation",
+        {
+            "anchored_relation": score,
+            "original_relation": score,
+            anchor_key: score,
+        },
+    )
+
+
+def test_anchor_expansion_batches_deduplicates_and_preserves_results(
+    tmp_path: Path,
+) -> None:
+    from unittest.mock import patch
+
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+
+    chunks = [
+        _anchor_test_chunk("readme-seed", "docs/README.md"),
+        _anchor_test_chunk("readme-secondary-seed", "docs/README.md", 11),
+        _anchor_test_chunk("readme-neighbor", "docs/README.md", 21),
+        _anchor_test_chunk("guide-seed", "docs/GUIDE.md"),
+        _anchor_test_chunk("guide-neighbor", "docs/GUIDE.md", 11),
+        _anchor_test_chunk("alpha", "docs/Alpha.java"),
+        _anchor_test_chunk("later-seed", "src/Zeta.java"),
+    ]
+    chunks_by_file: dict[Path, list[DocumentChunk]] = {}
+    for chunk in chunks:
+        chunks_by_file.setdefault(chunk.file_path, []).append(chunk)
+    for file_path, file_chunks in chunks_by_file.items():
+        store.replace_chunks(file_path, file_chunks)
+
+    seed_candidates = [
+        _direct_text_seed("readme-secondary-seed", 0.9),
+        _direct_text_seed("missing-seed", 1.1),
+        _direct_text_seed("readme-seed", 1.0),
+        _direct_text_seed("readme-seed", 0.95),
+        _direct_text_seed("guide-seed", 0.8),
+        _direct_text_seed("later-seed", 0.7),
+    ]
+    with (
+        patch.object(store, "chunks_for_ids", wraps=store.chunks_for_ids)
+        as chunks_for_ids,
+        patch.object(store, "chunk_for_id", wraps=store.chunk_for_id)
+        as chunk_for_id,
+        patch.object(store, "chunks_for_file", wraps=store.chunks_for_file)
+        as chunks_for_file,
+        patch.object(
+            store, "chunks_in_directory", wraps=store.chunks_in_directory
+        ) as chunks_in_directory,
+    ):
+        expanded = expansion.anchor_candidates(
+            store,
+            seed_candidates,
+            ToolConfig(retrieval=RetrievalConfig(final_top_k=1)),
+        )
+
+    assert [
+        (candidate.chunk_id, candidate.score, candidate.source, candidate.score_parts)
+        for candidate in expanded
+    ] == [
+        _expected_anchor("readme-neighbor", 0.8, "same_file_anchor"),
+        _expected_anchor("alpha", 0.55, "directory_anchor"),
+        _expected_anchor("guide-neighbor", 0.6400000000000001, "same_file_anchor"),
+    ]
+    assert chunks_for_ids.call_count == 1
+    assert chunks_for_ids.call_args.args[0] == [
+        "missing-seed",
+        "readme-seed",
+        "readme-seed",
+        "readme-secondary-seed",
+        "guide-seed",
+        "later-seed",
+    ]
+    assert chunk_for_id.call_count == 0
+    assert [call.args[0] for call in chunks_for_file.call_args_list] == [
+        Path("docs/README.md"),
+        Path("docs/GUIDE.md"),
+    ]
+    assert [call.args[0] for call in chunks_in_directory.call_args_list] == [
+        Path("docs")
+    ]
+
+
 def test_evidence_anchors_still_seed_directory_expansion(tmp_path: Path) -> None:
     store = SQLiteStore(tmp_path / "index.sqlite")
     store.initialize()
@@ -11634,7 +11752,7 @@ def test_returned_bundle_spans_trigger_no_followup_store_or_file_access(
     assert bundle.results
     assert all(result.spans for result in bundle.results)
     assert counts_at_return["lexical_search"] == 1
-    assert counts_at_return["chunks_for_ids"] == 0
+    assert counts_at_return["chunks_for_ids"] == 1
     assert counts_at_return["read_text"] >= 1
 
     payload = query_payload(bundle)

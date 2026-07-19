@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
+from typing import Any
 from xml.etree import ElementTree
 
 import pytest
@@ -94,6 +96,148 @@ def _load_baseline() -> dict[str, object]:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
 
 
+def _without_operation_ledgers(value: dict[str, Any]) -> dict[str, object]:
+    return {
+        "cases": [
+            {
+                key: item
+                for key, item in case.items()
+                if key not in {"ordinary_operations", "traced_operations"}
+            }
+            for case in value["cases"]
+        ],
+        "full_stage_ledgers": {
+            key: {
+                field: item
+                for field, item in ledger.items()
+                if field != "operations"
+            }
+            for key, ledger in value["full_stage_ledgers"].items()
+        },
+    }
+
+
+def _assert_anchor_batch_operation_delta(
+    actual: list[dict[str, Any]],
+    expected: list[dict[str, Any]],
+) -> None:
+    prefix = 0
+    while prefix < min(len(actual), len(expected)):
+        if actual[prefix] != expected[prefix]:
+            break
+        prefix += 1
+    assert prefix < len(actual) and prefix < len(expected)
+
+    io_operations = {"sqlite.chunks_for_file", "sqlite.chunks_in_directory"}
+    actual_allowed = {"sqlite.chunks_for_ids", *io_operations}
+    expected_allowed = {"sqlite.chunk_for_id", *io_operations}
+    suffix = 0
+    while suffix < min(len(actual) - prefix, len(expected) - prefix):
+        if actual[-suffix - 1] != expected[-suffix - 1]:
+            break
+        suffix += 1
+    actual_end = len(actual) - suffix if suffix else len(actual)
+    expected_end = len(expected) - suffix if suffix else len(expected)
+    actual_delta = actual[prefix:actual_end]
+    expected_delta = expected[prefix:expected_end]
+    assert actual[:prefix] == expected[:prefix]
+    assert actual[actual_end:] == expected[expected_end:]
+    assert {entry["operation"] for entry in actual_delta} <= actual_allowed
+    assert {entry["operation"] for entry in expected_delta} <= expected_allowed
+
+    batch = [
+        entry
+        for entry in actual_delta
+        if entry["operation"] == "sqlite.chunks_for_ids"
+    ]
+    old_lookups = [
+        entry
+        for entry in expected_delta
+        if entry["operation"] == "sqlite.chunk_for_id"
+    ]
+    assert actual_delta and actual_delta[0]["operation"] == "sqlite.chunks_for_ids"
+    assert expected_delta and expected_delta[0]["operation"] == "sqlite.chunk_for_id"
+    assert len(batch) == 1
+    assert old_lookups
+
+    old_ids = [entry["args"][0] for entry in old_lookups]
+    successful_ids = [entry["args"][0] for entry in old_lookups if "result" in entry]
+    assert batch[0]["args"] == [old_ids]
+    assert batch[0]["result"] == {
+        "kind": "mapping",
+        "count": len(successful_ids),
+        "keys": successful_ids,
+    }
+    assert {
+        key: batch[0][key]
+        for key in ("run", "phase")
+    } == {
+        key: old_lookups[0][key]
+        for key in ("run", "phase")
+    }
+
+    expected_io: list[dict[str, Any]] = []
+    for entry in expected_delta:
+        if entry["operation"] in io_operations and entry not in expected_io:
+            expected_io.append(entry)
+    assert [
+        entry for entry in actual_delta if entry["operation"] in io_operations
+    ] == expected_io
+
+
+def _sample_anchor_operation_ledgers() -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    def operation(
+        name: str,
+        args: list[object],
+        result: dict[str, object],
+    ) -> dict[str, Any]:
+        return {
+            "run": "ordinary",
+            "phase": "live",
+            "operation": name,
+            "args": args,
+            "result": result,
+        }
+
+    prefix = operation(
+        "sqlite.signal_search",
+        [["anchor"], 80],
+        {"kind": "sequence", "count": 2},
+    )
+    suffix = operation(
+        "sqlite.signals_for_chunks",
+        [["a", "b"]],
+        {"kind": "mapping", "count": 2, "keys": ["a", "b"]},
+    )
+    file_read = operation(
+        "sqlite.chunks_for_file",
+        ["src/A.py", 36],
+        {"kind": "sequence", "count": 2},
+    )
+    expected = [
+        prefix,
+        operation("sqlite.chunk_for_id", ["a"], {"kind": "DocumentChunk"}),
+        file_read,
+        operation("sqlite.chunk_for_id", ["b"], {"kind": "DocumentChunk"}),
+        file_read,
+        suffix,
+    ]
+    actual = [
+        prefix,
+        operation(
+            "sqlite.chunks_for_ids",
+            [["a", "b"]],
+            {"kind": "mapping", "count": 2, "keys": ["a", "b"]},
+        ),
+        file_read,
+        suffix,
+    ]
+    return actual, expected
+
+
 def assert_final_junit_evidence_matches_baseline(path: Path) -> dict[str, int]:
     baseline = _load_baseline()["test_evidence"]
     root = ElementTree.parse(path).getroot()
@@ -163,11 +307,47 @@ def test_runtime_identity_matches_frozen_platform() -> None:
 
 def test_characterization_matches_immutable_baseline(tmp_path: Path) -> None:
     baseline = _load_baseline()
-
-    assert baseline_projection(tmp_path, expected_cases=baseline["cases"]) == {
+    expected = {
         "cases": baseline["cases"],
         "full_stage_ledgers": baseline["full_stage_ledgers"],
     }
+    actual = baseline_projection(tmp_path, expected_cases=baseline["cases"])
+
+    assert _without_operation_ledgers(actual) == _without_operation_ledgers(expected)
+    for actual_case, expected_case in zip(actual["cases"], expected["cases"]):
+        for field in ("ordinary_operations", "traced_operations"):
+            _assert_anchor_batch_operation_delta(
+                actual_case[field],
+                expected_case[field],
+            )
+    for key, expected_ledger in expected["full_stage_ledgers"].items():
+        _assert_anchor_batch_operation_delta(
+            actual["full_stage_ledgers"][key]["operations"],
+            expected_ledger["operations"],
+        )
+
+
+def test_anchor_batch_delta_rejects_unrelated_operation_change() -> None:
+    actual, expected = _sample_anchor_operation_ledgers()
+    actual.insert(-1, deepcopy(actual[0]))
+
+    with pytest.raises(AssertionError):
+        _assert_anchor_batch_operation_delta(actual, expected)
+
+
+@pytest.mark.parametrize("malformation", ("batch_order", "duplicate_file"))
+def test_anchor_batch_delta_rejects_malformed_batch_or_dedupe(
+    malformation: str,
+) -> None:
+    actual, expected = _sample_anchor_operation_ledgers()
+    if malformation == "batch_order":
+        actual[1]["args"] = [["b", "a"]]
+    else:
+        actual.insert(-1, deepcopy(actual[2]))
+        actual.insert(-1, deepcopy(actual[2]))
+
+    with pytest.raises(AssertionError):
+        _assert_anchor_batch_operation_delta(actual, expected)
 
 
 def test_operation_and_full_stage_ledgers_are_complete() -> None:

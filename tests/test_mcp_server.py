@@ -16,6 +16,9 @@ def test_mcp_server_imports() -> None:
     assert "raw ranked search" in mcp_server.context_search_query.__doc__.lower()
     assert "retrieval diagnostics" in mcp_server.context_search_trace.__doc__.lower()
     assert "agent-oriented" in mcp_server.context_search_context.__doc__.lower()
+    assert "bounded graph projection" in (
+        mcp_server.context_search_explain.__doc__ or ""
+    ).lower()
 
 
 def test_context_tool_adds_only_nullable_v2_budget_overrides() -> None:

@@ -174,6 +174,11 @@ P5_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/quality/runner.py",
 }
 
+LIGHTWEIGHT_GRAPH_REVIEWED_PRODUCTION_CHANGES = {
+    "src/context_search_tool/mcp_server.py",
+    "src/context_search_tool/retrieval_core/expansion.py",
+}
+
 P4_IMPLEMENTATION_BASELINE = "b827707325d0ee4e9c6b2bcb3dee39955c263822"
 THIS_TEST_PATH = "tests/test_retrieval_core_boundaries.py"
 
@@ -837,7 +842,11 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
     )
 
     assert EXPECTED_P4_PRODUCTION_DIFF <= changed
-    assert changed <= EXPECTED_P4_PRODUCTION_DIFF | P5_REVIEWED_PRODUCTION_CHANGES
+    assert changed <= (
+        EXPECTED_P4_PRODUCTION_DIFF
+        | P5_REVIEWED_PRODUCTION_CHANGES
+        | LIGHTWEIGHT_GRAPH_REVIEWED_PRODUCTION_CHANGES
+    )
 
     source_status = subprocess.run(
         (
@@ -854,7 +863,10 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         text=True,
     ).stdout.splitlines()
     dirty_source_paths = {line[3:] for line in source_status}
-    assert dirty_source_paths <= P5_REVIEWED_PRODUCTION_CHANGES
+    assert dirty_source_paths <= (
+        P5_REVIEWED_PRODUCTION_CHANGES
+        | LIGHTWEIGHT_GRAPH_REVIEWED_PRODUCTION_CHANGES
+    )
 
     subprocess.run(
         (
