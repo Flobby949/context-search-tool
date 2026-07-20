@@ -1,0 +1,642 @@
+{
+  "schema_version": 1,
+  "implementation_commit": "e18e7dd1cb4e6d42ffe867e328a50b885a6b64f6",
+  "production_tree": "f3d89faaaa1c1be8a557817917da6dc9baa16664",
+  "query_manifest_sha256": "a8b2f2a68df4cdd52bf42a99062cb4a6558aba0de7a8f07540290f3917c7ab8a",
+  "cases": [
+    {
+      "case_id": "lexical_high",
+      "snapshot_a": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "ab12b1dd242f8fbe4807861d01bcbb2a1cc4cda957f4533f7c4fe40dc9542299",
+            "score": 1.2,
+            "source_parts": {
+              "lexical": 0.25579956863994613,
+              "path_symbol": 0.25,
+              "direct_text": 1.0,
+              "signal": 0.0,
+              "semantic": 0.0
+            }
+          }
+        ],
+        "final_result_sha256": "2b8a826447509f95c62729ee9de36ed567ccf2a7fae28b41d48d21185d4c175c"
+      },
+      "snapshot_b": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "ab12b1dd242f8fbe4807861d01bcbb2a1cc4cda957f4533f7c4fe40dc9542299",
+            "score": 1.2,
+            "source_parts": {
+              "lexical": 0.25579956863994613,
+              "path_symbol": 0.25,
+              "direct_text": 1.0,
+              "signal": 0.0,
+              "semantic": 0.0
+            }
+          }
+        ],
+        "final_result_sha256": "2b8a826447509f95c62729ee9de36ed567ccf2a7fae28b41d48d21185d4c175c"
+      }
+    },
+    {
+      "case_id": "lexical_low",
+      "snapshot_a": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "ab12b1dd242f8fbe4807861d01bcbb2a1cc4cda957f4533f7c4fe40dc9542299",
+            "score": 1.2,
+            "source_parts": {
+              "lexical": 0.3180216176093634,
+              "path_symbol": 0.25,
+              "direct_text": 1.0,
+              "signal": 0.0,
+              "semantic": 0.0
+            }
+          }
+        ],
+        "final_result_sha256": "ead2ad845c343061a8a3800a4f8b5874351e89497a862e8de078dfd5532d5cde"
+      },
+      "snapshot_b": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "ab12b1dd242f8fbe4807861d01bcbb2a1cc4cda957f4533f7c4fe40dc9542299",
+            "score": 1.2,
+            "source_parts": {
+              "lexical": 0.3180216176093634,
+              "path_symbol": 0.25,
+              "direct_text": 1.0,
+              "signal": 0.0,
+              "semantic": 0.0
+            }
+          }
+        ],
+        "final_result_sha256": "ead2ad845c343061a8a3800a4f8b5874351e89497a862e8de078dfd5532d5cde"
+      }
+    },
+    {
+      "case_id": "lexical_zero",
+      "snapshot_a": {
+        "ordered_candidates": [],
+        "final_result_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+      },
+      "snapshot_b": {
+        "ordered_candidates": [],
+        "final_result_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+      }
+    },
+    {
+      "case_id": "path_symbol_ambiguity",
+      "snapshot_a": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "04d25d8b7cfd781fafb03db4c52018f892b7ae865d0814916b74189b1a0870dd",
+            "score": 1.5,
+            "source_parts": {
+              "lexical": 0.27138276744370327,
+              "path_symbol": 2.0,
+              "direct_text": 1.0,
+              "signal": 1.0,
+              "semantic": 0.0
+            }
+          },
+          {
+            "candidate_id": "258d89ac5564af03764c0904bdd9f1a8ddfece296d33d91c8b39751eb1756a0a",
+            "score": 0.9785798310009355,
+            "source_parts": {
+              "lexical": 0.2663457678160643,
+              "path_symbol": 2.0,
+              "direct_text": 1.0,
+              "signal": 1.0,
+              "semantic": 0.0
+            }
+          }
+        ],
+        "final_result_sha256": "ca3a1ce651920c9f04af8399b0a7e0ad99dbfde0cd7a2ec32c49d1780ea627d1"
+      },
+      "snapshot_b": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "04d25d8b7cfd781fafb03db4c52018f892b7ae865d0814916b74189b1a0870dd",
+            "score": 1.5,
+            "source_parts": {
+              "lexical": 0.27138276744370327,
+              "path_symbol": 2.0,
+              "direct_text": 1.0,
+              "signal": 1.0,
+              "semantic": 0.0
+            }
+          },
+          {
+            "candidate_id": "258d89ac5564af03764c0904bdd9f1a8ddfece296d33d91c8b39751eb1756a0a",
+            "score": 0.9785798310009355,
+            "source_parts": {
+              "lexical": 0.2663457678160643,
+              "path_symbol": 2.0,
+              "direct_text": 1.0,
+              "signal": 1.0,
+              "semantic": 0.0
+            }
+          }
+        ],
+        "final_result_sha256": "ca3a1ce651920c9f04af8399b0a7e0ad99dbfde0cd7a2ec32c49d1780ea627d1"
+      }
+    },
+    {
+      "case_id": "direct_ascii",
+      "snapshot_a": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "7a20b273f06c3e2f386c854b200751645d24d929ae01237dce5e9f71359a207c",
+            "score": 1.2,
+            "source_parts": {
+              "lexical": 0.10776822904176861,
+              "path_symbol": 1.75,
+              "direct_text": 1.0,
+              "signal": 0.25,
+              "semantic": 0.0
+            }
+          }
+        ],
+        "final_result_sha256": "ec18b36a8bb693eff389da93b7b191163c2a193a657671734c007604ef1d71da"
+      },
+      "snapshot_b": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "7a20b273f06c3e2f386c854b200751645d24d929ae01237dce5e9f71359a207c",
+            "score": 1.2,
+            "source_parts": {
+              "lexical": 0.10776822904176861,
+              "path_symbol": 1.75,
+              "direct_text": 1.0,
+              "signal": 0.25,
+              "semantic": 0.0
+            }
+          }
+        ],
+        "final_result_sha256": "ec18b36a8bb693eff389da93b7b191163c2a193a657671734c007604ef1d71da"
+      }
+    },
+    {
+      "case_id": "direct_cjk",
+      "snapshot_a": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "7a20b273f06c3e2f386c854b200751645d24d929ae01237dce5e9f71359a207c",
+            "score": 1.2,
+            "source_parts": {
+              "lexical": 0.06496471778842136,
+              "path_symbol": 2.5,
+              "direct_text": 1.0,
+              "signal": 0.0,
+              "semantic": 0.0
+            }
+          }
+        ],
+        "final_result_sha256": "d939b77d8e88573880e8c60655108f146258d58cd28158eafd3873c75fd5474e"
+      },
+      "snapshot_b": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "7a20b273f06c3e2f386c854b200751645d24d929ae01237dce5e9f71359a207c",
+            "score": 1.2,
+            "source_parts": {
+              "lexical": 0.06496471778842136,
+              "path_symbol": 2.5,
+              "direct_text": 1.0,
+              "signal": 0.0,
+              "semantic": 0.0
+            }
+          }
+        ],
+        "final_result_sha256": "d939b77d8e88573880e8c60655108f146258d58cd28158eafd3873c75fd5474e"
+      }
+    },
+    {
+      "case_id": "signal_metadata",
+      "snapshot_a": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "c3d5fe7eea63d08aa1d92c4a0343c08dab1c1dded93708b409d28f8682be73e2",
+            "score": 1.5299999999999998,
+            "source_parts": {
+              "lexical": 0.3475805193370051,
+              "path_symbol": 1.0,
+              "direct_text": 1.0,
+              "signal": 1.0,
+              "semantic": 0.0
+            }
+          }
+        ],
+        "final_result_sha256": "1e1ce469b28afa09c2f51831df09a78b30059fa8f1b30c6b44cad0668fb47b36"
+      },
+      "snapshot_b": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "c3d5fe7eea63d08aa1d92c4a0343c08dab1c1dded93708b409d28f8682be73e2",
+            "score": 1.5299999999999998,
+            "source_parts": {
+              "lexical": 0.3475805193370051,
+              "path_symbol": 1.0,
+              "direct_text": 1.0,
+              "signal": 1.0,
+              "semantic": 0.0
+            }
+          }
+        ],
+        "final_result_sha256": "1e1ce469b28afa09c2f51831df09a78b30059fa8f1b30c6b44cad0668fb47b36"
+      }
+    },
+    {
+      "case_id": "semantic_high",
+      "snapshot_a": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "874b660aaa6164ccccefb703628aa92deb255bc685d1569d10d689a325a6836b",
+            "score": 1.2,
+            "source_parts": {
+              "lexical": 0.1009198407495484,
+              "path_symbol": 1.0,
+              "direct_text": 1.0,
+              "signal": 0.0,
+              "semantic": 0.47193992137908936
+            }
+          },
+          {
+            "candidate_id": "c3d5fe7eea63d08aa1d92c4a0343c08dab1c1dded93708b409d28f8682be73e2",
+            "score": 0.4703949812584645,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.0,
+              "semantic": 0.05933908745646477
+            }
+          },
+          {
+            "candidate_id": "04d25d8b7cfd781fafb03db4c52018f892b7ae865d0814916b74189b1a0870dd",
+            "score": 0.14855082386816731,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.0,
+              "semantic": 0.07453560084104538
+            }
+          },
+          {
+            "candidate_id": "7820aac92331c57df518f617ff882385137e165286d37b419c020cefd5af2204",
+            "score": 0.1454083212093157,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.0,
+              "semantic": 0.0686802789568901
+            }
+          },
+          {
+            "candidate_id": "7a20b273f06c3e2f386c854b200751645d24d929ae01237dce5e9f71359a207c",
+            "score": 0.14039498125846453,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.0,
+              "semantic": 0.05933908745646477
+            }
+          },
+          {
+            "candidate_id": "ab12b1dd242f8fbe4807861d01bcbb2a1cc4cda957f4533f7c4fe40dc9542299",
+            "score": 0.13667847626986085,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.0,
+              "semantic": 0.052414245903491974
+            }
+          },
+          {
+            "candidate_id": "258d89ac5564af03764c0904bdd9f1a8ddfece296d33d91c8b39751eb1756a0a",
+            "score": -0.25,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.0,
+              "semantic": 0.07808688282966614
+            }
+          }
+        ],
+        "final_result_sha256": "ac0d8d64fd1638cd9f5ed00f31801fcc70af9dcbdddc13a28caf73d6285a7a81"
+      },
+      "snapshot_b": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "874b660aaa6164ccccefb703628aa92deb255bc685d1569d10d689a325a6836b",
+            "score": 1.2,
+            "source_parts": {
+              "lexical": 0.1009198407495484,
+              "path_symbol": 1.0,
+              "direct_text": 1.0,
+              "signal": 0.0,
+              "semantic": 0.47193992137908936
+            }
+          },
+          {
+            "candidate_id": "c3d5fe7eea63d08aa1d92c4a0343c08dab1c1dded93708b409d28f8682be73e2",
+            "score": 0.4703949812584645,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.0,
+              "semantic": 0.05933908745646477
+            }
+          },
+          {
+            "candidate_id": "04d25d8b7cfd781fafb03db4c52018f892b7ae865d0814916b74189b1a0870dd",
+            "score": 0.14855082386816731,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.0,
+              "semantic": 0.07453560084104538
+            }
+          },
+          {
+            "candidate_id": "7820aac92331c57df518f617ff882385137e165286d37b419c020cefd5af2204",
+            "score": 0.1454083212093157,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.0,
+              "semantic": 0.0686802789568901
+            }
+          },
+          {
+            "candidate_id": "7a20b273f06c3e2f386c854b200751645d24d929ae01237dce5e9f71359a207c",
+            "score": 0.14039498125846453,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.0,
+              "semantic": 0.05933908745646477
+            }
+          },
+          {
+            "candidate_id": "ab12b1dd242f8fbe4807861d01bcbb2a1cc4cda957f4533f7c4fe40dc9542299",
+            "score": 0.13667847626986085,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.0,
+              "semantic": 0.052414245903491974
+            }
+          },
+          {
+            "candidate_id": "258d89ac5564af03764c0904bdd9f1a8ddfece296d33d91c8b39751eb1756a0a",
+            "score": -0.25,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.0,
+              "semantic": 0.07808688282966614
+            }
+          }
+        ],
+        "final_result_sha256": "ac0d8d64fd1638cd9f5ed00f31801fcc70af9dcbdddc13a28caf73d6285a7a81"
+      }
+    },
+    {
+      "case_id": "planner_off_ordinary",
+      "snapshot_a": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "7820aac92331c57df518f617ff882385137e165286d37b419c020cefd5af2204",
+            "score": 1.3399999999999999,
+            "source_parts": {
+              "lexical": 0.18548613630401187,
+              "path_symbol": 2.25,
+              "direct_text": 1.0,
+              "signal": 0.6666666666666666,
+              "semantic": 0.0
+            }
+          },
+          {
+            "candidate_id": "c3d5fe7eea63d08aa1d92c4a0343c08dab1c1dded93708b409d28f8682be73e2",
+            "score": 1.2187796183398967,
+            "source_parts": {
+              "lexical": 0.2302482230186112,
+              "path_symbol": 1.5,
+              "direct_text": 1.0,
+              "signal": 0.3333333333333333,
+              "semantic": 0.0
+            }
+          }
+        ],
+        "final_result_sha256": "e7de3dd2444d5a0bfa4a8d2f5c2d5ca359783293ba6be8f099d63f5f1078e034"
+      },
+      "snapshot_b": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "7820aac92331c57df518f617ff882385137e165286d37b419c020cefd5af2204",
+            "score": 1.3399999999999999,
+            "source_parts": {
+              "lexical": 0.18548613630401187,
+              "path_symbol": 2.25,
+              "direct_text": 1.0,
+              "signal": 0.6666666666666666,
+              "semantic": 0.0
+            }
+          },
+          {
+            "candidate_id": "c3d5fe7eea63d08aa1d92c4a0343c08dab1c1dded93708b409d28f8682be73e2",
+            "score": 1.2187796183398967,
+            "source_parts": {
+              "lexical": 0.2302482230186112,
+              "path_symbol": 1.5,
+              "direct_text": 1.0,
+              "signal": 0.3333333333333333,
+              "semantic": 0.0
+            }
+          }
+        ],
+        "final_result_sha256": "e7de3dd2444d5a0bfa4a8d2f5c2d5ca359783293ba6be8f099d63f5f1078e034"
+      }
+    },
+    {
+      "case_id": "p4_explore",
+      "snapshot_a": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "c3d5fe7eea63d08aa1d92c4a0343c08dab1c1dded93708b409d28f8682be73e2",
+            "score": 1.3936194239814421,
+            "source_parts": {
+              "lexical": 0.47295196844198906,
+              "path_symbol": 1.0,
+              "direct_text": 0.6,
+              "signal": 0.25,
+              "semantic": 0.0
+            }
+          },
+          {
+            "candidate_id": "7820aac92331c57df518f617ff882385137e165286d37b419c020cefd5af2204",
+            "score": 1.2,
+            "source_parts": {
+              "lexical": 0.7345414009920206,
+              "path_symbol": 1.25,
+              "direct_text": 0.6,
+              "signal": 0.25,
+              "semantic": 0.0
+            }
+          },
+          {
+            "candidate_id": "258d89ac5564af03764c0904bdd9f1a8ddfece296d33d91c8b39751eb1756a0a",
+            "score": 0.36949592124045694,
+            "source_parts": {
+              "lexical": 0.29582777979056957,
+              "path_symbol": 1.0,
+              "direct_text": 0.2,
+              "signal": 0.3333333333333333,
+              "semantic": 0.0
+            }
+          },
+          {
+            "candidate_id": "04d25d8b7cfd781fafb03db4c52018f892b7ae865d0814916b74189b1a0870dd",
+            "score": 0.28523327711374913,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.0,
+              "semantic": 0.0
+            }
+          },
+          {
+            "candidate_id": "ab12b1dd242f8fbe4807861d01bcbb2a1cc4cda957f4533f7c4fe40dc9542299",
+            "score": 0.24132858199380264,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.16666666666666666,
+              "semantic": 0.0
+            }
+          },
+          {
+            "candidate_id": "874b660aaa6164ccccefb703628aa92deb255bc685d1569d10d689a325a6836b",
+            "score": 0.24132858199380264,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.16666666666666666,
+              "semantic": 0.0
+            }
+          },
+          {
+            "candidate_id": "7a20b273f06c3e2f386c854b200751645d24d929ae01237dce5e9f71359a207c",
+            "score": 0.24132858199380264,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.16666666666666666,
+              "semantic": 0.0
+            }
+          }
+        ],
+        "final_result_sha256": "eb0161b943e24efc02723d4038231ed65a462e49ae70f5b30ffaf6d25471c8b4"
+      },
+      "snapshot_b": {
+        "ordered_candidates": [
+          {
+            "candidate_id": "c3d5fe7eea63d08aa1d92c4a0343c08dab1c1dded93708b409d28f8682be73e2",
+            "score": 1.3936194239814421,
+            "source_parts": {
+              "lexical": 0.47295196844198906,
+              "path_symbol": 1.0,
+              "direct_text": 0.6,
+              "signal": 0.25,
+              "semantic": 0.0
+            }
+          },
+          {
+            "candidate_id": "7820aac92331c57df518f617ff882385137e165286d37b419c020cefd5af2204",
+            "score": 1.2,
+            "source_parts": {
+              "lexical": 0.7345414009920206,
+              "path_symbol": 1.25,
+              "direct_text": 0.6,
+              "signal": 0.25,
+              "semantic": 0.0
+            }
+          },
+          {
+            "candidate_id": "258d89ac5564af03764c0904bdd9f1a8ddfece296d33d91c8b39751eb1756a0a",
+            "score": 0.36949592124045694,
+            "source_parts": {
+              "lexical": 0.29582777979056957,
+              "path_symbol": 1.0,
+              "direct_text": 0.2,
+              "signal": 0.3333333333333333,
+              "semantic": 0.0
+            }
+          },
+          {
+            "candidate_id": "04d25d8b7cfd781fafb03db4c52018f892b7ae865d0814916b74189b1a0870dd",
+            "score": 0.28523327711374913,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.0,
+              "semantic": 0.0
+            }
+          },
+          {
+            "candidate_id": "ab12b1dd242f8fbe4807861d01bcbb2a1cc4cda957f4533f7c4fe40dc9542299",
+            "score": 0.24132858199380264,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.16666666666666666,
+              "semantic": 0.0
+            }
+          },
+          {
+            "candidate_id": "874b660aaa6164ccccefb703628aa92deb255bc685d1569d10d689a325a6836b",
+            "score": 0.24132858199380264,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.16666666666666666,
+              "semantic": 0.0
+            }
+          },
+          {
+            "candidate_id": "7a20b273f06c3e2f386c854b200751645d24d929ae01237dce5e9f71359a207c",
+            "score": 0.24132858199380264,
+            "source_parts": {
+              "lexical": 0.0,
+              "path_symbol": 0.0,
+              "direct_text": 0.0,
+              "signal": 0.16666666666666666,
+              "semantic": 0.0
+            }
+          }
+        ],
+        "final_result_sha256": "eb0161b943e24efc02723d4038231ed65a462e49ae70f5b30ffaf6d25471c8b4"
+      }
+    }
+  ]
+}

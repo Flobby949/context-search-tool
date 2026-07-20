@@ -1,0 +1,1320 @@
+{
+  "fixture_schema_version": 1,
+  "canonical_report_keys": [
+    "schema_version",
+    "health",
+    "queryable",
+    "queryability_evidence",
+    "availability",
+    "observation",
+    "freshness",
+    "coverage",
+    "integrity",
+    "vectors",
+    "indexed_embedding",
+    "configured_embedding",
+    "embedding_config_match",
+    "refresh",
+    "writer",
+    "diagnostics"
+  ],
+  "cases": [
+    {
+      "id": "missing",
+      "report": {
+        "schema_version": 1,
+        "health": "missing",
+        "queryable": false,
+        "queryability_evidence": "none",
+        "availability": "missing",
+        "observation": {
+          "started_at_epoch_ms": null,
+          "completed_at_epoch_ms": null,
+          "inventory_status": "not_inspected",
+          "unscannable_subtree_count": null,
+          "control_file_error_count": null,
+          "change_token_kind": null,
+          "limitations": null
+        },
+        "freshness": {
+          "status": "unknown",
+          "inspection_mode": "none",
+          "indexed_at_epoch_s": null,
+          "age_seconds": null,
+          "added": null,
+          "changed": null,
+          "deleted": null,
+          "metadata_unchanged": null,
+          "content_verified": null,
+          "samples": null,
+          "sample_limit": 20,
+          "sampled_total": null,
+          "evidence_generation": null
+        },
+        "coverage": {
+          "status": "unknown",
+          "evidence": "not_inspected",
+          "indexed_files": null,
+          "coverage_skips": null,
+          "pending_inspection": null,
+          "pending_retry": null,
+          "skip_counts": null,
+          "skip_samples": null,
+          "excluded_counts": null
+        },
+        "integrity": {
+          "status": "unchecked",
+          "manifest": "missing",
+          "sqlite": "missing",
+          "graph": "missing",
+          "graph_stale_reason": null,
+          "vector": "missing"
+        },
+        "vectors": {
+          "generation": null,
+          "eligible_chunks": null,
+          "rows": null,
+          "coverage_ratio": null,
+          "coverage_evidence": "not_inspected",
+          "missing_ids": null,
+          "orphan_ids": null,
+          "dimensions": null
+        },
+        "indexed_embedding": {
+          "status": "missing",
+          "provider": null,
+          "model": null,
+          "dimensions": null,
+          "config_hash": null,
+          "network_egress_capable": true,
+          "network_egress_evidence": "index_missing"
+        },
+        "configured_embedding": {
+          "status": "not_inspected",
+          "provider": null,
+          "model": null,
+          "dimensions": null,
+          "config_hash": null,
+          "network_egress_capable": true,
+          "network_egress_evidence": "not_inspected"
+        },
+        "embedding_config_match": null,
+        "refresh": {
+          "required": true,
+          "kind": "authoritative",
+          "reasons": [],
+          "recommended_action": "index"
+        },
+        "writer": {
+          "active": null,
+          "state": "not_inspected",
+          "evidence": "not_inspected"
+        },
+        "diagnostics": null
+      }
+    },
+    {
+      "id": "future_manifest",
+      "report": {
+        "schema_version": 1,
+        "health": "incompatible",
+        "queryable": false,
+        "queryability_evidence": "none",
+        "availability": "incompatible",
+        "observation": {
+          "started_at_epoch_ms": null,
+          "completed_at_epoch_ms": null,
+          "inventory_status": "not_inspected",
+          "unscannable_subtree_count": null,
+          "control_file_error_count": null,
+          "change_token_kind": null,
+          "limitations": null
+        },
+        "freshness": {
+          "status": "unknown",
+          "inspection_mode": "none",
+          "indexed_at_epoch_s": null,
+          "age_seconds": null,
+          "added": null,
+          "changed": null,
+          "deleted": null,
+          "metadata_unchanged": null,
+          "content_verified": null,
+          "samples": null,
+          "sample_limit": 20,
+          "sampled_total": null,
+          "evidence_generation": null
+        },
+        "coverage": {
+          "status": "unknown",
+          "evidence": "not_inspected",
+          "indexed_files": null,
+          "coverage_skips": null,
+          "pending_inspection": null,
+          "pending_retry": null,
+          "skip_counts": null,
+          "skip_samples": null,
+          "excluded_counts": null
+        },
+        "integrity": {
+          "status": "unchecked",
+          "manifest": "incompatible",
+          "sqlite": "not_inspected",
+          "graph": "not_inspected",
+          "graph_stale_reason": null,
+          "vector": "not_inspected"
+        },
+        "vectors": {
+          "generation": null,
+          "eligible_chunks": null,
+          "rows": null,
+          "coverage_ratio": null,
+          "coverage_evidence": "not_inspected",
+          "missing_ids": null,
+          "orphan_ids": null,
+          "dimensions": null
+        },
+        "indexed_embedding": {
+          "status": "not_inspected",
+          "provider": null,
+          "model": null,
+          "dimensions": null,
+          "config_hash": null,
+          "network_egress_capable": true,
+          "network_egress_evidence": "not_inspected"
+        },
+        "configured_embedding": {
+          "status": "not_inspected",
+          "provider": null,
+          "model": null,
+          "dimensions": null,
+          "config_hash": null,
+          "network_egress_capable": true,
+          "network_egress_evidence": "not_inspected"
+        },
+        "embedding_config_match": null,
+        "refresh": {
+          "required": true,
+          "kind": "authoritative",
+          "reasons": [],
+          "recommended_action": "use_compatible_version"
+        },
+        "writer": {
+          "active": null,
+          "state": "not_inspected",
+          "evidence": "not_inspected"
+        },
+        "diagnostics": null
+      }
+    },
+    {
+      "id": "future_operational",
+      "report": {
+        "schema_version": 1,
+        "health": "incompatible",
+        "queryable": false,
+        "queryability_evidence": "none",
+        "availability": "incompatible",
+        "observation": {
+          "started_at_epoch_ms": null,
+          "completed_at_epoch_ms": null,
+          "inventory_status": "not_inspected",
+          "unscannable_subtree_count": null,
+          "control_file_error_count": null,
+          "change_token_kind": null,
+          "limitations": null
+        },
+        "freshness": {
+          "status": "unknown",
+          "inspection_mode": "none",
+          "indexed_at_epoch_s": null,
+          "age_seconds": null,
+          "added": null,
+          "changed": null,
+          "deleted": null,
+          "metadata_unchanged": null,
+          "content_verified": null,
+          "samples": null,
+          "sample_limit": 20,
+          "sampled_total": null,
+          "evidence_generation": null
+        },
+        "coverage": {
+          "status": "unknown",
+          "evidence": "not_inspected",
+          "indexed_files": null,
+          "coverage_skips": null,
+          "pending_inspection": null,
+          "pending_retry": null,
+          "skip_counts": null,
+          "skip_samples": null,
+          "excluded_counts": null
+        },
+        "integrity": {
+          "status": "unchecked",
+          "manifest": "valid",
+          "sqlite": "incompatible",
+          "graph": "not_inspected",
+          "graph_stale_reason": null,
+          "vector": "not_inspected"
+        },
+        "vectors": {
+          "generation": null,
+          "eligible_chunks": null,
+          "rows": null,
+          "coverage_ratio": null,
+          "coverage_evidence": "not_inspected",
+          "missing_ids": null,
+          "orphan_ids": null,
+          "dimensions": null
+        },
+        "indexed_embedding": {
+          "status": "not_inspected",
+          "provider": null,
+          "model": null,
+          "dimensions": null,
+          "config_hash": null,
+          "network_egress_capable": true,
+          "network_egress_evidence": "not_inspected"
+        },
+        "configured_embedding": {
+          "status": "not_inspected",
+          "provider": null,
+          "model": null,
+          "dimensions": null,
+          "config_hash": null,
+          "network_egress_capable": true,
+          "network_egress_evidence": "not_inspected"
+        },
+        "embedding_config_match": null,
+        "refresh": {
+          "required": true,
+          "kind": "authoritative",
+          "reasons": [],
+          "recommended_action": "use_compatible_version"
+        },
+        "writer": {
+          "active": null,
+          "state": "not_inspected",
+          "evidence": "not_inspected"
+        },
+        "diagnostics": null
+      }
+    },
+    {
+      "id": "future_graph",
+      "report": {
+        "schema_version": 1,
+        "health": "incompatible",
+        "queryable": false,
+        "queryability_evidence": "none",
+        "availability": "incompatible",
+        "observation": {
+          "started_at_epoch_ms": null,
+          "completed_at_epoch_ms": null,
+          "inventory_status": "not_inspected",
+          "unscannable_subtree_count": null,
+          "control_file_error_count": null,
+          "change_token_kind": null,
+          "limitations": null
+        },
+        "freshness": {
+          "status": "unknown",
+          "inspection_mode": "none",
+          "indexed_at_epoch_s": null,
+          "age_seconds": null,
+          "added": null,
+          "changed": null,
+          "deleted": null,
+          "metadata_unchanged": null,
+          "content_verified": null,
+          "samples": null,
+          "sample_limit": 20,
+          "sampled_total": null,
+          "evidence_generation": null
+        },
+        "coverage": {
+          "status": "unknown",
+          "evidence": "not_inspected",
+          "indexed_files": null,
+          "coverage_skips": null,
+          "pending_inspection": null,
+          "pending_retry": null,
+          "skip_counts": null,
+          "skip_samples": null,
+          "excluded_counts": null
+        },
+        "integrity": {
+          "status": "unchecked",
+          "manifest": "valid",
+          "sqlite": "valid_quick",
+          "graph": "incompatible",
+          "graph_stale_reason": null,
+          "vector": "not_inspected"
+        },
+        "vectors": {
+          "generation": null,
+          "eligible_chunks": null,
+          "rows": null,
+          "coverage_ratio": null,
+          "coverage_evidence": "not_inspected",
+          "missing_ids": null,
+          "orphan_ids": null,
+          "dimensions": null
+        },
+        "indexed_embedding": {
+          "status": "not_inspected",
+          "provider": null,
+          "model": null,
+          "dimensions": null,
+          "config_hash": null,
+          "network_egress_capable": true,
+          "network_egress_evidence": "not_inspected"
+        },
+        "configured_embedding": {
+          "status": "not_inspected",
+          "provider": null,
+          "model": null,
+          "dimensions": null,
+          "config_hash": null,
+          "network_egress_capable": true,
+          "network_egress_evidence": "not_inspected"
+        },
+        "embedding_config_match": null,
+        "refresh": {
+          "required": true,
+          "kind": "authoritative",
+          "reasons": [],
+          "recommended_action": "use_compatible_version"
+        },
+        "writer": {
+          "active": null,
+          "state": "not_inspected",
+          "evidence": "not_inspected"
+        },
+        "diagnostics": null
+      }
+    },
+    {
+      "id": "legacy_manifest_v1",
+      "report": {
+        "schema_version": 1,
+        "health": "degraded",
+        "queryable": true,
+        "queryability_evidence": "committed_snapshot_quick",
+        "availability": "present",
+        "observation": {
+          "started_at_epoch_ms": 1000,
+          "completed_at_epoch_ms": 1010,
+          "inventory_status": "complete",
+          "unscannable_subtree_count": 0,
+          "control_file_error_count": 0,
+          "change_token_kind": "mtime_ns+ctime_ns",
+          "limitations": [
+            "metadata_not_content_proof",
+            "vector_payload_content_not_verified"
+          ]
+        },
+        "freshness": {
+          "status": "unknown",
+          "inspection_mode": "quick",
+          "indexed_at_epoch_s": null,
+          "age_seconds": null,
+          "added": 0,
+          "changed": 0,
+          "deleted": 0,
+          "metadata_unchanged": 10,
+          "content_verified": 0,
+          "samples": [],
+          "sample_limit": 20,
+          "sampled_total": 0,
+          "evidence_generation": null
+        },
+        "coverage": {
+          "status": "unknown",
+          "evidence": "not_inspected",
+          "indexed_files": null,
+          "coverage_skips": null,
+          "pending_inspection": null,
+          "pending_retry": null,
+          "skip_counts": null,
+          "skip_samples": null,
+          "excluded_counts": null
+        },
+        "integrity": {
+          "status": "unchecked",
+          "manifest": "valid",
+          "sqlite": "valid_quick",
+          "graph": "ready",
+          "graph_stale_reason": "",
+          "vector": "valid_identity_and_size"
+        },
+        "vectors": {
+          "generation": "vectors-0001",
+          "eligible_chunks": 20,
+          "rows": 20,
+          "coverage_ratio": 1,
+          "coverage_evidence": "count_only",
+          "missing_ids": null,
+          "orphan_ids": null,
+          "dimensions": 384
+        },
+        "indexed_embedding": {
+          "status": "valid",
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "config_hash": "sha256:indexed",
+          "network_egress_capable": false,
+          "network_egress_evidence": "built_in_hash"
+        },
+        "configured_embedding": {
+          "status": "valid",
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "config_hash": "sha256:indexed",
+          "network_egress_capable": false,
+          "network_egress_evidence": "built_in_hash"
+        },
+        "embedding_config_match": true,
+        "refresh": {
+          "required": true,
+          "kind": "authoritative",
+          "reasons": [
+            "manifest_upgrade"
+          ],
+          "recommended_action": "index"
+        },
+        "writer": {
+          "active": false,
+          "state": "idle",
+          "evidence": "lock_probe"
+        },
+        "diagnostics": [
+          {
+            "code": "legacy_manifest",
+            "scope": "manifest",
+            "path": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "healthy_metadata",
+      "report": {
+        "schema_version": 1,
+        "health": "healthy_metadata",
+        "queryable": true,
+        "queryability_evidence": "committed_snapshot_quick",
+        "availability": "present",
+        "observation": {
+          "started_at_epoch_ms": 1000,
+          "completed_at_epoch_ms": 1010,
+          "inventory_status": "complete",
+          "unscannable_subtree_count": 0,
+          "control_file_error_count": 0,
+          "change_token_kind": "mtime_ns+ctime_ns",
+          "limitations": [
+            "metadata_not_content_proof",
+            "vector_payload_content_not_verified"
+          ]
+        },
+        "freshness": {
+          "status": "metadata_fresh",
+          "inspection_mode": "quick",
+          "indexed_at_epoch_s": 1,
+          "age_seconds": 0,
+          "added": 0,
+          "changed": 0,
+          "deleted": 0,
+          "metadata_unchanged": 10,
+          "content_verified": 0,
+          "samples": [],
+          "sample_limit": 20,
+          "sampled_total": 0,
+          "evidence_generation": "obs-0001"
+        },
+        "coverage": {
+          "status": "complete",
+          "evidence": "ready_snapshot",
+          "indexed_files": 10,
+          "coverage_skips": 0,
+          "pending_inspection": 0,
+          "pending_retry": 0,
+          "skip_counts": {
+            "too_large": 0,
+            "binary": 0,
+            "unreadable": 0,
+            "unsafe_path": 0,
+            "changed_during_read": 0,
+            "unsupported_encoding": 0
+          },
+          "skip_samples": [],
+          "excluded_counts": {
+            "ignored": 0,
+            "internal": 0,
+            "default_directory": 0,
+            "config_excluded": 0,
+            "unsupported_language": 0,
+            "pruned_directory": 0
+          }
+        },
+        "integrity": {
+          "status": "valid_quick",
+          "manifest": "valid",
+          "sqlite": "valid_quick",
+          "graph": "ready",
+          "graph_stale_reason": "",
+          "vector": "valid_identity_and_size"
+        },
+        "vectors": {
+          "generation": "vectors-0001",
+          "eligible_chunks": 20,
+          "rows": 20,
+          "coverage_ratio": 1,
+          "coverage_evidence": "count_only",
+          "missing_ids": null,
+          "orphan_ids": null,
+          "dimensions": 384
+        },
+        "indexed_embedding": {
+          "status": "valid",
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "config_hash": "sha256:indexed",
+          "network_egress_capable": false,
+          "network_egress_evidence": "built_in_hash"
+        },
+        "configured_embedding": {
+          "status": "valid",
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "config_hash": "sha256:indexed",
+          "network_egress_capable": false,
+          "network_egress_evidence": "built_in_hash"
+        },
+        "embedding_config_match": true,
+        "refresh": {
+          "required": false,
+          "kind": "none",
+          "reasons": [],
+          "recommended_action": "query"
+        },
+        "writer": {
+          "active": false,
+          "state": "idle",
+          "evidence": "lock_probe"
+        },
+        "diagnostics": []
+      }
+    },
+    {
+      "id": "healthy_verified",
+      "report": {
+        "schema_version": 1,
+        "health": "healthy_verified",
+        "queryable": true,
+        "queryability_evidence": "committed_snapshot_verified",
+        "availability": "present",
+        "observation": {
+          "started_at_epoch_ms": 1000,
+          "completed_at_epoch_ms": 1010,
+          "inventory_status": "complete",
+          "unscannable_subtree_count": 0,
+          "control_file_error_count": 0,
+          "change_token_kind": "mtime_ns+ctime_ns",
+          "limitations": []
+        },
+        "freshness": {
+          "status": "verified_fresh",
+          "inspection_mode": "verified",
+          "indexed_at_epoch_s": 1,
+          "age_seconds": 0,
+          "added": 0,
+          "changed": 0,
+          "deleted": 0,
+          "metadata_unchanged": 10,
+          "content_verified": 10,
+          "samples": [],
+          "sample_limit": 20,
+          "sampled_total": 0,
+          "evidence_generation": "obs-0001"
+        },
+        "coverage": {
+          "status": "complete",
+          "evidence": "verified_workspace",
+          "indexed_files": 10,
+          "coverage_skips": 0,
+          "pending_inspection": 0,
+          "pending_retry": 0,
+          "skip_counts": {
+            "too_large": 0,
+            "binary": 0,
+            "unreadable": 0,
+            "unsafe_path": 0,
+            "changed_during_read": 0,
+            "unsupported_encoding": 0
+          },
+          "skip_samples": [],
+          "excluded_counts": {
+            "ignored": 0,
+            "internal": 0,
+            "default_directory": 0,
+            "config_excluded": 0,
+            "unsupported_language": 0,
+            "pruned_directory": 0
+          }
+        },
+        "integrity": {
+          "status": "valid_verified",
+          "manifest": "valid",
+          "sqlite": "valid_verified",
+          "graph": "ready",
+          "graph_stale_reason": "",
+          "vector": "valid_exact"
+        },
+        "vectors": {
+          "generation": "vectors-0001",
+          "eligible_chunks": 20,
+          "rows": 20,
+          "coverage_ratio": 1,
+          "coverage_evidence": "exact_ids",
+          "missing_ids": [],
+          "orphan_ids": [],
+          "dimensions": 384
+        },
+        "indexed_embedding": {
+          "status": "valid",
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "config_hash": "sha256:indexed",
+          "network_egress_capable": false,
+          "network_egress_evidence": "built_in_hash"
+        },
+        "configured_embedding": {
+          "status": "valid",
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "config_hash": "sha256:indexed",
+          "network_egress_capable": false,
+          "network_egress_evidence": "built_in_hash"
+        },
+        "embedding_config_match": true,
+        "refresh": {
+          "required": false,
+          "kind": "none",
+          "reasons": [],
+          "recommended_action": "query"
+        },
+        "writer": {
+          "active": false,
+          "state": "idle",
+          "evidence": "lock_probe"
+        },
+        "diagnostics": []
+      }
+    },
+    {
+      "id": "stale",
+      "report": {
+        "schema_version": 1,
+        "health": "stale",
+        "queryable": true,
+        "queryability_evidence": "committed_snapshot_quick",
+        "availability": "present",
+        "observation": {
+          "started_at_epoch_ms": 1000,
+          "completed_at_epoch_ms": 1010,
+          "inventory_status": "complete",
+          "unscannable_subtree_count": 0,
+          "control_file_error_count": 0,
+          "change_token_kind": "mtime_ns+ctime_ns",
+          "limitations": [
+            "metadata_not_content_proof",
+            "vector_payload_content_not_verified"
+          ]
+        },
+        "freshness": {
+          "status": "stale",
+          "inspection_mode": "quick",
+          "indexed_at_epoch_s": 1,
+          "age_seconds": 0,
+          "added": 0,
+          "changed": 1,
+          "deleted": 0,
+          "metadata_unchanged": 9,
+          "content_verified": 0,
+          "samples": [
+            {
+              "category": "changed",
+              "path": "src/app.py",
+              "reason": "source_changed"
+            }
+          ],
+          "sample_limit": 20,
+          "sampled_total": 1,
+          "evidence_generation": "obs-0001"
+        },
+        "coverage": {
+          "status": "complete",
+          "evidence": "ready_snapshot",
+          "indexed_files": 10,
+          "coverage_skips": 0,
+          "pending_inspection": 0,
+          "pending_retry": 0,
+          "skip_counts": {
+            "too_large": 0,
+            "binary": 0,
+            "unreadable": 0,
+            "unsafe_path": 0,
+            "changed_during_read": 0,
+            "unsupported_encoding": 0
+          },
+          "skip_samples": [],
+          "excluded_counts": {
+            "ignored": 0,
+            "internal": 0,
+            "default_directory": 0,
+            "config_excluded": 0,
+            "unsupported_language": 0,
+            "pruned_directory": 0
+          }
+        },
+        "integrity": {
+          "status": "valid_quick",
+          "manifest": "valid",
+          "sqlite": "valid_quick",
+          "graph": "ready",
+          "graph_stale_reason": "",
+          "vector": "valid_identity_and_size"
+        },
+        "vectors": {
+          "generation": "vectors-0001",
+          "eligible_chunks": 20,
+          "rows": 20,
+          "coverage_ratio": 1,
+          "coverage_evidence": "count_only",
+          "missing_ids": null,
+          "orphan_ids": null,
+          "dimensions": 384
+        },
+        "indexed_embedding": {
+          "status": "valid",
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "config_hash": "sha256:indexed",
+          "network_egress_capable": false,
+          "network_egress_evidence": "built_in_hash"
+        },
+        "configured_embedding": {
+          "status": "valid",
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "config_hash": "sha256:indexed",
+          "network_egress_capable": false,
+          "network_egress_evidence": "built_in_hash"
+        },
+        "embedding_config_match": true,
+        "refresh": {
+          "required": true,
+          "kind": "quick",
+          "reasons": [
+            "source_changed"
+          ],
+          "recommended_action": "refresh"
+        },
+        "writer": {
+          "active": false,
+          "state": "idle",
+          "evidence": "lock_probe"
+        },
+        "diagnostics": []
+      }
+    },
+    {
+      "id": "writer_interrupted",
+      "report": {
+        "schema_version": 1,
+        "health": "degraded",
+        "queryable": true,
+        "queryability_evidence": "committed_snapshot_quick",
+        "availability": "present",
+        "observation": {
+          "started_at_epoch_ms": 1000,
+          "completed_at_epoch_ms": 1010,
+          "inventory_status": "complete",
+          "unscannable_subtree_count": 0,
+          "control_file_error_count": 0,
+          "change_token_kind": "mtime_ns+ctime_ns",
+          "limitations": [
+            "metadata_not_content_proof",
+            "vector_payload_content_not_verified"
+          ]
+        },
+        "freshness": {
+          "status": "unknown",
+          "inspection_mode": "quick",
+          "indexed_at_epoch_s": 1,
+          "age_seconds": 0,
+          "added": 0,
+          "changed": 0,
+          "deleted": 0,
+          "metadata_unchanged": 10,
+          "content_verified": 0,
+          "samples": [],
+          "sample_limit": 20,
+          "sampled_total": 0,
+          "evidence_generation": "obs-0001"
+        },
+        "coverage": {
+          "status": "complete",
+          "evidence": "ready_snapshot",
+          "indexed_files": 10,
+          "coverage_skips": 0,
+          "pending_inspection": 0,
+          "pending_retry": 0,
+          "skip_counts": {
+            "too_large": 0,
+            "binary": 0,
+            "unreadable": 0,
+            "unsafe_path": 0,
+            "changed_during_read": 0,
+            "unsupported_encoding": 0
+          },
+          "skip_samples": [],
+          "excluded_counts": {
+            "ignored": 0,
+            "internal": 0,
+            "default_directory": 0,
+            "config_excluded": 0,
+            "unsupported_language": 0,
+            "pruned_directory": 0
+          }
+        },
+        "integrity": {
+          "status": "unchecked",
+          "manifest": "valid",
+          "sqlite": "valid_quick",
+          "graph": "ready",
+          "graph_stale_reason": "",
+          "vector": "valid_identity_and_size"
+        },
+        "vectors": {
+          "generation": "vectors-0001",
+          "eligible_chunks": 20,
+          "rows": 20,
+          "coverage_ratio": 1,
+          "coverage_evidence": "count_only",
+          "missing_ids": null,
+          "orphan_ids": null,
+          "dimensions": 384
+        },
+        "indexed_embedding": {
+          "status": "valid",
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "config_hash": "sha256:indexed",
+          "network_egress_capable": false,
+          "network_egress_evidence": "built_in_hash"
+        },
+        "configured_embedding": {
+          "status": "valid",
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "config_hash": "sha256:indexed",
+          "network_egress_capable": false,
+          "network_egress_evidence": "built_in_hash"
+        },
+        "embedding_config_match": true,
+        "refresh": {
+          "required": false,
+          "kind": "none",
+          "reasons": [],
+          "recommended_action": "retry_inspection"
+        },
+        "writer": {
+          "active": true,
+          "state": "active",
+          "evidence": "lock_probe"
+        },
+        "diagnostics": [
+          {
+            "code": "inspection_interrupted",
+            "scope": "writer",
+            "path": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "generation_interrupted",
+      "report": {
+        "schema_version": 1,
+        "health": "degraded",
+        "queryable": true,
+        "queryability_evidence": "committed_snapshot_quick",
+        "availability": "present",
+        "observation": {
+          "started_at_epoch_ms": 1000,
+          "completed_at_epoch_ms": 1010,
+          "inventory_status": "complete",
+          "unscannable_subtree_count": 0,
+          "control_file_error_count": 0,
+          "change_token_kind": "mtime_ns+ctime_ns",
+          "limitations": [
+            "metadata_not_content_proof",
+            "vector_payload_content_not_verified"
+          ]
+        },
+        "freshness": {
+          "status": "unknown",
+          "inspection_mode": "quick",
+          "indexed_at_epoch_s": 1,
+          "age_seconds": 0,
+          "added": 0,
+          "changed": 0,
+          "deleted": 0,
+          "metadata_unchanged": 10,
+          "content_verified": 0,
+          "samples": [],
+          "sample_limit": 20,
+          "sampled_total": 0,
+          "evidence_generation": "obs-0001"
+        },
+        "coverage": {
+          "status": "complete",
+          "evidence": "ready_snapshot",
+          "indexed_files": 10,
+          "coverage_skips": 0,
+          "pending_inspection": 0,
+          "pending_retry": 0,
+          "skip_counts": {
+            "too_large": 0,
+            "binary": 0,
+            "unreadable": 0,
+            "unsafe_path": 0,
+            "changed_during_read": 0,
+            "unsupported_encoding": 0
+          },
+          "skip_samples": [],
+          "excluded_counts": {
+            "ignored": 0,
+            "internal": 0,
+            "default_directory": 0,
+            "config_excluded": 0,
+            "unsupported_language": 0,
+            "pruned_directory": 0
+          }
+        },
+        "integrity": {
+          "status": "unchecked",
+          "manifest": "valid",
+          "sqlite": "valid_quick",
+          "graph": "ready",
+          "graph_stale_reason": "",
+          "vector": "valid_identity_and_size"
+        },
+        "vectors": {
+          "generation": "vectors-0001",
+          "eligible_chunks": 20,
+          "rows": 20,
+          "coverage_ratio": 1,
+          "coverage_evidence": "count_only",
+          "missing_ids": null,
+          "orphan_ids": null,
+          "dimensions": 384
+        },
+        "indexed_embedding": {
+          "status": "valid",
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "config_hash": "sha256:indexed",
+          "network_egress_capable": false,
+          "network_egress_evidence": "built_in_hash"
+        },
+        "configured_embedding": {
+          "status": "valid",
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "config_hash": "sha256:indexed",
+          "network_egress_capable": false,
+          "network_egress_evidence": "built_in_hash"
+        },
+        "embedding_config_match": true,
+        "refresh": {
+          "required": false,
+          "kind": "none",
+          "reasons": [],
+          "recommended_action": "retry_inspection"
+        },
+        "writer": {
+          "active": null,
+          "state": "unknown",
+          "evidence": "generation_drift"
+        },
+        "diagnostics": [
+          {
+            "code": "inspection_interrupted",
+            "scope": "generation",
+            "path": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "degraded_coverage",
+      "report": {
+        "schema_version": 1,
+        "health": "degraded",
+        "queryable": true,
+        "queryability_evidence": "committed_snapshot_quick",
+        "availability": "present",
+        "observation": {
+          "started_at_epoch_ms": 1000,
+          "completed_at_epoch_ms": 1010,
+          "inventory_status": "complete",
+          "unscannable_subtree_count": 0,
+          "control_file_error_count": 0,
+          "change_token_kind": "mtime_ns+ctime_ns",
+          "limitations": [
+            "metadata_not_content_proof",
+            "vector_payload_content_not_verified"
+          ]
+        },
+        "freshness": {
+          "status": "metadata_fresh",
+          "inspection_mode": "quick",
+          "indexed_at_epoch_s": 1,
+          "age_seconds": 0,
+          "added": 0,
+          "changed": 0,
+          "deleted": 0,
+          "metadata_unchanged": 10,
+          "content_verified": 0,
+          "samples": [],
+          "sample_limit": 20,
+          "sampled_total": 0,
+          "evidence_generation": "obs-0001"
+        },
+        "coverage": {
+          "status": "degraded",
+          "evidence": "ready_snapshot",
+          "indexed_files": 10,
+          "coverage_skips": 1,
+          "pending_inspection": 0,
+          "pending_retry": 1,
+          "skip_counts": {
+            "too_large": 0,
+            "binary": 0,
+            "unreadable": 1,
+            "unsafe_path": 0,
+            "changed_during_read": 0,
+            "unsupported_encoding": 0
+          },
+          "skip_samples": [
+            {
+              "path": "src/private.py",
+              "reason": "unreadable",
+              "retryable": true
+            }
+          ],
+          "excluded_counts": {
+            "ignored": 0,
+            "internal": 0,
+            "default_directory": 0,
+            "config_excluded": 0,
+            "unsupported_language": 0,
+            "pruned_directory": 0
+          }
+        },
+        "integrity": {
+          "status": "valid_quick",
+          "manifest": "valid",
+          "sqlite": "valid_quick",
+          "graph": "ready",
+          "graph_stale_reason": "",
+          "vector": "valid_identity_and_size"
+        },
+        "vectors": {
+          "generation": "vectors-0001",
+          "eligible_chunks": 20,
+          "rows": 20,
+          "coverage_ratio": 1,
+          "coverage_evidence": "count_only",
+          "missing_ids": null,
+          "orphan_ids": null,
+          "dimensions": 384
+        },
+        "indexed_embedding": {
+          "status": "valid",
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "config_hash": "sha256:indexed",
+          "network_egress_capable": false,
+          "network_egress_evidence": "built_in_hash"
+        },
+        "configured_embedding": {
+          "status": "valid",
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "config_hash": "sha256:indexed",
+          "network_egress_capable": false,
+          "network_egress_evidence": "built_in_hash"
+        },
+        "embedding_config_match": true,
+        "refresh": {
+          "required": true,
+          "kind": "quick",
+          "reasons": [
+            "coverage_changed"
+          ],
+          "recommended_action": "refresh"
+        },
+        "writer": {
+          "active": false,
+          "state": "idle",
+          "evidence": "lock_probe"
+        },
+        "diagnostics": [
+          {
+            "code": "coverage_pending",
+            "scope": "coverage",
+            "path": "src/private.py"
+          }
+        ]
+      }
+    },
+    {
+      "id": "stable_corruption",
+      "report": {
+        "schema_version": 1,
+        "health": "corrupt",
+        "queryable": false,
+        "queryability_evidence": "committed_snapshot_quick",
+        "availability": "corrupt",
+        "observation": {
+          "started_at_epoch_ms": 1000,
+          "completed_at_epoch_ms": 1010,
+          "inventory_status": "complete",
+          "unscannable_subtree_count": 0,
+          "control_file_error_count": 0,
+          "change_token_kind": "mtime_ns+ctime_ns",
+          "limitations": [
+            "metadata_not_content_proof",
+            "vector_payload_content_not_verified"
+          ]
+        },
+        "freshness": {
+          "status": "unknown",
+          "inspection_mode": "quick",
+          "indexed_at_epoch_s": 1,
+          "age_seconds": 0,
+          "added": 0,
+          "changed": 0,
+          "deleted": 0,
+          "metadata_unchanged": 10,
+          "content_verified": 0,
+          "samples": [],
+          "sample_limit": 20,
+          "sampled_total": 0,
+          "evidence_generation": "obs-0001"
+        },
+        "coverage": {
+          "status": "complete",
+          "evidence": "ready_snapshot",
+          "indexed_files": 10,
+          "coverage_skips": 0,
+          "pending_inspection": 0,
+          "pending_retry": 0,
+          "skip_counts": {
+            "too_large": 0,
+            "binary": 0,
+            "unreadable": 0,
+            "unsafe_path": 0,
+            "changed_during_read": 0,
+            "unsupported_encoding": 0
+          },
+          "skip_samples": [],
+          "excluded_counts": {
+            "ignored": 0,
+            "internal": 0,
+            "default_directory": 0,
+            "config_excluded": 0,
+            "unsupported_language": 0,
+            "pruned_directory": 0
+          }
+        },
+        "integrity": {
+          "status": "invalid",
+          "manifest": "valid",
+          "sqlite": "valid_quick",
+          "graph": "ready",
+          "graph_stale_reason": "",
+          "vector": "invalid"
+        },
+        "vectors": {
+          "generation": "vectors-0001",
+          "eligible_chunks": 20,
+          "rows": 20,
+          "coverage_ratio": 1,
+          "coverage_evidence": "count_only",
+          "missing_ids": null,
+          "orphan_ids": null,
+          "dimensions": 384
+        },
+        "indexed_embedding": {
+          "status": "valid",
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "config_hash": "sha256:indexed",
+          "network_egress_capable": false,
+          "network_egress_evidence": "built_in_hash"
+        },
+        "configured_embedding": {
+          "status": "valid",
+          "provider": "hash",
+          "model": "hash-v1",
+          "dimensions": 384,
+          "config_hash": "sha256:indexed",
+          "network_egress_capable": false,
+          "network_egress_evidence": "built_in_hash"
+        },
+        "embedding_config_match": true,
+        "refresh": {
+          "required": true,
+          "kind": "authoritative",
+          "reasons": [
+            "integrity_failed"
+          ],
+          "recommended_action": "index"
+        },
+        "writer": {
+          "active": false,
+          "state": "idle",
+          "evidence": "lock_probe"
+        },
+        "diagnostics": [
+          {
+            "code": "vector_identity_mismatch",
+            "scope": "vector",
+            "path": null
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -4,12 +4,12 @@ version = "0.1.0"
 description = "Local hybrid semantic retrieval for codebases"
 requires-python = ">=3.11"
 dependencies = [
-  "typer>=0.12.0",
-  "rich>=13.7.0",
-  "pathspec>=0.12.1",
-  "numpy>=1.26.0",
-  "requests>=2.32.0",
-  "mcp[cli]>=1.27,<2",
+  "typer==0.24.1",
+  "rich==15.0.0",
+  "pathspec==1.1.1",
+  "numpy==2.4.2",
+  "requests==2.32.5",
+  "mcp[cli]==1.27.2",
   "tree-sitter==0.26.0",
   "tree-sitter-java==0.23.5",
   "tree-sitter-javascript==0.25.0",
@@ -23,7 +23,9 @@ cst-mcp = "context_search_tool.mcp_server:main"
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.0.0"
+  "pytest==9.0.3",
+  "jsonschema==4.26.0",
+  "PyYAML==6.0.3"
 ]
 
 [build-system]

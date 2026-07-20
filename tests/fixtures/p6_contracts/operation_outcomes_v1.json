@@ -1,0 +1,84 @@
+{
+  "fixture_schema_version": 1,
+  "operations": [
+    "cli_status",
+    "cli_stats",
+    "mcp_status",
+    "mcp_stats",
+    "refresh"
+  ],
+  "states": [
+    {
+      "state": "missing_index",
+      "cli_status": "report_missing",
+      "cli_stats": "missing_index",
+      "mcp_status": "ok_missing",
+      "mcp_stats": "missing_index",
+      "refresh": "missing_index"
+    },
+    {
+      "state": "manifest_v1",
+      "cli_status": "report_degraded",
+      "cli_stats": "success",
+      "mcp_status": "ok_degraded",
+      "mcp_stats": "success_with_health",
+      "refresh": "authoritative_index_required"
+    },
+    {
+      "state": "v2_ready_or_stale",
+      "cli_status": "report",
+      "cli_stats": "success",
+      "mcp_status": "ok",
+      "mcp_stats": "success_with_health",
+      "refresh": "success_or_authoritative"
+    },
+    {
+      "state": "future_manifest",
+      "cli_status": "report_incompatible",
+      "cli_stats": "incompatible_manifest_schema",
+      "mcp_status": "ok_incompatible",
+      "mcp_stats": "incompatible_manifest_schema",
+      "refresh": "incompatible_manifest_schema"
+    },
+    {
+      "state": "future_operational",
+      "cli_status": "report_incompatible",
+      "cli_stats": "incompatible_operational_schema",
+      "mcp_status": "ok_incompatible",
+      "mcp_stats": "incompatible_operational_schema",
+      "refresh": "incompatible_operational_schema"
+    },
+    {
+      "state": "future_graph",
+      "cli_status": "report_incompatible",
+      "cli_stats": "incompatible_signal_schema",
+      "mcp_status": "ok_incompatible",
+      "mcp_stats": "incompatible_signal_schema",
+      "refresh": "incompatible_signal_schema"
+    },
+    {
+      "state": "stable_corruption",
+      "cli_status": "report_corrupt",
+      "cli_stats": "index_corrupt",
+      "mcp_status": "ok_corrupt",
+      "mcp_stats": "index_corrupt",
+      "refresh": "authoritative_index_required"
+    },
+    {
+      "state": "ready_writer_or_generation_drift",
+      "cli_status": "report_degraded_retry",
+      "cli_stats": "success_with_health",
+      "mcp_status": "ok_degraded_retry",
+      "mcp_stats": "success_with_health",
+      "refresh": "index_busy_or_workspace_changed"
+    },
+    {
+      "state": "stale_writer_or_generation_drift",
+      "cli_status": "report_stale_retry",
+      "cli_stats": "success_with_health",
+      "mcp_status": "ok_stale_retry",
+      "mcp_stats": "success_with_health",
+      "refresh": "index_busy_or_workspace_changed"
+    }
+  ]
+}
