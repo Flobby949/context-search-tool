@@ -1,0 +1,416 @@
+{
+  "schema_version": 1,
+  "generator": {
+    "version": "p6-generator-v1",
+    "contract_sha256": "d29403325893798bad60309b649c98eb5a5ed87217a39a697da0962ea42b75f2",
+    "seed": 20260718,
+    "network_allowed": false,
+    "real_source_allowed": false
+  },
+  "tiers": {
+    "smoke": {
+      "files": 1000,
+      "source_bytes": 25165824,
+      "chunks": 4000,
+      "chunk_text_bytes": 12582912,
+      "tokens": 80000,
+      "symbols": 8000,
+      "signals": 12000,
+      "relations": 16000,
+      "vector_bytes": 6186598
+    },
+    "large": {
+      "files": 20000,
+      "source_bytes": 536870912,
+      "chunks": 80000,
+      "chunk_text_bytes": 268435456,
+      "tokens": 1600000,
+      "symbols": 160000,
+      "signals": 240000,
+      "relations": 320000,
+      "vector_bytes": 122893107
+    },
+    "scale-5k": {
+      "files": 5000,
+      "source_bytes": 134217728,
+      "chunks": 20000,
+      "chunk_text_bytes": 67108864,
+      "tokens": 400000,
+      "symbols": 40000,
+      "signals": 60000,
+      "relations": 80000,
+      "vector_bytes": 30723277
+    },
+    "scale-10k": {
+      "files": 10000,
+      "source_bytes": 268435456,
+      "chunks": 40000,
+      "chunk_text_bytes": 134217728,
+      "tokens": 800000,
+      "symbols": 80000,
+      "signals": 120000,
+      "relations": 160000,
+      "vector_bytes": 61446554
+    },
+    "stress": {
+      "files": 50000,
+      "source_bytes": 1342177280,
+      "chunks": 200000,
+      "chunk_text_bytes": 671088640,
+      "tokens": 4000000,
+      "symbols": 400000,
+      "signals": 600000,
+      "relations": 800000,
+      "vector_bytes": 307232768
+    }
+  },
+  "distributions": {
+    "file_size_bytes": {
+      "percentile_method": "nearest_rank",
+      "p50": 24576,
+      "p95": 65536,
+      "max": 262144
+    },
+    "chunk_size_bytes": {
+      "p50": 3072,
+      "p95": 8192,
+      "max": 32768
+    },
+    "path_depth": {
+      "basis": "repository_relative_parts_including_filename",
+      "percentile_method": "nearest_rank",
+      "p50": 4,
+      "p95": 8,
+      "max": 16
+    },
+    "signal_metadata_bytes": {
+      "population": "persisted_v5_signals_including_module",
+      "percentile_method": "nearest_rank",
+      "p50": 96,
+      "p95": 512,
+      "max": 4096
+    },
+    "relation_out_degree": {
+      "population": "v5_type_relation_sources",
+      "percentile_method": "nearest_rank",
+      "p50": 2,
+      "p95": 8,
+      "max": 32
+    },
+    "relation_target_fan_in": {
+      "designed_ordinal_cycle": [1, 5, 10, 20],
+      "boundary_groups_may_be_partial": true,
+      "max": 20
+    },
+    "source_to_test_ratio": "4:1"
+  },
+  "selectivity_families": [
+    "high_hit",
+    "low_hit",
+    "zero_hit",
+    "high_ambiguity"
+  ],
+  "edit_schedule": {
+    "version": "p6-churn-v1",
+    "steps": 100,
+    "sample_every_steps": 10,
+    "sample_operations": [
+      "status",
+      "query"
+    ],
+    "cycle_length": 10,
+    "base_target_stride": 7,
+    "failure_variants": [
+      "directory_failure",
+      "control_file_failure"
+    ],
+    "control_file": ".gitignore",
+    "directory_failure_target": "generated/source",
+    "operation_counts": {
+      "add": 10,
+      "control_file_failure": 5,
+      "delete": 10,
+      "delete_added": 10,
+      "directory_failure": 5,
+      "equal_content_touch": 10,
+      "modify": 10,
+      "restore": 10,
+      "retryable_skip": 10,
+      "same_metadata_content_edit": 10,
+      "stable_skip": 10
+    },
+    "expected_trace_sha256": "caa8aea76b31a7e8ecdfda3b39b349dec639da8ffed9492c068919d8b697cd97"
+  },
+  "benchmark_registry": {
+    "version": "p6-benchmark-registry-v1",
+    "measurement_states": [
+      {
+        "id": "cli_process_cold",
+        "acceptance_evidence": true,
+        "informational_only": false
+      },
+      {
+        "id": "mcp_resident_warm",
+        "acceptance_evidence": true,
+        "informational_only": false
+      },
+      {
+        "id": "filesystem_cold_diagnostic",
+        "acceptance_evidence": false,
+        "informational_only": true
+      }
+    ],
+    "cases": [
+      {
+        "operation_id": "full_build",
+        "case_id": "default",
+        "protected_operation_id": "full_build",
+        "case_family": "index",
+        "tiers": ["smoke", "large", "scale-5k", "scale-10k", "stress"],
+        "planner_enabled": false,
+        "query_case_id": null,
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 5, "baseline_outcome": "supported"},
+          {"state": "filesystem_cold_diagnostic", "sample_count": 5, "baseline_outcome": "unsupported"}
+        ]
+      },
+      {
+        "operation_id": "authoritative_noop",
+        "case_id": "default",
+        "protected_operation_id": "authoritative_noop",
+        "case_family": "index",
+        "tiers": ["smoke", "large", "scale-5k", "scale-10k", "stress"],
+        "planner_enabled": false,
+        "query_case_id": null,
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 5, "baseline_outcome": "supported"},
+          {"state": "filesystem_cold_diagnostic", "sample_count": 5, "baseline_outcome": "unsupported"}
+        ]
+      },
+      {
+        "operation_id": "stats",
+        "case_id": "default",
+        "protected_operation_id": null,
+        "case_family": "status",
+        "tiers": ["smoke", "large", "scale-5k", "scale-10k", "stress"],
+        "planner_enabled": false,
+        "query_case_id": null,
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 20, "baseline_outcome": "supported"}
+        ]
+      },
+      {
+        "operation_id": "status_quick",
+        "case_id": "default",
+        "protected_operation_id": "status_quick",
+        "case_family": "status",
+        "tiers": ["smoke", "large", "scale-5k", "scale-10k"],
+        "planner_enabled": false,
+        "query_case_id": null,
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 20, "baseline_outcome": "unsupported"}
+        ]
+      },
+      {
+        "operation_id": "status_verified",
+        "case_id": "default",
+        "protected_operation_id": "status_verified",
+        "case_family": "status",
+        "tiers": ["smoke", "large", "scale-5k", "scale-10k"],
+        "planner_enabled": false,
+        "query_case_id": null,
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 5, "baseline_outcome": "unsupported"}
+        ]
+      },
+      {
+        "operation_id": "refresh_noop",
+        "case_id": "default",
+        "protected_operation_id": "refresh_noop",
+        "case_family": "refresh",
+        "tiers": ["smoke", "large", "scale-5k", "scale-10k"],
+        "planner_enabled": false,
+        "query_case_id": null,
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 20, "baseline_outcome": "unsupported"}
+        ]
+      },
+      {
+        "operation_id": "refresh_one_file",
+        "case_id": "default",
+        "protected_operation_id": "refresh_one_file",
+        "case_family": "refresh",
+        "tiers": ["smoke", "large", "scale-5k", "scale-10k"],
+        "planner_enabled": false,
+        "query_case_id": null,
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 20, "baseline_outcome": "unsupported"}
+        ]
+      },
+      {
+        "operation_id": "query",
+        "case_id": "lexical_high",
+        "protected_operation_id": "query_lexical_high",
+        "case_family": "query",
+        "tiers": ["smoke", "large"],
+        "planner_enabled": false,
+        "query_case_id": "lexical_high",
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 30, "baseline_outcome": "supported"},
+          {"state": "mcp_resident_warm", "sample_count": 30, "baseline_outcome": "unsupported"},
+          {"state": "filesystem_cold_diagnostic", "sample_count": 30, "baseline_outcome": "unsupported"}
+        ]
+      },
+      {
+        "operation_id": "query",
+        "case_id": "lexical_low",
+        "protected_operation_id": "query_lexical_low",
+        "case_family": "query",
+        "tiers": ["smoke", "large"],
+        "planner_enabled": false,
+        "query_case_id": "lexical_low",
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 30, "baseline_outcome": "supported"},
+          {"state": "mcp_resident_warm", "sample_count": 30, "baseline_outcome": "unsupported"},
+          {"state": "filesystem_cold_diagnostic", "sample_count": 30, "baseline_outcome": "unsupported"}
+        ]
+      },
+      {
+        "operation_id": "query",
+        "case_id": "lexical_zero",
+        "protected_operation_id": "query_lexical_zero",
+        "case_family": "query",
+        "tiers": ["smoke", "large"],
+        "planner_enabled": false,
+        "query_case_id": "lexical_zero",
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 30, "baseline_outcome": "supported"},
+          {"state": "mcp_resident_warm", "sample_count": 30, "baseline_outcome": "unsupported"},
+          {"state": "filesystem_cold_diagnostic", "sample_count": 30, "baseline_outcome": "unsupported"}
+        ]
+      },
+      {
+        "operation_id": "query",
+        "case_id": "path_symbol_ambiguity",
+        "protected_operation_id": "query_path_symbol_ambiguous",
+        "case_family": "query",
+        "tiers": ["smoke", "large"],
+        "planner_enabled": false,
+        "query_case_id": "path_symbol_ambiguity",
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 30, "baseline_outcome": "supported"},
+          {"state": "mcp_resident_warm", "sample_count": 30, "baseline_outcome": "unsupported"},
+          {"state": "filesystem_cold_diagnostic", "sample_count": 30, "baseline_outcome": "unsupported"}
+        ]
+      },
+      {
+        "operation_id": "query",
+        "case_id": "direct_ascii",
+        "protected_operation_id": "query_direct_ascii",
+        "case_family": "query",
+        "tiers": ["smoke", "large"],
+        "planner_enabled": false,
+        "query_case_id": "direct_ascii",
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 30, "baseline_outcome": "supported"},
+          {"state": "mcp_resident_warm", "sample_count": 30, "baseline_outcome": "unsupported"},
+          {"state": "filesystem_cold_diagnostic", "sample_count": 30, "baseline_outcome": "unsupported"}
+        ]
+      },
+      {
+        "operation_id": "query",
+        "case_id": "direct_cjk",
+        "protected_operation_id": "query_direct_cjk",
+        "case_family": "query",
+        "tiers": ["smoke", "large"],
+        "planner_enabled": false,
+        "query_case_id": "direct_cjk",
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 30, "baseline_outcome": "supported"},
+          {"state": "mcp_resident_warm", "sample_count": 30, "baseline_outcome": "unsupported"},
+          {"state": "filesystem_cold_diagnostic", "sample_count": 30, "baseline_outcome": "unsupported"}
+        ]
+      },
+      {
+        "operation_id": "query",
+        "case_id": "signal_metadata",
+        "protected_operation_id": "query_signal",
+        "case_family": "query",
+        "tiers": ["smoke", "large"],
+        "planner_enabled": false,
+        "query_case_id": "signal_metadata",
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 30, "baseline_outcome": "supported"},
+          {"state": "mcp_resident_warm", "sample_count": 30, "baseline_outcome": "unsupported"},
+          {"state": "filesystem_cold_diagnostic", "sample_count": 30, "baseline_outcome": "unsupported"}
+        ]
+      },
+      {
+        "operation_id": "query",
+        "case_id": "semantic_high",
+        "protected_operation_id": "query_semantic",
+        "case_family": "query",
+        "tiers": ["smoke", "large"],
+        "planner_enabled": false,
+        "query_case_id": "semantic_high",
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 30, "baseline_outcome": "supported"},
+          {"state": "mcp_resident_warm", "sample_count": 30, "baseline_outcome": "unsupported"},
+          {"state": "filesystem_cold_diagnostic", "sample_count": 30, "baseline_outcome": "unsupported"}
+        ]
+      },
+      {
+        "operation_id": "query",
+        "case_id": "planner_off_ordinary",
+        "protected_operation_id": "query_planner_off",
+        "case_family": "query",
+        "tiers": ["smoke", "large"],
+        "planner_enabled": false,
+        "query_case_id": "planner_off_ordinary",
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 30, "baseline_outcome": "supported"},
+          {"state": "mcp_resident_warm", "sample_count": 30, "baseline_outcome": "unsupported"},
+          {"state": "filesystem_cold_diagnostic", "sample_count": 30, "baseline_outcome": "unsupported"}
+        ]
+      },
+      {
+        "operation_id": "explore",
+        "case_id": "p4_explore",
+        "protected_operation_id": "explore_p4_bounded",
+        "case_family": "explore",
+        "tiers": ["smoke", "large"],
+        "planner_enabled": false,
+        "query_case_id": "p4_explore",
+        "measurements": [
+          {"state": "cli_process_cold", "sample_count": 30, "baseline_outcome": "supported"},
+          {"state": "mcp_resident_warm", "sample_count": 30, "baseline_outcome": "unsupported"}
+        ]
+      }
+    ]
+  },
+  "protected_small_entry_comparable": [
+    "full_build",
+    "authoritative_noop",
+    "status_quick",
+    "status_verified",
+    "refresh_noop",
+    "refresh_one_file",
+    "query_lexical_high",
+    "query_lexical_low",
+    "query_lexical_zero",
+    "query_path_symbol_ambiguous",
+    "query_direct_ascii",
+    "query_direct_cjk",
+    "query_signal",
+    "query_semantic",
+    "query_planner_off",
+    "explore_p4_bounded"
+  ],
+  "expected_fingerprints": {
+    "smoke": "277ee953df4140d3b8d067e89cb279a1759e3376fb4d79dbf7d5c265d81e2921",
+    "large": "05df446a280a2d53672a586de1759724a2b9ed3a517b30f9a9615f92ec452c1e",
+    "scale-5k": "64cd7ea79c215c000086c216fcb6f78be4a1a656a748441a12e9a8c4bf2fe96e",
+    "scale-10k": "5a2471044a02c70ab3283ce7aafb223b82962981b9b904621a75d4d299070461",
+    "stress": "aae4c66902074a417bb25c7cbbbd4630c37fae28cbcd32bac9eea4eaa743779d"
+  }
+}
