@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import time
 import uuid
 from collections.abc import Callable, Iterable
@@ -23,8 +24,10 @@ from context_search_tool.graph_lifecycle import (
     PROJECT_UNIT_TOPOLOGY_FINGERPRINT_KEY,
     GraphIntegrityError,
     IncompatibleSignalSchemaError,
+    OperationalIntegrityError,
     TARGET_SIGNAL_SCHEMA_VERSION,
     read_graph_capability,
+    read_operational_capability,
 )
 from context_search_tool.graph_plugins import GraphLanguagePlugin, PluginContext
 from context_search_tool.graph_resolution import resolve_graph_relations
@@ -33,9 +36,18 @@ from context_search_tool.index_health import preflight_public_operation
 from context_search_tool.manifest import (
     SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION,
     Manifest,
+    ManifestV2,
+    IncompatibleManifestSchemaError,
+    LoadedManifestSnapshot,
+    PreparedManifestV2,
     assert_manifest_compatible,
     embedding_config_hash,
+    index_config_hash,
+    inspect_raw_manifest_schema,
     load_manifest,
+    load_manifest_snapshot,
+    prepare_manifest_v2,
+    publish_manifest_v2,
     write_manifest,
     write_manifest_v5,
 )
@@ -63,14 +75,35 @@ from context_search_tool.project_scope import (
     unit_for_path,
 )
 from context_search_tool.scanner import (
+    CoverageSkipObservation,
+    ObservedFileRead,
     ScannedFile,
+    WorkspaceInventory,
+    observe_workspace,
+    read_observed_file,
     read_scanned_file_bytes,
     scan_workspace,
     scan_workspace_v5,
+    workspace_inventory_identity,
 )
-from context_search_tool.sqlite_store import FILE_WRITE_IN_PROGRESS_KEY, SQLiteStore
+from context_search_tool.sqlite_store import (
+    FILE_WRITE_IN_PROGRESS_KEY,
+    OperationalControlObservation,
+    OperationalReadyBinding,
+    OperationalScanSkip,
+    OperationalSnapshot,
+    OperationalSourceObservation,
+    SQLiteStore,
+    operational_content_fingerprint,
+    operational_observation_fingerprint,
+)
 from context_search_tool.test_paths import is_test_path
-from context_search_tool.vector_store import NumpyVectorStore
+from context_search_tool.vector_store import (
+    FrozenVectorGeneration,
+    NumpyVectorStore,
+    PreparedVectorGeneration,
+    PublishedVectorDescriptor,
+)
 from context_search_tool.test_association import regenerate_test_associations
 
 
@@ -79,6 +112,20 @@ logger = logging.getLogger(__name__)
 
 class IncompatibleIndexError(RuntimeError):
     pass
+
+
+class InventoryIncompleteError(ValueError):
+    code = "inventory_incomplete"
+
+    def __init__(self) -> None:
+        super().__init__("repository inventory is incomplete")
+
+
+class WorkspaceChangedError(ValueError):
+    code = "workspace_changed"
+
+    def __init__(self) -> None:
+        super().__init__("repository changed during index preparation")
 
 
 CURRENT_SIGNAL_SCHEMA_VERSION = 5
@@ -98,9 +145,43 @@ class IndexSummary:
 @dataclass(frozen=True)
 class _PreparedFile:
     source_file: SourceFile
-    chunks: list[DocumentChunk]
-    signals: list[CodeSignal]
-    relations: list[CodeRelation]
+    chunks: tuple[DocumentChunk, ...]
+    signals: tuple[CodeSignal, ...]
+    relations: tuple[CodeRelation, ...]
+
+
+@dataclass(frozen=True)
+class PreparedIndexSnapshot:
+    effective_config: ToolConfig
+    effective_config_payload: bytes
+    index_config_hash: str
+    opening_inventory: WorkspaceInventory
+    closing_inventory: WorkspaceInventory
+    observation_started_at_epoch_ms: int
+    observation_completed_at_epoch_ms: int
+    observation_generation: int
+    source_observations: tuple[OperationalSourceObservation, ...]
+    scan_skips: tuple[OperationalScanSkip, ...]
+    control_observations: tuple[OperationalControlObservation, ...]
+    source_content_fingerprint: str
+    source_observation_fingerprint: str
+    scanned_files: tuple[ScannedFile, ...]
+    prepared_files: tuple[_PreparedFile, ...]
+    deleted_paths: tuple[Path, ...]
+    project_units: tuple[ProjectUnit, ...]
+    topology_fingerprint: str
+    expected_vector_ids: tuple[str, ...]
+    frozen_vector_generation: FrozenVectorGeneration | None
+    prepared_vector_generation: PreparedVectorGeneration
+    vector_descriptor_snapshot: PublishedVectorDescriptor
+    publish_vector_descriptor: bool
+    prepared_manifest: PreparedManifestV2
+    work_metrics: tuple[tuple[str, int | str], ...]
+    stale_reason: str
+    force_full_reindex: bool
+    stored_signal_version: int
+    suppress_fault_hooks: bool
+    summary: IndexSummary
 
 
 def index_repository(
@@ -110,30 +191,30 @@ def index_repository(
     config_loader: Callable[[Path], ToolConfig] | None = None,
 ) -> IndexSummary:
     preflight_public_operation(repo, "index")
-    if config is None:
-        config = (
-            load_config(repo)
-            if config_loader is None
-            else config_loader(repo)
-        )
+    deferred_config_loader = config_loader or (lambda path: load_config(path))
     return build_v5_index_snapshot(
         repo,
         config,
         graph_plugins=default_plugins(),
         scanner=scan_workspace_v5,
+        config_loader=deferred_config_loader,
     )
 
 
 def build_v5_index_snapshot(
     repo: Path,
-    config: ToolConfig,
+    config: ToolConfig | None,
     *,
     graph_plugins: Iterable[GraphLanguagePlugin],
     scanner: Callable[[Path, ToolConfig], list[ScannedFile]],
-    file_reader: Callable[..., bytes] = read_scanned_file_bytes,
+    file_reader: Callable[..., bytes] | None = None,
+    inventory_observer: Callable[[Path, ToolConfig], WorkspaceInventory] | None = None,
+    observed_reader: Callable[..., ObservedFileRead] | None = None,
     embedding_provider: EmbeddingProvider | None = None,
+    config_loader: Callable[[Path], ToolConfig] | None = None,
     fault_hook: Callable[[str], None] | None = None,
 ) -> IndexSummary:
+    del scanner  # The authoritative path uses the richer two-fence inventory contract.
     repo = repo.resolve(strict=True)
     if not repo.is_dir():
         raise ValueError("repository root must be a directory")
@@ -142,348 +223,1017 @@ def build_v5_index_snapshot(
     with exclusive_index_lock(index_dir):
         store = SQLiteStore(index_dir / "index.sqlite")
         stored_version = store.inspect_signal_schema_version()
-        if stored_version > TARGET_SIGNAL_SCHEMA_VERSION:
-            raise IncompatibleSignalSchemaError(stored_version)
-        plugins = ordered_graph_plugins(graph_plugins)
-        manifest_integrity_failed = False
-        try:
-            assert_manifest_compatible(repo, config)
-        except (OSError, ValueError) as error:
-            try:
-                load_manifest(repo)
-            except (OSError, ValueError):
-                manifest_integrity_failed = True
-            else:
-                raise IncompatibleIndexError(str(error)) from error
+        _require_authoritative_schema_compatibility(repo, store, stored_version)
 
-        existing_files = {
-            source.path: source for source in store.source_files_snapshot()
-        }
-        persisted_paths = store.persisted_file_paths_snapshot()
-        scanned_files = _canonical_scanned_files(scanner(repo, config))
-        scanned_paths = {scanned.path for scanned in scanned_files}
-        deleted_paths = persisted_paths - scanned_paths
-        path_inventory_changed = scanned_paths != persisted_paths
-        units = detect_project_units(
+        provided_config = config is not None
+        effective_config = _freeze_effective_config(
+            config
+            if config is not None
+            else (config_loader or load_config)(repo)
+        )
+        loaded_manifest, manifest_integrity_failed = _load_authoritative_manifest(
             repo,
-            [scanned.path for scanned in scanned_files],
+            effective_config,
         )
-        topology_fingerprint = project_unit_topology_fingerprint(units)
-        unit_by_path = {
-            scanned.path: unit_for_path(scanned.path, units)
-            for scanned in scanned_files
-        }
-        scanned_files = [
-            replace(
-                scanned,
-                is_test=is_test_path(
-                    scanned.path,
-                    scanned.language,
-                    _project_unit_key(unit_by_path[scanned.path]),
-                ),
-            )
-            for scanned in scanned_files
-        ]
-        changed_paths = {
-            scanned.path
-            for scanned in scanned_files
-            if _v5_source_changed(
-                scanned,
-                existing_files.get(scanned.path),
-                unit_by_path[scanned.path],
-            )
-        }
+        _initialize_index_controls(
+            repo,
+            effective_config,
+            overwrite_config=provided_config,
+        )
 
-        entry_state = "legacy"
-        entry_full_reindex = stored_version < TARGET_SIGNAL_SCHEMA_VERSION
-        stored_topology = None
-        if stored_version == TARGET_SIGNAL_SCHEMA_VERSION:
-            capability = read_graph_capability(store)
-            entry_state = capability.status
-            entry_full_reindex = capability.full_reindex_required
-            stored_topology = store.get_metadata(
-                PROJECT_UNIT_TOPOLOGY_FINGERPRINT_KEY
-            )
-        topology_changed = (
-            stored_version == TARGET_SIGNAL_SCHEMA_VERSION
-            and stored_topology != topology_fingerprint
+        prepared = _prepare_authoritative_index(
+            repo=repo,
+            store=store,
+            stored_version=stored_version,
+            config=effective_config,
+            graph_plugins=ordered_graph_plugins(graph_plugins),
+            file_reader=file_reader or read_scanned_file_bytes,
+            inventory_observer=inventory_observer or observe_workspace,
+            observed_reader=observed_reader or read_observed_file,
+            embedding_provider=embedding_provider,
+            loaded_manifest=loaded_manifest,
+            manifest_integrity_failed=manifest_integrity_failed,
+            fault_hook=fault_hook,
         )
-        project_scope_metadata_current = (
-            stored_version < TARGET_SIGNAL_SCHEMA_VERSION
-            or project_scope_metadata_is_current(store)
+        _persist_prepared_index(
+            repo=repo,
+            store=store,
+            prepared=prepared,
+            fault_hook=fault_hook,
         )
-        embedding_identity = embedding_config_hash(config.embedding)
-        vector_snapshot_valid = False
-        if (
-            stored_version == TARGET_SIGNAL_SCHEMA_VERSION
-            and not entry_full_reindex
-        ):
-            try:
-                _validate_published_vectors(
-                    index_dir,
-                    embedding_identity=embedding_identity,
-                    dimensions=config.embedding.dimensions,
-                    expected_ids=store.active_embedding_ids(),
+        return prepared.summary
+
+
+def _require_authoritative_schema_compatibility(
+    repo: Path,
+    store: SQLiteStore,
+    stored_version: int,
+) -> None:
+    raw_manifest = inspect_raw_manifest_schema(repo)
+    if (
+        raw_manifest.status == "valid"
+        and raw_manifest.version is not None
+        and raw_manifest.version > 2
+    ):
+        raise IncompatibleManifestSchemaError(raw_manifest.version)
+    if stored_version > TARGET_SIGNAL_SCHEMA_VERSION:
+        raise IncompatibleSignalSchemaError(stored_version)
+    if stored_version:
+        read_operational_capability(store)
+
+
+def _freeze_effective_config(config: ToolConfig) -> ToolConfig:
+    if not isinstance(config, ToolConfig):
+        raise ValueError("config loader returned an invalid configuration")
+    return replace(
+        config,
+        index=replace(
+            config.index,
+            include=tuple(config.index.include),  # type: ignore[arg-type]
+            exclude=tuple(config.index.exclude),  # type: ignore[arg-type]
+        ),
+    )
+
+
+def _load_authoritative_manifest(
+    repo: Path,
+    config: ToolConfig,
+) -> tuple[LoadedManifestSnapshot | None, bool]:
+    path = repo / ".context-search" / "manifest.json"
+    if not os.path.lexists(path):
+        return None, False
+    try:
+        loaded = load_manifest_snapshot(repo)
+    except IncompatibleManifestSchemaError:
+        raise
+    except (OSError, ValueError):
+        return None, True
+    if loaded.manifest.embedding_config_hash != embedding_config_hash(config.embedding):
+        raise IncompatibleIndexError(
+            "incompatible embedding configuration for existing index"
+        )
+    return loaded, False
+
+
+def _initialize_index_controls(
+    repo: Path,
+    config: ToolConfig,
+    *,
+    overwrite_config: bool,
+) -> None:
+    ensure_index_gitignore_entry(repo)
+    path = repo / ".context-search" / "config.toml"
+    if os.path.lexists(path) and (path.is_symlink() or not path.is_file()):
+        raise ValueError("config must be a regular non-symlink file")
+    payload = render_config(config).encode("utf-8")
+    if not path.exists() or (overwrite_config and path.read_bytes() != payload):
+        atomic_write_index_bytes(
+            path,
+            payload,
+            fault_prefix="config_initialize",
+        )
+
+
+def _prepare_authoritative_index(
+    *,
+    repo: Path,
+    store: SQLiteStore,
+    stored_version: int,
+    config: ToolConfig,
+    graph_plugins: tuple[GraphLanguagePlugin, ...],
+    file_reader: Callable[..., bytes],
+    inventory_observer: Callable[[Path, ToolConfig], WorkspaceInventory],
+    observed_reader: Callable[..., ObservedFileRead],
+    embedding_provider: EmbeddingProvider | None,
+    loaded_manifest: LoadedManifestSnapshot | None,
+    manifest_integrity_failed: bool,
+    fault_hook: Callable[[str], None] | None,
+) -> PreparedIndexSnapshot:
+    observation_started = time.time_ns() // 1_000_000
+    existing_files = {
+        source.path: source for source in store.source_files_snapshot()
+    }
+    persisted_paths = store.persisted_file_paths_snapshot()
+
+    entry_state = "legacy"
+    entry_full_reindex = stored_version < TARGET_SIGNAL_SCHEMA_VERSION
+    stored_topology: str | None = None
+    operational_snapshot: OperationalSnapshot | None = None
+    operational_integrity_failed = False
+    if stored_version == TARGET_SIGNAL_SCHEMA_VERSION:
+        capability = read_graph_capability(store)
+        entry_state = capability.status
+        entry_full_reindex = capability.full_reindex_required
+        stored_topology = store.get_metadata(
+            PROJECT_UNIT_TOPOLOGY_FINGERPRINT_KEY
+        )
+        try:
+            if read_operational_capability(store).status == "current":
+                operational_snapshot = store.read_operational_snapshot()
+        except (OperationalIntegrityError, ValueError):
+            operational_integrity_failed = True
+
+    embedding_identity = embedding_config_hash(config.embedding)
+    effective_index_hash = index_config_hash(config)
+    existing_ids = (
+        store.active_embedding_ids()
+        if stored_version == TARGET_SIGNAL_SCHEMA_VERSION
+        else set()
+    )
+    vector_snapshot_valid = False
+    current_vector_store: NumpyVectorStore | None = None
+    current_descriptor: PublishedVectorDescriptor | None = None
+    if stored_version == TARGET_SIGNAL_SCHEMA_VERSION and not entry_full_reindex:
+        try:
+            descriptor, current_vector_store = (
+                NumpyVectorStore.load_published_snapshot(
+                    repo / ".context-search",
+                    expected_embedding_identity=embedding_identity,
                 )
-                vector_snapshot_valid = True
-            except ValueError:
-                vector_snapshot_valid = False
+            )
+            current_descriptor = NumpyVectorStore.inspect_published_descriptor(
+                repo / ".context-search"
+            )
+            if descriptor is None or current_descriptor is None:
+                raise ValueError("published vector descriptor is missing")
+            if descriptor != current_descriptor.descriptor:
+                raise ValueError("vector descriptor changed during validation")
+            if descriptor.dimensions != config.embedding.dimensions:
+                raise ValueError("vector generation dimensions mismatch")
+            if current_vector_store.ids != tuple(sorted(existing_ids)):
+                raise ValueError("vector snapshot IDs do not match SQLite")
+            vector_snapshot_valid = True
+        except (OSError, RuntimeError, ValueError):
+            vector_snapshot_valid = False
+            current_vector_store = None
+            current_descriptor = None
 
-        no_file_changes = not changed_paths and not deleted_paths
-        no_op_candidate = (
-            stored_version == TARGET_SIGNAL_SCHEMA_VERSION
-            and entry_state == "ready"
-            and not entry_full_reindex
-            and not topology_changed
-            and project_scope_metadata_current
-            and no_file_changes
-            and vector_snapshot_valid
+    binding_integrity_failed = _bound_v2_identity_failed(
+        loaded_manifest,
+        operational_snapshot,
+        current_descriptor,
+        entry_state=entry_state,
+    )
+    opening_inventory = inventory_observer(repo, config)
+    quiet_candidate = _opening_matches_operational_snapshot(
+        opening_inventory,
+        operational_snapshot,
+        effective_index_hash,
+    )
+    preparation_fault_hook = None if quiet_candidate else fault_hook
+    _fault(preparation_fault_hook, "opening_inventory_complete")
+    if not opening_inventory.complete:
+        raise InventoryIncompleteError()
+
+    bodies: dict[Path, bytes] = {}
+    read_results: dict[Path, ObservedFileRead] = {}
+    read_skips: list[CoverageSkipObservation] = []
+    read_interrupted = False
+    for observation in opening_inventory.eligible:
+        result = observed_reader(
+            repo,
+            observation,
+            max_file_bytes=config.index.max_file_bytes,
+            require_utf8=False,
         )
-        integrity_failed = False
-        if no_op_candidate:
+        read_results[observation.path] = result
+        _fault(preparation_fault_hook, "source_read_complete")
+        if (
+            result.status == "read"
+            and result.content is not None
+            and result.sha256 is not None
+            and result.size is not None
+            and result.metadata is not None
+        ):
+            bodies[observation.path] = result.content
+        else:
+            if result.reason == "changed_during_read":
+                read_interrupted = True
+            read_skips.append(
+                CoverageSkipObservation(
+                    path=observation.path,
+                    language=observation.language,
+                    reason=result.reason or "unreadable",
+                    retryable=result.retryable,
+                    metadata=result.metadata,
+                )
+            )
+
+    observations_by_path = {
+        item.path: item for item in opening_inventory.eligible
+    }
+    scanned_files = _canonical_scanned_files(
+        ScannedFile(
+            path=path,
+            absolute_path=observations_by_path[path].absolute_path,
+            language=observations_by_path[path].language,
+            sha256=read_results[path].sha256 or "",
+            size=read_results[path].size or 0,
+            mtime_ns=(
+                read_results[path].metadata.mtime_ns
+                if read_results[path].metadata is not None
+                else observations_by_path[path].mtime_ns
+            ),
+            is_test=observations_by_path[path].is_test,
+        )
+        for path in bodies
+    )
+    scanned_paths = {scanned.path for scanned in scanned_files}
+    deleted_paths = persisted_paths - scanned_paths
+    path_inventory_changed = scanned_paths != persisted_paths
+
+    project_units = detect_project_units(
+        repo,
+        [scanned.path for scanned in scanned_files],
+    )
+    topology_fingerprint = project_unit_topology_fingerprint(project_units)
+    unit_by_path = {
+        scanned.path: unit_for_path(scanned.path, project_units)
+        for scanned in scanned_files
+    }
+    scanned_files = [
+        replace(
+            scanned,
+            is_test=is_test_path(
+                scanned.path,
+                scanned.language,
+                _project_unit_key(unit_by_path[scanned.path]),
+            ),
+        )
+        for scanned in scanned_files
+    ]
+    changed_paths = {
+        scanned.path
+        for scanned in scanned_files
+        if _v5_source_changed(
+            scanned,
+            existing_files.get(scanned.path),
+            unit_by_path[scanned.path],
+        )
+    }
+    topology_changed = (
+        stored_version == TARGET_SIGNAL_SCHEMA_VERSION
+        and stored_topology != topology_fingerprint
+    )
+    project_scope_metadata_current = (
+        stored_version < TARGET_SIGNAL_SCHEMA_VERSION
+        or project_scope_metadata_is_current(store)
+    )
+
+    no_file_changes = not changed_paths and not deleted_paths
+    graph_integrity_failed = False
+    if (
+        stored_version == TARGET_SIGNAL_SCHEMA_VERSION
+        and entry_state == "ready"
+        and not entry_full_reindex
+        and vector_snapshot_valid
+        and no_file_changes
+        and not topology_changed
+        and project_scope_metadata_current
+    ):
+        try:
             stats = store.stats()
-            expected_ids = store.active_embedding_ids()
-            validator = _external_v5_validator(
-                repo=repo,
-                config=config,
-                expected_embedding_identity=embedding_identity,
-                expected_ids=expected_ids,
+            store.validate_ready_v5_snapshot(
+                topology_fingerprint=topology_fingerprint,
+                expected_embedding_ids=existing_ids,
                 expected_source_count=len(scanned_files),
                 expected_chunk_count=stats["active_chunks"],
+                external_validator=lambda: None,
             )
-            try:
-                store.validate_ready_v5_snapshot(
-                    topology_fingerprint=topology_fingerprint,
-                    expected_embedding_ids=expected_ids,
-                    expected_source_count=len(scanned_files),
-                    expected_chunk_count=stats["active_chunks"],
-                    external_validator=validator,
-                )
-            except (GraphIntegrityError, OSError, ValueError):
-                integrity_failed = True
-            else:
-                return IndexSummary(
-                    files_seen=len(scanned_files),
-                    files_indexed=0,
-                    files_skipped=len(scanned_files),
-                    files_deleted=0,
-                    chunks_indexed=0,
-                )
+        except (GraphIntegrityError, OSError, ValueError):
+            graph_integrity_failed = True
 
-        force_full_reindex = (
-            stored_version < TARGET_SIGNAL_SCHEMA_VERSION
-            or entry_full_reindex
-            or not vector_snapshot_valid
-            or integrity_failed
+    force_full_reindex = (
+        stored_version < TARGET_SIGNAL_SCHEMA_VERSION
+        or entry_full_reindex
+        or not vector_snapshot_valid
+        or graph_integrity_failed
+        or manifest_integrity_failed
+        or operational_integrity_failed
+        or binding_integrity_failed
+        or not project_scope_metadata_current
+    )
+    stale_reason = _authoritative_stale_reason(
+        stored_version=stored_version,
+        entry_full_reindex=entry_full_reindex,
+        integrity_failed=(
+            graph_integrity_failed
             or manifest_integrity_failed
-            or not project_scope_metadata_current
-        )
-        if stored_version < TARGET_SIGNAL_SCHEMA_VERSION:
-            stale_reason = (
-                "schema_migration" if stored_version else "full_reindex"
-            )
-        elif entry_full_reindex:
-            stale_reason = "full_reindex"
-        elif (
-            integrity_failed
-            or manifest_integrity_failed
+            or operational_integrity_failed
+            or binding_integrity_failed
             or not vector_snapshot_valid
-        ):
-            stale_reason = "integrity_check_failed"
-        elif topology_changed:
-            stale_reason = "topology_changed"
-        elif not project_scope_metadata_current:
-            stale_reason = "project_scope_metadata_changed"
-        elif changed_paths or deleted_paths:
-            stale_reason = "files_changed"
-        else:
-            stale_reason = "stale_on_entry"
+        ),
+        topology_changed=topology_changed,
+        project_scope_metadata_current=project_scope_metadata_current,
+        changed_paths=changed_paths,
+        deleted_paths=deleted_paths,
+    )
 
-        ensure_index_gitignore_entry(repo)
-        if stored_version < TARGET_SIGNAL_SCHEMA_VERSION:
-            store.initialize_v5(stale_reason=stale_reason)
-        else:
-            store.mark_graph_stale(
-                stale_reason,
-                full_reindex_required=force_full_reindex,
-            )
-        _fault(fault_hook, "stale_committed")
-        store.set_metadata(FILE_WRITE_IN_PROGRESS_KEY, "")
-
-        active_paths = tuple(scanned.path for scanned in scanned_files)
-        active_path_units = tuple(
-            (
-                scanned.path,
-                _project_unit_key(unit_by_path[scanned.path]),
-            )
-            for scanned in scanned_files
+    rebuild_paths = set(changed_paths)
+    if force_full_reindex:
+        rebuild_paths = set(scanned_paths)
+    elif entry_state == "stale" or topology_changed or graph_integrity_failed:
+        rebuild_paths.update(
+            scanned.path for scanned in scanned_files if scanned.size > 0
         )
-        rebuild_paths = set(changed_paths)
-        if force_full_reindex:
-            rebuild_paths = set(scanned_paths)
-        elif entry_state == "stale" or topology_changed or integrity_failed:
-            for scanned in scanned_files:
-                if scanned.size > 0:
-                    rebuild_paths.add(scanned.path)
-        elif path_inventory_changed:
-            # Module selectors persist the active candidate set, so path
-            # additions and deletions invalidate their unchanged sources.
-            rebuild_paths.update(
-                store.active_relation_source_paths(
-                    _PATH_INVENTORY_RELATION_KINDS
-                )
-                & scanned_paths
+    elif path_inventory_changed and stored_version == TARGET_SIGNAL_SCHEMA_VERSION:
+        rebuild_paths.update(
+            store.active_relation_source_paths(
+                _PATH_INVENTORY_RELATION_KINDS
             )
-
-        prepared_files = [
-            _prepare_v5_file(
-                repo=repo,
-                scanned_file=scanned,
-                project_unit=unit_by_path[scanned.path],
-                plugins=plugins,
-                active_paths=active_paths,
-                active_path_units=active_path_units,
-                file_reader=file_reader,
-                max_file_bytes=config.index.max_file_bytes,
-            )
-            for scanned in scanned_files
-            if scanned.path in rebuild_paths
-        ]
-        changed_chunks = [
-            chunk
-            for prepared in prepared_files
-            for chunk in prepared.chunks
-        ]
-        replaced_paths = rebuild_paths | deleted_paths
-        removed_embedding_ids = store.active_embedding_ids_for_files(
-            replaced_paths
+            & scanned_paths
         )
-        if force_full_reindex:
-            vector_store = NumpyVectorStore.fresh(
-                index_dir,
-                dimensions=config.embedding.dimensions,
-            )
-            expected_vector_ids: set[str] = set()
-        else:
-            vector_store = NumpyVectorStore.load_published(
-                index_dir,
-                expected_embedding_identity=embedding_identity,
-            )
-            expected_vector_ids = set(vector_store.ids)
-            vector_store.remove_many(sorted(removed_embedding_ids))
-            expected_vector_ids -= removed_embedding_ids
 
-        if changed_chunks:
-            provider = embedding_provider or provider_from_config(config.embedding)
-            _validate_embedding_provider(provider, config)
-            vectors = provider.embed_texts(
-                [_embedding_text_for_chunk(chunk) for chunk in changed_chunks]
-            )
-            if len(vectors) != len(changed_chunks):
-                raise ValueError("embedding response count mismatch")
-            vector_store.upsert_many(
-                [
-                    (chunk.embedding_id or chunk.chunk_id, vector)
-                    for chunk, vector in zip(changed_chunks, vectors)
-                ]
-            )
-        expected_vector_ids.update(
-            chunk.embedding_id or chunk.chunk_id for chunk in changed_chunks
+    active_paths = tuple(scanned.path for scanned in scanned_files)
+    active_path_units = tuple(
+        (
+            scanned.path,
+            _project_unit_key(unit_by_path[scanned.path]),
         )
-        vector_store.sort_by_id()
-        if set(vector_store.ids) != expected_vector_ids:
-            raise GraphIntegrityError("prepared vector ID set mismatch")
-        prepared_vectors = vector_store.prepare_generation(
+        for scanned in scanned_files
+    )
+    prepared_files = tuple(
+        _prepare_v5_file(
+            repo=repo,
+            scanned_file=scanned,
+            project_unit=unit_by_path[scanned.path],
+            plugins=graph_plugins,
+            active_paths=active_paths,
+            active_path_units=active_path_units,
+            file_reader=file_reader,
+            max_file_bytes=config.index.max_file_bytes,
+            content_bytes=(
+                bodies[scanned.path]
+                if file_reader is read_scanned_file_bytes
+                else None
+            ),
+        )
+        for scanned in scanned_files
+        if scanned.path in rebuild_paths
+    )
+    _fault(preparation_fault_hook, "preparation_complete")
+
+    prepared_by_path = {
+        prepared.source_file.path: prepared for prepared in prepared_files
+    }
+    vector_rebuild_paths = {
+        path
+        for path in rebuild_paths
+        if (
+            force_full_reindex
+            or existing_files.get(path) is None
+            or existing_files[path].sha256 != prepared_by_path[path].source_file.sha256
+            or existing_files[path].language != prepared_by_path[path].source_file.language
+        )
+    }
+    if not force_full_reindex and stored_version == TARGET_SIGNAL_SCHEMA_VERSION:
+        for path, prepared_file in prepared_by_path.items():
+            if path in vector_rebuild_paths:
+                continue
+            previous = store.active_embedding_ids_for_files({path})
+            current = {
+                chunk.embedding_id or chunk.chunk_id
+                for chunk in prepared_file.chunks
+            }
+            if previous != current:
+                vector_rebuild_paths.add(path)
+
+    vector_removed_paths = vector_rebuild_paths | deleted_paths
+    removed_embedding_ids = (
+        store.active_embedding_ids_for_files(vector_removed_paths)
+        if stored_version == TARGET_SIGNAL_SCHEMA_VERSION
+        else set()
+    )
+    if force_full_reindex:
+        vector_store = NumpyVectorStore.fresh(
+            repo / ".context-search",
+            dimensions=config.embedding.dimensions,
+        )
+        expected_vector_ids: set[str] = set()
+    else:
+        if current_vector_store is None:
+            raise GraphIntegrityError("validated vector snapshot is unavailable")
+        vector_store = current_vector_store
+        expected_vector_ids = set(vector_store.ids)
+        vector_store.remove_many(sorted(removed_embedding_ids))
+        expected_vector_ids -= removed_embedding_ids
+
+    embedding_chunks = tuple(
+        chunk
+        for path in sorted(vector_rebuild_paths, key=lambda item: item.as_posix())
+        for chunk in prepared_by_path[path].chunks
+    )
+    if embedding_chunks:
+        provider = embedding_provider or provider_from_config(config.embedding)
+        _validate_embedding_provider(provider, config)
+        vectors = provider.embed_texts(
+            [_embedding_text_for_chunk(chunk) for chunk in embedding_chunks]
+        )
+        if len(vectors) != len(embedding_chunks):
+            raise ValueError("embedding response count mismatch")
+        vector_store.upsert_many(
+            [
+                (chunk.embedding_id or chunk.chunk_id, vector)
+                for chunk, vector in zip(embedding_chunks, vectors)
+            ]
+        )
+    _fault(preparation_fault_hook, "embedding_complete")
+    expected_vector_ids.update(
+        chunk.embedding_id or chunk.chunk_id for chunk in embedding_chunks
+    )
+    vector_store.sort_by_id()
+    if vector_store.ids != tuple(sorted(expected_vector_ids)):
+        raise GraphIntegrityError("prepared vector ID set mismatch")
+
+    vector_changed = bool(
+        force_full_reindex or vector_rebuild_paths or deleted_paths
+    )
+    frozen_vectors: FrozenVectorGeneration | None = None
+    publish_vector_descriptor = False
+    if (
+        not vector_changed
+        and current_descriptor is not None
+        and current_descriptor.descriptor.schema_version == 2
+    ):
+        prepared_vectors = PreparedVectorGeneration(
+            repo / ".context-search",
+            current_descriptor.descriptor,
+        )
+        descriptor_snapshot = current_descriptor
+        descriptor_action = "reused"
+    elif not vector_changed and current_descriptor is not None:
+        prepared_vectors = NumpyVectorStore.prepare_existing_generation_v2(
+            repo / ".context-search",
+            expected_embedding_identity=embedding_identity,
+            expected_ids=expected_vector_ids,
+        )
+        descriptor_snapshot = NumpyVectorStore.prepared_descriptor_snapshot(
+            prepared_vectors
+        )
+        publish_vector_descriptor = True
+        descriptor_action = "published"
+    else:
+        frozen_vectors = vector_store.freeze_generation_v2(
             generation=uuid.uuid4().hex,
             embedding_identity=embedding_identity,
-            fault_hook=fault_hook,
+            normalization="none",
         )
-        _fault(fault_hook, "vectors_prepared")
+        prepared_vectors = PreparedVectorGeneration(
+            repo / ".context-search",
+            frozen_vectors.descriptor,
+        )
+        descriptor_snapshot = NumpyVectorStore.prepared_descriptor_snapshot(
+            prepared_vectors
+        )
+        publish_vector_descriptor = True
+        descriptor_action = "published"
 
-        for prepared in prepared_files:
-            file_path = prepared.source_file.path
-            store.begin_v5_file_write(file_path)
-            _fault(fault_hook, "file_write_started")
-            store.replace_chunks(file_path, prepared.chunks)
-            _fault(fault_hook, "chunks_persisted")
-            store.replace_signals(file_path, prepared.signals)
-            _fault(fault_hook, "signals_persisted")
-            store.replace_relations(file_path, prepared.relations)
-            _fault(fault_hook, "producer_relations_persisted")
-            store.finish_v5_file_write(prepared.source_file)
-            _fault(fault_hook, "source_hash_persisted")
+    closing_inventory = inventory_observer(repo, config)
+    if not closing_inventory.complete:
+        raise InventoryIncompleteError()
+    if (
+        read_interrupted
+        or workspace_inventory_identity(opening_inventory)
+        != workspace_inventory_identity(closing_inventory)
+    ):
+        raise WorkspaceChangedError()
+    observation_completed = time.time_ns() // 1_000_000
+    _fault(preparation_fault_hook, "closing_inventory_complete")
 
-        for path in sorted(deleted_paths, key=lambda item: item.as_posix()):
-            store.mark_file_deleted(path)
-            _fault(fault_hook, "deletion_persisted")
+    observation_generation = (
+        operational_snapshot.binding.observation_generation + 1
+        if operational_snapshot is not None
+        else 1
+    )
+    source_observations = _operational_source_observations(
+        tuple(scanned_files),
+        read_results,
+        observation_generation,
+    )
+    scan_skips = _operational_scan_skips(
+        (*opening_inventory.coverage_skips, *read_skips),
+        observation_generation,
+        operational_snapshot,
+    )
+    control_observations = _operational_control_observations(
+        opening_inventory,
+        observation_generation,
+    )
+    content_fingerprint = operational_content_fingerprint(source_observations)
+    observation_fingerprint = operational_observation_fingerprint(
+        source_observations,
+        scan_skips,
+        control_observations,
+    )
+    hashed_results = tuple(
+        result
+        for result in read_results.values()
+        if result.status == "read" and result.size is not None
+    )
+    work_metrics = tuple(
+        sorted(
+            {
+                "chunks.embedded": len(embedding_chunks),
+                "files.parsed": len(prepared_files),
+                "source.bytes_hashed": sum(
+                    int(result.size or 0) for result in hashed_results
+                ),
+                "source.files_hashed": len(hashed_results),
+                "vector.bytes_written": (
+                    int(descriptor_snapshot.descriptor.vectors_bytes or 0)
+                    + int(descriptor_snapshot.descriptor.ids_bytes or 0)
+                    if frozen_vectors is not None
+                    else 0
+                ),
+                "vector.descriptor_action": descriptor_action,
+            }.items()
+        )
+    )
+    descriptor = descriptor_snapshot.descriptor
+    if descriptor.vectors_bytes is None or descriptor.ids_bytes is None:
+        raise GraphIntegrityError("prepared vector descriptor is not v2")
+    manifest = ManifestV2(
+        embedding_config_hash=embedding_identity,
+        embedding_provider=config.embedding.provider,
+        embedding_model=config.embedding.model,
+        embedding_dimensions=config.embedding.dimensions,
+        index_config_hash=effective_index_hash,
+        source_content_fingerprint=content_fingerprint,
+        source_observation_fingerprint=observation_fingerprint,
+        observation_generation=observation_generation,
+        manifest_generation=f"manifest-{uuid.uuid4().hex}",
+        vector_descriptor_schema_version=descriptor.schema_version,
+        vector_generation=descriptor.generation,
+        vector_descriptor_sha256=descriptor_snapshot.sha256,
+        vector_bytes=descriptor.vectors_bytes,
+        vector_ids_bytes=descriptor.ids_bytes,
+        indexed_at_epoch_s=observation_completed // 1_000,
+        operational_schema_version=1,
+        operation_mode="authoritative_index",
+        work_metrics=work_metrics,
+        total_files=len(scanned_files),
+        total_chunks=len(expected_vector_ids),
+    )
+    prepared_manifest = prepare_manifest_v2(manifest)
+    suppress_fault_hooks = bool(
+        quiet_candidate
+        and not force_full_reindex
+        and not changed_paths
+        and not deleted_paths
+        and not topology_changed
+        and not graph_integrity_failed
+        and isinstance(
+            loaded_manifest.manifest if loaded_manifest is not None else None,
+            ManifestV2,
+        )
+    )
+    summary = IndexSummary(
+        files_seen=len(scanned_files),
+        files_indexed=len(prepared_files),
+        files_skipped=len(scanned_files) - len(prepared_files),
+        files_deleted=len(deleted_paths),
+        chunks_indexed=len(embedding_chunks),
+    )
+    return PreparedIndexSnapshot(
+        effective_config=config,
+        effective_config_payload=render_config(config).encode("utf-8"),
+        index_config_hash=effective_index_hash,
+        opening_inventory=opening_inventory,
+        closing_inventory=closing_inventory,
+        observation_started_at_epoch_ms=observation_started,
+        observation_completed_at_epoch_ms=observation_completed,
+        observation_generation=observation_generation,
+        source_observations=source_observations,
+        scan_skips=scan_skips,
+        control_observations=control_observations,
+        source_content_fingerprint=content_fingerprint,
+        source_observation_fingerprint=observation_fingerprint,
+        scanned_files=tuple(scanned_files),
+        prepared_files=prepared_files,
+        deleted_paths=tuple(
+            sorted(deleted_paths, key=lambda item: item.as_posix())
+        ),
+        project_units=project_units,
+        topology_fingerprint=topology_fingerprint,
+        expected_vector_ids=tuple(sorted(expected_vector_ids)),
+        frozen_vector_generation=frozen_vectors,
+        prepared_vector_generation=prepared_vectors,
+        vector_descriptor_snapshot=descriptor_snapshot,
+        publish_vector_descriptor=publish_vector_descriptor,
+        prepared_manifest=prepared_manifest,
+        work_metrics=prepared_manifest.manifest.work_metrics,
+        stale_reason=stale_reason,
+        force_full_reindex=force_full_reindex,
+        stored_signal_version=stored_version,
+        suppress_fault_hooks=suppress_fault_hooks,
+        summary=summary,
+    )
 
-        resolve_graph_relations(store, association_only=False)
-        producer_generation = store.advance_producer_resolution_generation()
-        _fault(fault_hook, "producer_resolver_complete")
-        regenerate_test_associations(
-            store,
-            producer_resolution_generation=producer_generation,
-        )
-        _fault(fault_hook, "associations_complete")
-        resolve_graph_relations(store, association_only=True)
-        _fault(fault_hook, "association_resolver_complete")
 
-        vector_store.publish_generation(
-            prepared_vectors,
-            fault_hook=fault_hook,
+def _bound_v2_identity_failed(
+    loaded_manifest: LoadedManifestSnapshot | None,
+    operational: OperationalSnapshot | None,
+    descriptor: PublishedVectorDescriptor | None,
+    *,
+    entry_state: str,
+) -> bool:
+    if loaded_manifest is None or not isinstance(loaded_manifest.manifest, ManifestV2):
+        return False
+    if operational is None:
+        return entry_state == "ready"
+    manifest = loaded_manifest.manifest
+    binding = operational.binding
+    if descriptor is None:
+        return True
+    return not all(
+        (
+            loaded_manifest.sha256 == binding.manifest_sha256,
+            manifest.manifest_generation == binding.manifest_generation,
+            manifest.index_config_hash == binding.index_config_hash,
+            manifest.source_content_fingerprint
+            == binding.source_content_fingerprint,
+            manifest.source_observation_fingerprint
+            == binding.source_observation_fingerprint,
+            manifest.observation_generation == binding.observation_generation,
+            manifest.vector_generation == binding.vector_generation,
+            manifest.vector_descriptor_sha256
+            == binding.vector_descriptor_sha256,
+            manifest.vector_bytes == binding.vector_bytes,
+            manifest.vector_ids_bytes == binding.vector_ids_bytes,
+            descriptor.sha256 == binding.vector_descriptor_sha256,
+            descriptor.descriptor.generation == binding.vector_generation,
+            descriptor.descriptor.vectors_bytes == binding.vector_bytes,
+            descriptor.descriptor.ids_bytes == binding.vector_ids_bytes,
         )
-        _fault(fault_hook, "vector_descriptor_published")
-        atomic_write_index_bytes(
-            index_dir / "config.toml",
-            render_config(config).encode("utf-8"),
-            fault_prefix="config",
-            fault_hook=fault_hook,
-        )
-        stats = store.stats()
-        manifest = Manifest(
-            embedding_config_hash=embedding_identity,
-            embedding_provider=config.embedding.provider,
-            embedding_model=config.embedding.model,
-            embedding_dimensions=config.embedding.dimensions,
-            total_files=len(scanned_files),
-            total_chunks=stats["active_chunks"],
-        )
-        write_manifest_v5(repo, manifest, fault_hook=fault_hook)
-        expected_ids = set(vector_store.ids)
-        validator = _external_v5_validator(
-            repo=repo,
-            config=config,
-            expected_embedding_identity=embedding_identity,
-            expected_ids=expected_ids,
-            expected_source_count=len(scanned_files),
-            expected_chunk_count=stats["active_chunks"],
-        )
-        validator()
-        _fault(fault_hook, "external_artifacts_validated")
-        store.set_metadata(
-            PROJECT_SCOPE_METADATA_VERSION_KEY,
-            str(PROJECT_SCOPE_METADATA_VERSION),
-        )
-        _fault(fault_hook, "final_validation")
-        store.mark_graph_ready(
-            topology_fingerprint=topology_fingerprint,
-            expected_embedding_ids=expected_ids,
-            expected_source_count=len(scanned_files),
-            expected_chunk_count=stats["active_chunks"],
-            expected_producer_resolution_generation=producer_generation,
-            external_validator=validator,
-            indexed_at=int(time.time()),
-            before_commit=lambda: _fault(fault_hook, "before_ready_commit"),
-        )
-        _fault(fault_hook, "after_ready_commit")
+    )
 
-        return IndexSummary(
-            files_seen=len(scanned_files),
-            files_indexed=len(prepared_files),
-            files_skipped=len(scanned_files) - len(prepared_files),
-            files_deleted=len(deleted_paths),
-            chunks_indexed=len(changed_chunks),
+
+def _opening_matches_operational_snapshot(
+    inventory: WorkspaceInventory,
+    operational: OperationalSnapshot | None,
+    effective_index_hash: str,
+) -> bool:
+    if (
+        operational is None
+        or operational.graph_status != "ready"
+        or operational.binding.index_config_hash != effective_index_hash
+        or not inventory.complete
+    ):
+        return False
+    eligible = {item.path: item for item in inventory.eligible}
+    if set(eligible) != {item.path for item in operational.source_observations}:
+        return False
+    for persisted in operational.source_observations:
+        observed = eligible[persisted.path]
+        if (
+            observed.language != persisted.language
+            or observed.size != persisted.size
+            or observed.mtime_ns != persisted.mtime_ns
+            or observed.change_token != persisted.change_token
+            or observed.change_token_kind != persisted.change_token_kind
+        ):
+            return False
+    controls = {
+        Path(item.path): item for item in inventory.control_observations
+    }
+    if set(controls) != {item.path for item in operational.control_observations}:
+        return False
+    for persisted in operational.control_observations:
+        observed = controls[persisted.path]
+        if (
+            observed.sha256 != persisted.sha256
+            or observed.metadata.size != persisted.size
+            or observed.metadata.mtime_ns != persisted.mtime_ns
+            or observed.metadata.change_token != persisted.change_token
+            or observed.metadata.change_token_kind != persisted.change_token_kind
+        ):
+            return False
+    return not operational.scan_skips and not inventory.coverage_skips
+
+
+def _authoritative_stale_reason(
+    *,
+    stored_version: int,
+    entry_full_reindex: bool,
+    integrity_failed: bool,
+    topology_changed: bool,
+    project_scope_metadata_current: bool,
+    changed_paths: set[Path],
+    deleted_paths: set[Path],
+) -> str:
+    if stored_version < TARGET_SIGNAL_SCHEMA_VERSION:
+        return "schema_migration" if stored_version else "full_reindex"
+    if entry_full_reindex:
+        return "full_reindex"
+    if integrity_failed:
+        return "integrity_check_failed"
+    if topology_changed:
+        return "topology_changed"
+    if not project_scope_metadata_current:
+        return "project_scope_metadata_changed"
+    if changed_paths or deleted_paths:
+        return "files_changed"
+    return "stale_on_entry"
+
+
+def _operational_source_observations(
+    scanned_files: tuple[ScannedFile, ...],
+    results: dict[Path, ObservedFileRead],
+    generation: int,
+) -> tuple[OperationalSourceObservation, ...]:
+    observations: list[OperationalSourceObservation] = []
+    for scanned in scanned_files:
+        metadata = results[scanned.path].metadata
+        if metadata is None:
+            raise WorkspaceChangedError()
+        observations.append(
+            OperationalSourceObservation(
+                path=scanned.path,
+                language=scanned.language,
+                sha256=scanned.sha256,
+                size=scanned.size,
+                mtime_ns=metadata.mtime_ns,
+                change_token=metadata.change_token,
+                change_token_kind=metadata.change_token_kind,
+                observation_generation=generation,
+            )
         )
+    return tuple(sorted(observations, key=lambda item: item.path.as_posix()))
+
+
+def _operational_scan_skips(
+    skips: Iterable[CoverageSkipObservation],
+    generation: int,
+    prior: OperationalSnapshot | None,
+) -> tuple[OperationalScanSkip, ...]:
+    previous = (
+        {item.path: item for item in prior.scan_skips}
+        if prior is not None
+        else {}
+    )
+    by_path = {item.path: item for item in skips}
+    prepared: list[OperationalScanSkip] = []
+    for path, item in sorted(by_path.items(), key=lambda pair: pair[0].as_posix()):
+        metadata = item.metadata
+        old = previous.get(path)
+        prepared.append(
+            OperationalScanSkip(
+                path=path,
+                reason=item.reason,
+                language=item.language or None,
+                size=metadata.size if metadata is not None else None,
+                mtime_ns=metadata.mtime_ns if metadata is not None else None,
+                change_token=(
+                    metadata.change_token if metadata is not None else None
+                ),
+                change_token_kind=(
+                    metadata.change_token_kind
+                    if metadata is not None
+                    else "unavailable"
+                ),
+                retryable=item.retryable,
+                first_observation_generation=(
+                    old.first_observation_generation
+                    if old is not None
+                    else generation
+                ),
+                last_observation_generation=generation,
+                last_retry_generation=(
+                    old.last_retry_generation if old is not None else None
+                ),
+            )
+        )
+    return tuple(prepared)
+
+
+def _operational_control_observations(
+    inventory: WorkspaceInventory,
+    generation: int,
+) -> tuple[OperationalControlObservation, ...]:
+    return tuple(
+        OperationalControlObservation(
+            path=Path(item.path),
+            sha256=item.sha256,
+            size=item.metadata.size,
+            mtime_ns=item.metadata.mtime_ns,
+            change_token=item.metadata.change_token,
+            change_token_kind=item.metadata.change_token_kind,
+            observation_generation=generation,
+        )
+        for item in inventory.control_observations
+    )
+
+
+def _persist_prepared_index(
+    *,
+    repo: Path,
+    store: SQLiteStore,
+    prepared: PreparedIndexSnapshot,
+    fault_hook: Callable[[str], None] | None,
+) -> None:
+    active_fault_hook = None if prepared.suppress_fault_hooks else fault_hook
+    if prepared.stored_signal_version < TARGET_SIGNAL_SCHEMA_VERSION:
+        store.initialize_v5(stale_reason=prepared.stale_reason)
+    else:
+        store.mark_graph_stale(
+            prepared.stale_reason,
+            full_reindex_required=prepared.force_full_reindex,
+        )
+    _fault(active_fault_hook, "stale_committed")
+
+    store.initialize_operational_schema_v1(
+        before_commit=lambda: _fault(active_fault_hook, "operational_ddl_commit"),
+    )
+    _fault(active_fault_hook, "operational_ddl_complete")
+    store.set_metadata(FILE_WRITE_IN_PROGRESS_KEY, "")
+
+    for item in prepared.prepared_files:
+        file_path = item.source_file.path
+        store.begin_v5_file_write(file_path)
+        _fault(active_fault_hook, "file_write_started")
+        store.replace_chunks(file_path, list(item.chunks))
+        _fault(active_fault_hook, "chunks_persisted")
+        store.replace_signals(file_path, list(item.signals))
+        _fault(active_fault_hook, "signals_persisted")
+        store.replace_relations(file_path, list(item.relations))
+        _fault(active_fault_hook, "producer_relations_persisted")
+        store.finish_v5_file_write(item.source_file)
+        _fault(active_fault_hook, "source_hash_persisted")
+
+    for path in prepared.deleted_paths:
+        store.mark_file_deleted(path)
+        _fault(active_fault_hook, "deletion_persisted")
+
+    resolve_graph_relations(store, association_only=False)
+    producer_generation = store.advance_producer_resolution_generation()
+    _fault(active_fault_hook, "producer_resolver_complete")
+    regenerate_test_associations(
+        store,
+        producer_resolution_generation=producer_generation,
+    )
+    _fault(active_fault_hook, "associations_complete")
+    resolve_graph_relations(store, association_only=True)
+    _fault(active_fault_hook, "association_resolver_complete")
+
+    store.replace_operational_observations(
+        observation_generation=prepared.observation_generation,
+        source_observations=prepared.source_observations,
+        scan_skips=prepared.scan_skips,
+        control_observations=prepared.control_observations,
+    )
+    _fault(active_fault_hook, "operational_observations_persisted")
+
+    publisher = NumpyVectorStore.fresh(
+        repo / ".context-search",
+        dimensions=prepared.effective_config.embedding.dimensions,
+    )
+    vector_generation = prepared.prepared_vector_generation
+    if prepared.frozen_vector_generation is not None:
+        vector_generation = publisher.materialize_frozen_generation(
+            prepared.frozen_vector_generation,
+            fault_hook=active_fault_hook,
+        )
+    _fault(active_fault_hook, "vectors_prepared")
+    if prepared.publish_vector_descriptor:
+        publisher.publish_generation(
+            vector_generation,
+            fault_hook=active_fault_hook,
+        )
+        _fault(active_fault_hook, "vector_descriptor_published")
+    else:
+        _fault(active_fault_hook, "vector_descriptor_reused")
+
+    for stage in (
+        "config_temp_write",
+        "config_file_fsync",
+        "config_rename",
+        "config_directory_fsync",
+    ):
+        _fault(active_fault_hook, stage)
+    for stage in (
+        "manifest_temp_write",
+        "manifest_file_fsync",
+        "manifest_rename",
+        "manifest_directory_fsync",
+    ):
+        _fault(active_fault_hook, stage)
+    publish_manifest_v2(
+        repo,
+        prepared.prepared_manifest,
+        fault_hook=active_fault_hook,
+    )
+
+    expected_ids = set(prepared.expected_vector_ids)
+    validator = _prepared_external_validator(
+        repo=repo,
+        prepared=prepared,
+    )
+    validator()
+    _fault(active_fault_hook, "external_artifacts_validated")
+    store.set_metadata(
+        PROJECT_SCOPE_METADATA_VERSION_KEY,
+        str(PROJECT_SCOPE_METADATA_VERSION),
+    )
+    _fault(active_fault_hook, "final_validation")
+    manifest = prepared.prepared_manifest.manifest
+    binding = OperationalReadyBinding(
+        index_config_hash=manifest.index_config_hash,
+        source_content_fingerprint=manifest.source_content_fingerprint,
+        source_observation_fingerprint=manifest.source_observation_fingerprint,
+        observation_generation=manifest.observation_generation,
+        manifest_schema_version=manifest.schema_version,
+        manifest_generation=manifest.manifest_generation,
+        manifest_sha256=prepared.prepared_manifest.sha256,
+        vector_descriptor_schema_version=manifest.vector_descriptor_schema_version,
+        vector_generation=manifest.vector_generation,
+        vector_descriptor_sha256=manifest.vector_descriptor_sha256,
+        vector_bytes=manifest.vector_bytes,
+        vector_ids_bytes=manifest.vector_ids_bytes,
+        indexed_at_epoch_s=manifest.indexed_at_epoch_s,
+        operation_mode=manifest.operation_mode,
+        work_metrics=manifest.work_metrics,
+    )
+    store.commit_operational_ready_v1(
+        binding=binding,
+        topology_fingerprint=prepared.topology_fingerprint,
+        expected_embedding_ids=expected_ids,
+        expected_source_count=manifest.total_files,
+        expected_chunk_count=manifest.total_chunks,
+        external_validator=validator,
+        before_commit=lambda: _fault(
+            active_fault_hook,
+            "before_ready_commit",
+        ),
+    )
+    _fault(active_fault_hook, "after_ready_commit")
+
+
+def _prepared_external_validator(
+    *,
+    repo: Path,
+    prepared: PreparedIndexSnapshot,
+) -> Callable[[], None]:
+    def validate() -> None:
+        manifest = load_manifest_snapshot(repo)
+        if (
+            manifest.manifest != prepared.prepared_manifest.manifest
+            or manifest.sha256 != prepared.prepared_manifest.sha256
+        ):
+            raise GraphIntegrityError("manifest snapshot mismatch")
+        descriptor = NumpyVectorStore.inspect_published_descriptor(
+            repo / ".context-search"
+        )
+        if descriptor != prepared.vector_descriptor_snapshot:
+            raise GraphIntegrityError("vector descriptor snapshot mismatch")
+        verified = NumpyVectorStore.verify_published_snapshot(
+            repo / ".context-search",
+            expected_ids=set(prepared.expected_vector_ids),
+            expected_embedding_identity=prepared.prepared_manifest.manifest.embedding_config_hash,
+        )
+        if verified.ids != prepared.expected_vector_ids:
+            raise GraphIntegrityError("vector ID snapshot mismatch")
+
+    return validate
 
 
 def _canonical_scanned_files(
@@ -583,12 +1333,14 @@ def _prepare_v5_file(
     active_path_units: tuple[tuple[Path, str], ...],
     file_reader: Callable[..., bytes],
     max_file_bytes: int,
+    content_bytes: bytes | None = None,
 ) -> _PreparedFile:
-    content_bytes = file_reader(
-        repo,
-        scanned_file,
-        max_file_bytes=max_file_bytes,
-    )
+    if content_bytes is None:
+        content_bytes = file_reader(
+            repo,
+            scanned_file,
+            max_file_bytes=max_file_bytes,
+        )
     if (
         len(content_bytes) != scanned_file.size
         or hashlib.sha256(content_bytes).hexdigest() != scanned_file.sha256
@@ -728,9 +1480,9 @@ def _prepare_v5_file(
     )
     return _PreparedFile(
         source_file=source_file,
-        chunks=chunks,
-        signals=signals,
-        relations=relations,
+        chunks=tuple(chunks),
+        signals=tuple(signals),
+        relations=tuple(relations),
     )
 
 
@@ -897,8 +1649,7 @@ def _load_validated_v5_vector_tuple(
         raise GraphIntegrityError("config snapshot mismatch")
     manifest = load_manifest(repo)
     if (
-        manifest.schema_version != MANIFEST_SCHEMA_VERSION
-        or manifest.embedding_config_hash != expected_embedding_identity
+        manifest.embedding_config_hash != expected_embedding_identity
         or manifest.embedding_provider != config.embedding.provider
         or manifest.embedding_model != config.embedding.model
         or manifest.embedding_dimensions != config.embedding.dimensions
@@ -912,6 +1663,21 @@ def _load_validated_v5_vector_tuple(
     )
     if descriptor is None:
         raise GraphIntegrityError("vector descriptor is missing")
+    if isinstance(manifest, ManifestV2):
+        descriptor_snapshot = NumpyVectorStore.inspect_published_descriptor(index_dir)
+        if (
+            manifest.index_config_hash != index_config_hash(config)
+            or descriptor_snapshot is None
+            or descriptor_snapshot.sha256 != manifest.vector_descriptor_sha256
+            or descriptor.schema_version
+            != manifest.vector_descriptor_schema_version
+            or descriptor.generation != manifest.vector_generation
+            or descriptor.vectors_bytes != manifest.vector_bytes
+            or descriptor.ids_bytes != manifest.vector_ids_bytes
+        ):
+            raise GraphIntegrityError("manifest vector binding mismatch")
+    elif manifest.schema_version != MANIFEST_SCHEMA_VERSION:
+        raise GraphIntegrityError("manifest snapshot mismatch")
     if (
         descriptor.embedding_identity != expected_embedding_identity
         or descriptor.dimensions != config.embedding.dimensions

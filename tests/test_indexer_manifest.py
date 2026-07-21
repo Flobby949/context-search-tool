@@ -33,7 +33,7 @@ from context_search_tool.graph_plugins import (
 from context_search_tool.frontend_graph import FrontendGraphProducer
 from context_search_tool.java_graph import JavaGraphProducer
 from context_search_tool.index_lock import exclusive_index_lock
-from context_search_tool.manifest import load_manifest
+from context_search_tool.manifest import ManifestV2, load_manifest
 from context_search_tool.models import CodeRelation, CodeSignal
 from context_search_tool.mybatis_xml import MyBatisGraphProducer
 from context_search_tool.scanner import read_scanned_file_bytes, scan_workspace_v5
@@ -121,7 +121,16 @@ def test_index_repository_creates_expected_index_files(tmp_path: Path) -> None:
     assert (repo / ".context-search" / "manifest.json").exists()
     assert (repo / ".context-search" / "index.sqlite").exists()
     assert (repo / ".context-search" / "vector_snapshot.json").exists()
-    assert load_manifest(repo).total_chunks >= 1
+    manifest = load_manifest(repo)
+    assert isinstance(manifest, ManifestV2)
+    assert manifest.total_chunks >= 1
+    assert manifest.operation_mode == "authoritative_index"
+    assert manifest.vector_descriptor_schema_version == 2
+    operational = SQLiteStore(
+        repo / ".context-search" / "index.sqlite"
+    ).read_operational_snapshot()
+    assert operational is not None
+    assert operational.binding.manifest_generation == manifest.manifest_generation
 
 
 def test_index_repository_indexes_go_source_with_generic_chunks(tmp_path: Path) -> None:

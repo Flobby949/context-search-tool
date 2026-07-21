@@ -15,6 +15,7 @@ from context_search_tool.paths import (
     atomic_write_index_bytes,
     ensure_index_layout,
     index_dir_for,
+    prepare_index_directory,
 )
 
 
@@ -288,7 +289,7 @@ def publish_manifest_v2(
     checked = prepare_manifest_v2(prepared.manifest)
     if checked.payload != prepared.payload or checked.sha256 != prepared.sha256:
         raise ManifestCorruptionError("prepared manifest identity mismatch")
-    ensure_index_layout(repo)
+    prepare_index_directory(repo)
     atomic_write_index_bytes(
         manifest_path(repo),
         prepared.payload,
@@ -311,17 +312,23 @@ def embedding_config_hash(config: EmbeddingConfig) -> str:
     return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
 
+def index_config_hash(config: ToolConfig) -> str:
+    """Hash only settings that can change scanner eligibility or body limits."""
+    payload = {
+        "exclude": list(config.index.exclude),
+        "include": list(config.index.include),
+        "max_file_bytes": config.index.max_file_bytes,
+    }
+    rendered = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
 def assert_manifest_compatible(repo: Path, config: ToolConfig) -> None:
     path = manifest_path(repo)
     if not path.exists():
         return
 
     manifest = load_manifest(repo)
-    if manifest.schema_version != SCHEMA_VERSION:
-        raise ValueError(
-            f"incompatible manifest schema version: {manifest.schema_version}"
-        )
-
     expected_hash = embedding_config_hash(config.embedding)
     if manifest.embedding_config_hash != expected_hash:
         raise ValueError("incompatible embedding configuration for existing index")

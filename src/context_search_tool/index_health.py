@@ -23,6 +23,7 @@ from context_search_tool.manifest import (
     ManifestV2,
     READABLE_MANIFEST_VERSIONS,
     embedding_config_hash,
+    index_config_hash,
     inspect_raw_manifest_schema,
     load_manifest_snapshot,
 )
@@ -913,6 +914,7 @@ class CommittedIndexSnapshot:
     vector_identity_valid: bool
     indexed_embedding: EmbeddingIdentity
     active_embedding_ids: tuple[str, ...] = ()
+    index_config_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1004,6 +1006,7 @@ def read_committed_index_snapshot(repo: Path) -> CommittedIndexSnapshot:
         vector_identity_valid=vector_valid,
         indexed_embedding=_indexed_embedding(manifest),
         active_embedding_ids=operational.active_embedding_ids,
+        index_config_hash=operational.binding.index_config_hash,
     )
 
 
@@ -1254,6 +1257,7 @@ def _unbound_v2_snapshot(
         vector_identity_valid=False,
         indexed_embedding=_indexed_embedding(manifest),
         active_embedding_ids=active_ids,
+        index_config_hash=manifest.index_config_hash,
     )
 
 
@@ -1287,6 +1291,7 @@ class InspectionAdapters:
     writer_probe: Callable[[Path], WriterProbe]
     clock_ms: Callable[[], int]
     max_file_bytes: int = 16 * 1024 * 1024
+    configured_index_hash_reader: Callable[[Path], str | None] | None = None
 
 
 def inspect_index_health(
@@ -1303,6 +1308,11 @@ def inspect_index_health(
 
     started = adapters.clock_ms()
     configured_embedding = adapters.configured_embedding_reader(repo)
+    configured_index_hash = (
+        adapters.configured_index_hash_reader(repo)
+        if adapters.configured_index_hash_reader is not None
+        else None
+    )
     opening_snapshot = adapters.snapshot_reader(repo)
     opening_inventory = adapters.inventory_reader(repo, None)
     content_results: dict[str, ObservedFileRead] = {}
@@ -1332,6 +1342,7 @@ def inspect_index_health(
         content_results=content_results,
         vector_result=vector_result,
         configured_embedding=configured_embedding,
+        configured_index_hash=configured_index_hash,
         writer=writer,
     )
 
@@ -1358,6 +1369,7 @@ def inspect_repository_health(repo: Path, *, mode: str) -> IndexHealthReport:
         writer_probe=probe_writer_state,
         clock_ms=lambda: time.time_ns() // 1_000_000,
         max_file_bytes=config.index.max_file_bytes,
+        configured_index_hash_reader=lambda _repo: index_config_hash(config),
     )
     return inspect_index_health(repo, mode=mode, adapters=adapters)
 
@@ -1851,6 +1863,7 @@ def _observed_report(
     content_results: Mapping[str, ObservedFileRead],
     vector_result: VectorVerification | None,
     configured_embedding: EmbeddingIdentity,
+    configured_index_hash: str | None,
     writer: WriterProbe,
 ) -> IndexHealthReport:
     del raw
@@ -1972,7 +1985,14 @@ def _observed_report(
     )
     legacy = opening_snapshot.manifest_version == 1
     graph_stale = opening_snapshot.graph_status in {"stale", "unfinished"}
-    has_delta = bool(added_paths or deleted_paths or changed_paths)
+    index_config_changed = (
+        opening_snapshot.index_config_hash is not None
+        and configured_index_hash is not None
+        and opening_snapshot.index_config_hash != configured_index_hash
+    )
+    has_delta = bool(
+        added_paths or deleted_paths or changed_paths or index_config_changed
+    )
 
     if confirmed_corrupt:
         integrity_status = "invalid"
@@ -2021,6 +2041,8 @@ def _observed_report(
         refresh_reasons.append("coverage_changed")
     if graph_stale:
         refresh_reasons.append("graph_stale")
+    if index_config_changed:
+        refresh_reasons.append("index_config_changed")
     if legacy:
         refresh_reasons.append("manifest_upgrade")
     if confirmed_corrupt:
@@ -2047,7 +2069,13 @@ def _observed_report(
         refresh_kind = "none"
         action = "retry_inspection"
     elif any(
-        reason in {"embedding_config_changed", "manifest_upgrade", "integrity_failed"}
+        reason
+        in {
+            "index_config_changed",
+            "embedding_config_changed",
+            "manifest_upgrade",
+            "integrity_failed",
+        }
         for reason in refresh_reasons
     ):
         refresh_required = True

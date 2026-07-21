@@ -632,6 +632,20 @@ def test_production_status_reads_legacy_v1_without_mutation(tmp_path: Path) -> N
     repo.mkdir()
     (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
     index_repository(repo, DEFAULT_CONFIG)
+    from context_search_tool.manifest import Manifest, load_manifest, write_manifest
+
+    current = load_manifest(repo)
+    write_manifest(
+        repo,
+        Manifest(
+            embedding_config_hash=current.embedding_config_hash,
+            embedding_provider=current.embedding_provider,
+            embedding_model=current.embedding_model,
+            embedding_dimensions=current.embedding_dimensions,
+            total_files=current.total_files,
+            total_chunks=current.total_chunks,
+        ),
+    )
     before = _tree_snapshot(repo)
 
     report = module.inspect_repository_health(repo, mode="verified")
@@ -643,3 +657,26 @@ def test_production_status_reads_legacy_v1_without_mutation(tmp_path: Path) -> N
     assert rendered["refresh"]["reasons"] == ["manifest_upgrade"]
     assert rendered["queryable"] is True
     assert _tree_snapshot(repo) == before
+
+
+def test_production_status_reports_index_configuration_mismatch(
+    tmp_path: Path,
+) -> None:
+    module = _health_module()
+    from context_search_tool.indexer import index_repository
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    (repo / ".context-search" / "config.toml").write_text(
+        '[index]\nexclude = ["app.py"]\n',
+        encoding="utf-8",
+    )
+
+    report = module.inspect_repository_health(repo, mode="quick")
+
+    assert report.health == "stale"
+    assert report.refresh.required is True
+    assert report.refresh.kind == "authoritative"
+    assert "index_config_changed" in report.refresh.reasons

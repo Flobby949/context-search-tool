@@ -429,6 +429,42 @@ def test_failure_after_acknowledged_ready_commit_exposes_complete_noop(
     assert summary.files_indexed == 0
 
 
+def test_failure_at_closing_fence_keeps_prior_ready_generation(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo-closing-fence"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int oldValue; }\n", encoding="utf-8")
+    build_v5_index_snapshot(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+        scanner=scan_workspace_v5,
+    )
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    old_hash = store.source_file_for_path(Path("App.java")).sha256
+    old_manifest = (repo / ".context-search" / "manifest.json").read_bytes()
+    source.write_text("class App { int newValue; }\n", encoding="utf-8")
+
+    def fail(stage: str) -> None:
+        if stage == "closing_inventory_complete":
+            raise RuntimeError("closing fence fault")
+
+    with pytest.raises(RuntimeError, match="closing fence fault"):
+        build_v5_index_snapshot(
+            repo,
+            DEFAULT_CONFIG,
+            graph_plugins=[JavaGraphProducer()],
+            scanner=scan_workspace_v5,
+            fault_hook=fail,
+        )
+
+    assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "ready"
+    assert store.source_file_for_path(Path("App.java")).sha256 == old_hash
+    assert (repo / ".context-search" / "manifest.json").read_bytes() == old_manifest
+
+
 def test_incremental_failure_after_source_hash_cannot_skip_recovery(
     tmp_path: Path,
 ) -> None:

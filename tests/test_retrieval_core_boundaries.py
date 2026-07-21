@@ -778,8 +778,9 @@ def test_graph_lifecycle_primitives_are_leaf_bounded_and_activated() -> None:
     assert "build_v5_index_snapshot" in indexer_path.read_text(encoding="utf-8")
     indexer_source = indexer_path.read_text(encoding="utf-8")
     assert "prepare_generation_v2" not in indexer_source
-    assert "publish_manifest_v2" not in indexer_source
-    assert "commit_operational_ready_v1" not in indexer_source
+    assert "freeze_generation_v2" in indexer_source
+    assert "publish_manifest_v2" in indexer_source
+    assert "commit_operational_ready_v1" in indexer_source
 
     for name in ("graph_lifecycle.py", "graph_resolution.py", "index_lock.py"):
         assert _import_roots(package / name).isdisjoint(

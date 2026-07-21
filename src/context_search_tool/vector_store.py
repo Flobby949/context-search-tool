@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 from dataclasses import dataclass
@@ -39,6 +40,14 @@ class VectorGenerationDescriptor:
 class PreparedVectorGeneration:
     index_dir: Path
     descriptor: VectorGenerationDescriptor
+
+
+@dataclass(frozen=True)
+class FrozenVectorGeneration:
+    index_dir: Path
+    descriptor: VectorGenerationDescriptor
+    vectors_payload: bytes
+    ids_payload: bytes
 
 
 @dataclass(frozen=True)
@@ -260,6 +269,137 @@ class NumpyVectorStore:
             fault_hook=fault_hook,
         )
 
+    def freeze_generation_v2(
+        self,
+        *,
+        generation: str,
+        embedding_identity: str,
+        normalization: Literal["none", "l2"] = "none",
+    ) -> FrozenVectorGeneration:
+        """Serialize an immutable v2 generation without touching the index directory."""
+        _validate_generation_inputs(
+            generation,
+            embedding_identity,
+            self._ids,
+            self._vectors,
+        )
+        if normalization not in {"none", "l2"}:
+            raise ValueError("vector normalization must be none or l2")
+        if normalization == "l2":
+            _validate_l2_normalization(self._vectors)
+        buffer = io.BytesIO()
+        np.save(buffer, self._vectors, allow_pickle=False)
+        vectors_payload = buffer.getvalue()
+        ids_payload = (
+            json.dumps(self._ids, ensure_ascii=False, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        descriptor = VectorGenerationDescriptor(
+            generation=generation,
+            vectors_file=f"vectors.{generation}.npy",
+            ids_file=f"vector_ids.{generation}.json",
+            vectors_sha256=hashlib.sha256(vectors_payload).hexdigest(),
+            ids_sha256=hashlib.sha256(ids_payload).hexdigest(),
+            row_count=len(self._ids),
+            dimensions=(
+                int(self._vectors.shape[1]) if self._vectors.ndim == 2 else 0
+            ),
+            embedding_identity=embedding_identity,
+            schema_version=WRITE_VECTOR_DESCRIPTOR_VERSION,
+            vectors_bytes=len(vectors_payload),
+            ids_bytes=len(ids_payload),
+            normalization=normalization,
+        )
+        return FrozenVectorGeneration(
+            index_dir=self.index_dir,
+            descriptor=descriptor,
+            vectors_payload=vectors_payload,
+            ids_payload=ids_payload,
+        )
+
+    def materialize_frozen_generation(
+        self,
+        frozen: FrozenVectorGeneration,
+        *,
+        fault_hook: _FaultHook | None = None,
+    ) -> PreparedVectorGeneration:
+        if frozen.index_dir.resolve() != self.index_dir.resolve():
+            raise ValueError("frozen vector generation belongs to another index")
+        checked = _validate_frozen_generation(frozen)
+        self.index_dir.mkdir(parents=True, exist_ok=True)
+        vectors_path = self.index_dir / checked.descriptor.vectors_file
+        ids_path = self.index_dir / checked.descriptor.ids_file
+        _atomic_file_write(
+            vectors_path,
+            lambda file: file.write(checked.vectors_payload),
+            prefix="vectors",
+            fault_hook=fault_hook,
+            replace=False,
+        )
+        _atomic_file_write(
+            ids_path,
+            lambda file: file.write(checked.ids_payload),
+            prefix="ids",
+            fault_hook=fault_hook,
+            replace=False,
+        )
+        prepared = PreparedVectorGeneration(self.index_dir, checked.descriptor)
+        _load_generation(self.index_dir, prepared.descriptor)
+        return prepared
+
+    @classmethod
+    def prepare_existing_generation_v2(
+        cls,
+        index_dir: Path,
+        *,
+        expected_embedding_identity: str,
+        expected_ids: set[str],
+    ) -> PreparedVectorGeneration:
+        snapshot = cls.inspect_published_descriptor(index_dir)
+        if snapshot is None:
+            raise VectorDescriptorCorruptionError("vector descriptor is missing")
+        descriptor = snapshot.descriptor
+        if descriptor.embedding_identity != expected_embedding_identity:
+            raise VectorDescriptorCorruptionError("vector embedding identity mismatch")
+        ids, _vectors = _load_generation(index_dir, descriptor)
+        if tuple(ids) != tuple(sorted(expected_ids)):
+            raise VectorDescriptorCorruptionError("exact vector IDs mismatch")
+        if descriptor.schema_version == WRITE_VECTOR_DESCRIPTOR_VERSION:
+            return PreparedVectorGeneration(index_dir, descriptor)
+        upgraded = VectorGenerationDescriptor(
+            generation=descriptor.generation,
+            vectors_file=descriptor.vectors_file,
+            ids_file=descriptor.ids_file,
+            vectors_sha256=descriptor.vectors_sha256,
+            ids_sha256=descriptor.ids_sha256,
+            row_count=descriptor.row_count,
+            dimensions=descriptor.dimensions,
+            embedding_identity=descriptor.embedding_identity,
+            schema_version=WRITE_VECTOR_DESCRIPTOR_VERSION,
+            vectors_bytes=_regular_file_size(
+                index_dir / descriptor.vectors_file,
+                "vector payload",
+            ),
+            ids_bytes=_regular_file_size(
+                index_dir / descriptor.ids_file,
+                "vector IDs",
+            ),
+            normalization="none",
+        )
+        _load_generation(index_dir, upgraded)
+        return PreparedVectorGeneration(index_dir, upgraded)
+
+    @classmethod
+    def prepared_descriptor_snapshot(
+        cls,
+        prepared: PreparedVectorGeneration,
+    ) -> PublishedVectorDescriptor:
+        payload = _descriptor_payload(prepared.descriptor)
+        return PublishedVectorDescriptor(
+            descriptor=prepared.descriptor,
+            sha256=hashlib.sha256(payload).hexdigest(),
+            byte_size=len(payload),
+        )
+
     def _prepare_generation(
         self,
         *,
@@ -269,14 +409,12 @@ class NumpyVectorStore:
         normalization: Literal["none", "l2"] | None,
         fault_hook: _FaultHook | None,
     ) -> PreparedVectorGeneration:
-        if not _GENERATION_RE.fullmatch(generation):
-            raise ValueError("invalid vector generation")
-        if not embedding_identity:
-            raise ValueError("embedding identity must not be empty")
-        if len(self._ids) != self._vectors.shape[0]:
-            raise ValueError("vector id count does not match vector row count")
-        if len(set(self._ids)) != len(self._ids):
-            raise ValueError("vector IDs must be unique")
+        _validate_generation_inputs(
+            generation,
+            embedding_identity,
+            self._ids,
+            self._vectors,
+        )
 
         self.index_dir.mkdir(parents=True, exist_ok=True)
         vectors_name = f"vectors.{generation}.npy"
@@ -345,15 +483,7 @@ class NumpyVectorStore:
         if prepared.index_dir.resolve() != self.index_dir.resolve():
             raise ValueError("prepared vector generation belongs to another index")
         _load_generation(self.index_dir, prepared.descriptor)
-        payload = (
-            json.dumps(
-                _descriptor_dict(prepared.descriptor),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            + "\n"
-        ).encode("utf-8")
+        payload = _descriptor_payload(prepared.descriptor)
         _atomic_file_write(
             self.index_dir / _DESCRIPTOR_FILENAME,
             lambda file: file.write(payload),
@@ -417,6 +547,57 @@ class NumpyVectorStore:
     @property
     def _ids_path(self) -> Path:
         return self.index_dir / "vector_ids.json"
+
+
+def _validate_generation_inputs(
+    generation: str,
+    embedding_identity: str,
+    ids: list[str],
+    vectors: np.ndarray,
+) -> None:
+    if not _GENERATION_RE.fullmatch(generation):
+        raise ValueError("invalid vector generation")
+    if not embedding_identity:
+        raise ValueError("embedding identity must not be empty")
+    if vectors.ndim != 2 or len(ids) != vectors.shape[0]:
+        raise ValueError("vector id count does not match vector row count")
+    if len(set(ids)) != len(ids):
+        raise ValueError("vector IDs must be unique")
+
+
+def _validate_frozen_generation(
+    frozen: FrozenVectorGeneration,
+) -> FrozenVectorGeneration:
+    if not isinstance(frozen, FrozenVectorGeneration):
+        raise ValueError("invalid frozen vector generation")
+    descriptor = frozen.descriptor
+    if descriptor.schema_version != WRITE_VECTOR_DESCRIPTOR_VERSION:
+        raise ValueError("frozen vector generation must use descriptor v2")
+    if descriptor.vectors_file != f"vectors.{descriptor.generation}.npy" or (
+        descriptor.ids_file != f"vector_ids.{descriptor.generation}.json"
+    ):
+        raise ValueError("invalid frozen vector generation path")
+    if (
+        descriptor.vectors_sha256
+        != hashlib.sha256(frozen.vectors_payload).hexdigest()
+        or descriptor.ids_sha256 != hashlib.sha256(frozen.ids_payload).hexdigest()
+        or descriptor.vectors_bytes != len(frozen.vectors_payload)
+        or descriptor.ids_bytes != len(frozen.ids_payload)
+    ):
+        raise ValueError("frozen vector generation identity mismatch")
+    return frozen
+
+
+def _descriptor_payload(descriptor: VectorGenerationDescriptor) -> bytes:
+    return (
+        json.dumps(
+            _descriptor_dict(descriptor),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
 
 
 def _descriptor_dict(

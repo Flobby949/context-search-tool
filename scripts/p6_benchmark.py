@@ -1000,16 +1000,25 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     original_manifest_assert = manifest_module.assert_manifest_compatible
     original_indexer_manifest_assert = indexer_module.assert_manifest_compatible
     original_indexer_load_manifest = indexer_module.load_manifest
+    original_indexer_load_manifest_snapshot = indexer_module.load_manifest_snapshot
     original_indexer_write_manifest = indexer_module.write_manifest_v5
+    original_indexer_publish_manifest_v2 = indexer_module.publish_manifest_v2
     original_vector_search = NumpyVectorStore.search
     original_scan = indexer_module.scan_workspace_v5
+    original_observe_workspace = indexer_module.observe_workspace
+    original_read_observed_file = indexer_module.read_observed_file
     original_prepare = indexer_module._prepare_v5_file
     original_embed = HashEmbeddingProvider.embed_texts
     original_resolve = indexer_module.resolve_graph_relations
     original_associate = indexer_module.regenerate_test_associations
     original_prepare_generation = NumpyVectorStore.prepare_generation
+    original_freeze_generation_v2 = NumpyVectorStore.freeze_generation_v2
+    original_materialize_frozen_generation = (
+        NumpyVectorStore.materialize_frozen_generation
+    )
     original_publish_generation = NumpyVectorStore.publish_generation
     original_vector_sha256_file = vector_store_module._sha256_file
+    original_vector_sha256_file_safe = vector_store_module._sha256_file_safe
     original_load_generation = vector_store_module._load_generation
     original_open_connection = sqlite_store_module._open_connection
     original_build_repo_profile = retrieval_module.build_repo_profile
@@ -1241,28 +1250,32 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
         attributed_work["inventory_entries"] = len(result)
         return result
 
-    def measured_prepare(*args: Any, **kwargs: Any) -> Any:
-        original_reader = kwargs["file_reader"]
-        source_ms = 0.0
-        source_bytes = 0
-
-        def measured_reader(*reader_args: Any, **reader_kwargs: Any) -> bytes:
-            nonlocal source_ms, source_bytes
-            started = time.perf_counter()
-            content = original_reader(*reader_args, **reader_kwargs)
-            source_ms += (time.perf_counter() - started) * 1000
-            source_bytes += len(content)
-            return content
-
-        measured_kwargs = dict(kwargs)
-        measured_kwargs["file_reader"] = measured_reader
+    def measured_inventory(scan_repo: Path, config: Any) -> Any:
         started = time.perf_counter()
-        prepared = original_prepare(*args, **measured_kwargs)
-        total_ms = (time.perf_counter() - started) * 1000
-        attributed_stage_timings["source"] += source_ms
-        attributed_stage_timings["parse"] += max(0.0, total_ms - source_ms)
-        attributed_work["source_bytes_read"] += source_bytes
-        attributed_work["source_bytes_hashed"] += source_bytes
+        result = original_observe_workspace(scan_repo, config)
+        attributed_stage_timings["inventory"] += (
+            time.perf_counter() - started
+        ) * 1000
+        attributed_work["inventory_entries"] = len(result.eligible)
+        return result
+
+    def measured_observed_read(*args: Any, **kwargs: Any) -> Any:
+        started = time.perf_counter()
+        result = original_read_observed_file(*args, **kwargs)
+        attributed_stage_timings["source"] += (
+            time.perf_counter() - started
+        ) * 1000
+        if result.content is not None:
+            attributed_work["source_bytes_read"] += len(result.content)
+            attributed_work["source_bytes_hashed"] += len(result.content)
+        return result
+
+    def measured_prepare(*args: Any, **kwargs: Any) -> Any:
+        started = time.perf_counter()
+        prepared = original_prepare(*args, **kwargs)
+        attributed_stage_timings["parse"] += (
+            time.perf_counter() - started
+        ) * 1000
         attributed_work["peak_queued_files"] += 1
         attributed_work["peak_queued_chunks"] += len(prepared.chunks)
         attributed_work["peak_queued_text_bytes"] += sum(
@@ -1271,8 +1284,8 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
         attributed_work["path_index_builds"] += 1
         attributed_work["paths_canonicalized"] += (
             1
-            + len(measured_kwargs["active_paths"])
-            + len(measured_kwargs["active_path_units"])
+            + len(kwargs["active_paths"])
+            + len(kwargs["active_path_units"])
         )
         return prepared
 
@@ -1332,6 +1345,39 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             (result.index_dir / descriptor.vectors_file).stat().st_size
             + (result.index_dir / descriptor.ids_file).stat().st_size
         )
+        return result
+
+    def measured_freeze_generation_v2(
+        store: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        started = time.perf_counter()
+        result = original_freeze_generation_v2(store, *args, **kwargs)
+        attributed_stage_timings["vector_publication"] += (
+            time.perf_counter() - started
+        ) * 1000
+        return result
+
+    def measured_materialize_frozen_generation(
+        store: Any,
+        frozen: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        started = time.perf_counter()
+        result = original_materialize_frozen_generation(
+            store,
+            frozen,
+            *args,
+            **kwargs,
+        )
+        attributed_stage_timings["vector_publication"] += (
+            time.perf_counter() - started
+        ) * 1000
+        attributed_work["vector_bytes_written"] += len(
+            frozen.vectors_payload
+        ) + len(frozen.ids_payload)
         return result
 
     def measured_publish_generation(store: Any, *args: Any, **kwargs: Any) -> Any:
@@ -1417,9 +1463,12 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             "authoritative_noop",
         }:
             vector_store_module._sha256_file = measured_vector_sha256_file
+            vector_store_module._sha256_file_safe = measured_vector_sha256_file
             vector_store_module._load_generation = measured_load_generation
         if operation in {"full_build", "authoritative_noop"}:
             indexer_module.scan_workspace_v5 = measured_scan
+            indexer_module.observe_workspace = measured_inventory
+            indexer_module.read_observed_file = measured_observed_read
             indexer_module._prepare_v5_file = measured_prepare
             indexer_module.assert_manifest_compatible = manifest_wrapper(
                 original_indexer_manifest_assert
@@ -1427,13 +1476,23 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             indexer_module.load_manifest = manifest_wrapper(
                 original_indexer_load_manifest
             )
+            indexer_module.load_manifest_snapshot = manifest_wrapper(
+                original_indexer_load_manifest_snapshot
+            )
             indexer_module.write_manifest_v5 = manifest_wrapper(
                 original_indexer_write_manifest
+            )
+            indexer_module.publish_manifest_v2 = manifest_wrapper(
+                original_indexer_publish_manifest_v2
             )
             HashEmbeddingProvider.embed_texts = measured_embed
             indexer_module.resolve_graph_relations = measured_resolve
             indexer_module.regenerate_test_associations = measured_associate
             NumpyVectorStore.prepare_generation = measured_prepare_generation
+            NumpyVectorStore.freeze_generation_v2 = measured_freeze_generation_v2
+            NumpyVectorStore.materialize_frozen_generation = (
+                measured_materialize_frozen_generation
+            )
             NumpyVectorStore.publish_generation = measured_publish_generation
             for name in persistence_names:
                 setattr(SQLiteStore, name, persistence_wrapper(name))
@@ -1456,16 +1515,27 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             manifest_module.assert_manifest_compatible = original_manifest_assert
             indexer_module.assert_manifest_compatible = original_indexer_manifest_assert
             indexer_module.load_manifest = original_indexer_load_manifest
+            indexer_module.load_manifest_snapshot = (
+                original_indexer_load_manifest_snapshot
+            )
             indexer_module.write_manifest_v5 = original_indexer_write_manifest
+            indexer_module.publish_manifest_v2 = original_indexer_publish_manifest_v2
             NumpyVectorStore.search = original_vector_search
             indexer_module.scan_workspace_v5 = original_scan
+            indexer_module.observe_workspace = original_observe_workspace
+            indexer_module.read_observed_file = original_read_observed_file
             indexer_module._prepare_v5_file = original_prepare
             HashEmbeddingProvider.embed_texts = original_embed
             indexer_module.resolve_graph_relations = original_resolve
             indexer_module.regenerate_test_associations = original_associate
             NumpyVectorStore.prepare_generation = original_prepare_generation
+            NumpyVectorStore.freeze_generation_v2 = original_freeze_generation_v2
+            NumpyVectorStore.materialize_frozen_generation = (
+                original_materialize_frozen_generation
+            )
             NumpyVectorStore.publish_generation = original_publish_generation
             vector_store_module._sha256_file = original_vector_sha256_file
+            vector_store_module._sha256_file_safe = original_vector_sha256_file_safe
             vector_store_module._load_generation = original_load_generation
             sqlite_store_module._open_connection = original_open_connection
             retrieval_module.build_repo_profile = original_build_repo_profile

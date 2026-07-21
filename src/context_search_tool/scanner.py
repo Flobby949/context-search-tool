@@ -117,6 +117,19 @@ _DEFAULT_SKIPPED_DIRS = {
 
 _CONTROL_FILE_LIMIT = 1024 * 1024
 _CONTROL_PATHS = (Path(".gitignore"), Path(".context-search/config.toml"))
+_PROJECT_TOPOLOGY_MARKERS = frozenset(
+    {
+        "package.json",
+        "go.mod",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+        "Cargo.toml",
+        "pyproject.toml",
+    }
+)
 _EXCLUSION_REASONS = (
     "ignored",
     "internal",
@@ -225,6 +238,35 @@ class ObservedFileRead:
     metadata: StableFileMetadata | None
 
 
+def workspace_inventory_identity(inventory: WorkspaceInventory) -> tuple[Any, ...]:
+    """Return the complete freshness-affecting identity for one inventory fence."""
+    return (
+        inventory.complete,
+        tuple(
+            (
+                item.path.as_posix(),
+                item.language,
+                item.metadata,
+                item.is_test,
+            )
+            for item in inventory.eligible
+        ),
+        tuple(
+            (
+                item.path.as_posix(),
+                item.language,
+                item.reason,
+                item.retryable,
+                item.metadata,
+            )
+            for item in inventory.coverage_skips
+        ),
+        inventory.unscannable_subtrees,
+        inventory.control_file_errors,
+        inventory.control_observations,
+    )
+
+
 def scan_workspace(repo: Path, config: ToolConfig) -> list[ScannedFile]:
     repo = repo.resolve()
     gitignore_spec = _load_gitignore(repo)
@@ -271,13 +313,19 @@ def observe_workspace(
 
     control_observations: list[ControlFileObservation] = []
     control_errors: list[InventoryDiagnostic] = []
+    observed_control_paths: set[Path] = set()
     gitignore_lines: list[str] = []
-    for relative in _CONTROL_PATHS:
+
+    def observe_control(relative: Path) -> bytes | None:
+        if relative in observed_control_paths:
+            return None
+        observed_control_paths.add(relative)
         candidate = resolved_repo / relative
         if not os.path.lexists(candidate):
-            continue
+            return None
         try:
             content, metadata = _read_control_file(resolved_repo, candidate)
+            content.decode("utf-8")
             control_observations.append(
                 ControlFileObservation(
                     path=relative.as_posix(),
@@ -285,8 +333,7 @@ def observe_workspace(
                     metadata=metadata,
                 )
             )
-            if relative == Path(".gitignore"):
-                gitignore_lines = content.decode("utf-8").splitlines()
+            return content
         except (OSError, UnicodeDecodeError, ValueError):
             control_errors.append(
                 InventoryDiagnostic(
@@ -295,6 +342,12 @@ def observe_workspace(
                     path=relative.as_posix(),
                 )
             )
+            return None
+
+    for relative in _CONTROL_PATHS:
+        content = observe_control(relative)
+        if relative == Path(".gitignore") and content is not None:
+            gitignore_lines = content.decode("utf-8").splitlines()
 
     gitignore_spec = pathspec.GitIgnoreSpec.from_lines(gitignore_lines)
     include_spec = pathspec.GitIgnoreSpec.from_lines(config.index.include)
@@ -344,6 +397,8 @@ def observe_workspace(
             if relative is None:
                 unscannable.add(".")
                 continue
+            if filename in _PROJECT_TOPOLOGY_MARKERS:
+                observe_control(relative)
             if relative in _CONTROL_PATHS:
                 continue
             reason = _excluded_reason(

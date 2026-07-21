@@ -8,6 +8,13 @@ from typing import Any
 import pytest
 
 from context_search_tool import manifest as manifest_module
+from context_search_tool.config import (
+    EmbeddingConfig,
+    IndexConfig,
+    QueryPlannerConfig,
+    RetrievalConfig,
+    ToolConfig,
+)
 
 
 def _require(name: str) -> Any:
@@ -188,3 +195,35 @@ def test_manifest_v2_preparation_is_canonical_and_public_writer_stays_v1(
             encoding="utf-8"
         )
     )["schema_version"] == 1
+
+
+def test_index_config_hash_is_scanner_specific_and_secret_safe() -> None:
+    index_config_hash = _require("index_config_hash")
+    baseline = ToolConfig(
+        index=IndexConfig(include=["src/**"], exclude=["dist/**"], max_file_bytes=99),
+        embedding=EmbeddingConfig(
+            provider="openai-compatible",
+            model="private-model",
+            dimensions=3,
+            base_url="https://user:password@example.test/v1",
+            api_key_env="PRIVATE_TOKEN",
+        ),
+    )
+    query_only = ToolConfig(
+        index=baseline.index,
+        embedding=baseline.embedding,
+        retrieval=RetrievalConfig(final_top_k=3),
+        query_planner=QueryPlannerConfig(enabled=True),
+    )
+    changed_scanner = ToolConfig(
+        index=IndexConfig(include=["src/**"], exclude=["vendor/**"], max_file_bytes=99),
+        embedding=baseline.embedding,
+    )
+
+    digest = index_config_hash(baseline)
+
+    assert len(digest) == 64
+    assert digest == index_config_hash(query_only)
+    assert digest != index_config_hash(changed_scanner)
+    assert "password" not in digest
+    assert "PRIVATE_TOKEN" not in digest

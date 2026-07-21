@@ -1007,18 +1007,19 @@ def test_cli_stats_json_is_additive_and_contains_the_same_health_model(
     assert tuple(payload) == ("ok", "repo", "stats", "embedding", "index_health")
     assert payload["stats"]["total_files"] == 1
     assert payload["stats"]["total_chunks"] >= 1
-    assert payload["stats"]["manifest_schema_version"] == 1
-    assert payload["stats"]["operational_schema_version"] is None
+    assert payload["stats"]["manifest_schema_version"] == 2
+    assert payload["stats"]["operational_schema_version"] == 1
     assert payload["stats"]["graph_schema_version"] == 5
     assert payload["stats"]["disk_components"]["total_bytes"] == payload["stats"][
         "disk_usage_bytes"
     ]
-    assert payload["stats"]["last_work"] is None
+    assert payload["stats"]["last_work"]["operation"] == "authoritative_index"
+    assert payload["stats"]["last_work"]["observation_generation"] == 1
     assert payload["embedding"] == {
         "provider": "hash",
         "model": "hash-v1",
         "dimensions": 384,
     }
     assert payload["index_health"]["schema_version"] == 1
-    assert payload["index_health"]["health"] == "degraded"
+    assert payload["index_health"]["health"] == "healthy_verified"
     assert payload["index_health"]["freshness"]["inspection_mode"] == "verified"

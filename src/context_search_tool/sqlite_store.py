@@ -148,6 +148,17 @@ class OperationalScanSkip:
 
 
 @dataclass(frozen=True)
+class OperationalControlObservation:
+    path: Path
+    sha256: str
+    size: int
+    mtime_ns: int
+    change_token: int | str | None
+    change_token_kind: str
+    observation_generation: int
+
+
+@dataclass(frozen=True)
 class OperationalReadyBinding:
     index_config_hash: str
     source_content_fingerprint: str
@@ -175,6 +186,7 @@ class OperationalSnapshot:
     binding: OperationalReadyBinding
     source_observations: tuple[OperationalSourceObservation, ...]
     scan_skips: tuple[OperationalScanSkip, ...]
+    control_observations: tuple[OperationalControlObservation, ...]
     active_embedding_ids: tuple[str, ...]
     source_count: int
     chunk_count: int
@@ -279,6 +291,10 @@ class SQLiteStore:
                 _ConnectionMetadataReader(connection)
             )
             if capability.status == "current":
+                connection.execute("BEGIN IMMEDIATE")
+                for statement in _operational_schema_v1_statements():
+                    connection.execute(statement)
+                connection.commit()
                 _require_operational_schema_v1(connection)
                 return
             connection.execute("BEGIN IMMEDIATE")
@@ -286,8 +302,10 @@ class SQLiteStore:
                 _ConnectionMetadataReader(connection)
             )
             if capability.status == "current":
+                for statement in _operational_schema_v1_statements():
+                    connection.execute(statement)
+                connection.commit()
                 _require_operational_schema_v1(connection)
-                connection.rollback()
                 return
             for statement in _common_schema_statements():
                 connection.execute(statement)
@@ -328,6 +346,7 @@ class SQLiteStore:
         observation_generation: int,
         source_observations: tuple[OperationalSourceObservation, ...],
         scan_skips: tuple[OperationalScanSkip, ...],
+        control_observations: tuple[OperationalControlObservation, ...] = (),
         busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
     ) -> None:
         if type(observation_generation) is not int or observation_generation < 0:
@@ -337,6 +356,10 @@ class SQLiteStore:
             observation_generation,
         )
         skips = _validate_scan_skips(scan_skips, observation_generation)
+        controls = _validate_control_observations(
+            control_observations,
+            observation_generation,
+        )
         source_paths = {_path_key(item.path) for item in sources}
         if source_paths & {_path_key(item.path) for item in skips}:
             raise ValueError("source and scan-skip paths must not overlap")
@@ -402,6 +425,26 @@ class SQLiteStore:
                         item.first_observation_generation,
                         item.last_observation_generation,
                         item.last_retry_generation,
+                    ),
+                )
+            connection.execute("DELETE FROM operational_controls")
+            for item in controls:
+                connection.execute(
+                    """
+                    INSERT INTO operational_controls (
+                        path, sha256, size, mtime_ns, change_token,
+                        change_token_kind, observation_generation
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _path_key(item.path),
+                        item.sha256,
+                        item.size,
+                        item.mtime_ns,
+                        _encode_change_token(item.change_token),
+                        item.change_token_kind,
+                        item.observation_generation,
                     ),
                 )
             connection.commit()
@@ -486,8 +529,13 @@ class SQLiteStore:
                 return None
             _require_operational_schema_v1(connection)
             binding = _read_operational_binding(connection)
-            sources, skips = _read_operational_observations(connection)
-            _validate_bound_operational_observations(binding, sources, skips)
+            sources, skips, controls = _read_operational_observations(connection)
+            _validate_bound_operational_observations(
+                binding,
+                sources,
+                skips,
+                controls,
+            )
             graph = read_graph_capability(_ConnectionMetadataReader(connection))
             source_count = int(
                 connection.execute(
@@ -531,6 +579,7 @@ class SQLiteStore:
                 binding=binding,
                 source_observations=sources,
                 scan_skips=skips,
+                control_observations=controls,
                 active_embedding_ids=embedding_ids,
                 source_count=source_count,
                 chunk_count=chunk_count,
@@ -584,8 +633,13 @@ class SQLiteStore:
                 expected_chunk_count=expected_chunk_count,
                 expected_producer_resolution_generation=None,
             )
-            sources, skips = _read_operational_observations(connection)
-            _validate_bound_operational_observations(binding, sources, skips)
+            sources, skips, controls = _read_operational_observations(connection)
+            _validate_bound_operational_observations(
+                binding,
+                sources,
+                skips,
+                controls,
+            )
             external_validator()
             if tombstone_purge_limit:
                 self._purge_tombstones(connection, tombstone_purge_limit)
@@ -3651,6 +3705,7 @@ def operational_content_fingerprint(
 def operational_observation_fingerprint(
     sources: tuple[OperationalSourceObservation, ...],
     skips: tuple[OperationalScanSkip, ...],
+    controls: tuple[OperationalControlObservation, ...] = (),
 ) -> str:
     source_rows = []
     seen: set[str] = set()
@@ -3690,7 +3745,29 @@ def operational_observation_fingerprint(
                 "metadata": dict(normalized.metadata),
             }
         )
-    return _sha256_canonical({"sources": source_rows, "scan_skips": skip_rows})
+    control_rows = []
+    for item in _validate_control_observations(
+        controls,
+        controls[0].observation_generation if controls else 0,
+    ):
+        path = _operational_path(item.path)
+        control_rows.append(
+            {
+                "path": path,
+                "sha256": item.sha256,
+                "size": item.size,
+                "mtime_ns": item.mtime_ns,
+                "change_token": item.change_token,
+                "change_token_kind": item.change_token_kind,
+            }
+        )
+    return _sha256_canonical(
+        {
+            "sources": source_rows,
+            "scan_skips": skip_rows,
+            "controls": control_rows,
+        }
+    )
 
 
 def _operational_schema_v1_statements() -> tuple[str, ...]:
@@ -3719,6 +3796,17 @@ def _operational_schema_v1_statements() -> tuple[str, ...]:
         """
         CREATE INDEX IF NOT EXISTS idx_scan_skips_retry
         ON scan_skips(retryable, last_retry_generation, path)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS operational_controls (
+            path TEXT PRIMARY KEY,
+            sha256 TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            mtime_ns INTEGER NOT NULL,
+            change_token TEXT,
+            change_token_kind TEXT NOT NULL,
+            observation_generation INTEGER NOT NULL
+        )
         """,
     )
 
@@ -3764,11 +3852,23 @@ def _require_operational_schema_v1(connection: sqlite3.Connection) -> None:
         "last_observation_generation",
         "last_retry_generation",
     }
+    required_control_columns = {
+        "path",
+        "sha256",
+        "size",
+        "mtime_ns",
+        "change_token",
+        "change_token_kind",
+        "observation_generation",
+    }
     if (
         not _table_exists(connection, "source_files")
         or not _table_exists(connection, "scan_skips")
+        or not _table_exists(connection, "operational_controls")
         or not required_source_columns <= _table_columns(connection, "source_files")
         or not required_skip_columns <= _table_columns(connection, "scan_skips")
+        or not required_control_columns
+        <= _table_columns(connection, "operational_controls")
     ):
         raise OperationalIntegrityError("operational schema v1 is incomplete")
 
@@ -3802,6 +3902,32 @@ def _validate_source_observation(item: OperationalSourceObservation) -> None:
         if type(value) is not int or value < 0:
             raise ValueError("invalid source observation metadata")
     _validate_change_token(item.change_token, item.change_token_kind)
+
+
+def _validate_control_observations(
+    controls: tuple[OperationalControlObservation, ...],
+    generation: int,
+) -> tuple[OperationalControlObservation, ...]:
+    if not isinstance(controls, tuple):
+        raise ValueError("control observations must be an immutable tuple")
+    normalized = tuple(sorted(controls, key=lambda item: _path_key(item.path)))
+    seen: set[str] = set()
+    for item in normalized:
+        if not isinstance(item, OperationalControlObservation):
+            raise ValueError("invalid control observation")
+        path = _operational_path(item.path)
+        if path in seen:
+            raise ValueError("duplicate operational control path")
+        if not _SHA256_RE.fullmatch(item.sha256):
+            raise ValueError("invalid control observation identity")
+        for value in (item.size, item.mtime_ns, item.observation_generation):
+            if type(value) is not int or value < 0:
+                raise ValueError("invalid control observation metadata")
+        if item.observation_generation != generation:
+            raise ValueError("control observation generation mismatch")
+        _validate_change_token(item.change_token, item.change_token_kind)
+        seen.add(path)
+    return normalized
 
 
 def _validate_scan_skips(
@@ -3919,6 +4045,7 @@ def _read_operational_observations(
 ) -> tuple[
     tuple[OperationalSourceObservation, ...],
     tuple[OperationalScanSkip, ...],
+    tuple[OperationalControlObservation, ...],
 ]:
     source_rows = connection.execute(
         """
@@ -3938,25 +4065,57 @@ def _read_operational_observations(
         ORDER BY path
         """
     ).fetchall()
+    control_rows = connection.execute(
+        """
+        SELECT path, sha256, size, mtime_ns, change_token,
+               change_token_kind, observation_generation
+        FROM operational_controls
+        ORDER BY path
+        """
+    ).fetchall()
     try:
         sources = tuple(_source_observation_from_row(row) for row in source_rows)
         skips = tuple(_scan_skip_from_row(row) for row in skip_rows)
-        generation = sources[0].observation_generation if sources else None
+        controls = tuple(
+            _control_observation_from_row(row) for row in control_rows
+        )
+        generation = (
+            sources[0].observation_generation
+            if sources
+            else controls[0].observation_generation
+            if controls
+            else None
+        )
         if generation is not None:
             _validate_source_observations(sources, generation)
+            _validate_control_observations(controls, generation)
         for item in skips:
             _validate_scan_skip(item)
     except (TypeError, ValueError) as error:
         if isinstance(error, OperationalIntegrityError):
             raise
         raise OperationalIntegrityError("invalid operational observations") from error
-    return sources, skips
+    return sources, skips, controls
 
 
 def _source_observation_from_row(row: sqlite3.Row) -> OperationalSourceObservation:
     return OperationalSourceObservation(
         path=Path(str(row["path"])),
         language=str(row["language"]),
+        sha256=str(row["sha256"]),
+        size=_row_int(row, "size"),
+        mtime_ns=_row_int(row, "mtime_ns"),
+        change_token=_decode_change_token(row["change_token"]),
+        change_token_kind=str(row["change_token_kind"]),
+        observation_generation=_row_int(row, "observation_generation"),
+    )
+
+
+def _control_observation_from_row(
+    row: sqlite3.Row,
+) -> OperationalControlObservation:
+    return OperationalControlObservation(
+        path=Path(str(row["path"])),
         sha256=str(row["sha256"]),
         size=_row_int(row, "size"),
         mtime_ns=_row_int(row, "mtime_ns"),
@@ -4028,6 +4187,7 @@ def _validate_bound_operational_observations(
     binding: OperationalReadyBinding,
     sources: tuple[OperationalSourceObservation, ...],
     skips: tuple[OperationalScanSkip, ...],
+    controls: tuple[OperationalControlObservation, ...],
 ) -> None:
     if any(
         item.observation_generation != binding.observation_generation
@@ -4035,12 +4195,17 @@ def _validate_bound_operational_observations(
     ) or any(
         item.last_observation_generation != binding.observation_generation
         for item in skips
+    ) or any(
+        item.observation_generation != binding.observation_generation
+        for item in controls
     ):
         raise OperationalIntegrityError("observation generation mismatch")
     try:
         content_fingerprint = operational_content_fingerprint(sources)
         observation_fingerprint = operational_observation_fingerprint(
-            sources, skips
+            sources,
+            skips,
+            controls,
         )
     except ValueError as error:
         raise OperationalIntegrityError(
@@ -5092,6 +5257,7 @@ def _table_columns(
         "code_relations",
         "source_files",
         "scan_skips",
+        "operational_controls",
     }:
         raise ValueError("unsupported schema table")
     return frozenset(
