@@ -467,7 +467,11 @@ def _validate_benchmark_sample_semantics(sample: Mapping[str, Any]) -> None:
         raise ValueError("vector bytes hashed exceed vector bytes read")
 
 
-def _validate_benchmark_case_semantics(case: Mapping[str, Any]) -> None:
+def _validate_benchmark_case_semantics(
+    case: Mapping[str, Any],
+    *,
+    mode: str,
+) -> None:
     samples = case["samples"]
     summary = case["summary"]
     if summary["sample_count"] != len(samples):
@@ -477,6 +481,7 @@ def _validate_benchmark_case_semantics(case: Mapping[str, Any]) -> None:
         raise ValueError("benchmark raw sample IDs must be unique")
     for sample in samples:
         _validate_benchmark_sample_semantics(sample)
+    _validate_query_work_contract(case, mode=mode)
 
     durations = sorted(float(sample["duration_ms"]) for sample in samples)
     expected = {
@@ -499,6 +504,53 @@ def _validate_benchmark_case_semantics(case: Mapping[str, Any]) -> None:
             float(summary[key]), value, rel_tol=1e-9, abs_tol=1e-9
         ):
             raise ValueError(f"benchmark {key} does not match raw samples")
+
+
+def _validate_query_work_contract(
+    case: Mapping[str, Any],
+    *,
+    mode: str,
+) -> None:
+    operation = case["operation"]
+    if (
+        mode != "final"
+        or operation["outcome"] != "supported"
+        or operation["case_family"] not in {"query", "explore"}
+    ):
+        return
+
+    manifest = _load_json(DEFAULT_WORKLOAD_MANIFEST)
+    tier = manifest["tiers"].get(case["workload"]["tier"])
+    if not isinstance(tier, Mapping):
+        raise ValueError("query work contract has no workload tier")
+    chunks = int(tier["chunks"])
+    symbols = int(tier["symbols"])
+    signals = int(tier["signals"])
+    retrieval_passes = 3 if operation["case_family"] == "explore" else 1
+    planner_source_passes = 1 + int(bool(operation["planner_enabled"]))
+    path_symbol_row_limit = retrieval_passes * (
+        chunks + symbols + (chunks * 16 * planner_source_passes)
+    )
+    direct_text_row_limit = retrieval_passes * chunks
+    signal_row_limit = retrieval_passes * signals * planner_source_passes
+
+    for sample in case["samples"]:
+        work = sample["work"]
+        if not operation["planner_enabled"] and any(
+            int(work[name]) != 0
+            for name in (
+                "repo_profile_vm_steps",
+                "repo_profile_rows",
+                "repo_profile_bytes",
+            )
+        ):
+            raise ValueError("unused repository profile violates query work contract")
+        if int(work["path_symbol_rows"]) > path_symbol_row_limit:
+            raise ValueError("path/symbol row budget violates query work contract")
+        if int(work["direct_text_rows"]) > direct_text_row_limit:
+            raise ValueError("direct-text row budget violates query work contract")
+        if int(work["signal_rows"]) > signal_row_limit:
+            raise ValueError("signal row budget violates query work contract")
 
 
 def validate_report_data(report: Any, schema_name: str | None = None) -> None:
@@ -536,11 +588,14 @@ def validate_report_data(report: Any, schema_name: str | None = None) -> None:
         raise ValueError(errors[0].message)
     if schema_name == "benchmark-report-v1.json":
         if report["report_scope"] == "tier":
-            _validate_benchmark_case_semantics(report)
+            _validate_benchmark_case_semantics(report, mode=str(report["mode"]))
         else:
             cases = report["case_reports"]
             for case in cases:
-                _validate_benchmark_case_semantics(case)
+                _validate_benchmark_case_semantics(
+                    case,
+                    mode=str(report["mode"]),
+                )
             identities = [
                 (
                     case["workload"]["tier"],
@@ -956,6 +1011,13 @@ def _current_rss_bytes() -> int:
 
 
 def _measurement_output_bytes(operation: str, output: str) -> bytes:
+    output = re.sub(
+        r"(?m)^direct_text_search slow: [0-9]+(?:\.[0-9]+)?ms "
+        r"for ([0-9]+) probes, ([0-9]+) chunks$",
+        r"direct_text_search slow: <work-proof-excluded>ms "
+        r"for \1 probes, \2 chunks",
+        output,
+    )
     if operation.startswith("explore"):
         output = re.sub(
             r"(?m)^- Duration: [0-9]+ ms$",

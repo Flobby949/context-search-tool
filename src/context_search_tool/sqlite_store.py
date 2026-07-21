@@ -56,6 +56,7 @@ from context_search_tool.models import (
 
 logger = logging.getLogger(__name__)
 _DIRECT_TEXT_CJK_SEQUENCE_RE = re.compile(r"[㐀-鿿]{2,}")
+_SIGNAL_SQL_SAFE_TOKEN_RE = re.compile(r"[a-z0-9_./:$-]+")
 _DEFAULT_BUSY_TIMEOUT_MS = 5_000
 _RESOLVED_STATES = ("resolved_exact", "resolved_unique")
 PRODUCER_RESOLUTION_GENERATION_KEY = "graph_producer_resolution_generation"
@@ -1709,13 +1710,16 @@ class SQLiteStore:
                 if _has_column(connection, "code_signals", "recallable")
                 else ""
             )
+            row_filter, row_filter_values = _signal_row_prefilter(normalized)
             rows = connection.execute(
                 f"""
                 SELECT *
                 FROM code_signals
                 WHERE deleted_at IS NULL
                   {legacy_filter}
-                """
+                  {row_filter}
+                """,
+                row_filter_values,
             ).fetchall()
 
         for row in rows:
@@ -1852,7 +1856,8 @@ class SQLiteStore:
                     member_name,
                     limit,
                 )
-            return [self._chunk_from_row(connection, row) for row in rows]
+            chunks_by_id = self._chunks_from_rows(connection, rows)
+            return [chunks_by_id[row["chunk_id"]] for row in rows]
 
     def chunks_matching_signal_or_symbols(
         self, target_names: list[str], limit_per_target: int
@@ -1865,6 +1870,8 @@ class SQLiteStore:
             return grouped
 
         with self._connect() as connection:
+            rows_by_target: dict[str, list[sqlite3.Row]] = {}
+            unique_rows: dict[str, sqlite3.Row] = {}
             for target_name in target_names:
                 if not target_name:
                     continue
@@ -1877,8 +1884,15 @@ class SQLiteStore:
                         member_name,
                         limit_per_target,
                     )
+                rows_by_target[target_name] = rows
+                unique_rows.update((row["chunk_id"], row) for row in rows)
+            chunks_by_id = self._chunks_from_rows(
+                connection,
+                list(unique_rows.values()),
+            )
+            for target_name, rows in rows_by_target.items():
                 grouped[target_name] = [
-                    self._chunk_from_row(connection, row) for row in rows
+                    chunks_by_id[row["chunk_id"]] for row in rows
                 ]
         return grouped
 
@@ -2016,12 +2030,17 @@ class SQLiteStore:
                         add_token_score(row["chunk_id"], token, 1.0)
 
             token_rows = connection.execute(
-                """
+                _in_query(
+                    """
                 SELECT chunk_tokens.chunk_id, chunk_tokens.token
                 FROM chunk_tokens
                 JOIN chunks ON chunks.chunk_id = chunk_tokens.chunk_id
                 WHERE chunks.deleted_at IS NULL
-                """
+                  AND chunk_tokens.token IN ({placeholders})
+                """,
+                    normalized,
+                ),
+                normalized,
             ).fetchall()
             for row in token_rows:
                 token = row["token"].lower()
@@ -2153,9 +2172,7 @@ class SQLiteStore:
                 ),
                 chunk_ids,
             ).fetchall()
-            chunks_by_id = {
-                row["chunk_id"]: self._chunk_from_row(connection, row) for row in rows
-            }
+            chunks_by_id = self._chunks_from_rows(connection, rows)
 
         return {
             chunk_id: chunks_by_id[chunk_id]
@@ -2179,7 +2196,8 @@ class SQLiteStore:
                 """,
                 (path, limit),
             ).fetchall()
-            return [self._chunk_from_row(connection, row) for row in rows]
+            chunks_by_id = self._chunks_from_rows(connection, rows)
+            return [chunks_by_id[row["chunk_id"]] for row in rows]
 
     def chunks_in_directory(self, directory: Path, limit: int) -> list[DocumentChunk]:
         if limit <= 0:
@@ -2210,7 +2228,8 @@ class SQLiteStore:
                     """,
                     (f"{directory_key}/%", limit),
                 ).fetchall()
-            return [self._chunk_from_row(connection, row) for row in rows]
+            chunks_by_id = self._chunks_from_rows(connection, rows)
+            return [chunks_by_id[row["chunk_id"]] for row in rows]
 
     def chunk_for_line(self, file_path: Path, line: int) -> DocumentChunk:
         path = _path_key(file_path)
@@ -2669,6 +2688,72 @@ class SQLiteStore:
             """,
             (row["chunk_id"],),
         ).fetchall()
+        return self._decode_chunk_row(row, token_rows, symbol_rows)
+
+    def _chunks_from_rows(
+        self,
+        connection: sqlite3.Connection,
+        rows: list[sqlite3.Row],
+    ) -> dict[str, DocumentChunk]:
+        if not rows:
+            return {}
+
+        rows_by_id = {str(row["chunk_id"]): row for row in rows}
+        chunk_ids = list(rows_by_id)
+        token_rows = connection.execute(
+            _in_query(
+                """
+            SELECT chunk_id, token
+            FROM chunk_tokens
+            WHERE chunk_id IN ({placeholders})
+            ORDER BY rowid
+            """,
+                chunk_ids,
+            ),
+            chunk_ids,
+        ).fetchall()
+        symbol_rows = connection.execute(
+            _in_query(
+                """
+            SELECT chunk_symbols.chunk_id, symbols.*
+            FROM symbols
+            JOIN chunk_symbols ON chunk_symbols.symbol_id = symbols.symbol_id
+            WHERE chunk_symbols.chunk_id IN ({placeholders})
+            ORDER BY chunk_symbols.chunk_id,
+                     symbols.start_line,
+                     symbols.end_line,
+                     symbols.name
+            """,
+                chunk_ids,
+            ),
+            chunk_ids,
+        ).fetchall()
+        tokens_by_id: dict[str, list[sqlite3.Row]] = {
+            chunk_id: [] for chunk_id in chunk_ids
+        }
+        symbols_by_id: dict[str, list[sqlite3.Row]] = {
+            chunk_id: [] for chunk_id in chunk_ids
+        }
+        for token_row in token_rows:
+            tokens_by_id[str(token_row["chunk_id"])].append(token_row)
+        for symbol_row in symbol_rows:
+            symbols_by_id[str(symbol_row["chunk_id"])].append(symbol_row)
+
+        return {
+            chunk_id: self._decode_chunk_row(
+                row,
+                tokens_by_id[chunk_id],
+                symbols_by_id[chunk_id],
+            )
+            for chunk_id, row in rows_by_id.items()
+        }
+
+    def _decode_chunk_row(
+        self,
+        row: sqlite3.Row,
+        token_rows: list[sqlite3.Row],
+        symbol_rows: list[sqlite3.Row],
+    ) -> DocumentChunk:
         return DocumentChunk(
             chunk_id=row["chunk_id"],
             file_path=Path(row["file_path"]),
@@ -2782,10 +2867,7 @@ class GraphReadSession:
             chunk_ids,
         ).fetchall()
         decoder = SQLiteStore(self.db_path)
-        chunks_by_id = {
-            row["chunk_id"]: decoder._chunk_from_row(connection, row)
-            for row in rows
-        }
+        chunks_by_id = decoder._chunks_from_rows(connection, rows)
         return {
             chunk_id: chunks_by_id[chunk_id]
             for chunk_id in chunk_ids
@@ -2846,13 +2928,16 @@ class GraphReadSession:
             legal_filter = "AND recallable = 1 AND producer = 'legacy'"
         else:
             legal_filter = ""
+        row_filter, row_filter_values = _signal_row_prefilter(normalized)
         rows = connection.execute(
             f"""
             SELECT *
             FROM code_signals
             WHERE deleted_at IS NULL
               {legal_filter}
-            """
+              {row_filter}
+            """,
+            row_filter_values,
         ).fetchall()
         matches: list[tuple[CodeSignal, float]] = []
         for row in rows:
@@ -2958,6 +3043,8 @@ class GraphReadSession:
             return grouped
         connection = self._require_connection()
         decoder = SQLiteStore(self.db_path)
+        rows_by_target: dict[str, list[sqlite3.Row]] = {}
+        unique_rows: dict[str, sqlite3.Row] = {}
         for target_name in target_names:
             if not target_name:
                 continue
@@ -2970,8 +3057,15 @@ class GraphReadSession:
                     member_name,
                     limit_per_target,
                 )
+            rows_by_target[target_name] = rows
+            unique_rows.update((row["chunk_id"], row) for row in rows)
+        chunks_by_id = decoder._chunks_from_rows(
+            connection,
+            list(unique_rows.values()),
+        )
+        for target_name, rows in rows_by_target.items():
             grouped[target_name] = [
-                decoder._chunk_from_row(connection, row) for row in rows
+                chunks_by_id[row["chunk_id"]] for row in rows
             ]
         return grouped
 
@@ -5582,6 +5676,34 @@ def _metadata_search_text(metadata: dict[str, Any]) -> str:
         elif value is not None:
             values.append(str(value))
     return " ".join(values)
+
+
+def _signal_row_prefilter(tokens: list[str]) -> tuple[str, tuple[str, ...]]:
+    if not all(
+        token.isascii() and _SIGNAL_SQL_SAFE_TOKEN_RE.fullmatch(token)
+        for token in tokens
+    ):
+        return "", ()
+
+    clauses: list[str] = []
+    values: list[str] = []
+    for token in tokens:
+        clauses.append(
+            "instr(lower(name || ' ' || tokens || ' ' || metadata), ?) > 0"
+        )
+        values.append(token)
+
+    clauses.extend(
+        (
+            "name GLOB '*[^ -~]*'",
+            "instr(tokens, ?) > 0",
+            "instr(metadata, ?) > 0",
+        )
+    )
+    values.extend((r"\u", r"\u"))
+    if any(token in "none" for token in tokens):
+        clauses.append("instr(metadata, 'null') > 0")
+    return f"AND ({' OR '.join(clauses)})", tuple(values)
 
 
 def _signal_from_row(row: sqlite3.Row) -> CodeSignal:

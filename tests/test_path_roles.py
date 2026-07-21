@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from context_search_tool import path_roles as path_roles_module
 from context_search_tool.path_roles import PathRole, classify_path_role
 
 
@@ -478,3 +479,44 @@ def test_java_content_roles_do_not_demote_higher_precedence_roles(
     expected: tuple[str, int, str],
 ) -> None:
     assert classify_path_role(Path(path), content) == PathRole(*expected)
+
+
+def test_java_role_classifier_skips_whitespace_boundaries_linearly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = Path("src/main/java/example/Padded.java")
+    compact = "public class Padded {}\n"
+    padded = compact + "\n".join(" " * 256 for _ in range(300)) + "\n"
+    expected = classify_path_role(path, compact)
+    skipped_characters = 0
+    mask_calls = 0
+    real_skip_whitespace = path_roles_module._skip_whitespace
+    real_mask = path_roles_module._mask_java_comments_and_literals
+
+    def counted_skip_whitespace(content: str, index: int) -> int:
+        nonlocal skipped_characters
+        result = real_skip_whitespace(content, index)
+        skipped_characters += result - index
+        return result
+
+    def counted_mask(content: str) -> str:
+        nonlocal mask_calls
+        mask_calls += 1
+        return real_mask(content)
+
+    monkeypatch.setattr(
+        path_roles_module,
+        "_skip_whitespace",
+        counted_skip_whitespace,
+    )
+    monkeypatch.setattr(
+        path_roles_module,
+        "_mask_java_comments_and_literals",
+        counted_mask,
+    )
+
+    actual = classify_path_role(path, padded)
+
+    assert actual == expected
+    assert mask_calls == 0
+    assert skipped_characters <= len(padded) * 2

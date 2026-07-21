@@ -2177,6 +2177,7 @@ Task 1.
 - Modify: `src/context_search_tool/retrieval.py`
 - Modify: `src/context_search_tool/repo_profile.py`
 - Modify: `src/context_search_tool/retrieval_core/candidates.py`
+- Modify: `src/context_search_tool/path_roles.py`
 - Modify: `src/context_search_tool/sqlite_store.py`
 - Modify: `scripts/p6_benchmark.py`
 - Modify: `tests/test_repo_profile.py`
@@ -2185,7 +2186,11 @@ Task 1.
 - Modify: `tests/test_retrieval_pipeline.py`
 - Modify: `tests/test_retrieval_core_characterization.py`
 - Modify: `tests/test_p6_benchmark.py`
+- Modify: `tests/test_p6_measurement_worker.py`
+- Modify: `tests/test_path_roles.py`
 - Modify: `tests/test_retrieval_core_boundaries.py`
+- Modify: `tests/test_exploration_boundaries.py`
+- Create: `tests/test_sqlite_store_query_work.py`
 
 - [ ] **Step 1: Profile every exact candidate source independently**
 
@@ -2214,6 +2219,49 @@ Task 1.
   Only valid calibration/sample/CV/state/RSS/work/privacy evidence may identify
   a source for optimization. One complete rerun is allowed; a second invalid
   profile stops instead of authorizing a rewrite.
+
+  **Measured amendment (2026-07-21):** isolated smoke-tier attribution on the
+  clean Task-8 commit measured ordinary query wall times of 1.94--2.20 s. A
+  representative query spent 129 ms in query understanding while the disabled
+  planner's unused repository profile performed 1,349,996 SQLite VM steps and
+  decoded 321 rows. Path/symbol recall decoded 92,000 rows (about 80,000 from an
+  unconditional `chunk_tokens` scan), direct text made one 4,000-row/
+  25,537,824-byte active-content pass, and signal recall decoded 11,000 legal
+  recallable rows. This authorizes only the mandatory disabled-profile skip and
+  an indexed equality seek for the exact-token component of path/symbol recall;
+  the already-bounded direct-text and recallable-signal scans remain unchanged.
+
+  Three cases also exposed a measurement-only identity bug: the product logger's
+  host-dependent `direct_text_search slow: <elapsed>ms` line was included in the
+  timing/attribution output digest. Two ordinary runs produced different hashes
+  while attribution was stable. Task 9 therefore also authorizes canonicalizing
+  only that diagnostic duration in `_measurement_output_bytes`; probe/chunk
+  counts and all product output remain hashed. Freeze this repair separately in
+  `tests/test_p6_measurement_worker.py` before changing the harness.
+
+  Post-change stage profiling then isolated the retained dominant query cost:
+  92 Java path-role classifications spent about 0.9 s in normal execution (and
+  6.7 s under call profiling) performing roughly 33 million `isspace()` calls
+  across generated whitespace padding. `_JAVA_DECLARATION_BOUNDARY_RE` treated
+  every whitespace-only line as a declaration candidate, so each candidate
+  rescanned the remaining padding. This authorizes one lookahead requiring an
+  annotation/identifier start at a boundary. Freeze identical compact/padded
+  role projections and linear skipped-character work; no role precedence or
+  declaration grammar change is authorized.
+
+  A subsequent 10k-file ready-snapshot query measured 10.64 s end to end:
+  signal recall took 1.95 s, ranking 2.15 s, and relation expansion 2.13 s.
+  Inspection showed that every decoded result chunk independently queried the
+  unindexed `chunk_tokens.chunk_id` column, repeatedly scanning the full token
+  table, while signal recall decoded every legal row before matching. Java role
+  classification also masked the full body even when no record, enum, or data
+  annotation marker existed. This authorizes one non-persistent batched payload
+  read per chunk set, a conservative ASCII SQL prefilter with an exact fallback
+  for unsafe tokens/rows, and a marker-absence fast path before Java masking.
+  Ordered chunks, tokens, symbols, signal scores/ties, Unicode behavior, and all
+  protected output projections remain byte-identical. On the same 10k snapshot,
+  the resulting query measured 1.78 s end to end: signal recall was 0.14 s,
+  ranking 0.09 s, and relation expansion 0.08 s.
 
 - [ ] **Step 2: Skip unused repository profiles with a protective test**
 

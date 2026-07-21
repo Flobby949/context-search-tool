@@ -5,7 +5,7 @@ from typing import get_args, get_type_hints
 import numpy as np
 import pytest
 
-from context_search_tool import chunker, retrieval, tokenizer
+from context_search_tool import chunker, query_planner, retrieval, tokenizer
 from context_search_tool.config import (
     DEFAULT_CONFIG,
     EmbeddingConfig,
@@ -33,6 +33,7 @@ from context_search_tool.models import (
 )
 from context_search_tool.paths import index_dir_for
 from context_search_tool.retrieval import evidence_anchor_top_k, query_repository
+from context_search_tool.repo_profile import build_repo_profile
 from context_search_tool.retrieval_core import (
     candidates,
     context_expansion,
@@ -5101,6 +5102,53 @@ def test_query_repository_passes_repo_profile_to_planner(tmp_path: Path) -> None
     assert "session" in planner.repo_profile.tokens
     assert "sessions.py" in " ".join(planner.repo_profile.important_files)
     assert bundle.planner.repo_profile_hash == planner.repo_profile.profile_hash
+
+
+def test_planner_disabled_skips_repository_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "sessions.py").write_text(
+        "class Session:\n    def send(self):\n        return None\n",
+        encoding="utf-8",
+    )
+    index_repository(repo, DEFAULT_CONFIG)
+    profile_builds = 0
+    received_profiles: list[object | None] = []
+    real_build_repo_profile = build_repo_profile
+
+    def counted_build_repo_profile(store: SQLiteStore):
+        nonlocal profile_builds
+        profile_builds += 1
+        return real_build_repo_profile(store)
+
+    class RecordingDisabledPlanner:
+        def plan(self, query: str, repo_profile: object | None = None) -> QueryPlan:
+            received_profiles.append(repo_profile)
+            return query_planner.disabled_plan(query)
+
+    monkeypatch.setattr(
+        "context_search_tool.retrieval.build_repo_profile",
+        counted_build_repo_profile,
+    )
+    monkeypatch.setattr(
+        query_planner,
+        "planner_from_config",
+        lambda _config: RecordingDisabledPlanner(),
+    )
+
+    bundle = query_repository(
+        repo,
+        "where is session send handled",
+        DEFAULT_CONFIG,
+    )
+
+    assert bundle.planner.status == "disabled"
+    assert any(result.file_path == Path("sessions.py") for result in bundle.results)
+    assert profile_builds == 0
+    assert received_profiles == [None]
 
 
 def test_query_planner_fallback_returns_original_query_results(tmp_path: Path) -> None:

@@ -85,10 +85,15 @@ P6_TASK2_PRODUCTION_CHANGES = {
     "src/context_search_tool/index_health.py",
 }
 
+P6_TASK9_PRODUCTION_CHANGES = {
+    "src/context_search_tool/path_roles.py",
+}
+
 REVIEWED_PRODUCTION_CHANGES = (
     ALLOWED_PRODUCTION_CHANGES
     | P5_REVIEWED_PRODUCTION_CHANGES
     | P6_TASK2_PRODUCTION_CHANGES
+    | P6_TASK9_PRODUCTION_CHANGES
 )
 
 

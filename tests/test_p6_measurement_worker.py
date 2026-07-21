@@ -326,6 +326,24 @@ def test_query_work_proof_must_match_measured_product_output(
         raise AssertionError("mismatched attribution output must fail closed")
 
 
+def test_query_output_identity_excludes_direct_text_host_timing() -> None:
+    module = _load_harness()
+    first = (
+        "direct_text_search slow: 51.2ms for 5 probes, 4000 chunks\n"
+        "# Context Search Results\n"
+    )
+    second = (
+        "direct_text_search slow: 87.9ms for 5 probes, 4000 chunks\n"
+        "# Context Search Results\n"
+    )
+
+    first_payload = module._measurement_output_bytes("query", first)
+    second_payload = module._measurement_output_bytes("query", second)
+
+    assert first_payload == second_payload
+    assert b"5 probes, 4000 chunks" in first_payload
+
+
 def test_query_and_explore_use_real_positional_cli_shape(tmp_path: Path) -> None:
     module = _load_harness()
     repo = tmp_path / "repo"
@@ -384,9 +402,9 @@ def test_query_worker_captures_private_numeric_production_trace(tmp_path: Path) 
         "vector_bytes_read"
     ]
     assert attribution["work"]["vector_payload_passes"] > 0
-    assert attribution["work"]["repo_profile_vm_steps"] > 0
-    assert attribution["work"]["repo_profile_rows"] > 0
-    assert attribution["work"]["repo_profile_bytes"] > 0
+    assert attribution["work"]["repo_profile_vm_steps"] == 0
+    assert attribution["work"]["repo_profile_rows"] == 0
+    assert attribution["work"]["repo_profile_bytes"] == 0
     assert attribution["work"]["active_ids_materialized"] > 0
     assert attribution["work"]["deleted_ids_materialized"] == 0
     assert attribution["work"]["id_bytes_materialized"] > 0

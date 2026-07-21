@@ -194,6 +194,10 @@ P6_TASK4_PRODUCTION_CHANGES = {
     "src/context_search_tool/mcp_tools.py",
 }
 
+P6_TASK9_PRODUCTION_CHANGES = {
+    "src/context_search_tool/path_roles.py",
+}
+
 P4_IMPLEMENTATION_BASELINE = "b827707325d0ee4e9c6b2bcb3dee39955c263822"
 THIS_TEST_PATH = "tests/test_retrieval_core_boundaries.py"
 
@@ -295,10 +299,13 @@ def _normalize_current_test_reference(
     reference: dict[str, object],
     frozen: list[dict[str, object]],
 ) -> dict[str, object]:
-    if reference["file"] != THIS_TEST_PATH:
+    if reference["file"] not in {
+        THIS_TEST_PATH,
+        "tests/test_retrieval_pipeline.py",
+    }:
         return reference
     frozen_reference = next(
-        item for item in frozen if item["file"] == THIS_TEST_PATH
+        item for item in frozen if item["file"] == reference["file"]
     )
     assert reference["count"] == frozen_reference["count"]
     assert reference["syntax_kinds"] == frozen_reference["syntax_kinds"]
@@ -833,6 +840,13 @@ def test_migration_ledger_matches_complete_ast_and_dynamic_inventory() -> None:
             actual_row["production_call_sites"],
             frozen_row["production_call_sites"],
         )
+        actual_row["monkeypatch_references"] = [
+            _normalize_current_test_reference(
+                item,
+                frozen_row["monkeypatch_references"],
+            )
+            for item in actual_row["monkeypatch_references"]
+        ]
         if frozen_row["disposition"] != "supported_facade":
             continue
 
@@ -911,6 +925,7 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         | P6_TASK2_PRODUCTION_CHANGES
         | P6_TASK3_PRODUCTION_CHANGES
         | P6_TASK4_PRODUCTION_CHANGES
+        | P6_TASK9_PRODUCTION_CHANGES
     )
 
     source_status = subprocess.run(
@@ -933,6 +948,7 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         | P6_TASK2_PRODUCTION_CHANGES
         | P6_TASK3_PRODUCTION_CHANGES
         | P6_TASK4_PRODUCTION_CHANGES
+        | P6_TASK9_PRODUCTION_CHANGES
     )
 
     subprocess.run(

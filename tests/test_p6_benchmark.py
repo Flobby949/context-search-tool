@@ -1175,6 +1175,34 @@ def test_path_context_work_scales_linearly() -> None:
     assert scale_10k[1] / scale_5k[1] <= 2.4
 
 
+def test_query_work_contract_rejects_full_scan_amplification() -> None:
+    module = _load_harness()
+    report = _benchmark_report()
+    report["mode"] = "final"
+
+    module.validate_report_data(report, "benchmark-report-v1.json")
+
+    unused_profile = deepcopy(report)
+    unused_profile["samples"][0]["work"]["repo_profile_vm_steps"] = 1
+    with pytest.raises(ValueError, match="unused repository profile"):
+        module.validate_report_data(unused_profile, "benchmark-report-v1.json")
+
+    token_full_scan = deepcopy(report)
+    token_full_scan["samples"][0]["work"]["path_symbol_rows"] = 92_000
+    with pytest.raises(ValueError, match="path/symbol row budget"):
+        module.validate_report_data(token_full_scan, "benchmark-report-v1.json")
+
+    repeated_direct_text = deepcopy(report)
+    repeated_direct_text["samples"][0]["work"]["direct_text_rows"] = 4_001
+    with pytest.raises(ValueError, match="direct-text row budget"):
+        module.validate_report_data(repeated_direct_text, "benchmark-report-v1.json")
+
+    nonrecallable_signals = deepcopy(report)
+    nonrecallable_signals["samples"][0]["work"]["signal_rows"] = 12_001
+    with pytest.raises(ValueError, match="signal row budget"):
+        module.validate_report_data(nonrecallable_signals, "benchmark-report-v1.json")
+
+
 def test_required_benchmark_subcommands_are_registered() -> None:
     module = _load_harness()
     required = {

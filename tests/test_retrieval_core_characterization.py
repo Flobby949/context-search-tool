@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from pathlib import Path
 from xml.etree import ElementTree
@@ -89,9 +90,53 @@ EXPECTED_BASELINE_SKIPS = (
     ),
 )
 
+_DISABLED_PROFILE_OPERATIONS = {
+    "sqlite.language_counts",
+    "sqlite.source_files_for_profile",
+    "sqlite.symbol_names_for_profile",
+    "sqlite.token_counts_for_profile",
+}
+
 
 def _load_baseline() -> dict[str, object]:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
+def _without_disabled_profile_work(
+    projection: dict[str, object],
+) -> dict[str, object]:
+    normalized = deepcopy(projection)
+    cases = normalized["cases"]
+    assert isinstance(cases, list)
+    disabled_ledger_keys: set[str] = set()
+
+    def normalize_operations(operations: list[dict[str, object]]) -> None:
+        operations[:] = [
+            operation
+            for operation in operations
+            if operation["operation"] not in _DISABLED_PROFILE_OPERATIONS
+        ]
+        for operation in operations:
+            if operation["operation"] != "planner.plan":
+                continue
+            args = operation["args"]
+            assert isinstance(args, dict)
+            args.pop("repo_profile", None)
+
+    for case in cases:
+        assert isinstance(case, dict)
+        planner = case["effective_config"]["query_planner"]
+        if planner["enabled"]:
+            continue
+        disabled_ledger_keys.add(f"{case['repo_key']}/{case['case_id']}")
+        normalize_operations(case["ordinary_operations"])
+        normalize_operations(case["traced_operations"])
+
+    ledgers = normalized["full_stage_ledgers"]
+    assert isinstance(ledgers, dict)
+    for key in disabled_ledger_keys & set(ledgers):
+        normalize_operations(ledgers[key]["operations"])
+    return normalized
 
 
 def assert_final_junit_evidence_matches_baseline(path: Path) -> dict[str, int]:
@@ -163,11 +208,31 @@ def test_runtime_identity_matches_frozen_platform() -> None:
 
 def test_characterization_matches_immutable_baseline(tmp_path: Path) -> None:
     baseline = _load_baseline()
+    actual = baseline_projection(tmp_path, expected_cases=baseline["cases"])
+    for case in actual["cases"]:
+        if case["effective_config"]["query_planner"]["enabled"]:
+            continue
+        for operations in (
+            case["ordinary_operations"],
+            case["traced_operations"],
+        ):
+            assert not any(
+                operation["operation"] in _DISABLED_PROFILE_OPERATIONS
+                for operation in operations
+            )
+            planner_call = next(
+                operation
+                for operation in operations
+                if operation["operation"] == "planner.plan"
+            )
+            assert planner_call["args"].get("repo_profile") is None
 
-    assert baseline_projection(tmp_path, expected_cases=baseline["cases"]) == {
-        "cases": baseline["cases"],
-        "full_stage_ledgers": baseline["full_stage_ledgers"],
-    }
+    assert _without_disabled_profile_work(actual) == _without_disabled_profile_work(
+        {
+            "cases": baseline["cases"],
+            "full_stage_ledgers": baseline["full_stage_ledgers"],
+        }
+    )
 
 
 def test_operation_and_full_stage_ledgers_are_complete() -> None:
