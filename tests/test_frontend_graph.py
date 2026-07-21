@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from context_search_tool import graph_plugins as graph_plugins_module
 from context_search_tool.frontend_graph import (
     FrontendGraphProducer,
     extract_frontend_facts,
@@ -404,6 +405,78 @@ createBrowserRouter([{ path: "/view", Component: View }]);
         for relation in view_relations
     )
     assert all(relation.resolution == "unresolved" for relation in graph.relations)
+
+
+def test_frontend_path_context_reuses_one_repository_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    index_type = getattr(graph_plugins_module, "RepositoryPathIndex", None)
+    assert index_type is not None, "shared repository path index is absent"
+
+    source_path = Path("src/routes.tsx")
+    active_paths = (
+        source_path,
+        Path("src/View.ts"),
+        *(Path(f"src/generated/Type{index}.ts") for index in range(498)),
+    )
+    path_units = tuple((path, "src") for path in active_paths)
+    repository_index = index_type(active_paths, path_units)
+    reversed_index = index_type(
+        tuple(reversed(active_paths)),
+        tuple(reversed(path_units)),
+    )
+
+    assert repository_index.active_paths == reversed_index.active_paths
+    assert (
+        repository_index.active_path_project_units
+        == reversed_index.active_path_project_units
+    )
+    assert repository_index.contains_path("src/View.ts") is True
+    assert repository_index.project_unit_for_path("src/View.ts") == "src"
+
+    context = PluginContext(
+        source_path,
+        "typescript",
+        "src",
+        repository_path_index=repository_index,
+    )
+    assert context.repository_path_index is repository_index
+    assert context.active_paths is repository_index.active_paths
+    assert (
+        context.active_path_project_units
+        is repository_index.active_path_project_units
+    )
+
+    source = b'import View from "./View";\n'
+    chunk = DocumentChunk(
+        "frontend-chunk",
+        source_path,
+        1,
+        1,
+        source.decode(),
+        "code",
+    )
+    producer = FrontendGraphProducer()
+    parsed = producer.parse(context, source)
+    path_type = type(source_path)
+    real_as_posix = path_type.as_posix
+    as_posix_calls = 0
+
+    def counted_as_posix(path: Path) -> str:
+        nonlocal as_posix_calls
+        as_posix_calls += 1
+        return real_as_posix(path)
+
+    monkeypatch.setattr(path_type, "as_posix", counted_as_posix)
+    graph = producer.materialize(
+        context,
+        parsed,
+        (chunk,),
+        _frontend_module(source_path, chunk),
+    )
+
+    assert graph.relations
+    assert as_posix_calls < 100
 
 
 def test_frontend_graph_missing_route_chunk_fails_the_producer_closed() -> None:

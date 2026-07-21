@@ -1150,6 +1150,31 @@ def _load_harness() -> Any:
     return module
 
 
+def test_path_context_work_scales_linearly() -> None:
+    module = _load_harness()
+    counter_type = getattr(module, "_PathContextWorkCounter", None)
+    assert counter_type is not None, "path-context work counter is absent"
+
+    def projection(repository_paths: int) -> tuple[int, int]:
+        path_index = type(
+            "PathIndexFixture",
+            (),
+            {"active_paths": tuple(range(repository_paths))},
+        )()
+        counter = counter_type()
+        for _ in range(repository_paths):
+            counter.observe(path_index)
+        return counter.builds, counter.paths_canonicalized
+
+    scale_5k = projection(5_000)
+    scale_10k = projection(10_000)
+
+    assert scale_5k == (1, 5_000)
+    assert scale_10k == (1, 10_000)
+    assert scale_10k[0] / scale_5k[0] <= 2.4
+    assert scale_10k[1] / scale_5k[1] <= 2.4
+
+
 def test_required_benchmark_subcommands_are_registered() -> None:
     module = _load_harness()
     required = {

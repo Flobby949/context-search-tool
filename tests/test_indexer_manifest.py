@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 
 from context_search_tool import indexer as indexer_module
+from context_search_tool import sqlite_store as sqlite_store_module
 from context_search_tool.config import (
     DEFAULT_CONFIG,
     EmbeddingConfig,
@@ -85,6 +86,53 @@ class _RecordingGraphPlugin:
             f"materialize:{self.name}:{context.file_path.as_posix()}"
         )
         return MaterializedGraph()
+
+
+def test_fresh_v5_build_skips_absent_fts_payload_deletes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int alpha; }\n", encoding="utf-8")
+    statements: list[str] = []
+    real_open_connection = sqlite_store_module._open_connection
+
+    def traced_connection(*args, **kwargs):
+        connection = real_open_connection(*args, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(
+        sqlite_store_module,
+        "_open_connection",
+        traced_connection,
+    )
+
+    index_repository(repo, DEFAULT_CONFIG)
+
+    fresh_deletes = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith("DELETE FROM CHUNKS_FTS")
+    ]
+    assert fresh_deletes == []
+
+    statements.clear()
+    source.write_text("class App { int beta; }\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    changed_deletes = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith("DELETE FROM CHUNKS_FTS")
+    ]
+    assert len(changed_deletes) == 1
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    results = store.lexical_search(["beta"], 10)
+    assert results
+    chunks = store.chunks_for_ids([result.chunk_id for result in results])
+    assert all("alpha" not in chunks[result.chunk_id].content for result in results)
 
 
 def _frontend_import_state(

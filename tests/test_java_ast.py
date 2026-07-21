@@ -13,6 +13,7 @@ from context_search_tool.graph_contract import (
 )
 from context_search_tool.graph_plugins import PluginContext
 from context_search_tool.indexer import index_repository
+from context_search_tool import java_plugin as java_plugin_module
 from context_search_tool.java_graph import JavaGraphProducer
 from context_search_tool.java_plugin import JavaPlugin
 from context_search_tool.models import CodeSignal, DocumentChunk
@@ -1082,3 +1083,37 @@ def test_java_coordinator_calls_legacy_extractor_once_per_file(
 
     assert parsed.fallback_required is fallback_required
     assert calls == [path]
+
+
+def test_java_extractor_skips_whitespace_padding_without_projection_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = Path("src/main/java/demo/Padded.java")
+    compact = """package demo;
+class Padded {
+    private Object value;
+    void run() {}
+}
+"""
+    padded = compact + "\n".join(" " * 256 for _ in range(300)) + "\n"
+    expected = JavaPlugin().extract(path, compact)
+
+    class CountingPattern:
+        def __init__(self, pattern) -> None:
+            self.pattern = pattern
+            self.search_calls = 0
+
+        def search(self, value: str):
+            self.search_calls += 1
+            return self.pattern.search(value)
+
+    method_pattern = CountingPattern(java_plugin_module._METHOD_RE)
+    field_pattern = CountingPattern(java_plugin_module._FIELD_RE)
+    monkeypatch.setattr(java_plugin_module, "_METHOD_RE", method_pattern)
+    monkeypatch.setattr(java_plugin_module, "_FIELD_RE", field_pattern)
+
+    actual = JavaPlugin().extract(path, padded)
+
+    assert actual == expected
+    assert method_pattern.search_calls <= 10
+    assert field_pattern.search_calls <= 15

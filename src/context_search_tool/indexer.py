@@ -31,7 +31,11 @@ from context_search_tool.graph_lifecycle import (
     read_graph_capability,
     read_operational_capability,
 )
-from context_search_tool.graph_plugins import GraphLanguagePlugin, PluginContext
+from context_search_tool.graph_plugins import (
+    GraphLanguagePlugin,
+    PluginContext,
+    RepositoryPathIndex,
+)
 from context_search_tool.graph_resolution import resolve_graph_relations
 from context_search_tool.index_lock import exclusive_index_lock
 from context_search_tool.index_health import (
@@ -354,6 +358,7 @@ class PreparedIndexSnapshot:
     source_content_fingerprint: str
     source_observation_fingerprint: str
     scanned_files: tuple[ScannedFile, ...]
+    repository_path_index: RepositoryPathIndex
     prepared_files: tuple[_PreparedFile, ...]
     deleted_paths: tuple[Path, ...]
     project_units: tuple[ProjectUnit, ...]
@@ -720,6 +725,10 @@ def _refresh_repository_locked(
     active_path_units = tuple(
         (path, _project_unit_key(unit_by_path[path])) for path in active_path_tuple
     )
+    repository_path_index = RepositoryPathIndex(
+        active_path_tuple,
+        active_path_units,
+    )
     topology_changed = topology_fingerprint != baseline.topology_fingerprint
     path_inventory_changed = active_paths != set(prior_sources)
 
@@ -804,8 +813,7 @@ def _refresh_repository_locked(
             scanned_file=scanned,
             project_unit=unit_by_path[scanned.path],
             plugins=graph_plugins,
-            active_paths=active_path_tuple,
-            active_path_units=active_path_units,
+            repository_path_index=repository_path_index,
             file_reader=read_scanned_file_bytes,
             max_file_bytes=config.index.max_file_bytes,
             content_bytes=bodies[scanned.path],
@@ -1053,6 +1061,7 @@ def _refresh_repository_locked(
         source_content_fingerprint=content_fingerprint,
         source_observation_fingerprint=observation_fingerprint,
         scanned_files=tuple(scanned_files),
+        repository_path_index=repository_path_index,
         prepared_files=prepared_files,
         deleted_paths=tuple(sorted(deleted_paths, key=lambda item: item.as_posix())),
         project_units=project_units,
@@ -1840,14 +1849,14 @@ def _prepare_authoritative_index(
         )
         for scanned in scanned_files
     )
+    repository_path_index = RepositoryPathIndex(active_paths, active_path_units)
     prepared_files = tuple(
         _prepare_v5_file(
             repo=repo,
             scanned_file=scanned,
             project_unit=unit_by_path[scanned.path],
             plugins=graph_plugins,
-            active_paths=active_paths,
-            active_path_units=active_path_units,
+            repository_path_index=repository_path_index,
             file_reader=file_reader,
             max_file_bytes=config.index.max_file_bytes,
             content_bytes=(
@@ -2023,6 +2032,8 @@ def _prepare_authoritative_index(
             {
                 "chunks.embedded": len(embedding_chunks),
                 "files.parsed": len(prepared_files),
+                "path_index.builds": 1,
+                "path_index.paths_canonicalized": len(active_paths),
                 "source.bytes_hashed": sum(
                     int(result.size or 0) for result in hashed_results
                 ),
@@ -2097,6 +2108,7 @@ def _prepare_authoritative_index(
         source_content_fingerprint=content_fingerprint,
         source_observation_fingerprint=observation_fingerprint,
         scanned_files=tuple(scanned_files),
+        repository_path_index=repository_path_index,
         prepared_files=prepared_files,
         deleted_paths=tuple(
             sorted(deleted_paths, key=lambda item: item.as_posix())
@@ -2627,16 +2639,14 @@ def _project_unit_key(project_unit: ProjectUnit) -> str:
 def _v5_plugin_context(
     scanned_file: ScannedFile,
     project_unit: ProjectUnit,
-    active_paths: tuple[Path, ...],
-    active_path_units: tuple[tuple[Path, str], ...],
+    repository_path_index: RepositoryPathIndex,
 ) -> PluginContext:
     return PluginContext(
         file_path=scanned_file.path,
         language=scanned_file.language,
         project_unit_key=_project_unit_key(project_unit),
         project_metadata=project_metadata(project_unit),
-        active_paths=active_paths,
-        active_path_project_units=active_path_units,
+        repository_path_index=repository_path_index,
     )
 
 
@@ -2646,8 +2656,7 @@ def _prepare_v5_file(
     scanned_file: ScannedFile,
     project_unit: ProjectUnit,
     plugins: tuple[GraphLanguagePlugin, ...],
-    active_paths: tuple[Path, ...],
-    active_path_units: tuple[tuple[Path, str], ...],
+    repository_path_index: RepositoryPathIndex,
     file_reader: Callable[..., bytes],
     max_file_bytes: int,
     content_bytes: bytes | None = None,
@@ -2667,8 +2676,7 @@ def _prepare_v5_file(
     context = _v5_plugin_context(
         scanned_file,
         project_unit,
-        active_paths,
-        active_path_units,
+        repository_path_index,
     )
     supported = (
         tuple(plugin for plugin in plugins if plugin.supports(context))

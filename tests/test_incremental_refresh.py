@@ -94,6 +94,68 @@ def _refresh(
     )
 
 
+def test_repository_path_index_built_once_per_operation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    index_type = getattr(indexer_module, "RepositoryPathIndex", None)
+    assert index_type is not None, "shared repository path index is absent"
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for name in ("Alpha.java", "Beta.java", "Gamma.java"):
+        (repo / name).write_text(f"class {name[:-5]} {{}}\n", encoding="utf-8")
+
+    built_indexes: list[Any] = []
+    real_index_type = index_type
+
+    def tracked_index(*args: Any, **kwargs: Any) -> Any:
+        index = real_index_type(*args, **kwargs)
+        built_indexes.append(index)
+        return index
+
+    monkeypatch.setattr(indexer_module, "RepositoryPathIndex", tracked_index)
+    contexts: list[Any] = []
+
+    class RecordingPathPlugin(_RecordingPlugin):
+        def parse(self, context: Any, content: bytes) -> ParsedGraphFacts:
+            contexts.append(context)
+            return super().parse(context, content)
+
+    plugin = RecordingPathPlugin([])
+    build_v5_index_snapshot(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[plugin],
+        scanner=scan_workspace_v5,
+    )
+
+    assert len(built_indexes) == 1
+    assert len(contexts) == 3
+    assert all(
+        context.repository_path_index is built_indexes[0] for context in contexts
+    )
+
+    contexts.clear()
+    (repo / "Alpha.java").write_text("class Alpha { int changed; }\n", encoding="utf-8")
+    refresh = getattr(indexer_module, "refresh_repository", None)
+    assert callable(refresh)
+    result = refresh(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[plugin],
+    )
+
+    assert result.ok is True
+    assert len(built_indexes) == 2
+    assert contexts
+    assert all(
+        context.repository_path_index is built_indexes[1] for context in contexts
+    )
+    assert result.summary.work.path_index.builds == 1
+    assert result.summary.work.path_index.paths_canonicalized == 3
+
+
 def test_authoritative_prepares_and_closes_inventory_before_stale(
     tmp_path: Path,
 ) -> None:

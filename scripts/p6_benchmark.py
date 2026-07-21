@@ -73,6 +73,21 @@ _SAFE_ENVIRONMENT_KEYS = {
     "swap_growth_bytes",
     "dependency_lock_sha256",
 }
+
+
+class _PathContextWorkCounter:
+    def __init__(self) -> None:
+        self._seen: set[int] = set()
+        self.builds = 0
+        self.paths_canonicalized = 0
+
+    def observe(self, repository_path_index: Any) -> None:
+        identity = id(repository_path_index)
+        if identity in self._seen:
+            return
+        self._seen.add(identity)
+        self.builds += 1
+        self.paths_canonicalized += len(repository_path_index.active_paths)
 _FORBIDDEN_KEYS = {
     "source_body",
     "vector_values",
@@ -1083,6 +1098,7 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
         "path_index_builds": 0,
         "paths_canonicalized": 0,
     }
+    path_context_work = _PathContextWorkCounter()
 
     def traced_query_repository(
         query_repo: Path,
@@ -1281,11 +1297,10 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
         attributed_work["peak_queued_text_bytes"] += sum(
             len(chunk.content.encode("utf-8")) for chunk in prepared.chunks
         )
-        attributed_work["path_index_builds"] += 1
-        attributed_work["paths_canonicalized"] += (
-            1
-            + len(kwargs["active_paths"])
-            + len(kwargs["active_path_units"])
+        path_context_work.observe(kwargs["repository_path_index"])
+        attributed_work["path_index_builds"] = path_context_work.builds
+        attributed_work["paths_canonicalized"] = (
+            path_context_work.paths_canonicalized
         )
         return prepared
 

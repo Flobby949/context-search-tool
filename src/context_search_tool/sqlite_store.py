@@ -1504,7 +1504,24 @@ class SQLiteStore:
                 )
 
             incoming_ids = [chunk.chunk_id for chunk in chunks]
-            self._delete_search_payloads(connection, incoming_ids)
+            active_id_set = set(active_ids)
+            unchecked_incoming_ids = [
+                chunk_id
+                for chunk_id in incoming_ids
+                if chunk_id not in active_id_set
+            ]
+            existing_incoming_ids = self._existing_chunk_ids(
+                connection,
+                unchecked_incoming_ids,
+            )
+            self._delete_search_payloads(
+                connection,
+                [
+                    chunk_id
+                    for chunk_id in unchecked_incoming_ids
+                    if chunk_id in existing_incoming_ids
+                ],
+            )
 
             for chunk in chunks:
                 self._insert_chunk(connection, chunk)
@@ -2486,6 +2503,23 @@ class SQLiteStore:
             (path,),
         ).fetchall()
         return [row["chunk_id"] for row in rows]
+
+    def _existing_chunk_ids(
+        self,
+        connection: sqlite3.Connection,
+        chunk_ids: list[str],
+    ) -> set[str]:
+        if not chunk_ids:
+            return set()
+        rows = connection.execute(
+            _in_query(
+                "SELECT chunk_id FROM chunks "
+                "WHERE chunk_id IN ({placeholders})",
+                chunk_ids,
+            ),
+            chunk_ids,
+        ).fetchall()
+        return {str(row["chunk_id"]) for row in rows}
 
     def _delete_search_payloads(
         self, connection: sqlite3.Connection, chunk_ids: list[str]

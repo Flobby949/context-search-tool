@@ -1919,12 +1919,14 @@ Task 1.
 - Modify: `src/context_search_tool/graph_plugins.py`
 - Modify: `src/context_search_tool/frontend_graph.py`
 - Modify: `src/context_search_tool/indexer.py`
+- Modify: `src/context_search_tool/java_plugin.py`
 - Modify: `src/context_search_tool/sqlite_store.py`
 - Modify: `src/context_search_tool/test_association.py`
 - Modify: `src/context_search_tool/vector_store.py`
 - Modify: `scripts/p6_benchmark.py`
 - Modify: `tests/test_incremental_refresh.py`
 - Modify: `tests/test_indexer_manifest.py`
+- Modify: `tests/test_java_ast.py`
 - Modify: `tests/test_frontend_graph.py`
 - Modify: `tests/test_test_association.py`
 - Modify: `tests/test_embeddings_vector_store.py`
@@ -1963,6 +1965,33 @@ Task 1.
   Only a report with valid calibration, sample counts, applicable CV, cold/warm
   state, RSS/work units, clean implementation identity, and privacy may drive
   Step 4/5. One complete rerun is allowed; a second invalid result stops.
+
+  **Measured amendment (2026-07-21):** after removing the mandatory path-index
+  amplification, an isolated scale-5k full build remained CPU-bound for
+  608.99 s before interruption while peak RSS stayed at 243,924,992 bytes. A
+  stack sample and seven-run single-file projection isolated the retained P5
+  Java extraction pass: 555.37 ms for one 24,576-byte/320-line generated file,
+  versus 0.84 ms for AST graph parsing and 0.59 ms for chunking. The excess is
+  `_METHOD_RE`/`_FIELD_RE` backtracking on generated whitespace-only padding.
+  This measured budget failure authorizes one exact `java_plugin.py` fast path:
+  skip scrubbed lines containing no non-whitespace characters before declaration
+  regexes. Freeze equal extraction/graph/index projections with and without the
+  padding; no other Java parsing behavior or file is authorized by this amendment.
+
+  The corrected scale-5k build then completed in 256.38 s with 891,879,424-byte
+  peak RSS. Its remaining sampled hotspot was an FTS5 full scan caused by
+  `replace_chunks()` deleting incoming chunk IDs that were absent from the
+  `chunks` primary-key table; a pristine one-chunk trace reproduced one such
+  invalid `DELETE FROM chunks_fts`. This measured amplification authorizes one
+  `sqlite_store.py` existence filter before incoming search-payload deletion.
+  Existing active IDs must still be cleaned exactly once, changed-file FTS/token/
+  symbol projections must remain exact, and no transaction/batching redesign is
+  authorized unless this filter fails the next scale projection.
+
+  With both measured fixes applied, clean isolated builds completed in 96.11 s
+  for scale-5k and 242.52 s for scale-10k, a 2.523x projection ratio within the
+  2.7x budget. Maximum RSS was 899,776,512 bytes and 1,663,025,152 bytes,
+  respectively, so the 2 GiB batching trigger was not reached.
 
 - [ ] **Step 2: Write shared repository-path-index work proofs first**
 
