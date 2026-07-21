@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Literal
 from typing import Any, Callable
 
 from context_search_tool.config import EmbeddingConfig, ToolConfig
@@ -15,6 +18,8 @@ from context_search_tool.paths import (
 
 
 SCHEMA_VERSION = 1
+READABLE_MANIFEST_VERSIONS = frozenset({1, 2})
+MAX_RAW_MANIFEST_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -28,8 +33,85 @@ class Manifest:
     total_chunks: int = 0
 
 
+@dataclass(frozen=True)
+class RawManifestSchema:
+    status: Literal["missing", "valid", "invalid"]
+    version: int | None
+    error_code: str | None
+
+
 def manifest_path(repo: Path) -> Path:
     return index_dir_for(repo) / "manifest.json"
+
+
+def inspect_raw_manifest_schema(
+    repo: Path,
+    *,
+    max_bytes: int = MAX_RAW_MANIFEST_BYTES,
+) -> RawManifestSchema:
+    if max_bytes < 1:
+        raise ValueError("raw manifest byte limit must be positive")
+    path = manifest_path(repo)
+    if not os.path.lexists(path):
+        return RawManifestSchema("missing", None, "missing_manifest")
+    descriptor: int | None = None
+    try:
+        path_stat = os.lstat(path)
+        if path.is_symlink() or not stat.S_ISREG(path_stat.st_mode):
+            return RawManifestSchema("invalid", None, "unsafe_manifest")
+        flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > max_bytes:
+            return RawManifestSchema("invalid", None, "manifest_too_large")
+        content = bytearray()
+        while len(content) <= max_bytes:
+            block = os.read(descriptor, min(16 * 1024, max_bytes + 1 - len(content)))
+            if not block:
+                break
+            content.extend(block)
+        after = os.fstat(descriptor)
+    except OSError:
+        return RawManifestSchema("invalid", None, "unreadable_manifest")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if len(content) > max_bytes:
+        return RawManifestSchema("invalid", None, "manifest_too_large")
+    try:
+        final_stat = os.lstat(path)
+    except OSError:
+        return RawManifestSchema("invalid", None, "manifest_changed")
+    if (
+        (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        or (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        != (
+            final_stat.st_dev,
+            final_stat.st_ino,
+            final_stat.st_size,
+            final_stat.st_mtime_ns,
+        )
+        or len(content) != after.st_size
+    ):
+        return RawManifestSchema("invalid", None, "manifest_changed")
+    try:
+        data = json.loads(
+            bytes(content).decode("utf-8"),
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return RawManifestSchema("invalid", None, "malformed_manifest")
+    if not isinstance(data, dict):
+        return RawManifestSchema("invalid", None, "invalid_manifest_schema")
+    raw_version = data.get("schema_version")
+    if type(raw_version) is not int or raw_version < 0:
+        return RawManifestSchema("invalid", None, "invalid_manifest_schema")
+    return RawManifestSchema("valid", raw_version, None)
 
 
 def load_manifest(repo: Path) -> Manifest:

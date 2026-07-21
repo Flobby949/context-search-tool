@@ -1,4 +1,5 @@
 from dataclasses import replace
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,14 @@ from context_search_tool.scanner import (
     scan_workspace_v5,
 )
 from context_search_tool.tokenizer import tokenize_identifier, tokenize_query
+
+
+def _inventory_api():
+    observe = getattr(scanner, "observe_workspace", None)
+    read = getattr(scanner, "read_observed_file", None)
+    assert callable(observe), "P6 metadata inventory capability is absent"
+    assert callable(read), "P6 observed-file reader capability is absent"
+    return observe, read
 
 
 def test_identifier_tokenizer_splits_common_code_shapes() -> None:
@@ -452,3 +461,176 @@ def test_scanner_broad_language_support_still_skips_ignored_binary_and_oversized
 
     assert [item.path for item in files] == [Path("visible.go")]
     assert files[0].language == "go"
+
+
+def test_p6_inventory_is_metadata_only_canonical_and_lossless_about_skips(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observe_workspace, _read_observed_file = _inventory_api()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+    (repo / "b.py").write_bytes(b"b = 2\n")
+    (repo / "a.py").write_bytes(b"a = 1\n")
+    (repo / "binary.py").write_bytes(b"value = 1\x00\n")
+    (repo / "ignored.py").write_text("ignored = True\n", encoding="utf-8")
+    (repo / "notes.unknown").write_text("not source\n", encoding="utf-8")
+    (repo / "large.py").write_bytes(
+        b"x" * (DEFAULT_CONFIG.index.max_file_bytes + 1)
+    )
+    (repo / "node_modules").mkdir()
+    (repo / "node_modules" / "noise.py").write_text("noise = 1\n")
+
+    def forbidden_body(*_args, **_kwargs):
+        raise AssertionError("metadata observation read an eligible source body")
+
+    monkeypatch.setattr(scanner, "read_observed_file", forbidden_body)
+    inventory = observe_workspace(repo, DEFAULT_CONFIG)
+
+    assert [item.path for item in inventory.eligible] == [
+        Path("a.py"),
+        Path("b.py"),
+        Path("binary.py"),
+    ]
+    assert [item.path for item in inventory.coverage_skips] == [Path("large.py")]
+    assert inventory.coverage_skips[0].reason == "too_large"
+    assert inventory.coverage_skips[0].retryable is False
+    assert dict(inventory.excluded_counts) == {
+        "ignored": 1,
+        "internal": 0,
+        "default_directory": 1,
+        "config_excluded": 0,
+        "unsupported_language": 1,
+        "pruned_directory": 1,
+    }
+    assert inventory.complete is True
+    assert inventory.unscannable_subtrees == ()
+    assert inventory.control_file_errors == ()
+    assert inventory.change_token_kind in {
+        "mtime_ns+ctime_ns",
+        "mtime_ns",
+        "platform_specific",
+    }
+    assert all(not item.path.is_absolute() for item in inventory.eligible)
+
+
+def test_p6_inventory_records_traversal_and_control_errors_as_lower_bounds(
+    tmp_path: Path,
+) -> None:
+    observe_workspace, _read_observed_file = _inventory_api()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "ok.py").write_text("ok = True\n", encoding="utf-8")
+    (repo / ".gitignore").mkdir()
+
+    def failing_walk(_root: Path, *, followlinks: bool, onerror):
+        assert followlinks is False
+        yield str(repo), [], ["ok.py"]
+        onerror(PermissionError(13, "denied", str(repo / "blocked")))
+
+    inventory = observe_workspace(repo, DEFAULT_CONFIG, walk=failing_walk)
+
+    assert [item.path for item in inventory.eligible] == [Path("ok.py")]
+    assert inventory.complete is False
+    assert inventory.unscannable_subtrees == ("blocked",)
+    assert [item.path for item in inventory.control_file_errors] == [".gitignore"]
+    rendered_diagnostics = [
+        (item.code, item.scope, item.path) for item in inventory.diagnostics
+    ]
+    assert rendered_diagnostics == [
+        ("unscannable_subtree", "inventory", "blocked"),
+        ("control_file_error", "control", ".gitignore"),
+    ]
+    assert all(str(repo) not in str(item) for item in rendered_diagnostics)
+
+
+def test_p6_observed_reader_normalizes_binary_encoding_unreadable_and_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observe_workspace, read_observed_file = _inventory_api()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "ok.py").write_bytes(b"value = 1\n")
+    (repo / "binary.py").write_bytes(b"value = \x00\n")
+    (repo / "encoding.py").write_bytes(b"value = '\xff'\n")
+    inventory = observe_workspace(repo, DEFAULT_CONFIG)
+    observations = {item.path.as_posix(): item for item in inventory.eligible}
+
+    ok = read_observed_file(
+        repo,
+        observations["ok.py"],
+        max_file_bytes=DEFAULT_CONFIG.index.max_file_bytes,
+        chunk_size=3,
+    )
+    assert ok.status == "read"
+    assert ok.content == b"value = 1\n"
+    assert ok.sha256 == hashlib.sha256(ok.content).hexdigest()
+    assert ok.reason is None
+
+    binary = read_observed_file(
+        repo,
+        observations["binary.py"],
+        max_file_bytes=DEFAULT_CONFIG.index.max_file_bytes,
+    )
+    assert (binary.status, binary.reason, binary.content, binary.retryable) == (
+        "skipped",
+        "binary",
+        None,
+        False,
+    )
+
+    encoding = read_observed_file(
+        repo,
+        observations["encoding.py"],
+        max_file_bytes=DEFAULT_CONFIG.index.max_file_bytes,
+        require_utf8=True,
+    )
+    assert (encoding.status, encoding.reason, encoding.retryable) == (
+        "skipped",
+        "unsupported_encoding",
+        False,
+    )
+
+    metadata = observations["ok.py"].metadata
+    sequence = iter((metadata, replace(metadata, mtime_ns=metadata.mtime_ns + 1)))
+    raced = read_observed_file(
+        repo,
+        observations["ok.py"],
+        max_file_bytes=DEFAULT_CONFIG.index.max_file_bytes,
+        metadata_observer=lambda _descriptor: next(sequence),
+    )
+    assert (raced.status, raced.reason, raced.retryable) == (
+        "skipped",
+        "changed_during_read",
+        True,
+    )
+    assert raced.content is None
+
+    original_open = scanner.os.open
+
+    def denied(path, flags):
+        if Path(path) == repo / "ok.py":
+            raise PermissionError("denied")
+        return original_open(path, flags)
+
+    monkeypatch.setattr(scanner.os, "open", denied)
+    unreadable = read_observed_file(
+        repo,
+        observations["ok.py"],
+        max_file_bytes=DEFAULT_CONFIG.index.max_file_bytes,
+    )
+    assert (unreadable.status, unreadable.reason, unreadable.retryable) == (
+        "skipped",
+        "unreadable",
+        True,
+    )
+
+    monkeypatch.setattr(scanner.os, "open", original_open)
+    recovered = read_observed_file(
+        repo,
+        observations["ok.py"],
+        max_file_bytes=DEFAULT_CONFIG.index.max_file_bytes,
+    )
+    assert recovered.status == "read"

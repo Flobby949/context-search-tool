@@ -174,6 +174,10 @@ P5_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/quality/runner.py",
 }
 
+P6_TASK2_PRODUCTION_CHANGES = {
+    "src/context_search_tool/index_health.py",
+}
+
 P4_IMPLEMENTATION_BASELINE = "b827707325d0ee4e9c6b2bcb3dee39955c263822"
 THIS_TEST_PATH = "tests/test_retrieval_core_boundaries.py"
 
@@ -244,6 +248,13 @@ GRAPH_RESOLUTION_ALLOWED_INTERNAL_IMPORTS = {
 
 INDEX_LOCK_ALLOWED_INTERNAL_IMPORTS = {
     "context_search_tool.graph_lifecycle",
+}
+
+INDEX_HEALTH_ALLOWED_INTERNAL_IMPORTS = {
+    "context_search_tool.graph_lifecycle",
+    "context_search_tool.manifest",
+    "context_search_tool.scanner",
+    "context_search_tool.sqlite_store",
 }
 
 
@@ -652,6 +663,12 @@ def test_graph_lifecycle_primitives_are_leaf_bounded_and_activated() -> None:
     assert _internal_imports(package / "index_lock.py") <= (
         INDEX_LOCK_ALLOWED_INTERNAL_IMPORTS
     )
+    index_health = package / "index_health.py"
+    assert index_health.is_file(), "P6 index-health core is absent"
+    assert _internal_imports(index_health) <= INDEX_HEALTH_ALLOWED_INTERNAL_IMPORTS
+    assert _import_roots(index_health).isdisjoint(
+        {"http", "requests", "socket", "subprocess", "urllib"}
+    )
 
     indexer_path = package / "indexer.py"
     indexer_imports = _internal_imports(indexer_path)
@@ -838,7 +855,11 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
     )
 
     assert EXPECTED_P4_PRODUCTION_DIFF <= changed
-    assert changed <= EXPECTED_P4_PRODUCTION_DIFF | P5_REVIEWED_PRODUCTION_CHANGES
+    assert changed <= (
+        EXPECTED_P4_PRODUCTION_DIFF
+        | P5_REVIEWED_PRODUCTION_CHANGES
+        | P6_TASK2_PRODUCTION_CHANGES
+    )
 
     source_status = subprocess.run(
         (
@@ -855,7 +876,9 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         text=True,
     ).stdout.splitlines()
     dirty_source_paths = {line[3:] for line in source_status}
-    assert dirty_source_paths <= P5_REVIEWED_PRODUCTION_CHANGES
+    assert dirty_source_paths <= (
+        P5_REVIEWED_PRODUCTION_CHANGES | P6_TASK2_PRODUCTION_CHANGES
+    )
 
     subprocess.run(
         (

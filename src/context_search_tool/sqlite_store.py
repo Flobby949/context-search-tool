@@ -4,11 +4,13 @@ import json
 import logging
 import re
 import sqlite3
+import stat
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from context_search_tool.graph_contract import (
     EDGE_QUERY_LIMIT,
@@ -55,6 +57,88 @@ TEST_ASSOCIATION_SOURCE_GENERATION_KEY = (
     "graph_test_association_source_generation"
 )
 FILE_WRITE_IN_PROGRESS_KEY = "graph_file_write_in_progress"
+OPERATIONAL_SCHEMA_VERSION_KEY = "operational_schema_version"
+TARGET_OPERATIONAL_SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True)
+class RawSQLiteSchemaVersions:
+    status: Literal["missing", "valid", "invalid"]
+    operational_version: int | None
+    graph_version: int | None
+    error_code: str | None
+
+
+def inspect_raw_sqlite_schema_versions(
+    db_path: Path,
+) -> RawSQLiteSchemaVersions:
+    if db_path.is_symlink():
+        return RawSQLiteSchemaVersions("invalid", None, None, "unsafe_sqlite")
+    if not db_path.exists():
+        return RawSQLiteSchemaVersions("missing", None, None, "missing_index")
+    try:
+        path_stat = db_path.lstat()
+    except OSError:
+        return RawSQLiteSchemaVersions("invalid", None, None, "unreadable_sqlite")
+    if not stat.S_ISREG(path_stat.st_mode):
+        return RawSQLiteSchemaVersions("invalid", None, None, "unsafe_sqlite")
+
+    connection: sqlite3.Connection | None = None
+    try:
+        uri = f"{db_path.resolve(strict=True).as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=0)
+        connection.execute("PRAGMA query_only = ON")
+        table = connection.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'index_metadata'
+            """
+        ).fetchone()
+        if table is None:
+            return RawSQLiteSchemaVersions("valid", None, None, None)
+        rows = connection.execute(
+            """
+            SELECT key, value
+            FROM index_metadata
+            WHERE key IN (?, ?)
+            """,
+            (OPERATIONAL_SCHEMA_VERSION_KEY, SIGNAL_SCHEMA_VERSION_KEY),
+        ).fetchall()
+    except (OSError, sqlite3.DatabaseError):
+        return RawSQLiteSchemaVersions("invalid", None, None, "malformed_sqlite")
+    finally:
+        if connection is not None:
+            connection.close()
+    values = {str(key): value for key, value in rows}
+    operational, operational_error = _parse_raw_schema_version(
+        values.get(OPERATIONAL_SCHEMA_VERSION_KEY),
+        "invalid_operational_schema",
+    )
+    if operational_error is not None:
+        return RawSQLiteSchemaVersions("invalid", None, None, operational_error)
+    graph, graph_error = _parse_raw_schema_version(
+        values.get(SIGNAL_SCHEMA_VERSION_KEY),
+        "invalid_graph_schema",
+    )
+    if graph_error is not None:
+        return RawSQLiteSchemaVersions("invalid", operational, None, graph_error)
+    return RawSQLiteSchemaVersions("valid", operational, graph, None)
+
+
+def _parse_raw_schema_version(
+    raw: object,
+    error_code: str,
+) -> tuple[int | None, str | None]:
+    if raw is None or raw == "":
+        return None, None
+    try:
+        version = int(raw)
+    except (TypeError, ValueError):
+        return None, error_code
+    if version < 0 or str(version) != str(raw):
+        return None, error_code
+    return version, None
 
 
 class SQLiteStore:

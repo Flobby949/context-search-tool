@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import importlib
+import importlib.util
+import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -25,6 +30,165 @@ from context_search_tool.sqlite_store import (
     SQLiteStore,
 )
 from context_search_tool.test_association import regenerate_test_associations
+
+
+def _health_module() -> Any:
+    spec = importlib.util.find_spec("context_search_tool.index_health")
+    assert spec is not None, "P6 raw index capability probe is absent"
+    return importlib.import_module("context_search_tool.index_health")
+
+
+def _raw_tree(root: Path) -> dict[str, tuple[int, int, str]]:
+    return {
+        path.relative_to(root).as_posix(): (
+            path.stat().st_size,
+            path.stat().st_mtime_ns,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _literal_raw_index(
+    repo: Path,
+    *,
+    manifest_version: object = 2,
+    operational_version: object | None = 1,
+    graph_version: object | None = 5,
+) -> None:
+    internal = repo / ".context-search"
+    internal.mkdir()
+    (internal / "manifest.json").write_text(
+        json.dumps({"schema_version": manifest_version}),
+        encoding="utf-8",
+    )
+    with sqlite3.connect(internal / "index.sqlite") as connection:
+        connection.execute(
+            "CREATE TABLE index_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        if operational_version is not None:
+            connection.execute(
+                "INSERT INTO index_metadata VALUES (?, ?)",
+                ("operational_schema_version", str(operational_version)),
+            )
+        if graph_version is not None:
+            connection.execute(
+                "INSERT INTO index_metadata VALUES (?, ?)",
+                (SIGNAL_SCHEMA_VERSION_KEY, str(graph_version)),
+            )
+
+
+def test_p6_raw_probe_is_missing_without_creating_index_state(tmp_path: Path) -> None:
+    module = _health_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    before = _raw_tree(repo)
+
+    capability = module.probe_raw_index_capability(repo)
+
+    assert capability.status == "missing"
+    assert capability.index_exists is False
+    assert capability.error_code == "missing_index"
+    assert capability.manifest_version is None
+    assert capability.operational_version is None
+    assert capability.graph_version is None
+    assert _raw_tree(repo) == before
+    assert not (repo / ".context-search").exists()
+
+
+def test_p6_future_manifest_stops_before_sqlite_or_normal_readers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _health_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _literal_raw_index(repo, manifest_version=3)
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("future manifest crossed schema-first preflight")
+
+    monkeypatch.setattr(module, "inspect_raw_sqlite_schema_versions", forbidden)
+    before = _raw_tree(repo)
+    capability = module.probe_raw_index_capability(repo)
+
+    assert capability.status == "incompatible"
+    assert capability.error_code == "future_manifest_schema"
+    assert capability.manifest_version == 3
+    assert capability.operational_version is None
+    assert capability.graph_version is None
+    assert _raw_tree(repo) == before
+
+
+@pytest.mark.parametrize(
+    ("operational", "graph", "error_code"),
+    [
+        (2, 5, "future_operational_schema"),
+        (1, 6, "future_graph_schema"),
+        ("not-an-int", 5, "invalid_operational_schema"),
+        (1, "not-an-int", "invalid_graph_schema"),
+    ],
+)
+def test_p6_raw_probe_classifies_future_and_malformed_known_metadata_only(
+    tmp_path: Path,
+    operational: object,
+    graph: object,
+    error_code: str,
+) -> None:
+    module = _health_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _literal_raw_index(
+        repo,
+        operational_version=operational,
+        graph_version=graph,
+    )
+    before = _raw_tree(repo)
+
+    capability = module.probe_raw_index_capability(repo)
+
+    expected_status = "incompatible" if error_code.startswith("future") else "corrupt"
+    assert capability.status == expected_status
+    assert capability.error_code == error_code
+    assert capability.manifest_version == 2
+    assert _raw_tree(repo) == before
+    assert not list((repo / ".context-search").glob("*-journal"))
+    assert not list((repo / ".context-search").glob("*-wal"))
+
+
+def test_p6_raw_probe_reads_literal_legacy_and_current_versions_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _health_module()
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("raw probe used a normal mutable store API")
+
+    monkeypatch.setattr(SQLiteStore, "get_metadata", forbidden)
+    for name, manifest_version, operational_version in (
+        ("legacy", 1, None),
+        ("current", 2, 1),
+    ):
+        repo = tmp_path / name
+        repo.mkdir()
+        _literal_raw_index(
+            repo,
+            manifest_version=manifest_version,
+            operational_version=operational_version,
+            graph_version=5,
+        )
+        before = _raw_tree(repo)
+
+        capability = module.probe_raw_index_capability(repo)
+
+        assert capability.status == "compatible"
+        assert capability.manifest_version == manifest_version
+        assert capability.operational_version == operational_version
+        assert capability.graph_version == 5
+        assert capability.error_code is None
+        assert _raw_tree(repo) == before
 
 
 V5_SIGNAL_COLUMNS = {

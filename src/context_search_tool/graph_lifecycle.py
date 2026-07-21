@@ -79,6 +79,34 @@ class GraphIntegrityResult:
         )
 
 
+@dataclass(frozen=True)
+class RawGraphSchemaCapability:
+    status: Literal["legacy", "current", "future"]
+    version: int
+    error_code: str | None
+
+
+def classify_raw_graph_schema(
+    version: int | None,
+) -> RawGraphSchemaCapability:
+    normalized = 0 if version is None else version
+    if normalized > TARGET_SIGNAL_SCHEMA_VERSION:
+        return RawGraphSchemaCapability(
+            status="future",
+            version=normalized,
+            error_code="future_graph_schema",
+        )
+    return RawGraphSchemaCapability(
+        status=(
+            "current"
+            if normalized == TARGET_SIGNAL_SCHEMA_VERSION
+            else "legacy"
+        ),
+        version=normalized,
+        error_code=None,
+    )
+
+
 def read_graph_capability(metadata: MetadataReader) -> GraphCapability:
     raw_version = metadata.get_metadata(SIGNAL_SCHEMA_VERSION_KEY)
     if raw_version is None or raw_version == "":

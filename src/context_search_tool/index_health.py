@@ -1,0 +1,1691 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+import os
+from pathlib import Path
+from typing import Any, Callable, Mapping, Sequence
+
+from context_search_tool.graph_lifecycle import (
+    TARGET_SIGNAL_SCHEMA_VERSION,
+    classify_raw_graph_schema,
+)
+from context_search_tool.manifest import (
+    READABLE_MANIFEST_VERSIONS,
+    inspect_raw_manifest_schema,
+)
+from context_search_tool.scanner import (
+    CoverageSkipObservation,
+    FileObservation,
+    InventoryDiagnostic,
+    ObservedFileRead,
+    WorkspaceInventory,
+)
+from context_search_tool.sqlite_store import (
+    TARGET_OPERATIONAL_SCHEMA_VERSION,
+    inspect_raw_sqlite_schema_versions,
+)
+
+
+REPORT_KEYS = (
+    "schema_version",
+    "health",
+    "queryable",
+    "queryability_evidence",
+    "availability",
+    "observation",
+    "freshness",
+    "coverage",
+    "integrity",
+    "vectors",
+    "indexed_embedding",
+    "configured_embedding",
+    "embedding_config_match",
+    "refresh",
+    "writer",
+    "diagnostics",
+)
+OBSERVATION_KEYS = (
+    "started_at_epoch_ms",
+    "completed_at_epoch_ms",
+    "inventory_status",
+    "unscannable_subtree_count",
+    "control_file_error_count",
+    "change_token_kind",
+    "limitations",
+)
+FRESHNESS_KEYS = (
+    "status",
+    "inspection_mode",
+    "indexed_at_epoch_s",
+    "age_seconds",
+    "added",
+    "changed",
+    "deleted",
+    "metadata_unchanged",
+    "content_verified",
+    "samples",
+    "sample_limit",
+    "sampled_total",
+    "evidence_generation",
+)
+COVERAGE_KEYS = (
+    "status",
+    "evidence",
+    "indexed_files",
+    "coverage_skips",
+    "pending_inspection",
+    "pending_retry",
+    "skip_counts",
+    "skip_samples",
+    "excluded_counts",
+)
+INTEGRITY_KEYS = (
+    "status",
+    "manifest",
+    "sqlite",
+    "graph",
+    "graph_stale_reason",
+    "vector",
+)
+VECTOR_KEYS = (
+    "generation",
+    "eligible_chunks",
+    "rows",
+    "coverage_ratio",
+    "coverage_evidence",
+    "missing_ids",
+    "orphan_ids",
+    "dimensions",
+)
+EMBEDDING_KEYS = (
+    "status",
+    "provider",
+    "model",
+    "dimensions",
+    "config_hash",
+    "network_egress_capable",
+    "network_egress_evidence",
+)
+REFRESH_KEYS = ("required", "kind", "reasons", "recommended_action")
+WRITER_KEYS = ("active", "state", "evidence")
+
+FRESHNESS_CATEGORY_ORDER = (
+    "added",
+    "changed",
+    "deleted",
+    "metadata_only",
+    "pending_inspection",
+)
+REFRESH_REASON_ORDER = (
+    "source_changed",
+    "path_inventory_changed",
+    "coverage_changed",
+    "index_config_changed",
+    "embedding_config_changed",
+    "topology_changed",
+    "graph_stale",
+    "manifest_upgrade",
+    "integrity_failed",
+    "inventory_incomplete",
+)
+DIAGNOSTIC_CODE_ORDER = (
+    "legacy_manifest",
+    "inventory_incomplete",
+    "unscannable_subtree",
+    "control_file_error",
+    "writer_state_unknown",
+    "inspection_interrupted",
+    "verification_interrupted",
+    "vector_payload_unverified",
+    "manifest_identity_mismatch",
+    "vector_identity_mismatch",
+    "orphan_generation",
+    "coverage_pending",
+)
+SKIP_REASON_ORDER = (
+    "too_large",
+    "binary",
+    "unreadable",
+    "unsafe_path",
+    "changed_during_read",
+    "unsupported_encoding",
+)
+EXCLUSION_REASON_ORDER = (
+    "ignored",
+    "internal",
+    "default_directory",
+    "config_excluded",
+    "unsupported_language",
+    "pruned_directory",
+)
+
+
+class Health(StrEnum):
+    MISSING = "missing"
+    INCOMPATIBLE = "incompatible"
+    CORRUPT = "corrupt"
+    STALE = "stale"
+    DEGRADED = "degraded"
+    HEALTHY_VERIFIED = "healthy_verified"
+    HEALTHY_METADATA = "healthy_metadata"
+
+
+class Availability(StrEnum):
+    MISSING = "missing"
+    PRESENT = "present"
+    INCOMPATIBLE = "incompatible"
+    CORRUPT = "corrupt"
+
+
+class FreshnessStatus(StrEnum):
+    UNKNOWN = "unknown"
+    STALE = "stale"
+    METADATA_FRESH = "metadata_fresh"
+    VERIFIED_FRESH = "verified_fresh"
+
+
+class CoverageStatus(StrEnum):
+    UNKNOWN = "unknown"
+    COMPLETE = "complete"
+    DEGRADED = "degraded"
+
+
+class IntegrityStatus(StrEnum):
+    UNCHECKED = "unchecked"
+    VALID_QUICK = "valid_quick"
+    VALID_VERIFIED = "valid_verified"
+    INVALID = "invalid"
+
+
+class InventoryStatus(StrEnum):
+    NOT_INSPECTED = "not_inspected"
+    COMPLETE = "complete"
+    INCOMPLETE = "incomplete"
+
+
+@dataclass(frozen=True)
+class FreshnessSample:
+    category: str
+    path: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class SkipSample:
+    path: str
+    reason: str
+    retryable: bool
+
+
+@dataclass(frozen=True)
+class Diagnostic:
+    code: str
+    scope: str
+    path: str | None
+
+
+@dataclass(frozen=True)
+class ObservationReport:
+    started_at_epoch_ms: int | None
+    completed_at_epoch_ms: int | None
+    inventory_status: str
+    unscannable_subtree_count: int | None
+    control_file_error_count: int | None
+    change_token_kind: str | None
+    limitations: tuple[str, ...] | None
+
+
+@dataclass(frozen=True)
+class FreshnessReport:
+    status: str
+    inspection_mode: str
+    indexed_at_epoch_s: int | None
+    age_seconds: int | None
+    added: int | None
+    changed: int | None
+    deleted: int | None
+    metadata_unchanged: int | None
+    content_verified: int | None
+    samples: tuple[FreshnessSample, ...] | None
+    sample_limit: int
+    sampled_total: int | None
+    evidence_generation: str | None
+
+
+@dataclass(frozen=True)
+class CoverageReport:
+    status: str
+    evidence: str
+    indexed_files: int | None
+    coverage_skips: int | None
+    pending_inspection: int | None
+    pending_retry: int | None
+    skip_counts: tuple[tuple[str, int], ...] | None
+    skip_samples: tuple[SkipSample, ...] | None
+    excluded_counts: tuple[tuple[str, int], ...] | None
+
+
+@dataclass(frozen=True)
+class IntegrityReport:
+    status: str
+    manifest: str
+    sqlite: str
+    graph: str
+    graph_stale_reason: str | None
+    vector: str
+
+
+@dataclass(frozen=True)
+class VectorReport:
+    generation: str | None
+    eligible_chunks: int | None
+    rows: int | None
+    coverage_ratio: int | float | None
+    coverage_evidence: str
+    missing_ids: tuple[str, ...] | None
+    orphan_ids: tuple[str, ...] | None
+    dimensions: int | None
+
+
+@dataclass(frozen=True)
+class EmbeddingIdentity:
+    status: str
+    provider: str | None
+    model: str | None
+    dimensions: int | None
+    config_hash: str | None
+    network_egress_capable: bool
+    network_egress_evidence: str
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> EmbeddingIdentity:
+        _require_keys(raw, EMBEDDING_KEYS, "embedding identity")
+        value = cls(**{key: raw[key] for key in EMBEDDING_KEYS})
+        value._validate()
+        return value
+
+    @classmethod
+    def hash_v1(cls, config_hash: str, dimensions: int) -> EmbeddingIdentity:
+        return cls(
+            status="valid",
+            provider="hash",
+            model="hash-v1",
+            dimensions=dimensions,
+            config_hash=config_hash,
+            network_egress_capable=False,
+            network_egress_evidence="built_in_hash",
+        )
+
+    def _validate(self) -> None:
+        if self.status == "valid":
+            if (
+                not isinstance(self.provider, str)
+                or not self.provider
+                or not isinstance(self.model, str)
+                or not self.model
+                or type(self.dimensions) is not int
+                or self.dimensions < 1
+                or not isinstance(self.config_hash, str)
+                or not self.config_hash
+            ):
+                raise ValueError("valid embedding identity is incomplete")
+            if self.provider == "hash":
+                if self.network_egress_capable or self.network_egress_evidence != (
+                    "built_in_hash"
+                ):
+                    raise ValueError("hash embedding network egress must be false")
+            elif not self.network_egress_capable:
+                raise ValueError("network egress must fail closed")
+            return
+        if self.status not in {"missing", "invalid", "not_inspected"}:
+            raise ValueError("embedding identity status is invalid")
+        if any(
+            value is not None
+            for value in (
+                self.provider,
+                self.model,
+                self.dimensions,
+                self.config_hash,
+            )
+        ):
+            raise ValueError("non-valid embedding identity must be null")
+        if not self.network_egress_capable:
+            raise ValueError("network egress must fail closed")
+
+
+@dataclass(frozen=True)
+class RefreshReport:
+    required: bool
+    kind: str
+    reasons: tuple[str, ...]
+    recommended_action: str
+
+
+@dataclass(frozen=True)
+class WriterReport:
+    active: bool | None
+    state: str
+    evidence: str
+
+
+@dataclass(frozen=True)
+class IndexHealthReport:
+    schema_version: int
+    health: str
+    queryable: bool
+    queryability_evidence: str
+    availability: str
+    observation: ObservationReport
+    freshness: FreshnessReport
+    coverage: CoverageReport
+    integrity: IntegrityReport
+    vectors: VectorReport
+    indexed_embedding: EmbeddingIdentity
+    configured_embedding: EmbeddingIdentity
+    embedding_config_match: bool | None
+    refresh: RefreshReport
+    writer: WriterReport
+    diagnostics: tuple[Diagnostic, ...] | None
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> IndexHealthReport:
+        _require_keys(raw, REPORT_KEYS, "index health report")
+        if raw["schema_version"] != 1:
+            raise ValueError("unsupported index health report schema")
+        Health(raw["health"])
+        Availability(raw["availability"])
+        observation_raw = _mapping(raw["observation"], "observation")
+        freshness_raw = _mapping(raw["freshness"], "freshness")
+        coverage_raw = _mapping(raw["coverage"], "coverage")
+        integrity_raw = _mapping(raw["integrity"], "integrity")
+        vector_raw = _mapping(raw["vectors"], "vectors")
+        refresh_raw = _mapping(raw["refresh"], "refresh")
+        writer_raw = _mapping(raw["writer"], "writer")
+        _require_keys(observation_raw, OBSERVATION_KEYS, "observation")
+        _require_keys(freshness_raw, FRESHNESS_KEYS, "freshness")
+        _require_keys(coverage_raw, COVERAGE_KEYS, "coverage")
+        _require_keys(integrity_raw, INTEGRITY_KEYS, "integrity")
+        _require_keys(vector_raw, VECTOR_KEYS, "vectors")
+        _require_keys(refresh_raw, REFRESH_KEYS, "refresh")
+        _require_keys(writer_raw, WRITER_KEYS, "writer")
+        InventoryStatus(observation_raw["inventory_status"])
+        FreshnessStatus(freshness_raw["status"])
+        CoverageStatus(coverage_raw["status"])
+        IntegrityStatus(integrity_raw["status"])
+
+        sample_limit = freshness_raw["sample_limit"]
+        if type(sample_limit) is not int or sample_limit < 1:
+            raise ValueError("freshness sample limit is invalid")
+        freshness_samples = _freshness_samples(
+            freshness_raw["samples"], sample_limit
+        )
+        skip_samples = _skip_samples(coverage_raw["skip_samples"], sample_limit)
+        refresh_reasons = _ordered_strings(
+            refresh_raw["reasons"], REFRESH_REASON_ORDER, "refresh reason"
+        )
+        diagnostics = _diagnostics(raw["diagnostics"])
+        skip_counts = _closed_counts(
+            coverage_raw["skip_counts"], SKIP_REASON_ORDER, "skip counts"
+        )
+        excluded_counts = _closed_counts(
+            coverage_raw["excluded_counts"],
+            EXCLUSION_REASON_ORDER,
+            "excluded counts",
+        )
+        indexed_embedding = EmbeddingIdentity.from_dict(
+            _mapping(raw["indexed_embedding"], "indexed embedding")
+        )
+        configured_embedding = EmbeddingIdentity.from_dict(
+            _mapping(raw["configured_embedding"], "configured embedding")
+        )
+        expected_match = (
+            _embedding_key(indexed_embedding) == _embedding_key(configured_embedding)
+            if indexed_embedding.status == configured_embedding.status == "valid"
+            else None
+        )
+        if raw["embedding_config_match"] != expected_match:
+            raise ValueError("embedding configuration match is inconsistent")
+        return cls(
+            schema_version=1,
+            health=str(raw["health"]),
+            queryable=bool(raw["queryable"]),
+            queryability_evidence=str(raw["queryability_evidence"]),
+            availability=str(raw["availability"]),
+            observation=ObservationReport(
+                **{key: observation_raw[key] for key in OBSERVATION_KEYS[:-1]},
+                limitations=(
+                    tuple(observation_raw["limitations"])
+                    if observation_raw["limitations"] is not None
+                    else None
+                ),
+            ),
+            freshness=FreshnessReport(
+                **{key: freshness_raw[key] for key in FRESHNESS_KEYS[:9]},
+                samples=freshness_samples,
+                sample_limit=sample_limit,
+                sampled_total=freshness_raw["sampled_total"],
+                evidence_generation=freshness_raw["evidence_generation"],
+            ),
+            coverage=CoverageReport(
+                status=coverage_raw["status"],
+                evidence=coverage_raw["evidence"],
+                indexed_files=coverage_raw["indexed_files"],
+                coverage_skips=coverage_raw["coverage_skips"],
+                pending_inspection=coverage_raw["pending_inspection"],
+                pending_retry=coverage_raw["pending_retry"],
+                skip_counts=skip_counts,
+                skip_samples=skip_samples,
+                excluded_counts=excluded_counts,
+            ),
+            integrity=IntegrityReport(
+                **{key: integrity_raw[key] for key in INTEGRITY_KEYS}
+            ),
+            vectors=VectorReport(
+                generation=vector_raw["generation"],
+                eligible_chunks=vector_raw["eligible_chunks"],
+                rows=vector_raw["rows"],
+                coverage_ratio=vector_raw["coverage_ratio"],
+                coverage_evidence=vector_raw["coverage_evidence"],
+                missing_ids=(
+                    tuple(vector_raw["missing_ids"])
+                    if vector_raw["missing_ids"] is not None
+                    else None
+                ),
+                orphan_ids=(
+                    tuple(vector_raw["orphan_ids"])
+                    if vector_raw["orphan_ids"] is not None
+                    else None
+                ),
+                dimensions=vector_raw["dimensions"],
+            ),
+            indexed_embedding=indexed_embedding,
+            configured_embedding=configured_embedding,
+            embedding_config_match=expected_match,
+            refresh=RefreshReport(
+                required=bool(refresh_raw["required"]),
+                kind=refresh_raw["kind"],
+                reasons=refresh_reasons,
+                recommended_action=refresh_raw["recommended_action"],
+            ),
+            writer=WriterReport(
+                active=writer_raw["active"],
+                state=writer_raw["state"],
+                evidence=writer_raw["evidence"],
+            ),
+            diagnostics=diagnostics,
+        )
+
+
+def serialize_index_health(report: IndexHealthReport) -> dict[str, Any]:
+    return {
+        "schema_version": report.schema_version,
+        "health": report.health,
+        "queryable": report.queryable,
+        "queryability_evidence": report.queryability_evidence,
+        "availability": report.availability,
+        "observation": {
+            "started_at_epoch_ms": report.observation.started_at_epoch_ms,
+            "completed_at_epoch_ms": report.observation.completed_at_epoch_ms,
+            "inventory_status": report.observation.inventory_status,
+            "unscannable_subtree_count": (
+                report.observation.unscannable_subtree_count
+            ),
+            "control_file_error_count": report.observation.control_file_error_count,
+            "change_token_kind": report.observation.change_token_kind,
+            "limitations": (
+                list(report.observation.limitations)
+                if report.observation.limitations is not None
+                else None
+            ),
+        },
+        "freshness": {
+            "status": report.freshness.status,
+            "inspection_mode": report.freshness.inspection_mode,
+            "indexed_at_epoch_s": report.freshness.indexed_at_epoch_s,
+            "age_seconds": report.freshness.age_seconds,
+            "added": report.freshness.added,
+            "changed": report.freshness.changed,
+            "deleted": report.freshness.deleted,
+            "metadata_unchanged": report.freshness.metadata_unchanged,
+            "content_verified": report.freshness.content_verified,
+            "samples": (
+                [
+                    {
+                        "category": item.category,
+                        "path": item.path,
+                        "reason": item.reason,
+                    }
+                    for item in report.freshness.samples
+                ]
+                if report.freshness.samples is not None
+                else None
+            ),
+            "sample_limit": report.freshness.sample_limit,
+            "sampled_total": report.freshness.sampled_total,
+            "evidence_generation": report.freshness.evidence_generation,
+        },
+        "coverage": {
+            "status": report.coverage.status,
+            "evidence": report.coverage.evidence,
+            "indexed_files": report.coverage.indexed_files,
+            "coverage_skips": report.coverage.coverage_skips,
+            "pending_inspection": report.coverage.pending_inspection,
+            "pending_retry": report.coverage.pending_retry,
+            "skip_counts": (
+                dict(report.coverage.skip_counts)
+                if report.coverage.skip_counts is not None
+                else None
+            ),
+            "skip_samples": (
+                [
+                    {
+                        "path": item.path,
+                        "reason": item.reason,
+                        "retryable": item.retryable,
+                    }
+                    for item in report.coverage.skip_samples
+                ]
+                if report.coverage.skip_samples is not None
+                else None
+            ),
+            "excluded_counts": (
+                dict(report.coverage.excluded_counts)
+                if report.coverage.excluded_counts is not None
+                else None
+            ),
+        },
+        "integrity": {
+            "status": report.integrity.status,
+            "manifest": report.integrity.manifest,
+            "sqlite": report.integrity.sqlite,
+            "graph": report.integrity.graph,
+            "graph_stale_reason": report.integrity.graph_stale_reason,
+            "vector": report.integrity.vector,
+        },
+        "vectors": {
+            "generation": report.vectors.generation,
+            "eligible_chunks": report.vectors.eligible_chunks,
+            "rows": report.vectors.rows,
+            "coverage_ratio": report.vectors.coverage_ratio,
+            "coverage_evidence": report.vectors.coverage_evidence,
+            "missing_ids": (
+                list(report.vectors.missing_ids)
+                if report.vectors.missing_ids is not None
+                else None
+            ),
+            "orphan_ids": (
+                list(report.vectors.orphan_ids)
+                if report.vectors.orphan_ids is not None
+                else None
+            ),
+            "dimensions": report.vectors.dimensions,
+        },
+        "indexed_embedding": _embedding_dict(report.indexed_embedding),
+        "configured_embedding": _embedding_dict(report.configured_embedding),
+        "embedding_config_match": report.embedding_config_match,
+        "refresh": {
+            "required": report.refresh.required,
+            "kind": report.refresh.kind,
+            "reasons": list(report.refresh.reasons),
+            "recommended_action": report.refresh.recommended_action,
+        },
+        "writer": {
+            "active": report.writer.active,
+            "state": report.writer.state,
+            "evidence": report.writer.evidence,
+        },
+        "diagnostics": (
+            [
+                {"code": item.code, "scope": item.scope, "path": item.path}
+                for item in report.diagnostics
+            ]
+            if report.diagnostics is not None
+            else None
+        ),
+    }
+
+
+@dataclass(frozen=True)
+class HealthDerivation:
+    availability: str
+    freshness: str
+    coverage: str
+    integrity: str
+    inventory: str
+    graph: str
+    writer_active: bool | None
+    generation_stable: bool
+
+
+def derive_health(evidence: HealthDerivation) -> Health:
+    if evidence.availability == "missing":
+        return Health.MISSING
+    if evidence.availability == "incompatible":
+        return Health.INCOMPATIBLE
+    stable_corruption = (
+        evidence.availability == "corrupt" or evidence.integrity == "invalid"
+    ) and evidence.writer_active is False and evidence.generation_stable
+    if stable_corruption:
+        return Health.CORRUPT
+    if (
+        evidence.graph in {"stale", "unfinished"}
+        or evidence.inventory == "incomplete"
+        or evidence.freshness == "stale"
+    ):
+        return Health.STALE
+    if (
+        evidence.writer_active is not False
+        or not evidence.generation_stable
+        or evidence.integrity == "unchecked"
+        or evidence.coverage == "degraded"
+    ):
+        return Health.DEGRADED
+    if (
+        evidence.freshness == "verified_fresh"
+        and evidence.integrity == "valid_verified"
+    ):
+        return Health.HEALTHY_VERIFIED
+    return Health.HEALTHY_METADATA
+
+
+@dataclass(frozen=True)
+class RawIndexCapability:
+    status: str
+    index_exists: bool
+    manifest_version: int | None
+    operational_version: int | None
+    graph_version: int | None
+    error_code: str | None
+
+
+def probe_raw_index_capability(repo: Path) -> RawIndexCapability:
+    try:
+        resolved_repo = repo.resolve(strict=True)
+    except OSError as error:
+        raise ValueError("repository root does not exist") from error
+    if not resolved_repo.is_dir():
+        raise ValueError("repository root must be a directory")
+    internal = resolved_repo / ".context-search"
+    database = internal / "index.sqlite"
+    if os.path.lexists(internal) and (internal.is_symlink() or not internal.is_dir()):
+        return RawIndexCapability(
+            status="corrupt",
+            index_exists=True,
+            manifest_version=None,
+            operational_version=None,
+            graph_version=None,
+            error_code="unsafe_index_directory",
+        )
+    if not os.path.lexists(database):
+        return RawIndexCapability(
+            status="missing",
+            index_exists=False,
+            manifest_version=None,
+            operational_version=None,
+            graph_version=None,
+            error_code="missing_index",
+        )
+    manifest = inspect_raw_manifest_schema(resolved_repo)
+    if manifest.status != "valid" or manifest.version is None:
+        return RawIndexCapability(
+            status="corrupt",
+            index_exists=True,
+            manifest_version=manifest.version,
+            operational_version=None,
+            graph_version=None,
+            error_code=manifest.error_code,
+        )
+    if manifest.version > max(READABLE_MANIFEST_VERSIONS):
+        return RawIndexCapability(
+            status="incompatible",
+            index_exists=True,
+            manifest_version=manifest.version,
+            operational_version=None,
+            graph_version=None,
+            error_code="future_manifest_schema",
+        )
+    if manifest.version not in READABLE_MANIFEST_VERSIONS:
+        return RawIndexCapability(
+            status="corrupt",
+            index_exists=True,
+            manifest_version=manifest.version,
+            operational_version=None,
+            graph_version=None,
+            error_code="invalid_manifest_schema",
+        )
+
+    sqlite_versions = inspect_raw_sqlite_schema_versions(database)
+    if sqlite_versions.status != "valid":
+        return RawIndexCapability(
+            status="corrupt",
+            index_exists=True,
+            manifest_version=manifest.version,
+            operational_version=sqlite_versions.operational_version,
+            graph_version=sqlite_versions.graph_version,
+            error_code=sqlite_versions.error_code,
+        )
+    operational = sqlite_versions.operational_version
+    if operational is not None and operational > TARGET_OPERATIONAL_SCHEMA_VERSION:
+        return RawIndexCapability(
+            status="incompatible",
+            index_exists=True,
+            manifest_version=manifest.version,
+            operational_version=operational,
+            graph_version=None,
+            error_code="future_operational_schema",
+        )
+    graph = classify_raw_graph_schema(sqlite_versions.graph_version)
+    if graph.status == "future":
+        return RawIndexCapability(
+            status="incompatible",
+            index_exists=True,
+            manifest_version=manifest.version,
+            operational_version=operational,
+            graph_version=graph.version,
+            error_code=graph.error_code,
+        )
+    return RawIndexCapability(
+        status="compatible",
+        index_exists=True,
+        manifest_version=manifest.version,
+        operational_version=operational,
+        graph_version=sqlite_versions.graph_version,
+        error_code=None,
+    )
+
+
+@dataclass(frozen=True)
+class IndexedFileObservation:
+    path: str
+    language: str
+    size: int
+    mtime_ns: int
+    change_token: int | str | None
+    change_token_kind: str
+    sha256: str
+
+
+@dataclass(frozen=True)
+class CommittedIndexSnapshot:
+    ready_generation: str
+    manifest_version: int
+    operational_version: int | None
+    graph_version: int
+    graph_status: str
+    graph_stale_reason: str
+    queryable: bool
+    indexed_at_epoch_s: int | None
+    indexed_files: tuple[IndexedFileObservation, ...]
+    coverage_skips: tuple[CoverageSkipObservation, ...]
+    eligible_chunks: int
+    vector_rows: int
+    vector_generation: str
+    vector_dimensions: int
+    manifest_valid: bool
+    sqlite_valid: bool
+    vector_identity_valid: bool
+    indexed_embedding: EmbeddingIdentity
+
+
+@dataclass(frozen=True)
+class VectorVerification:
+    status: str
+    missing_ids: tuple[str, ...]
+    orphan_ids: tuple[str, ...]
+
+    @classmethod
+    def valid(cls) -> VectorVerification:
+        return cls("valid", (), ())
+
+    @classmethod
+    def invalid(
+        cls,
+        *,
+        missing_ids: Sequence[str] = (),
+        orphan_ids: Sequence[str] = (),
+    ) -> VectorVerification:
+        return cls("invalid", tuple(missing_ids), tuple(orphan_ids))
+
+    @classmethod
+    def interrupted(cls) -> VectorVerification:
+        return cls("interrupted", (), ())
+
+
+@dataclass(frozen=True)
+class WriterProbe:
+    active: bool | None
+    state: str
+    evidence: str
+
+    @classmethod
+    def idle(cls) -> WriterProbe:
+        return cls(False, "idle", "lock_probe")
+
+    @classmethod
+    def active_writer(cls) -> WriterProbe:
+        return cls(True, "active", "lock_probe")
+
+    @classmethod
+    def unknown(cls, evidence: str = "lock_probe_unavailable") -> WriterProbe:
+        return cls(None, "unknown", evidence)
+
+
+@dataclass(frozen=True)
+class InspectionAdapters:
+    raw_probe: Callable[[Path], RawIndexCapability]
+    snapshot_reader: Callable[[Path], CommittedIndexSnapshot]
+    inventory_reader: Callable[[Path, Any], WorkspaceInventory]
+    file_reader: Callable[..., ObservedFileRead]
+    vector_verifier: Callable[[Path, CommittedIndexSnapshot], VectorVerification]
+    configured_embedding_reader: Callable[[Path], EmbeddingIdentity]
+    writer_probe: Callable[[Path], WriterProbe]
+    clock_ms: Callable[[], int]
+    max_file_bytes: int = 16 * 1024 * 1024
+
+
+def inspect_index_health(
+    repo: Path,
+    *,
+    mode: str,
+    adapters: InspectionAdapters,
+) -> IndexHealthReport:
+    if mode not in {"quick", "verified"}:
+        raise ValueError("inspection mode must be quick or verified")
+    raw = adapters.raw_probe(repo)
+    if raw.status != "compatible":
+        return _preflight_report(raw)
+
+    started = adapters.clock_ms()
+    configured_embedding = adapters.configured_embedding_reader(repo)
+    opening_snapshot = adapters.snapshot_reader(repo)
+    opening_inventory = adapters.inventory_reader(repo, None)
+    content_results: dict[str, ObservedFileRead] = {}
+    vector_result: VectorVerification | None = None
+    if mode == "verified":
+        for observation in opening_inventory.eligible:
+            content_results[observation.path.as_posix()] = adapters.file_reader(
+                repo,
+                observation,
+                max_file_bytes=adapters.max_file_bytes,
+                require_utf8=True,
+            )
+        vector_result = adapters.vector_verifier(repo, opening_snapshot)
+    closing_inventory = adapters.inventory_reader(repo, None)
+    closing_snapshot = adapters.snapshot_reader(repo)
+    writer = adapters.writer_probe(repo)
+    completed = adapters.clock_ms()
+    return _observed_report(
+        mode=mode,
+        started=started,
+        completed=completed,
+        raw=raw,
+        opening_snapshot=opening_snapshot,
+        closing_snapshot=closing_snapshot,
+        opening_inventory=opening_inventory,
+        closing_inventory=closing_inventory,
+        content_results=content_results,
+        vector_result=vector_result,
+        configured_embedding=configured_embedding,
+        writer=writer,
+    )
+
+
+def _preflight_report(capability: RawIndexCapability) -> IndexHealthReport:
+    missing = capability.status == "missing"
+    incompatible = capability.status == "incompatible"
+    availability = (
+        "missing" if missing else "incompatible" if incompatible else "corrupt"
+    )
+    health = availability
+    manifest_integrity = "missing" if missing else "not_inspected"
+    sqlite_integrity = "missing" if missing else "not_inspected"
+    graph_integrity = "missing" if missing else "not_inspected"
+    if capability.error_code == "future_manifest_schema":
+        manifest_integrity = "incompatible"
+    elif capability.error_code == "future_operational_schema":
+        manifest_integrity = "valid"
+        sqlite_integrity = "incompatible"
+    elif capability.error_code == "future_graph_schema":
+        manifest_integrity = "valid"
+        sqlite_integrity = "valid_quick"
+        graph_integrity = "incompatible"
+    elif not missing and not incompatible:
+        manifest_errors = {
+            "missing_manifest",
+            "unsafe_manifest",
+            "manifest_too_large",
+            "unreadable_manifest",
+            "manifest_changed",
+            "malformed_manifest",
+            "invalid_manifest_schema",
+        }
+        if capability.error_code in manifest_errors:
+            manifest_integrity = "invalid"
+        elif capability.error_code == "invalid_graph_schema":
+            manifest_integrity = "valid"
+            sqlite_integrity = "valid_quick"
+            graph_integrity = "invalid"
+        elif capability.error_code not in {None, "unsafe_index_directory"}:
+            manifest_integrity = "valid"
+            sqlite_integrity = "invalid"
+    indexed_embedding = (
+        _nonvalid_embedding("missing", "index_missing")
+        if missing
+        else _nonvalid_embedding("not_inspected", "not_inspected")
+    )
+    raw = {
+        "schema_version": 1,
+        "health": health,
+        "queryable": False,
+        "queryability_evidence": "none",
+        "availability": availability,
+        "observation": {
+            "started_at_epoch_ms": None,
+            "completed_at_epoch_ms": None,
+            "inventory_status": "not_inspected",
+            "unscannable_subtree_count": None,
+            "control_file_error_count": None,
+            "change_token_kind": None,
+            "limitations": None,
+        },
+        "freshness": {
+            "status": "unknown",
+            "inspection_mode": "none",
+            "indexed_at_epoch_s": None,
+            "age_seconds": None,
+            "added": None,
+            "changed": None,
+            "deleted": None,
+            "metadata_unchanged": None,
+            "content_verified": None,
+            "samples": None,
+            "sample_limit": 20,
+            "sampled_total": None,
+            "evidence_generation": None,
+        },
+        "coverage": {
+            "status": "unknown",
+            "evidence": "not_inspected",
+            "indexed_files": None,
+            "coverage_skips": None,
+            "pending_inspection": None,
+            "pending_retry": None,
+            "skip_counts": None,
+            "skip_samples": None,
+            "excluded_counts": None,
+        },
+        "integrity": {
+            "status": "unchecked",
+            "manifest": manifest_integrity,
+            "sqlite": sqlite_integrity,
+            "graph": graph_integrity,
+            "graph_stale_reason": None,
+            "vector": "missing" if missing else "not_inspected",
+        },
+        "vectors": {
+            "generation": None,
+            "eligible_chunks": None,
+            "rows": None,
+            "coverage_ratio": None,
+            "coverage_evidence": "not_inspected",
+            "missing_ids": None,
+            "orphan_ids": None,
+            "dimensions": None,
+        },
+        "indexed_embedding": _embedding_dict(indexed_embedding),
+        "configured_embedding": _embedding_dict(
+            _nonvalid_embedding("not_inspected", "not_inspected")
+        ),
+        "embedding_config_match": None,
+        "refresh": {
+            "required": True,
+            "kind": "authoritative",
+            "reasons": [],
+            "recommended_action": (
+                "index" if not incompatible else "use_compatible_version"
+            ),
+        },
+        "writer": {
+            "active": None,
+            "state": "not_inspected",
+            "evidence": "not_inspected",
+        },
+        "diagnostics": None,
+    }
+    return IndexHealthReport.from_dict(raw)
+
+
+def _observed_report(
+    *,
+    mode: str,
+    started: int,
+    completed: int,
+    raw: RawIndexCapability,
+    opening_snapshot: CommittedIndexSnapshot,
+    closing_snapshot: CommittedIndexSnapshot,
+    opening_inventory: WorkspaceInventory,
+    closing_inventory: WorkspaceInventory,
+    content_results: Mapping[str, ObservedFileRead],
+    vector_result: VectorVerification | None,
+    configured_embedding: EmbeddingIdentity,
+    writer: WriterProbe,
+) -> IndexHealthReport:
+    del raw
+    snapshot_stable = opening_snapshot == closing_snapshot
+    inventory_stable = _inventory_identity(opening_inventory) == _inventory_identity(
+        closing_inventory
+    )
+    complete_inventory = opening_inventory.complete and closing_inventory.complete
+    generation_stable = snapshot_stable and inventory_stable
+    verification_interrupted = any(
+        result.reason == "changed_during_read" for result in content_results.values()
+    ) or (vector_result is not None and vector_result.status == "interrupted") or (
+        mode == "verified" and not generation_stable
+    )
+    interrupted = (
+        not generation_stable
+        or writer.active is not False
+        or verification_interrupted
+    )
+
+    indexed = {item.path: item for item in opening_snapshot.indexed_files}
+    observed = {
+        item.path.as_posix(): item for item in opening_inventory.eligible
+    }
+    samples: list[dict[str, str]] = []
+    if complete_inventory:
+        added_paths = sorted(set(observed) - set(indexed))
+        deleted_paths = sorted(set(indexed) - set(observed))
+        metadata_changed = sorted(
+            path
+            for path in set(observed) & set(indexed)
+            if not _metadata_equal(observed[path], indexed[path])
+        )
+    else:
+        added_paths = []
+        deleted_paths = []
+        metadata_changed = []
+
+    content_changed: list[str] = []
+    metadata_only: list[str] = []
+    content_verified = 0
+    if mode == "verified":
+        for path, result in sorted(content_results.items()):
+            if result.status != "read" or result.sha256 is None:
+                continue
+            content_verified += 1
+            expected = indexed.get(path)
+            if expected is None:
+                continue
+            if expected.sha256 != result.sha256:
+                content_changed.append(path)
+            elif path in metadata_changed:
+                metadata_only.append(path)
+        changed_paths = sorted(set(content_changed) | set(metadata_only))
+    else:
+        changed_paths = metadata_changed
+
+    for path in added_paths:
+        samples.append({"category": "added", "path": path, "reason": "source_changed"})
+    for path in changed_paths:
+        samples.append(
+            {
+                "category": "metadata_only" if path in metadata_only else "changed",
+                "path": path,
+                "reason": "source_changed",
+            }
+        )
+    for path in deleted_paths:
+        samples.append(
+            {"category": "deleted", "path": path, "reason": "path_inventory_changed"}
+        )
+
+    current_skips = {item.path.as_posix(): item for item in opening_inventory.coverage_skips}
+    if mode == "verified":
+        for path, result in content_results.items():
+            if result.status == "skipped" and result.reason is not None:
+                observation = observed[path]
+                current_skips[path] = CoverageSkipObservation(
+                    path=observation.path,
+                    language=observation.language,
+                    reason=result.reason,
+                    retryable=result.retryable,
+                    metadata=result.metadata,
+                )
+    prior_skip_paths = {
+        item.path.as_posix(): item for item in opening_snapshot.coverage_skips
+    }
+    skip_counts = {reason: 0 for reason in SKIP_REASON_ORDER}
+    for item in current_skips.values():
+        if item.reason in skip_counts:
+            skip_counts[item.reason] += 1
+    skip_samples = [
+        {
+            "path": path,
+            "reason": item.reason,
+            "retryable": item.retryable,
+        }
+        for path, item in sorted(current_skips.items())
+    ]
+    pending_retry = sum(item.retryable for item in current_skips.values())
+    pending_inspection = (
+        len(added_paths) + len(metadata_changed) if mode == "quick" else 0
+    )
+    coverage_degraded = bool(current_skips or pending_inspection or pending_retry)
+
+    stable_artifact_invalid = not all(
+        (
+            opening_snapshot.manifest_valid,
+            opening_snapshot.sqlite_valid,
+            opening_snapshot.vector_identity_valid,
+        )
+    ) or (vector_result is not None and vector_result.status == "invalid")
+    confirmed_corrupt = (
+        stable_artifact_invalid
+        and generation_stable
+        and complete_inventory
+        and writer.active is False
+        and not verification_interrupted
+    )
+    legacy = opening_snapshot.manifest_version == 1
+    graph_stale = opening_snapshot.graph_status in {"stale", "unfinished"}
+    has_delta = bool(added_paths or deleted_paths or changed_paths)
+
+    if confirmed_corrupt:
+        integrity_status = "invalid"
+    elif interrupted or not complete_inventory or legacy:
+        integrity_status = "unchecked"
+    else:
+        integrity_status = "valid_verified" if mode == "verified" else "valid_quick"
+    if confirmed_corrupt:
+        freshness_status = "unknown"
+    elif graph_stale or has_delta:
+        freshness_status = "stale"
+    elif interrupted or not complete_inventory or legacy:
+        freshness_status = "unknown"
+    else:
+        freshness_status = (
+            "verified_fresh" if mode == "verified" else "metadata_fresh"
+        )
+    coverage_status = (
+        "unknown" if legacy else "degraded" if coverage_degraded else "complete"
+    )
+    inventory_status = "complete" if complete_inventory else "incomplete"
+    availability = "corrupt" if confirmed_corrupt else "present"
+    derived = derive_health(
+        HealthDerivation(
+            availability=availability,
+            freshness=freshness_status,
+            coverage=coverage_status,
+            integrity=integrity_status,
+            inventory=inventory_status,
+            graph=opening_snapshot.graph_status,
+            writer_active=writer.active,
+            generation_stable=generation_stable,
+        )
+    )
+
+    refresh_reasons: list[str] = []
+    if has_delta:
+        if changed_paths or added_paths:
+            refresh_reasons.append("source_changed")
+        if added_paths or deleted_paths:
+            refresh_reasons.append("path_inventory_changed")
+    if set(current_skips) != set(prior_skip_paths) or any(
+        current_skips[path].reason != prior_skip_paths[path].reason
+        for path in set(current_skips) & set(prior_skip_paths)
+    ):
+        refresh_reasons.append("coverage_changed")
+    if graph_stale:
+        refresh_reasons.append("graph_stale")
+    if legacy:
+        refresh_reasons.append("manifest_upgrade")
+    if confirmed_corrupt:
+        refresh_reasons.append("integrity_failed")
+    embedding_match = (
+        _embedding_key(opening_snapshot.indexed_embedding)
+        == _embedding_key(configured_embedding)
+        if opening_snapshot.indexed_embedding.status
+        == configured_embedding.status
+        == "valid"
+        else None
+    )
+    if embedding_match is False:
+        refresh_reasons.append("embedding_config_changed")
+    if not complete_inventory:
+        refresh_reasons.append("inventory_incomplete")
+
+    if interrupted and not graph_stale:
+        refresh_required = False
+        refresh_kind = "none"
+        action = "retry_inspection"
+    elif not complete_inventory:
+        refresh_required = False
+        refresh_kind = "none"
+        action = "retry_inspection"
+    elif any(
+        reason in {"embedding_config_changed", "manifest_upgrade", "integrity_failed"}
+        for reason in refresh_reasons
+    ):
+        refresh_required = True
+        refresh_kind = "authoritative"
+        action = "index"
+    elif refresh_reasons:
+        refresh_required = True
+        refresh_kind = "quick"
+        action = "refresh"
+    else:
+        refresh_required = False
+        refresh_kind = "none"
+        action = "query"
+
+    diagnostics = [
+        {"code": item.code, "scope": item.scope, "path": item.path}
+        for item in (*opening_inventory.diagnostics, *closing_inventory.diagnostics)
+    ]
+    if legacy:
+        diagnostics.append({"code": "legacy_manifest", "scope": "manifest", "path": None})
+    if not complete_inventory:
+        diagnostics.append(
+            {"code": "inventory_incomplete", "scope": "inventory", "path": None}
+        )
+    if not snapshot_stable:
+        diagnostics.append(
+            {"code": "inspection_interrupted", "scope": "generation", "path": None}
+        )
+    elif writer.active is True:
+        diagnostics.append(
+            {"code": "inspection_interrupted", "scope": "writer", "path": None}
+        )
+    elif writer.active is None:
+        diagnostics.append(
+            {"code": "writer_state_unknown", "scope": "writer", "path": None}
+        )
+    if verification_interrupted:
+        diagnostics.append(
+            {"code": "verification_interrupted", "scope": "inventory", "path": None}
+        )
+    if confirmed_corrupt and not opening_snapshot.manifest_valid:
+        diagnostics.append(
+            {"code": "manifest_identity_mismatch", "scope": "manifest", "path": None}
+        )
+    if confirmed_corrupt and (
+        not opening_snapshot.vector_identity_valid
+        or (vector_result is not None and vector_result.status == "invalid")
+    ):
+        diagnostics.append(
+            {"code": "vector_identity_mismatch", "scope": "vector", "path": None}
+        )
+    for item in skip_samples:
+        diagnostics.append(
+            {"code": "coverage_pending", "scope": "coverage", "path": item["path"]}
+        )
+
+    metadata_unchanged = sum(
+        _metadata_equal(observed[path], indexed[path])
+        for path in set(observed) & set(indexed)
+    )
+    ratio = (
+        opening_snapshot.vector_rows / opening_snapshot.eligible_chunks
+        if opening_snapshot.eligible_chunks
+        else 1.0
+    )
+    exact_vectors = (
+        mode == "verified"
+        and vector_result is not None
+        and vector_result.status in {"valid", "invalid"}
+    )
+    raw_report = {
+        "schema_version": 1,
+        "health": derived.value,
+        "queryable": opening_snapshot.queryable and not confirmed_corrupt,
+        "queryability_evidence": (
+            "none"
+            if not opening_snapshot.queryable
+            else (
+                "committed_snapshot_verified"
+                if integrity_status == "valid_verified"
+                else "committed_snapshot_quick"
+            )
+        ),
+        "availability": availability,
+        "observation": {
+            "started_at_epoch_ms": started,
+            "completed_at_epoch_ms": completed,
+            "inventory_status": inventory_status,
+            "unscannable_subtree_count": len(
+                set(opening_inventory.unscannable_subtrees)
+                | set(closing_inventory.unscannable_subtrees)
+            ),
+            "control_file_error_count": len(
+                {
+                    (item.scope, item.path)
+                    for item in (
+                        *opening_inventory.control_file_errors,
+                        *closing_inventory.control_file_errors,
+                    )
+                }
+            ),
+            "change_token_kind": opening_inventory.change_token_kind,
+            "limitations": (
+                []
+                if mode == "verified"
+                else [
+                    "metadata_not_content_proof",
+                    "vector_payload_content_not_verified",
+                ]
+            ),
+        },
+        "freshness": {
+            "status": freshness_status,
+            "inspection_mode": mode,
+            "indexed_at_epoch_s": opening_snapshot.indexed_at_epoch_s,
+            "age_seconds": (
+                max(0, completed // 1000 - opening_snapshot.indexed_at_epoch_s)
+                if opening_snapshot.indexed_at_epoch_s is not None
+                else None
+            ),
+            "added": len(added_paths),
+            "changed": len(changed_paths),
+            "deleted": len(deleted_paths),
+            "metadata_unchanged": metadata_unchanged,
+            "content_verified": content_verified,
+            "samples": samples,
+            "sample_limit": 20,
+            "sampled_total": len(samples),
+            "evidence_generation": opening_snapshot.ready_generation,
+        },
+        "coverage": {
+            "status": coverage_status,
+            "evidence": (
+                "not_inspected"
+                if legacy
+                else "verified_workspace" if mode == "verified" else "ready_snapshot"
+            ),
+            "indexed_files": None if legacy else len(indexed),
+            "coverage_skips": None if legacy else len(current_skips),
+            "pending_inspection": None if legacy else pending_inspection,
+            "pending_retry": None if legacy else pending_retry,
+            "skip_counts": None if legacy else skip_counts,
+            "skip_samples": None if legacy else skip_samples,
+            "excluded_counts": (
+                None if legacy else dict(opening_inventory.excluded_counts)
+            ),
+        },
+        "integrity": {
+            "status": integrity_status,
+            "manifest": (
+                "invalid"
+                if confirmed_corrupt and not opening_snapshot.manifest_valid
+                else "valid"
+            ),
+            "sqlite": (
+                "invalid"
+                if confirmed_corrupt and not opening_snapshot.sqlite_valid
+                else "valid_verified" if mode == "verified" else "valid_quick"
+            ),
+            "graph": opening_snapshot.graph_status,
+            "graph_stale_reason": opening_snapshot.graph_stale_reason,
+            "vector": (
+                "invalid"
+                if confirmed_corrupt
+                and (
+                    not opening_snapshot.vector_identity_valid
+                    or (vector_result is not None and vector_result.status == "invalid")
+                )
+                else "valid_exact" if exact_vectors else "valid_identity_and_size"
+            ),
+        },
+        "vectors": {
+            "generation": opening_snapshot.vector_generation,
+            "eligible_chunks": opening_snapshot.eligible_chunks,
+            "rows": opening_snapshot.vector_rows,
+            "coverage_ratio": ratio,
+            "coverage_evidence": "exact_ids" if exact_vectors else "count_only",
+            "missing_ids": (
+                list(vector_result.missing_ids) if exact_vectors else None
+            ),
+            "orphan_ids": (
+                list(vector_result.orphan_ids) if exact_vectors else None
+            ),
+            "dimensions": opening_snapshot.vector_dimensions,
+        },
+        "indexed_embedding": _embedding_dict(opening_snapshot.indexed_embedding),
+        "configured_embedding": _embedding_dict(configured_embedding),
+        "embedding_config_match": embedding_match,
+        "refresh": {
+            "required": refresh_required,
+            "kind": refresh_kind,
+            "reasons": refresh_reasons,
+            "recommended_action": action,
+        },
+        "writer": {
+            "active": writer.active,
+            "state": writer.state,
+            "evidence": writer.evidence,
+        },
+        "diagnostics": diagnostics,
+    }
+    return IndexHealthReport.from_dict(raw_report)
+
+
+def _require_keys(
+    raw: Mapping[str, Any],
+    expected: Sequence[str],
+    label: str,
+) -> None:
+    if set(raw) != set(expected):
+        raise ValueError(f"{label} keys are not closed")
+
+
+def _mapping(value: Any, label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be an object")
+    return value
+
+
+def _freshness_samples(
+    raw: Any,
+    limit: int,
+) -> tuple[FreshnessSample, ...] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise ValueError("freshness samples must be a list or null")
+    order = {name: index for index, name in enumerate(FRESHNESS_CATEGORY_ORDER)}
+    values: list[FreshnessSample] = []
+    for item in raw:
+        mapping = _mapping(item, "freshness sample")
+        _require_keys(mapping, ("category", "path", "reason"), "freshness sample")
+        category = mapping["category"]
+        if category not in order:
+            raise ValueError("freshness sample category is invalid")
+        path = _safe_report_path(mapping["path"])
+        values.append(FreshnessSample(category, path, str(mapping["reason"])))
+    values.sort(key=lambda item: (order[item.category], item.path, item.reason))
+    return tuple(values[:limit])
+
+
+def _skip_samples(
+    raw: Any,
+    limit: int,
+) -> tuple[SkipSample, ...] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise ValueError("skip samples must be a list or null")
+    order = {name: index for index, name in enumerate(SKIP_REASON_ORDER)}
+    values: list[SkipSample] = []
+    for item in raw:
+        mapping = _mapping(item, "skip sample")
+        _require_keys(mapping, ("path", "reason", "retryable"), "skip sample")
+        reason = mapping["reason"]
+        if reason not in order:
+            raise ValueError("skip sample reason is invalid")
+        values.append(
+            SkipSample(
+                path=_safe_report_path(mapping["path"]),
+                reason=reason,
+                retryable=bool(mapping["retryable"]),
+            )
+        )
+    values.sort(key=lambda item: (order[item.reason], item.path))
+    return tuple(values[:limit])
+
+
+def _diagnostics(raw: Any) -> tuple[Diagnostic, ...] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise ValueError("diagnostics must be a list or null")
+    order = {name: index for index, name in enumerate(DIAGNOSTIC_CODE_ORDER)}
+    values: list[Diagnostic] = []
+    for item in raw:
+        mapping = _mapping(item, "diagnostic")
+        _require_keys(mapping, ("code", "scope", "path"), "diagnostic")
+        code = mapping["code"]
+        if code not in order:
+            raise ValueError("diagnostic code is invalid")
+        path = mapping["path"]
+        values.append(
+            Diagnostic(
+                code=code,
+                scope=str(mapping["scope"]),
+                path=_safe_report_path(path) if path is not None else None,
+            )
+        )
+    values.sort(key=lambda item: (order[item.code], item.path or "", item.scope))
+    deduped: list[Diagnostic] = []
+    seen: set[tuple[str, str, str | None]] = set()
+    for item in values:
+        key = (item.code, item.scope, item.path)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(item)
+    return tuple(deduped)
+
+
+def _closed_counts(
+    raw: Any,
+    keys: Sequence[str],
+    label: str,
+) -> tuple[tuple[str, int], ...] | None:
+    if raw is None:
+        return None
+    mapping = _mapping(raw, label)
+    _require_keys(mapping, keys, label)
+    values: list[tuple[str, int]] = []
+    for key in keys:
+        value = mapping[key]
+        if type(value) is not int or value < 0:
+            raise ValueError(f"{label} values must be non-negative integers")
+        values.append((key, value))
+    return tuple(values)
+
+
+def _ordered_strings(
+    raw: Any,
+    order_values: Sequence[str],
+    label: str,
+) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        raise ValueError(f"{label}s must be a list")
+    order = {name: index for index, name in enumerate(order_values)}
+    if any(value not in order for value in raw):
+        raise ValueError(f"{label} is invalid")
+    return tuple(sorted(set(raw), key=order.__getitem__))
+
+
+def _safe_report_path(value: Any) -> str:
+    if not isinstance(value, str) or not value or "\\" in value:
+        raise ValueError("report path is invalid")
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts:
+        raise ValueError("report path must be repository-relative")
+    return path.as_posix()
+
+
+def _embedding_dict(value: EmbeddingIdentity) -> dict[str, Any]:
+    return {
+        "status": value.status,
+        "provider": value.provider,
+        "model": value.model,
+        "dimensions": value.dimensions,
+        "config_hash": value.config_hash,
+        "network_egress_capable": value.network_egress_capable,
+        "network_egress_evidence": value.network_egress_evidence,
+    }
+
+
+def _embedding_key(value: EmbeddingIdentity) -> tuple[str, str, int, str]:
+    if (
+        value.status != "valid"
+        or value.provider is None
+        or value.model is None
+        or value.dimensions is None
+        or value.config_hash is None
+    ):
+        raise ValueError("embedding identity is not valid")
+    return (
+        value.provider,
+        value.model,
+        value.dimensions,
+        value.config_hash,
+    )
+
+
+def _nonvalid_embedding(status: str, evidence: str) -> EmbeddingIdentity:
+    return EmbeddingIdentity(
+        status=status,
+        provider=None,
+        model=None,
+        dimensions=None,
+        config_hash=None,
+        network_egress_capable=True,
+        network_egress_evidence=evidence,
+    )
+
+
+def _metadata_equal(
+    observed: FileObservation,
+    indexed: IndexedFileObservation,
+) -> bool:
+    return (
+        observed.language == indexed.language
+        and observed.size == indexed.size
+        and observed.mtime_ns == indexed.mtime_ns
+        and observed.change_token == indexed.change_token
+        and observed.change_token_kind == indexed.change_token_kind
+    )
+
+
+def _inventory_identity(inventory: WorkspaceInventory) -> tuple[Any, ...]:
+    return (
+        tuple(
+            (
+                item.path.as_posix(),
+                item.language,
+                item.metadata,
+                item.is_test,
+            )
+            for item in inventory.eligible
+        ),
+        tuple(
+            (
+                item.path.as_posix(),
+                item.language,
+                item.reason,
+                item.retryable,
+                item.metadata,
+            )
+            for item in inventory.coverage_skips
+        ),
+        inventory.excluded_counts,
+        inventory.complete,
+        inventory.unscannable_subtrees,
+        tuple((item.scope, item.path) for item in inventory.control_file_errors),
+        inventory.change_token_kind,
+        inventory.diagnostics,
+        inventory.control_observations,
+    )
