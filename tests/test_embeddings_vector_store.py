@@ -498,3 +498,41 @@ def test_provider_from_config_supports_bge() -> None:
 
     assert isinstance(provider, BGEEmbeddingProvider)
     assert provider.config.model == "bge-m3"
+
+
+def test_vector_generation_cleanup_keeps_only_safe_referenced_pair(
+    tmp_path: Path,
+) -> None:
+    store = NumpyVectorStore.fresh(tmp_path)
+    store.upsert_many([("a", np.asarray([1.0, 0.0], dtype=np.float32))])
+    first = store.prepare_generation_v2(
+        generation="g1",
+        embedding_identity="hash-v1:2",
+        normalization="none",
+    )
+    store.publish_generation(first)
+    second = store.prepare_generation_v2(
+        generation="g2",
+        embedding_identity="hash-v1:2",
+        normalization="none",
+    )
+    store.publish_generation(second)
+    outside = tmp_path.parent / "outside.npy"
+    outside.write_bytes(b"outside")
+    unsafe = tmp_path / "vectors.unsafe.npy"
+    unsafe.symlink_to(outside)
+
+    assert NumpyVectorStore.generation_pair_count(tmp_path) == 2
+    removed = NumpyVectorStore.cleanup_unreferenced_generations(
+        tmp_path,
+        keep_generation="g2",
+    )
+
+    assert removed == 1
+    assert NumpyVectorStore.generation_pair_count(tmp_path) == 1
+    assert not (tmp_path / "vectors.g1.npy").exists()
+    assert not (tmp_path / "vector_ids.g1.json").exists()
+    assert (tmp_path / "vectors.g2.npy").exists()
+    assert (tmp_path / "vector_ids.g2.json").exists()
+    assert unsafe.is_symlink()
+    assert outside.read_bytes() == b"outside"

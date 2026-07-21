@@ -6,12 +6,12 @@ import os
 import time
 import uuid
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from context_search_tool.chunker import chunk_text
-from context_search_tool.config import ToolConfig, load_config, render_config
+from context_search_tool.config import ToolConfig, load_config, read_config, render_config
 from context_search_tool.embeddings import EmbeddingProvider, provider_from_config
 from context_search_tool.graph_contract import (
     MAX_PRODUCER_RELATIONS_PER_FILE,
@@ -23,7 +23,9 @@ from context_search_tool.graph_lifecycle import (
     GRAPH_RESOLUTION_STATE_KEY,
     PROJECT_UNIT_TOPOLOGY_FINGERPRINT_KEY,
     GraphIntegrityError,
+    IncompatibleOperationalSchemaError,
     IncompatibleSignalSchemaError,
+    IndexBusyError,
     OperationalIntegrityError,
     TARGET_SIGNAL_SCHEMA_VERSION,
     read_graph_capability,
@@ -32,7 +34,10 @@ from context_search_tool.graph_lifecycle import (
 from context_search_tool.graph_plugins import GraphLanguagePlugin, PluginContext
 from context_search_tool.graph_resolution import resolve_graph_relations
 from context_search_tool.index_lock import exclusive_index_lock
-from context_search_tool.index_health import preflight_public_operation
+from context_search_tool.index_health import (
+    preflight_public_operation,
+    probe_raw_index_capability,
+)
 from context_search_tool.manifest import (
     SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION,
     Manifest,
@@ -131,6 +136,21 @@ class WorkspaceChangedError(ValueError):
 CURRENT_SIGNAL_SCHEMA_VERSION = 5
 SIGNAL_SCHEMA_VERSION_KEY = "signal_schema_version"
 _PATH_INVENTORY_RELATION_KINDS = ("imports", "routes_to")
+_QUICK_RETRY_LIMIT = 32
+_QUICK_ALLOWED_STALE_REASONS = frozenset(
+    {"files_changed", "path_inventory_changed", "topology_changed", "stale_on_entry"}
+)
+_DEPENDENT_REASON_ORDER = (
+    "content_candidate",
+    "added_path",
+    "deleted_path",
+    "coverage_changed",
+    "index_config_changed",
+    "embedding_config_changed",
+    "project_topology_changed",
+    "path_inventory_changed",
+    "schema_or_integrity_rebuild",
+)
 
 
 @dataclass(frozen=True)
@@ -140,6 +160,169 @@ class IndexSummary:
     files_skipped: int
     files_deleted: int
     chunks_indexed: int
+
+
+@dataclass(frozen=True)
+class DependentRebuildCount:
+    reason: str
+    files: int
+
+    def to_dict(self) -> dict[str, int | str]:
+        return {"reason": self.reason, "files": self.files}
+
+
+@dataclass(frozen=True)
+class RefreshFileCounts:
+    direct_dirty: int = 0
+    content_changed: int = 0
+    metadata_only: int = 0
+    dependent_rebuild: int = 0
+    dependent_rebuilds: tuple[DependentRebuildCount, ...] = ()
+    deleted: int = 0
+    coverage_skips: int = 0
+    parsed: int = 0
+
+
+@dataclass(frozen=True)
+class RefreshChunkCounts:
+    embedded: int = 0
+
+
+@dataclass(frozen=True)
+class RefreshInventoryWork:
+    passes: int = 2
+    entries: int = 0
+    errors: int = 0
+    retryable_skip_attempts: int = 0
+
+
+@dataclass(frozen=True)
+class RefreshSourceWork:
+    bytes_read: int = 0
+    bytes_hashed: int = 0
+
+
+@dataclass(frozen=True)
+class RefreshPathIndexWork:
+    builds: int = 0
+    paths_canonicalized: int = 0
+
+
+@dataclass(frozen=True)
+class RefreshGraphWork:
+    relations_scanned: int = 0
+    relations_resolved: int = 0
+    association_inputs: int = 0
+    association_writes: int = 0
+
+
+@dataclass(frozen=True)
+class RefreshVectorWork:
+    bytes_read: int = 0
+    bytes_copied: int = 0
+    bytes_written: int = 0
+    bytes_hashed: int = 0
+    payload_passes: int = 0
+    prior_payload_passes: int = 0
+    prepared_payload_passes: int = 0
+    generations_before: int = 1
+    generations_after: int = 1
+    descriptor_action: str = "reused"
+
+
+@dataclass(frozen=True)
+class RefreshMaintenanceWork:
+    tombstones_before: int = 0
+    tombstones_purged: int = 0
+    tombstones_after: int = 0
+    sqlite_pages_before: int = 0
+    sqlite_pages_after: int = 0
+    sqlite_freelist_before: int = 0
+    sqlite_freelist_after: int = 0
+
+
+@dataclass(frozen=True)
+class RefreshWorkCounts:
+    inventory: RefreshInventoryWork = RefreshInventoryWork()
+    source: RefreshSourceWork = RefreshSourceWork()
+    path_index: RefreshPathIndexWork = RefreshPathIndexWork()
+    graph: RefreshGraphWork = RefreshGraphWork()
+    vector: RefreshVectorWork = RefreshVectorWork()
+    maintenance: RefreshMaintenanceWork = RefreshMaintenanceWork()
+
+
+@dataclass(frozen=True)
+class RefreshSummaryV1:
+    operation: str
+    outcome: str
+    verification: str
+    observation_generation: str
+    files: RefreshFileCounts
+    chunks: RefreshChunkCounts
+    work: RefreshWorkCounts
+
+    def to_dict(self) -> dict[str, Any]:
+        _validate_refresh_summary(self)
+        rendered = asdict(self)
+        rendered["files"]["dependent_rebuilds"] = [
+            item.to_dict() for item in self.files.dependent_rebuilds
+        ]
+        return rendered
+
+
+@dataclass(frozen=True)
+class RefreshSuccess:
+    summary: RefreshSummaryV1
+    freshness: str = "metadata_fresh"
+    network_egress_performed: bool = False
+    ok: bool = True
+
+
+@dataclass(frozen=True)
+class RefreshFailure:
+    code: str
+    message: str
+    network_egress_outcome: str = "not_attempted"
+    ok: bool = False
+
+
+RefreshResult = RefreshSuccess | RefreshFailure
+
+
+@dataclass
+class _EgressTracker:
+    network_capable: bool
+    outcome: str = "not_attempted"
+
+    def request_started(self) -> None:
+        if self.network_capable:
+            self.outcome = "possible"
+
+    def response_received(self) -> None:
+        if self.network_capable:
+            self.outcome = "performed"
+
+
+@dataclass(frozen=True)
+class _PersistenceWork:
+    relations_resolved: int
+    association_writes: int
+    tombstones_purged: int
+
+
+@dataclass(frozen=True)
+class _QuickBaseline:
+    loaded_manifest: LoadedManifestSnapshot
+    manifest: ManifestV2
+    operational: OperationalSnapshot
+    descriptor: PublishedVectorDescriptor
+    topology_fingerprint: str
+    graph_status: str
+    graph_stale_reason: str
+
+
+class _AuthoritativeRefreshRequired(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -199,6 +382,74 @@ def index_repository(
         scanner=scan_workspace_v5,
         config_loader=deferred_config_loader,
     )
+
+
+def refresh_repository(
+    repo: Path,
+    config: ToolConfig | None = None,
+    *,
+    graph_plugins: Iterable[GraphLanguagePlugin] | None = None,
+    inventory_observer: Callable[[Path, ToolConfig], WorkspaceInventory] | None = None,
+    observed_reader: Callable[..., ObservedFileRead] | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
+    config_loader: Callable[[Path], ToolConfig] | None = None,
+    fault_hook: Callable[[str], None] | None = None,
+) -> RefreshResult:
+    """Refresh a compatible v2 index from metadata-dirty source paths only.
+
+    This is intentionally an internal seam in Task 6. Public CLI and MCP
+    exposure is added separately so query-like operations cannot opt into a
+    repository mutation implicitly.
+    """
+    try:
+        resolved = repo.resolve(strict=True)
+        if not resolved.is_dir():
+            raise ValueError("repository root must be a directory")
+        capability = probe_raw_index_capability(resolved)
+    except (OSError, ValueError):
+        return _refresh_failure("refresh_failed")
+
+    preflight_failure = _quick_preflight_failure(capability)
+    if preflight_failure is not None:
+        return preflight_failure
+
+    tracker = _EgressTracker(network_capable=True)
+    try:
+        with exclusive_index_lock(resolved / ".context-search"):
+            effective_config = _freeze_effective_config(
+                config
+                if config is not None
+                else (config_loader or read_config)(resolved)
+            )
+            tracker.network_capable = effective_config.embedding.provider != "hash"
+            return _refresh_repository_locked(
+                repo=resolved,
+                config=effective_config,
+                graph_plugins=ordered_graph_plugins(
+                    graph_plugins if graph_plugins is not None else default_plugins()
+                ),
+                inventory_observer=inventory_observer or observe_workspace,
+                observed_reader=observed_reader or read_observed_file,
+                embedding_provider=embedding_provider,
+                fault_hook=fault_hook,
+                tracker=tracker,
+            )
+    except IndexBusyError:
+        return _refresh_failure("index_busy")
+    except IncompatibleManifestSchemaError:
+        return _refresh_failure("incompatible_manifest_schema")
+    except IncompatibleOperationalSchemaError:
+        return _refresh_failure("incompatible_operational_schema")
+    except IncompatibleSignalSchemaError:
+        return _refresh_failure("incompatible_signal_schema")
+    except InventoryIncompleteError:
+        return _refresh_failure("inventory_incomplete", tracker.outcome)
+    except WorkspaceChangedError:
+        return _refresh_failure("workspace_changed", tracker.outcome)
+    except _AuthoritativeRefreshRequired:
+        return _refresh_failure("authoritative_index_required", tracker.outcome)
+    except Exception:
+        return _refresh_failure("refresh_failed", tracker.outcome)
 
 
 def build_v5_index_snapshot(
@@ -262,6 +513,982 @@ def build_v5_index_snapshot(
             fault_hook=fault_hook,
         )
         return prepared.summary
+
+
+def _quick_preflight_failure(capability: Any) -> RefreshFailure | None:
+    if capability.status == "missing":
+        return _refresh_failure("missing_index")
+    if capability.status == "incompatible":
+        return _refresh_failure(
+            {
+                "future_manifest_schema": "incompatible_manifest_schema",
+                "future_operational_schema": "incompatible_operational_schema",
+                "future_graph_schema": "incompatible_signal_schema",
+            }.get(capability.error_code, "authoritative_index_required")
+        )
+    if capability.status == "corrupt":
+        return _refresh_failure("authoritative_index_required")
+    if capability.manifest_version != 2:
+        return _refresh_failure("authoritative_index_required")
+    return None
+
+
+def _refresh_failure(
+    code: str,
+    network_egress_outcome: str = "not_attempted",
+) -> RefreshFailure:
+    messages = {
+        "missing_index": "an existing v2 index is required",
+        "authoritative_index_required": "authoritative indexing is required",
+        "incompatible_manifest_schema": "manifest schema is incompatible",
+        "incompatible_operational_schema": "operational schema is incompatible",
+        "incompatible_signal_schema": "signal schema is incompatible",
+        "index_busy": "another index writer is active",
+        "inventory_incomplete": "repository inventory is incomplete",
+        "workspace_changed": "repository changed during refresh",
+        "refresh_failed": "refresh failed",
+    }
+    if network_egress_outcome not in {"not_attempted", "possible", "performed"}:
+        network_egress_outcome = "possible"
+    return RefreshFailure(
+        code=code,
+        message=messages.get(code, "refresh failed"),
+        network_egress_outcome=network_egress_outcome,
+    )
+
+
+def _refresh_repository_locked(
+    *,
+    repo: Path,
+    config: ToolConfig,
+    graph_plugins: tuple[GraphLanguagePlugin, ...],
+    inventory_observer: Callable[[Path, ToolConfig], WorkspaceInventory],
+    observed_reader: Callable[..., ObservedFileRead],
+    embedding_provider: EmbeddingProvider | None,
+    fault_hook: Callable[[str], None] | None,
+    tracker: _EgressTracker,
+) -> RefreshSuccess:
+    index_dir = repo / ".context-search"
+    store = SQLiteStore(index_dir / "index.sqlite")
+    baseline = _load_quick_baseline(repo, store)
+    pages_before, freelist_before = store.storage_page_metrics()
+    tombstones_before = store.tombstone_count()
+    generations_before = NumpyVectorStore.generation_pair_count(index_dir)
+    effective_index_hash = index_config_hash(config)
+    embedding_identity = embedding_config_hash(config.embedding)
+
+    observation_started = time.time_ns() // 1_000_000
+    opening = inventory_observer(repo, config)
+    _fault(fault_hook, "opening_inventory_complete")
+    if not opening.complete:
+        raise InventoryIncompleteError()
+    if baseline.manifest.embedding_config_hash != embedding_identity:
+        raise _AuthoritativeRefreshRequired()
+
+    quiet = (
+        baseline.graph_status == "ready"
+        and _quick_inventory_matches_snapshot(
+            opening,
+            baseline.operational,
+            effective_index_hash,
+        )
+    )
+    if quiet:
+        closing = inventory_observer(repo, config)
+        if (
+            not closing.complete
+            or workspace_inventory_identity(opening)
+            != workspace_inventory_identity(closing)
+        ):
+            raise WorkspaceChangedError()
+        _fault(fault_hook, "closing_inventory_complete")
+        pages_after, freelist_after = store.storage_page_metrics()
+        summary = _quick_noop_summary(
+            baseline=baseline,
+            opening=opening,
+            closing=closing,
+            generations=generations_before,
+            tombstones=tombstones_before,
+            pages_before=pages_before,
+            pages_after=pages_after,
+            freelist_before=freelist_before,
+            freelist_after=freelist_after,
+        )
+        return RefreshSuccess(summary=summary)
+
+    prior_sources = {
+        item.path: item for item in baseline.operational.source_observations
+    }
+    prior_skips = {item.path: item for item in baseline.operational.scan_skips}
+    eligible = {item.path: item for item in opening.eligible}
+    current_inventory_skips = {
+        item.path: item for item in opening.coverage_skips
+    }
+    retry_candidates = sorted(
+        (
+            prior
+            for path, prior in prior_skips.items()
+            if prior.retryable and path in eligible
+        ),
+        key=_retryable_skip_order,
+    )
+    selected_retry_paths = {
+        item.path for item in retry_candidates[:_QUICK_RETRY_LIMIT]
+    }
+    deferred_retry_paths = {
+        item.path for item in retry_candidates[_QUICK_RETRY_LIMIT:]
+    }
+    metadata_candidates = {
+        path
+        for path in set(eligible) & set(prior_sources)
+        if not _observation_matches_source(eligible[path], prior_sources[path])
+    }
+    newly_eligible = {
+        path
+        for path in set(eligible) - set(prior_sources)
+        if path not in deferred_retry_paths
+        and (
+            path not in prior_skips
+            or not prior_skips[path].retryable
+            or path in selected_retry_paths
+        )
+    }
+    direct_paths = tuple(
+        sorted(
+            metadata_candidates | newly_eligible | selected_retry_paths,
+            key=lambda item: item.as_posix(),
+        )
+    )
+    bodies: dict[Path, bytes] = {}
+    read_results: dict[Path, ObservedFileRead] = {}
+    read_skips: dict[Path, CoverageSkipObservation] = {}
+    content_paths: set[Path] = set()
+    metadata_only_paths: set[Path] = set()
+    for path in direct_paths:
+        observation = eligible[path]
+        result = observed_reader(
+            repo,
+            observation,
+            max_file_bytes=config.index.max_file_bytes,
+            require_utf8=False,
+        )
+        read_results[path] = result
+        _fault(fault_hook, "direct_read_complete")
+        if _successful_observed_read(result):
+            assert result.content is not None and result.sha256 is not None
+            bodies[path] = result.content
+            previous = prior_sources.get(path)
+            if (
+                previous is not None
+                and previous.sha256 == result.sha256
+                and previous.language == observation.language
+            ):
+                metadata_only_paths.add(path)
+            else:
+                content_paths.add(path)
+        else:
+            if result.reason == "changed_during_read":
+                raise WorkspaceChangedError()
+            read_skips[path] = _coverage_skip_from_read(observation, result)
+
+    active_paths = set(eligible) - deferred_retry_paths - set(read_skips)
+    deleted_paths = set(prior_sources) - active_paths
+    active_path_tuple = tuple(sorted(active_paths, key=lambda item: item.as_posix()))
+    project_units = detect_project_units(repo, active_path_tuple)
+    topology_fingerprint = project_unit_topology_fingerprint(project_units)
+    unit_by_path = {
+        path: unit_for_path(path, project_units) for path in active_path_tuple
+    }
+    active_path_units = tuple(
+        (path, _project_unit_key(unit_by_path[path])) for path in active_path_tuple
+    )
+    topology_changed = topology_fingerprint != baseline.topology_fingerprint
+    path_inventory_changed = active_paths != set(prior_sources)
+
+    dependency_reasons: dict[Path, set[str]] = {}
+
+    def depend(paths: Iterable[Path], reason: str) -> None:
+        for path in paths:
+            if path in active_paths and path not in content_paths:
+                dependency_reasons.setdefault(path, set()).add(reason)
+
+    nonempty_active = {
+        path for path in active_paths if eligible[path].size > 0
+    }
+    if topology_changed:
+        depend(nonempty_active, "project_topology_changed")
+    if path_inventory_changed:
+        depend(
+            store.active_relation_source_paths(_PATH_INVENTORY_RELATION_KINDS),
+            "path_inventory_changed",
+        )
+    if baseline.graph_status == "stale":
+        depend(nonempty_active, "schema_or_integrity_rebuild")
+
+    dependent_paths = set(dependency_reasons)
+    for path in sorted(dependent_paths, key=lambda item: item.as_posix()):
+        if path in bodies:
+            continue
+        observation = eligible[path]
+        result = observed_reader(
+            repo,
+            observation,
+            max_file_bytes=config.index.max_file_bytes,
+            require_utf8=False,
+        )
+        read_results[path] = result
+        _fault(fault_hook, "dependent_read_complete")
+        if not _successful_observed_read(result):
+            raise WorkspaceChangedError()
+        assert result.content is not None and result.sha256 is not None
+        bodies[path] = result.content
+        previous = prior_sources.get(path)
+        if (
+            previous is None
+            or previous.sha256 != result.sha256
+            or previous.language != observation.language
+        ):
+            content_paths.add(path)
+            metadata_only_paths.discard(path)
+
+    scanned_files: list[ScannedFile] = []
+    for path in active_path_tuple:
+        observation = eligible[path]
+        result = read_results.get(path)
+        previous = prior_sources.get(path)
+        sha256 = (
+            result.sha256
+            if result is not None and result.sha256 is not None
+            else previous.sha256 if previous is not None else ""
+        )
+        if not sha256:
+            raise WorkspaceChangedError()
+        scanned_files.append(
+            ScannedFile(
+                path=path,
+                absolute_path=observation.absolute_path,
+                language=observation.language,
+                sha256=sha256,
+                size=observation.size,
+                mtime_ns=observation.mtime_ns,
+                is_test=is_test_path(
+                    path,
+                    observation.language,
+                    _project_unit_key(unit_by_path[path]),
+                ),
+            )
+        )
+    scanned_files = _canonical_scanned_files(scanned_files)
+    rebuild_paths = content_paths | dependent_paths
+    prepared_files = tuple(
+        _prepare_v5_file(
+            repo=repo,
+            scanned_file=scanned,
+            project_unit=unit_by_path[scanned.path],
+            plugins=graph_plugins,
+            active_paths=active_path_tuple,
+            active_path_units=active_path_units,
+            file_reader=read_scanned_file_bytes,
+            max_file_bytes=config.index.max_file_bytes,
+            content_bytes=bodies[scanned.path],
+        )
+        for scanned in scanned_files
+        if scanned.path in rebuild_paths
+    )
+    _fault(fault_hook, "preparation_complete")
+
+    prepared_by_path = {
+        item.source_file.path: item for item in prepared_files
+    }
+    vector_rebuild_paths = set(content_paths)
+    removed_embedding_ids = store.active_embedding_ids_for_files(
+        vector_rebuild_paths | deleted_paths
+    )
+    embedding_chunks = tuple(
+        chunk
+        for path in sorted(vector_rebuild_paths, key=lambda item: item.as_posix())
+        for chunk in prepared_by_path[path].chunks
+    )
+    expected_vector_ids = set(baseline.operational.active_embedding_ids)
+    expected_vector_ids -= removed_embedding_ids
+    expected_vector_ids.update(
+        chunk.embedding_id or chunk.chunk_id for chunk in embedding_chunks
+    )
+    vector_changed = bool(removed_embedding_ids or embedding_chunks)
+    frozen_vectors: FrozenVectorGeneration | None = None
+    if vector_changed:
+        try:
+            loaded_descriptor, vector_store = NumpyVectorStore.load_published_snapshot(
+                index_dir,
+                expected_embedding_identity=embedding_identity,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            raise _AuthoritativeRefreshRequired() from error
+        if (
+            loaded_descriptor != baseline.descriptor.descriptor
+            or vector_store.ids
+            != tuple(sorted(baseline.operational.active_embedding_ids))
+        ):
+            raise _AuthoritativeRefreshRequired()
+        vector_store.remove_many(sorted(removed_embedding_ids))
+        if embedding_chunks:
+            provider = embedding_provider or provider_from_config(config.embedding)
+            _validate_embedding_provider(provider, config)
+            tracker.request_started()
+            vectors = provider.embed_texts(
+                [_embedding_text_for_chunk(chunk) for chunk in embedding_chunks]
+            )
+            tracker.response_received()
+            if len(vectors) != len(embedding_chunks):
+                raise ValueError("embedding response count mismatch")
+            vector_store.upsert_many(
+                [
+                    (chunk.embedding_id or chunk.chunk_id, vector)
+                    for chunk, vector in zip(embedding_chunks, vectors)
+                ]
+            )
+        _fault(fault_hook, "embedding_complete")
+        vector_store.sort_by_id()
+        if vector_store.ids != tuple(sorted(expected_vector_ids)):
+            raise GraphIntegrityError("prepared vector ID set mismatch")
+        frozen_vectors = vector_store.freeze_generation_v2(
+            generation=uuid.uuid4().hex,
+            embedding_identity=embedding_identity,
+            normalization="none",
+        )
+        prepared_vectors = PreparedVectorGeneration(
+            index_dir,
+            frozen_vectors.descriptor,
+        )
+        descriptor_snapshot = NumpyVectorStore.prepared_descriptor_snapshot(
+            prepared_vectors
+        )
+        publish_descriptor = True
+        descriptor_action = "published"
+    else:
+        prepared_vectors = PreparedVectorGeneration(
+            index_dir,
+            baseline.descriptor.descriptor,
+        )
+        descriptor_snapshot = baseline.descriptor
+        publish_descriptor = False
+        descriptor_action = "reused"
+
+    closing = inventory_observer(repo, config)
+    if not closing.complete:
+        raise WorkspaceChangedError()
+    if workspace_inventory_identity(opening) != workspace_inventory_identity(closing):
+        raise WorkspaceChangedError()
+    observation_completed = time.time_ns() // 1_000_000
+    _fault(fault_hook, "closing_inventory_complete")
+
+    observation_generation = baseline.operational.binding.observation_generation + 1
+    source_observations = _quick_source_observations(
+        tuple(scanned_files),
+        eligible,
+        observation_generation,
+    )
+    deferred_skips = tuple(
+        CoverageSkipObservation(
+            path=path,
+            language=eligible[path].language,
+            reason=prior_skips[path].reason,
+            retryable=True,
+            metadata=eligible[path].metadata,
+        )
+        for path in sorted(deferred_retry_paths, key=lambda item: item.as_posix())
+    )
+    scan_skips = _quick_scan_skips(
+        (
+            *current_inventory_skips.values(),
+            *read_skips.values(),
+            *deferred_skips,
+        ),
+        generation=observation_generation,
+        prior=baseline.operational,
+        attempted_paths=selected_retry_paths,
+    )
+    controls = _operational_control_observations(opening, observation_generation)
+    content_fingerprint = operational_content_fingerprint(source_observations)
+    observation_fingerprint = operational_observation_fingerprint(
+        source_observations,
+        scan_skips,
+        controls,
+    )
+    manifest_generation = f"manifest-{uuid.uuid4().hex}"
+    read_bytes = sum(
+        int(result.size or 0)
+        for result in read_results.values()
+        if result.status == "read"
+    )
+    dependency_counts = _dependent_rebuild_counts(dependency_reasons)
+    vector_bytes = (
+        len(frozen_vectors.vectors_payload) + len(frozen_vectors.ids_payload)
+        if frozen_vectors is not None
+        else 0
+    )
+    prior_vector_bytes = (
+        int(baseline.descriptor.descriptor.vectors_bytes or 0)
+        + int(baseline.descriptor.descriptor.ids_bytes or 0)
+        if vector_changed
+        else 0
+    )
+    summary = RefreshSummaryV1(
+        operation="quick_refresh",
+        outcome="ready",
+        verification="metadata",
+        observation_generation=manifest_generation,
+        files=RefreshFileCounts(
+            direct_dirty=len(direct_paths),
+            content_changed=len(content_paths),
+            metadata_only=len(metadata_only_paths),
+            dependent_rebuild=len(dependent_paths),
+            dependent_rebuilds=dependency_counts,
+            deleted=len(deleted_paths),
+            coverage_skips=len(scan_skips),
+            parsed=len(prepared_files),
+        ),
+        chunks=RefreshChunkCounts(embedded=len(embedding_chunks)),
+        work=RefreshWorkCounts(
+            inventory=RefreshInventoryWork(
+                entries=_inventory_entry_count(opening)
+                + _inventory_entry_count(closing),
+                retryable_skip_attempts=len(selected_retry_paths),
+            ),
+            source=RefreshSourceWork(
+                bytes_read=read_bytes,
+                bytes_hashed=read_bytes,
+            ),
+            path_index=RefreshPathIndexWork(
+                builds=1,
+                paths_canonicalized=len(active_paths),
+            ),
+            vector=RefreshVectorWork(
+                bytes_read=prior_vector_bytes,
+                bytes_written=vector_bytes,
+                bytes_hashed=prior_vector_bytes,
+                payload_passes=int(vector_changed) + int(frozen_vectors is not None),
+                prior_payload_passes=int(vector_changed),
+                prepared_payload_passes=int(frozen_vectors is not None),
+                generations_before=generations_before,
+                generations_after=1,
+                descriptor_action=descriptor_action,
+            ),
+            maintenance=RefreshMaintenanceWork(
+                tombstones_before=tombstones_before,
+                tombstones_after=tombstones_before,
+                sqlite_pages_before=pages_before,
+                sqlite_pages_after=pages_before,
+                sqlite_freelist_before=freelist_before,
+                sqlite_freelist_after=freelist_before,
+            ),
+        ),
+    )
+    work_metrics = _refresh_manifest_work_metrics(summary)
+    descriptor = descriptor_snapshot.descriptor
+    if descriptor.vectors_bytes is None or descriptor.ids_bytes is None:
+        raise _AuthoritativeRefreshRequired()
+    manifest = ManifestV2(
+        embedding_config_hash=embedding_identity,
+        embedding_provider=config.embedding.provider,
+        embedding_model=config.embedding.model,
+        embedding_dimensions=config.embedding.dimensions,
+        index_config_hash=effective_index_hash,
+        source_content_fingerprint=content_fingerprint,
+        source_observation_fingerprint=observation_fingerprint,
+        observation_generation=observation_generation,
+        manifest_generation=manifest_generation,
+        vector_descriptor_schema_version=descriptor.schema_version,
+        vector_generation=descriptor.generation,
+        vector_descriptor_sha256=descriptor_snapshot.sha256,
+        vector_bytes=descriptor.vectors_bytes,
+        vector_ids_bytes=descriptor.ids_bytes,
+        indexed_at_epoch_s=observation_completed // 1_000,
+        operational_schema_version=1,
+        operation_mode="quick_refresh",
+        work_metrics=work_metrics,
+        total_files=len(scanned_files),
+        total_chunks=len(expected_vector_ids),
+    )
+    prepared_manifest = prepare_manifest_v2(manifest)
+    stale_reason = (
+        "topology_changed"
+        if topology_changed
+        else "path_inventory_changed"
+        if path_inventory_changed
+        else "files_changed"
+        if content_paths or metadata_only_paths or scan_skips
+        else "stale_on_entry"
+    )
+    prepared = PreparedIndexSnapshot(
+        effective_config=config,
+        effective_config_payload=render_config(config).encode("utf-8"),
+        index_config_hash=effective_index_hash,
+        opening_inventory=opening,
+        closing_inventory=closing,
+        observation_started_at_epoch_ms=observation_started,
+        observation_completed_at_epoch_ms=observation_completed,
+        observation_generation=observation_generation,
+        source_observations=source_observations,
+        scan_skips=scan_skips,
+        control_observations=controls,
+        source_content_fingerprint=content_fingerprint,
+        source_observation_fingerprint=observation_fingerprint,
+        scanned_files=tuple(scanned_files),
+        prepared_files=prepared_files,
+        deleted_paths=tuple(sorted(deleted_paths, key=lambda item: item.as_posix())),
+        project_units=project_units,
+        topology_fingerprint=topology_fingerprint,
+        expected_vector_ids=tuple(sorted(expected_vector_ids)),
+        frozen_vector_generation=frozen_vectors,
+        prepared_vector_generation=prepared_vectors,
+        vector_descriptor_snapshot=descriptor_snapshot,
+        publish_vector_descriptor=publish_descriptor,
+        prepared_manifest=prepared_manifest,
+        work_metrics=work_metrics,
+        stale_reason=stale_reason,
+        force_full_reindex=False,
+        stored_signal_version=TARGET_SIGNAL_SCHEMA_VERSION,
+        suppress_fault_hooks=False,
+        summary=IndexSummary(
+            files_seen=len(scanned_files),
+            files_indexed=len(prepared_files),
+            files_skipped=len(scanned_files) - len(prepared_files),
+            files_deleted=len(deleted_paths),
+            chunks_indexed=len(embedding_chunks),
+        ),
+    )
+    persistence = _persist_prepared_index(
+        repo=repo,
+        store=store,
+        prepared=prepared,
+        fault_hook=fault_hook,
+    )
+    pages_after, freelist_after = store.storage_page_metrics()
+    tombstones_after = store.tombstone_count()
+    generations_after = NumpyVectorStore.generation_pair_count(index_dir)
+    summary = replace(
+        summary,
+        work=replace(
+            summary.work,
+            graph=RefreshGraphWork(
+                relations_scanned=persistence.relations_resolved,
+                relations_resolved=persistence.relations_resolved,
+                association_inputs=persistence.association_writes,
+                association_writes=persistence.association_writes,
+            ),
+            vector=replace(
+                summary.work.vector,
+                generations_after=generations_after,
+            ),
+            maintenance=RefreshMaintenanceWork(
+                tombstones_before=tombstones_before,
+                tombstones_purged=persistence.tombstones_purged,
+                tombstones_after=tombstones_after,
+                sqlite_pages_before=pages_before,
+                sqlite_pages_after=pages_after,
+                sqlite_freelist_before=freelist_before,
+                sqlite_freelist_after=freelist_after,
+            ),
+        ),
+    )
+    _validate_refresh_summary(summary)
+    return RefreshSuccess(
+        summary=summary,
+        network_egress_performed=tracker.outcome == "performed",
+    )
+
+
+def _load_quick_baseline(repo: Path, store: SQLiteStore) -> _QuickBaseline:
+    try:
+        loaded = load_manifest_snapshot(repo)
+        if not isinstance(loaded.manifest, ManifestV2):
+            raise _AuthoritativeRefreshRequired()
+        if store.inspect_signal_schema_version() != TARGET_SIGNAL_SCHEMA_VERSION:
+            raise _AuthoritativeRefreshRequired()
+        operational = store.read_operational_snapshot()
+        if operational is None:
+            raise _AuthoritativeRefreshRequired()
+        graph = read_graph_capability(store)
+        if graph.full_reindex_required:
+            raise _AuthoritativeRefreshRequired()
+        if graph.status == "stale" and graph.stale_reason not in (
+            _QUICK_ALLOWED_STALE_REASONS
+        ):
+            raise _AuthoritativeRefreshRequired()
+        if graph.status not in {"ready", "stale"}:
+            raise _AuthoritativeRefreshRequired()
+        descriptor = NumpyVectorStore.inspect_published_descriptor(
+            repo / ".context-search"
+        )
+        if descriptor is None:
+            raise _AuthoritativeRefreshRequired()
+        topology = store.get_metadata(PROJECT_UNIT_TOPOLOGY_FINGERPRINT_KEY)
+        if topology is None or len(topology) != 64:
+            raise _AuthoritativeRefreshRequired()
+        manifest = loaded.manifest
+        if (
+            _bound_v2_identity_failed(
+                loaded,
+                operational,
+                descriptor,
+                entry_state=graph.status,
+            )
+            or manifest.total_files != operational.source_count
+            or manifest.total_chunks != operational.chunk_count
+            or descriptor.descriptor.schema_version != 2
+            or descriptor.descriptor.dimensions != manifest.embedding_dimensions
+            or descriptor.descriptor.row_count
+            != len(operational.active_embedding_ids)
+            or descriptor.descriptor.embedding_identity
+            not in {
+                manifest.embedding_config_hash,
+                f"{manifest.embedding_model}:{manifest.embedding_dimensions}",
+            }
+            or not project_scope_metadata_is_current(store)
+            or store.get_metadata(FILE_WRITE_IN_PROGRESS_KEY) not in {None, ""}
+        ):
+            raise _AuthoritativeRefreshRequired()
+    except (
+        GraphIntegrityError,
+        OperationalIntegrityError,
+        OSError,
+        RuntimeError,
+        ValueError,
+    ) as error:
+        if isinstance(
+            error,
+            (
+                IncompatibleManifestSchemaError,
+                IncompatibleOperationalSchemaError,
+                IncompatibleSignalSchemaError,
+                _AuthoritativeRefreshRequired,
+            ),
+        ):
+            raise
+        raise _AuthoritativeRefreshRequired() from error
+    return _QuickBaseline(
+        loaded_manifest=loaded,
+        manifest=manifest,
+        operational=operational,
+        descriptor=descriptor,
+        topology_fingerprint=topology,
+        graph_status=graph.status,
+        graph_stale_reason=graph.stale_reason,
+    )
+
+
+def _quick_noop_summary(
+    *,
+    baseline: _QuickBaseline,
+    opening: WorkspaceInventory,
+    closing: WorkspaceInventory,
+    generations: int,
+    tombstones: int,
+    pages_before: int,
+    pages_after: int,
+    freelist_before: int,
+    freelist_after: int,
+) -> RefreshSummaryV1:
+    summary = RefreshSummaryV1(
+        operation="quick_refresh",
+        outcome="ready",
+        verification="metadata",
+        observation_generation=baseline.manifest.manifest_generation,
+        files=RefreshFileCounts(
+            coverage_skips=len(baseline.operational.scan_skips),
+        ),
+        chunks=RefreshChunkCounts(),
+        work=RefreshWorkCounts(
+            inventory=RefreshInventoryWork(
+                entries=_inventory_entry_count(opening)
+                + _inventory_entry_count(closing),
+            ),
+            vector=RefreshVectorWork(
+                generations_before=generations,
+                generations_after=generations,
+            ),
+            maintenance=RefreshMaintenanceWork(
+                tombstones_before=tombstones,
+                tombstones_after=tombstones,
+                sqlite_pages_before=pages_before,
+                sqlite_pages_after=pages_after,
+                sqlite_freelist_before=freelist_before,
+                sqlite_freelist_after=freelist_after,
+            ),
+        ),
+    )
+    _validate_refresh_summary(summary)
+    return summary
+
+
+def _quick_inventory_matches_snapshot(
+    inventory: WorkspaceInventory,
+    operational: OperationalSnapshot,
+    effective_index_hash: str,
+) -> bool:
+    if (
+        operational.binding.index_config_hash != effective_index_hash
+        or not inventory.complete
+    ):
+        return False
+    eligible = {item.path: item for item in inventory.eligible}
+    sources = {item.path: item for item in operational.source_observations}
+    if set(eligible) != set(sources):
+        return False
+    if any(
+        not _observation_matches_source(eligible[path], sources[path])
+        for path in eligible
+    ):
+        return False
+    controls = {Path(item.path): item for item in inventory.control_observations}
+    persisted_controls = {
+        item.path: item for item in operational.control_observations
+    }
+    if set(controls) != set(persisted_controls):
+        return False
+    if any(
+        path != Path(".context-search/config.toml")
+        and (
+            controls[path].sha256,
+            controls[path].metadata.size,
+            controls[path].metadata.mtime_ns,
+            controls[path].metadata.change_token,
+            controls[path].metadata.change_token_kind,
+        )
+        != (
+            persisted_controls[path].sha256,
+            persisted_controls[path].size,
+            persisted_controls[path].mtime_ns,
+            persisted_controls[path].change_token,
+            persisted_controls[path].change_token_kind,
+        )
+        for path in controls
+    ):
+        return False
+    skips = {item.path: item for item in inventory.coverage_skips}
+    persisted_skips = {item.path: item for item in operational.scan_skips}
+    if set(skips) != set(persisted_skips):
+        return False
+    return all(
+        _coverage_skip_matches(skips[path], persisted_skips[path])
+        for path in skips
+    )
+
+
+def _observation_matches_source(
+    observed: Any,
+    persisted: OperationalSourceObservation,
+) -> bool:
+    return (
+        observed.language,
+        observed.size,
+        observed.mtime_ns,
+        observed.change_token,
+        observed.change_token_kind,
+    ) == (
+        persisted.language,
+        persisted.size,
+        persisted.mtime_ns,
+        persisted.change_token,
+        persisted.change_token_kind,
+    )
+
+
+def _coverage_skip_matches(
+    observed: CoverageSkipObservation,
+    persisted: OperationalScanSkip,
+) -> bool:
+    metadata = observed.metadata
+    return (
+        observed.reason,
+        observed.language or None,
+        observed.retryable,
+        metadata.size if metadata is not None else None,
+        metadata.mtime_ns if metadata is not None else None,
+        metadata.change_token if metadata is not None else None,
+        metadata.change_token_kind if metadata is not None else "unavailable",
+    ) == (
+        persisted.reason,
+        persisted.language,
+        persisted.retryable,
+        persisted.size,
+        persisted.mtime_ns,
+        persisted.change_token,
+        persisted.change_token_kind,
+    )
+
+
+def _retryable_skip_order(item: OperationalScanSkip) -> tuple[Any, ...]:
+    return (
+        item.last_retry_generation is not None,
+        item.last_retry_generation if item.last_retry_generation is not None else -1,
+        item.first_observation_generation,
+        item.path.as_posix(),
+    )
+
+
+def _successful_observed_read(result: ObservedFileRead) -> bool:
+    return all(
+        (
+            result.status == "read",
+            result.content is not None,
+            result.sha256 is not None,
+            result.size is not None,
+            result.metadata is not None,
+        )
+    )
+
+
+def _coverage_skip_from_read(
+    observation: Any,
+    result: ObservedFileRead,
+) -> CoverageSkipObservation:
+    return CoverageSkipObservation(
+        path=observation.path,
+        language=observation.language,
+        reason=result.reason or "unreadable",
+        retryable=result.retryable,
+        metadata=result.metadata or observation.metadata,
+    )
+
+
+def _quick_source_observations(
+    scanned_files: tuple[ScannedFile, ...],
+    observations: dict[Path, Any],
+    generation: int,
+) -> tuple[OperationalSourceObservation, ...]:
+    return tuple(
+        OperationalSourceObservation(
+            path=item.path,
+            language=item.language,
+            sha256=item.sha256,
+            size=item.size,
+            mtime_ns=observations[item.path].mtime_ns,
+            change_token=observations[item.path].change_token,
+            change_token_kind=observations[item.path].change_token_kind,
+            observation_generation=generation,
+        )
+        for item in scanned_files
+    )
+
+
+def _quick_scan_skips(
+    skips: Iterable[CoverageSkipObservation],
+    *,
+    generation: int,
+    prior: OperationalSnapshot,
+    attempted_paths: set[Path],
+) -> tuple[OperationalScanSkip, ...]:
+    previous = {item.path: item for item in prior.scan_skips}
+    by_path = {item.path: item for item in skips}
+    prepared: list[OperationalScanSkip] = []
+    for path, item in sorted(by_path.items(), key=lambda pair: pair[0].as_posix()):
+        old = previous.get(path)
+        metadata = item.metadata
+        prepared.append(
+            OperationalScanSkip(
+                path=path,
+                reason=item.reason,
+                language=item.language or None,
+                size=metadata.size if metadata is not None else None,
+                mtime_ns=metadata.mtime_ns if metadata is not None else None,
+                change_token=metadata.change_token if metadata is not None else None,
+                change_token_kind=(
+                    metadata.change_token_kind
+                    if metadata is not None
+                    else "unavailable"
+                ),
+                retryable=item.retryable,
+                first_observation_generation=(
+                    old.first_observation_generation if old is not None else generation
+                ),
+                last_observation_generation=generation,
+                last_retry_generation=(
+                    generation
+                    if path in attempted_paths
+                    else old.last_retry_generation if old is not None else None
+                ),
+                metadata=old.metadata if old is not None else (),
+            )
+        )
+    return tuple(prepared)
+
+
+def _dependent_rebuild_counts(
+    reasons: dict[Path, set[str]],
+) -> tuple[DependentRebuildCount, ...]:
+    counts = {reason: 0 for reason in _DEPENDENT_REASON_ORDER}
+    for values in reasons.values():
+        selected = min(values, key=_DEPENDENT_REASON_ORDER.index)
+        counts[selected] += 1
+    return tuple(
+        DependentRebuildCount(reason=reason, files=counts[reason])
+        for reason in _DEPENDENT_REASON_ORDER
+        if counts[reason]
+    )
+
+
+def _inventory_entry_count(inventory: WorkspaceInventory) -> int:
+    return len(inventory.eligible) + len(inventory.coverage_skips)
+
+
+def _refresh_manifest_work_metrics(
+    summary: RefreshSummaryV1,
+) -> tuple[tuple[str, int | str], ...]:
+    return tuple(
+        sorted(
+            {
+                "chunks.embedded": summary.chunks.embedded,
+                "files.content_changed": summary.files.content_changed,
+                "files.deleted": summary.files.deleted,
+                "files.dependent_rebuild": summary.files.dependent_rebuild,
+                "files.direct_dirty": summary.files.direct_dirty,
+                "files.metadata_only": summary.files.metadata_only,
+                "files.parsed": summary.files.parsed,
+                "inventory.entries": summary.work.inventory.entries,
+                "inventory.passes": summary.work.inventory.passes,
+                "source.bytes_hashed": summary.work.source.bytes_hashed,
+                "source.bytes_read": summary.work.source.bytes_read,
+                "vector.bytes_read": summary.work.vector.bytes_read,
+                "vector.bytes_written": summary.work.vector.bytes_written,
+                "vector.descriptor_action": summary.work.vector.descriptor_action,
+            }.items()
+        )
+    )
+
+
+def _validate_refresh_summary(summary: RefreshSummaryV1) -> None:
+    if (
+        summary.operation != "quick_refresh"
+        or summary.outcome != "ready"
+        or summary.verification != "metadata"
+        or not summary.observation_generation
+    ):
+        raise ValueError("invalid refresh summary identity")
+    rendered = asdict(summary)
+    stack: list[Any] = [rendered]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            stack.extend(value.values())
+        elif isinstance(value, (list, tuple)):
+            stack.extend(value)
+        elif type(value) is int and value < 0:
+            raise ValueError("refresh work counts must be non-negative")
+    if summary.files.dependent_rebuild != sum(
+        item.files for item in summary.files.dependent_rebuilds
+    ):
+        raise ValueError("dependent rebuild count mismatch")
+    vector = summary.work.vector
+    if vector.descriptor_action not in {"reused", "published"}:
+        raise ValueError("invalid vector descriptor action")
+    if vector.payload_passes != (
+        vector.prior_payload_passes + vector.prepared_payload_passes
+    ):
+        raise ValueError("vector payload pass accounting mismatch")
+    if vector.bytes_hashed > vector.bytes_read:
+        raise ValueError("vector hash bytes exceed vector read bytes")
 
 
 def _require_authoritative_schema_compatibility(
@@ -1070,7 +2297,7 @@ def _persist_prepared_index(
     store: SQLiteStore,
     prepared: PreparedIndexSnapshot,
     fault_hook: Callable[[str], None] | None,
-) -> None:
+) -> _PersistenceWork:
     active_fault_hook = None if prepared.suppress_fault_hooks else fault_hook
     if prepared.stored_signal_version < TARGET_SIGNAL_SCHEMA_VERSION:
         store.initialize_v5(stale_reason=prepared.stale_reason)
@@ -1104,15 +2331,15 @@ def _persist_prepared_index(
         store.mark_file_deleted(path)
         _fault(active_fault_hook, "deletion_persisted")
 
-    resolve_graph_relations(store, association_only=False)
+    producer_resolved = resolve_graph_relations(store, association_only=False)
     producer_generation = store.advance_producer_resolution_generation()
     _fault(active_fault_hook, "producer_resolver_complete")
-    regenerate_test_associations(
+    associations = regenerate_test_associations(
         store,
         producer_resolution_generation=producer_generation,
     )
     _fault(active_fault_hook, "associations_complete")
-    resolve_graph_relations(store, association_only=True)
+    association_resolved = resolve_graph_relations(store, association_only=True)
     _fault(active_fault_hook, "association_resolver_complete")
 
     store.replace_operational_observations(
@@ -1193,6 +2420,20 @@ def _persist_prepared_index(
         operation_mode=manifest.operation_mode,
         work_metrics=manifest.work_metrics,
     )
+    stats_before_ready = store.stats()
+    tombstones_before_ready = store.tombstone_count()
+    tombstone_threshold = max(
+        5_000,
+        int(stats_before_ready["active_chunks"] * 0.05),
+    )
+    tombstone_purge_limit = (
+        1_000
+        if (
+            manifest.operation_mode == "quick_refresh"
+            and stats_before_ready["deleted_chunks"] > tombstone_threshold
+        )
+        else 0
+    )
     store.commit_operational_ready_v1(
         binding=binding,
         topology_fingerprint=prepared.topology_fingerprint,
@@ -1200,12 +2441,28 @@ def _persist_prepared_index(
         expected_source_count=manifest.total_files,
         expected_chunk_count=manifest.total_chunks,
         external_validator=validator,
+        tombstone_purge_limit=tombstone_purge_limit,
         before_commit=lambda: _fault(
             active_fault_hook,
             "before_ready_commit",
         ),
     )
     _fault(active_fault_hook, "after_ready_commit")
+    tombstones_after_ready = store.tombstone_count()
+    if manifest.operation_mode == "quick_refresh":
+        try:
+            NumpyVectorStore.cleanup_unreferenced_generations(
+                repo / ".context-search",
+                keep_generation=manifest.vector_generation,
+            )
+        except (OSError, ValueError):
+            logger.warning("vector_generation_cleanup_failed")
+        _fault(active_fault_hook, "generation_cleanup_complete")
+    return _PersistenceWork(
+        relations_resolved=producer_resolved + association_resolved,
+        association_writes=len(associations),
+        tombstones_purged=max(0, tombstones_before_ready - tombstones_after_ready),
+    )
 
 
 def _prepared_external_validator(

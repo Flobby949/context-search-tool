@@ -680,3 +680,38 @@ def test_production_status_reports_index_configuration_mismatch(
     assert report.refresh.required is True
     assert report.refresh.kind == "authoritative"
     assert "index_config_changed" in report.refresh.reasons
+
+
+def test_quick_refresh_success_is_only_metadata_fresh_and_generation_bound(
+    tmp_path: Path,
+) -> None:
+    module = _health_module()
+    from context_search_tool import indexer as indexer_module
+    from context_search_tool.indexer import index_repository
+    from context_search_tool.plugins import default_plugins
+
+    refresh = getattr(indexer_module, "refresh_repository", None)
+    assert callable(refresh), "P6 internal quick-refresh entry is absent"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "app.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    source.write_text("value = 2\n", encoding="utf-8")
+
+    result = refresh(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=default_plugins(),
+    )
+    report = module.inspect_repository_health(repo, mode="quick")
+
+    assert result.ok is True
+    assert result.freshness == "metadata_fresh"
+    assert result.summary.verification == "metadata"
+    assert report.health == "healthy_metadata"
+    assert report.freshness.status == "metadata_fresh"
+    assert report.freshness.evidence_generation == (
+        result.summary.observation_generation
+    )
+    assert report.integrity.status == "valid_quick"

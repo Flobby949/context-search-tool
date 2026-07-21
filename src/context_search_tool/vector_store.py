@@ -166,6 +166,47 @@ class NumpyVectorStore:
         return snapshot
 
     @classmethod
+    def generation_pair_count(cls, index_dir: Path) -> int:
+        generations: dict[str, set[str]] = {}
+        if not index_dir.is_dir() or index_dir.is_symlink():
+            return 0
+        for path in index_dir.iterdir():
+            parsed = _generation_artifact(path)
+            if parsed is None:
+                continue
+            generation, role = parsed
+            generations.setdefault(generation, set()).add(role)
+        return sum(roles == {"vectors", "ids"} for roles in generations.values())
+
+    @classmethod
+    def cleanup_unreferenced_generations(
+        cls,
+        index_dir: Path,
+        *,
+        keep_generation: str,
+    ) -> int:
+        if not _GENERATION_RE.fullmatch(keep_generation):
+            raise ValueError("invalid retained vector generation")
+        if not index_dir.is_dir() or index_dir.is_symlink():
+            raise ValueError("vector index directory is unsafe")
+        removed_generations: set[str] = set()
+        for path in sorted(index_dir.iterdir(), key=lambda item: item.name):
+            parsed = _generation_artifact(path)
+            if parsed is None or parsed[0] == keep_generation:
+                continue
+            generation, _role = parsed
+            path_stat = os.lstat(path)
+            if (
+                stat.S_ISLNK(path_stat.st_mode)
+                or not stat.S_ISREG(path_stat.st_mode)
+                or (hasattr(os, "getuid") and path_stat.st_uid != os.getuid())
+            ):
+                continue
+            os.unlink(path)
+            removed_generations.add(generation)
+        return len(removed_generations)
+
+    @classmethod
     def verify_published_snapshot(
         cls,
         index_dir: Path,
@@ -547,6 +588,28 @@ class NumpyVectorStore:
     @property
     def _ids_path(self) -> Path:
         return self.index_dir / "vector_ids.json"
+
+
+def _generation_artifact(path: Path) -> tuple[str, str] | None:
+    match = re.fullmatch(r"vectors\.([A-Za-z0-9][A-Za-z0-9_-]*)\.npy", path.name)
+    role = "vectors"
+    if match is None:
+        match = re.fullmatch(
+            r"vector_ids\.([A-Za-z0-9][A-Za-z0-9_-]*)\.json",
+            path.name,
+        )
+        role = "ids"
+    if match is None:
+        return None
+    try:
+        path_stat = os.lstat(path)
+    except OSError:
+        return None
+    if stat.S_ISLNK(path_stat.st_mode) or not stat.S_ISREG(path_stat.st_mode):
+        return None
+    if hasattr(os, "getuid") and path_stat.st_uid != os.getuid():
+        return None
+    return match.group(1), role
 
 
 def _validate_generation_inputs(

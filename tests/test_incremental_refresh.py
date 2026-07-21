@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 import sqlite3
 from typing import Any
@@ -9,11 +10,15 @@ from typing import Any
 import pytest
 
 from context_search_tool import indexer as indexer_module
-from context_search_tool.config import DEFAULT_CONFIG
-from context_search_tool.graph_lifecycle import GRAPH_RESOLUTION_STATE_KEY
+from context_search_tool.config import DEFAULT_CONFIG, EmbeddingConfig
+from context_search_tool.graph_lifecycle import (
+    GRAPH_RESOLUTION_STATE_KEY,
+    OPERATIONAL_SCHEMA_VERSION_KEY,
+)
 from context_search_tool.graph_plugins import MaterializedGraph, ParsedGraphFacts
+from context_search_tool.index_lock import exclusive_index_lock
 from context_search_tool.indexer import build_v5_index_snapshot, index_repository
-from context_search_tool.manifest import ManifestV2, load_manifest
+from context_search_tool.manifest import Manifest, ManifestV2, load_manifest, write_manifest
 from context_search_tool.scanner import (
     observe_workspace,
     read_observed_file,
@@ -67,6 +72,24 @@ def _snapshot_bytes(repo: Path) -> tuple[bytes, bytes, bytes]:
         (index_dir / "manifest.json").read_bytes(),
         (index_dir / "vector_snapshot.json").read_bytes(),
         (index_dir / "index.sqlite").read_bytes(),
+    )
+
+
+def _refresh(
+    repo: Path,
+    config: Any = DEFAULT_CONFIG,
+    *,
+    events: list[str] | None = None,
+    **kwargs: Any,
+):
+    refresh = getattr(indexer_module, "refresh_repository", None)
+    assert callable(refresh), "P6 internal quick-refresh entry is absent"
+    recorded = events if events is not None else []
+    return refresh(
+        repo,
+        config,
+        graph_plugins=[_RecordingPlugin(recorded)],
+        **kwargs,
     )
 
 
@@ -277,3 +300,342 @@ def test_config_edit_after_closing_fence_is_not_overwritten(
     _build(repo, fault_hook=edit_after_fence)
 
     assert (repo / ".context-search" / "config.toml").read_bytes() == edited
+
+
+def test_quick_refresh_missing_legacy_and_busy_are_non_mutating(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing"
+    missing.mkdir()
+    missing_result = _refresh(missing)
+    assert missing_result.ok is False
+    assert missing_result.code == "missing_index"
+    assert missing_result.network_egress_outcome == "not_attempted"
+    assert not (missing / ".context-search").exists()
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    current = load_manifest(repo)
+    assert isinstance(current, ManifestV2)
+    write_manifest(
+        repo,
+        Manifest(
+            embedding_config_hash=current.embedding_config_hash,
+            embedding_provider=current.embedding_provider,
+            embedding_model=current.embedding_model,
+            embedding_dimensions=current.embedding_dimensions,
+            total_files=current.total_files,
+            total_chunks=current.total_chunks,
+        ),
+    )
+    before_legacy = _snapshot_bytes(repo)
+    legacy_result = _refresh(repo)
+    assert legacy_result.ok is False
+    assert legacy_result.code == "authoritative_index_required"
+    assert _snapshot_bytes(repo) == before_legacy
+
+    index_repository(repo, DEFAULT_CONFIG)
+    before_busy = _snapshot_bytes(repo)
+    with exclusive_index_lock(repo / ".context-search"):
+        busy_result = _refresh(
+            repo,
+            inventory_observer=lambda *_args: pytest.fail(
+                "busy refresh performed an inventory"
+            ),
+        )
+    assert busy_result.ok is False
+    assert busy_result.code == "index_busy"
+    assert busy_result.network_egress_outcome == "not_attempted"
+    assert _snapshot_bytes(repo) == before_busy
+
+
+def test_quick_refresh_noop_has_exact_zero_work_and_never_rewrites_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    before = _snapshot_bytes(repo)
+    before_manifest = load_manifest(repo)
+    assert isinstance(before_manifest, ManifestV2)
+    inventory_calls = 0
+
+    def inventory_reader(repo_path: Path, config: Any):
+        nonlocal inventory_calls
+        inventory_calls += 1
+        return observe_workspace(repo_path, config)
+
+    def forbidden(*_args: Any, **_kwargs: Any):
+        raise AssertionError("zero-work refresh crossed a mutation/body seam")
+
+    for name in (
+        "mark_graph_stale",
+        "replace_chunks",
+        "replace_signals",
+        "replace_relations",
+        "replace_operational_observations",
+        "upsert_source_file",
+        "mark_file_deleted",
+        "commit_operational_ready_v1",
+    ):
+        monkeypatch.setattr(SQLiteStore, name, forbidden)
+    for name in (
+        "freeze_generation_v2",
+        "materialize_frozen_generation",
+        "publish_generation",
+    ):
+        monkeypatch.setattr(NumpyVectorStore, name, forbidden)
+
+    result = _refresh(
+        repo,
+        inventory_observer=inventory_reader,
+        observed_reader=forbidden,
+        embedding_provider=forbidden,
+    )
+
+    assert result.ok is True
+    assert result.freshness == "metadata_fresh"
+    assert result.network_egress_performed is False
+    assert inventory_calls == 2
+    assert _snapshot_bytes(repo) == before
+    summary = result.summary.to_dict()
+    assert summary["operation"] == "quick_refresh"
+    assert summary["outcome"] == "ready"
+    assert summary["verification"] == "metadata"
+    assert summary["observation_generation"] == before_manifest.manifest_generation
+    assert summary["files"] == {
+        "direct_dirty": 0,
+        "content_changed": 0,
+        "metadata_only": 0,
+        "dependent_rebuild": 0,
+        "dependent_rebuilds": [],
+        "deleted": 0,
+        "coverage_skips": 0,
+        "parsed": 0,
+    }
+    assert summary["chunks"] == {"embedded": 0}
+    assert summary["work"]["inventory"] == {
+        "passes": 2,
+        "entries": 2,
+        "errors": 0,
+        "retryable_skip_attempts": 0,
+    }
+    assert summary["work"]["source"] == {
+        "bytes_read": 0,
+        "bytes_hashed": 0,
+    }
+    assert summary["work"]["path_index"] == {
+        "builds": 0,
+        "paths_canonicalized": 0,
+    }
+    assert summary["work"]["graph"] == {
+        "relations_scanned": 0,
+        "relations_resolved": 0,
+        "association_inputs": 0,
+        "association_writes": 0,
+    }
+    assert summary["work"]["vector"] == {
+        "bytes_read": 0,
+        "bytes_copied": 0,
+        "bytes_written": 0,
+        "bytes_hashed": 0,
+        "payload_passes": 0,
+        "prior_payload_passes": 0,
+        "prepared_payload_passes": 0,
+        "generations_before": 1,
+        "generations_after": 1,
+        "descriptor_action": "reused",
+    }
+    maintenance = summary["work"]["maintenance"]
+    assert maintenance["tombstones_before"] == 0
+    assert maintenance["tombstones_purged"] == 0
+    assert maintenance["tombstones_after"] == 0
+    assert maintenance["sqlite_pages_before"] > 0
+    assert maintenance["sqlite_pages_after"] == maintenance["sqlite_pages_before"]
+    assert maintenance["sqlite_freelist_after"] == maintenance["sqlite_freelist_before"]
+
+
+def test_quick_refresh_hashes_only_dirty_metadata_and_reuses_equal_content(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App {}\n", encoding="utf-8")
+    (repo / "notes.md").write_text("notes\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    before = source.stat()
+    os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+    reads: list[Path] = []
+    events: list[str] = []
+
+    def source_reader(repo_path: Path, observation: Any, **kwargs: Any):
+        reads.append(observation.path)
+        return read_observed_file(repo_path, observation, **kwargs)
+
+    result = _refresh(
+        repo,
+        events=events,
+        observed_reader=source_reader,
+    )
+
+    assert result.ok is True
+    assert reads == [Path("App.java")]
+    assert events == []
+    summary = result.summary.to_dict()
+    assert summary["files"]["direct_dirty"] == 1
+    assert summary["files"]["content_changed"] == 0
+    assert summary["files"]["metadata_only"] == 1
+    assert summary["files"]["parsed"] == 0
+    assert summary["chunks"]["embedded"] == 0
+    assert summary["work"]["source"] == {
+        "bytes_read": len(b"class App {}\n"),
+        "bytes_hashed": len(b"class App {}\n"),
+    }
+    assert summary["work"]["vector"]["descriptor_action"] == "reused"
+    manifest = load_manifest(repo)
+    assert isinstance(manifest, ManifestV2)
+    assert manifest.operation_mode == "quick_refresh"
+
+
+def test_quick_refresh_closing_drift_and_incomplete_inventory_preserve_ready(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int oldValue; }\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    source.write_text("class App { int changed; }\n", encoding="utf-8")
+    before = _snapshot_bytes(repo)
+    calls = 0
+
+    def drifting_inventory(repo_path: Path, config: Any):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            source.write_text("class App { int drifted; }\n", encoding="utf-8")
+        return observe_workspace(repo_path, config)
+
+    drifted = _refresh(repo, inventory_observer=drifting_inventory)
+    assert drifted.ok is False
+    assert drifted.code == "workspace_changed"
+    assert drifted.network_egress_outcome == "not_attempted"
+    assert _snapshot_bytes(repo) == before
+
+    complete = observe_workspace(repo, DEFAULT_CONFIG)
+    incomplete = replace(
+        complete,
+        complete=False,
+        unscannable_subtrees=("blocked",),
+    )
+    before_incomplete = _snapshot_bytes(repo)
+    failed = _refresh(repo, inventory_observer=lambda *_args: incomplete)
+    assert failed.ok is False
+    assert failed.code == "inventory_incomplete"
+    assert failed.network_egress_outcome == "not_attempted"
+    assert _snapshot_bytes(repo) == before_incomplete
+
+
+def test_quick_refresh_configuration_legality_matrix(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    before = _snapshot_bytes(repo)
+    before_manifest = load_manifest(repo)
+    assert isinstance(before_manifest, ManifestV2)
+
+    retrieval_only = replace(
+        DEFAULT_CONFIG,
+        retrieval=replace(
+            DEFAULT_CONFIG.retrieval,
+            final_top_k=DEFAULT_CONFIG.retrieval.final_top_k + 1,
+        ),
+    )
+    no_index_work = _refresh(repo, retrieval_only)
+    assert no_index_work.ok is True
+    assert no_index_work.summary.observation_generation == (
+        before_manifest.manifest_generation
+    )
+    assert _snapshot_bytes(repo) == before
+
+    incompatible = replace(
+        DEFAULT_CONFIG,
+        embedding=EmbeddingConfig(
+            provider="hash",
+            model="hash-v1",
+            dimensions=DEFAULT_CONFIG.embedding.dimensions + 1,
+        ),
+    )
+    rejected = _refresh(repo, incompatible)
+    assert rejected.ok is False
+    assert rejected.code == "authoritative_index_required"
+    assert rejected.network_egress_outcome == "not_attempted"
+    assert _snapshot_bytes(repo) == before
+
+    scanner_changed = replace(
+        DEFAULT_CONFIG,
+        index=replace(DEFAULT_CONFIG.index, exclude=["App.java"]),
+    )
+    refreshed = _refresh(repo, scanner_changed)
+    assert refreshed.ok is True
+    assert refreshed.summary.files.deleted == 1
+    assert refreshed.summary.work.vector.descriptor_action == "published"
+    assert SQLiteStore(repo / ".context-search" / "index.sqlite").stats()[
+        "source_files"
+    ] == 0
+
+
+def test_quick_refresh_future_schemas_and_stable_corruption_are_exact(
+    tmp_path: Path,
+) -> None:
+    def indexed_repo(name: str) -> Path:
+        repo = tmp_path / name
+        repo.mkdir()
+        (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+        index_repository(repo, DEFAULT_CONFIG)
+        return repo
+
+    future_manifest = indexed_repo("future-manifest")
+    manifest_path = future_manifest / ".context-search" / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["schema_version"] = 99
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    before = _snapshot_bytes(future_manifest)
+    result = _refresh(future_manifest)
+    assert result.ok is False and result.code == "incompatible_manifest_schema"
+    assert _snapshot_bytes(future_manifest) == before
+
+    future_operational = indexed_repo("future-operational")
+    store = SQLiteStore(future_operational / ".context-search" / "index.sqlite")
+    store.set_metadata(OPERATIONAL_SCHEMA_VERSION_KEY, "99")
+    before = _snapshot_bytes(future_operational)
+    result = _refresh(future_operational)
+    assert result.ok is False and result.code == "incompatible_operational_schema"
+    assert _snapshot_bytes(future_operational) == before
+
+    future_graph = indexed_repo("future-graph")
+    SQLiteStore(future_graph / ".context-search" / "index.sqlite").set_metadata(
+        "signal_schema_version", "99"
+    )
+    before = _snapshot_bytes(future_graph)
+    result = _refresh(future_graph)
+    assert result.ok is False and result.code == "incompatible_signal_schema"
+    assert _snapshot_bytes(future_graph) == before
+
+    corrupt = indexed_repo("corrupt")
+    descriptor_path = corrupt / ".context-search" / "vector_snapshot.json"
+    descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    descriptor["row_count"] += 1
+    descriptor_path.write_text(json.dumps(descriptor), encoding="utf-8")
+    before = _snapshot_bytes(corrupt)
+    result = _refresh(corrupt)
+    assert result.ok is False
+    assert result.code == "authoritative_index_required"
+    assert result.network_egress_outcome == "not_attempted"
+    assert _snapshot_bytes(corrupt) == before

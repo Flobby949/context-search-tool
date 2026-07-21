@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import multiprocessing
 import os
 from pathlib import Path
@@ -8,9 +9,10 @@ import stat
 import threading
 import time
 
+import numpy as np
 import pytest
 
-from context_search_tool.config import DEFAULT_CONFIG
+from context_search_tool.config import DEFAULT_CONFIG, EmbeddingConfig, render_config
 from context_search_tool.graph_lifecycle import (
     FULL_REINDEX_REQUIRED_KEY,
     GRAPH_RESOLUTION_STATE_KEY,
@@ -19,10 +21,11 @@ from context_search_tool.graph_lifecycle import (
     read_graph_capability,
 )
 from context_search_tool.index_lock import INDEX_LOCK_FILENAME, exclusive_index_lock
-from context_search_tool.indexer import build_v5_index_snapshot
+from context_search_tool.indexer import build_v5_index_snapshot, refresh_repository
 from context_search_tool.java_graph import JavaGraphProducer
-from context_search_tool.scanner import scan_workspace_v5
+from context_search_tool.scanner import observe_workspace, scan_workspace_v5
 from context_search_tool.sqlite_store import SQLiteStore
+from context_search_tool.vector_store import NumpyVectorStore
 
 
 class _Metadata:
@@ -800,3 +803,223 @@ def test_ready_query_rejects_persisted_config_damage_without_mutation(
         assert not config_path.exists()
     else:
         assert config_path.read_bytes() == expected_bytes
+
+
+def test_quick_refresh_post_provider_drift_reports_performed_and_preserves_ready(
+    tmp_path: Path,
+) -> None:
+    config = replace(
+        DEFAULT_CONFIG,
+        embedding=EmbeddingConfig(
+            provider="openai-compatible",
+            model="fixture-embedding",
+            dimensions=3,
+            base_url="https://example.test/v1",
+        ),
+    )
+
+    class _Provider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def fingerprint(self) -> dict[str, object]:
+            return {
+                "provider": "openai-compatible",
+                "model": "fixture-embedding",
+                "dimensions": 3,
+                "base_url": "https://example.test/v1",
+            }
+
+        def embed_texts(self, texts: list[str]) -> list[np.ndarray]:
+            self.calls += 1
+            return [np.asarray([1.0, 0.0, 0.0], dtype=np.float32) for _ in texts]
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int oldValue; }\n", encoding="utf-8")
+    provider = _Provider()
+    build_v5_index_snapshot(
+        repo,
+        config,
+        graph_plugins=[JavaGraphProducer()],
+        scanner=scan_workspace_v5,
+        embedding_provider=provider,
+    )
+    provider.calls = 0
+    source.write_text("class App { int newValue; }\n", encoding="utf-8")
+    index_dir = repo / ".context-search"
+    before = tuple(
+        (index_dir / name).read_bytes()
+        for name in ("manifest.json", "vector_snapshot.json", "index.sqlite")
+    )
+    inventories = 0
+
+    def drifting_inventory(repo_path: Path, effective_config):
+        nonlocal inventories
+        inventories += 1
+        if inventories == 2:
+            source.write_text("class App { int drifted; }\n", encoding="utf-8")
+        return observe_workspace(repo_path, effective_config)
+
+    result = refresh_repository(
+        repo,
+        config,
+        graph_plugins=[JavaGraphProducer()],
+        inventory_observer=drifting_inventory,
+        embedding_provider=provider,
+    )
+
+    assert result.ok is False
+    assert result.code == "workspace_changed"
+    assert result.network_egress_outcome == "performed"
+    assert provider.calls == 1
+    assert tuple(
+        (index_dir / name).read_bytes()
+        for name in ("manifest.json", "vector_snapshot.json", "index.sqlite")
+    ) == before
+
+
+def test_quick_refresh_retrieval_only_config_edit_is_a_true_noop(
+    tmp_path: Path,
+) -> None:
+    from context_search_tool.indexer import index_repository
+    from context_search_tool.manifest import ManifestV2, load_manifest
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    retrieval_only = replace(
+        DEFAULT_CONFIG,
+        retrieval=replace(
+            DEFAULT_CONFIG.retrieval,
+            final_top_k=DEFAULT_CONFIG.retrieval.final_top_k + 1,
+        ),
+    )
+    (repo / ".context-search" / "config.toml").write_text(
+        render_config(retrieval_only),
+        encoding="utf-8",
+    )
+    manifest = load_manifest(repo)
+    assert isinstance(manifest, ManifestV2)
+    index_dir = repo / ".context-search"
+    before = tuple(
+        (index_dir / name).read_bytes()
+        for name in ("manifest.json", "vector_snapshot.json", "index.sqlite")
+    )
+
+    result = refresh_repository(repo, graph_plugins=[JavaGraphProducer()])
+
+    assert result.ok is True
+    assert result.summary.observation_generation == manifest.manifest_generation
+    assert result.summary.files.direct_dirty == 0
+    assert tuple(
+        (index_dir / name).read_bytes()
+        for name in ("manifest.json", "vector_snapshot.json", "index.sqlite")
+    ) == before
+
+
+def test_quick_refresh_retry_recovers_fault_immediately_after_stale(
+    tmp_path: Path,
+) -> None:
+    from context_search_tool.indexer import index_repository
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int oldValue; }\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    source.write_text("class App { int newValue; }\n", encoding="utf-8")
+
+    def fail_after_stale(stage: str) -> None:
+        if stage == "stale_committed":
+            raise RuntimeError("injected")
+
+    failed = refresh_repository(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+        fault_hook=fail_after_stale,
+    )
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    assert failed.ok is False
+    assert failed.code == "refresh_failed"
+    assert failed.network_egress_outcome == "not_attempted"
+    assert read_graph_capability(store).status == "stale"
+
+    recovered = refresh_repository(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+    )
+
+    assert recovered.ok is True
+    assert recovered.summary.files.content_changed == 1
+    assert read_graph_capability(store).status == "ready"
+    assert NumpyVectorStore.generation_pair_count(repo / ".context-search") == 1
+
+
+def test_quick_refresh_retries_at_most_32_oldest_retryable_skips(
+    tmp_path: Path,
+) -> None:
+    from context_search_tool.scanner import ObservedFileRead, read_observed_file
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for index in range(33):
+        (repo / f"File{index:02d}.java").write_text(
+            f"class File{index:02d} {{}}\n",
+            encoding="utf-8",
+        )
+
+    def unreadable(_repo: Path, observation, **_kwargs):
+        return ObservedFileRead(
+            status="skipped",
+            path=observation.path,
+            content=None,
+            sha256=None,
+            size=None,
+            reason="unreadable",
+            retryable=True,
+            metadata=observation.metadata,
+        )
+
+    build_v5_index_snapshot(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+        scanner=scan_workspace_v5,
+        observed_reader=unreadable,
+    )
+    reads: list[Path] = []
+
+    def recording_reader(repo_path: Path, observation, **kwargs):
+        reads.append(observation.path)
+        return read_observed_file(repo_path, observation, **kwargs)
+
+    first = refresh_repository(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+        observed_reader=recording_reader,
+    )
+
+    assert first.ok is True
+    assert first.summary.work.inventory.retryable_skip_attempts == 32
+    assert first.summary.files.direct_dirty == 32
+    assert first.summary.files.coverage_skips == 1
+    assert reads == [Path(f"File{index:02d}.java") for index in range(32)]
+
+    reads.clear()
+    second = refresh_repository(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+        observed_reader=recording_reader,
+    )
+
+    assert second.ok is True
+    assert second.summary.work.inventory.retryable_skip_attempts == 1
+    assert second.summary.files.coverage_skips == 0
+    assert reads == [Path("File32.java")]

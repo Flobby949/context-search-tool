@@ -2288,6 +2288,32 @@ class SQLiteStore:
             "tokens": int(tokens),
         }
 
+    def storage_page_metrics(self) -> tuple[int, int]:
+        """Return read-only SQLite page and freelist counters."""
+        if not self.db_path.exists():
+            return (0, 0)
+        with self._connect() as connection:
+            page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
+            freelist_count = int(
+                connection.execute("PRAGMA freelist_count").fetchone()[0]
+            )
+        return page_count, freelist_count
+
+    def tombstone_count(self) -> int:
+        if not self.db_path.exists():
+            return 0
+        with self._connect() as connection:
+            counts = [
+                int(
+                    connection.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE deleted_at IS NOT NULL"
+                    ).fetchone()[0]
+                )
+                for table in ("chunks", "code_signals", "code_relations")
+                if _table_exists(connection, table)
+            ]
+        return sum(counts)
+
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = _open_connection(self.db_path, _DEFAULT_BUSY_TIMEOUT_MS)

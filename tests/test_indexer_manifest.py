@@ -5,6 +5,7 @@ import sqlite3
 
 import pytest
 
+from context_search_tool import indexer as indexer_module
 from context_search_tool.config import (
     DEFAULT_CONFIG,
     EmbeddingConfig,
@@ -1045,3 +1046,81 @@ def test_internal_v5_vector_reader_fails_ready_and_skips_stale_mismatch(
     assert [record.message for record in caplog.records] == [
         "vector_snapshot_mismatch"
     ]
+
+
+def test_quick_refresh_path_addition_rematerializes_persisted_import_sources(
+    tmp_path: Path,
+) -> None:
+    refresh = getattr(indexer_module, "refresh_repository", None)
+    assert callable(refresh), "P6 internal quick-refresh entry is absent"
+    repo = tmp_path / "repo"
+    source_dir = repo / "src"
+    source_dir.mkdir(parents=True)
+    (source_dir / "Importer.ts").write_text(
+        "import value from './Target';\nexport { value };\n",
+        encoding="utf-8",
+    )
+    index_repository(repo, DEFAULT_CONFIG)
+    database = repo / ".context-search" / "index.sqlite"
+    assert _frontend_import_state(database) == ("unresolved", "", ())
+
+    (source_dir / "Target.ts").write_text(
+        "export default 1;\n",
+        encoding="utf-8",
+    )
+    result = refresh(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[FrontendGraphProducer()],
+    )
+
+    assert result.ok is True
+    assert result.summary.files.direct_dirty == 1
+    assert result.summary.files.content_changed == 1
+    assert result.summary.files.dependent_rebuild == 1
+    assert [item.to_dict() for item in result.summary.files.dependent_rebuilds] == [
+        {"reason": "path_inventory_changed", "files": 1}
+    ]
+    resolution, target, candidates = _frontend_import_state(database)
+    assert (resolution, bool(target), candidates) == (
+        "resolved_unique",
+        True,
+        ("src/Target.ts",),
+    )
+    assert SQLiteStore(database).graph_integrity().ok
+
+
+def test_quick_refresh_stale_entry_reason_matrix_never_uses_noop(
+    tmp_path: Path,
+) -> None:
+    refresh = getattr(indexer_module, "refresh_repository", None)
+    assert callable(refresh), "P6 internal quick-refresh entry is absent"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+
+    store.mark_graph_stale("files_changed")
+    recovered = refresh(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+    )
+    assert recovered.ok is True
+    assert recovered.summary.files.dependent_rebuild == 1
+    assert recovered.summary.files.parsed == 1
+    assert recovered.summary.work.vector.descriptor_action == "reused"
+    assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "ready"
+
+    store.mark_graph_stale("integrity_check_failed")
+    before = (repo / ".context-search" / "index.sqlite").read_bytes()
+    rejected = refresh(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+    )
+    assert rejected.ok is False
+    assert rejected.code == "authoritative_index_required"
+    assert rejected.network_egress_outcome == "not_attempted"
+    assert (repo / ".context-search" / "index.sqlite").read_bytes() == before
