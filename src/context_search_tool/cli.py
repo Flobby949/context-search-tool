@@ -83,6 +83,8 @@ def index(repo: Optional[Path] = typer.Argument(None)) -> None:
             resolved_repo,
             config_loader=load_config,
         )
+    except requests.HTTPError:
+        _exit_with_error(ValueError("remote embedding request failed"))
     except (
         IncompatibleIndexError,
         IncompatibleManifestSchemaError,
@@ -91,7 +93,6 @@ def index(repo: Optional[Path] = typer.Argument(None)) -> None:
         IndexBusyError,
         index_health.IndexCorruptionError,
         ValueError,
-        requests.HTTPError,
     ) as exc:
         _exit_with_error(exc)
 

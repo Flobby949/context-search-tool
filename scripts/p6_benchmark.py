@@ -40,6 +40,7 @@ DEFAULT_WORKLOAD_MANIFEST = (
 REQUIRED_SUBCOMMANDS = (
     "generate",
     "run",
+    "churn",
     "assemble",
     "paired",
     "decide",
@@ -297,6 +298,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--mode", choices=("baseline", "final"), default="baseline")
     run.add_argument("--checkpoint-dir", type=Path)
     run.add_argument("--resume", action="store_true")
+
+    churn = subparsers.add_parser("churn", help="run the frozen 100-step churn")
+    churn.add_argument("--repo", type=Path, required=True)
+    churn.add_argument("--manifest", type=Path, required=True)
+    churn.add_argument("--output", type=Path, required=True)
 
     assemble = subparsers.add_parser("assemble", help="assemble validated evidence")
     assemble.add_argument(
@@ -604,7 +610,7 @@ def validate_report_data(report: Any, schema_name: str | None = None) -> None:
     if schema_name == "benchmark-report-v1.json":
         if report["report_scope"] == "tier":
             _validate_benchmark_case_semantics(report, mode=str(report["mode"]))
-        else:
+        elif report["report_scope"] == "performance":
             cases = report["case_reports"]
             for case in cases:
                 _validate_benchmark_case_semantics(
@@ -989,8 +995,12 @@ def _storage_work_counters(repo: Path) -> dict[str, int]:
 
 def _operation_command(operation: str, repo: Path, case_id: str) -> list[str] | None:
     base = [sys.executable, "-m", "context_search_tool.cli"]
-    if operation in {"status_quick", "status_verified", "refresh_noop", "refresh_one_file"}:
-        return None
+    if operation == "status_quick":
+        return [*base, "status", str(repo), "--json"]
+    if operation == "status_verified":
+        return [*base, "status", str(repo), "--json", "--verify"]
+    if operation in {"refresh_noop", "refresh_one_file"}:
+        return [*base, "refresh", str(repo), "--json"]
     if operation in {"full_build", "authoritative_noop"}:
         return [*base, "index", str(repo)]
     if operation == "stats":
@@ -1075,6 +1085,7 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     from typer.testing import CliRunner
 
     import context_search_tool.cli as cli_module
+    import context_search_tool.index_health as index_health_module
     import context_search_tool.indexer as indexer_module
     import context_search_tool.manifest as manifest_module
     import context_search_tool.retrieval as retrieval_module
@@ -1095,6 +1106,9 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     original_indexer_load_manifest_snapshot = indexer_module.load_manifest_snapshot
     original_indexer_write_manifest = indexer_module.write_manifest_v5
     original_indexer_publish_manifest_v2 = indexer_module.publish_manifest_v2
+    original_health_observe_workspace = index_health_module.observe_workspace
+    original_health_read_observed_file = index_health_module.read_observed_file
+    original_health_snapshot_reader = index_health_module.read_committed_index_snapshot
     original_vector_search = NumpyVectorStore.search
     original_scan = indexer_module.scan_workspace_v5
     original_observe_workspace = indexer_module.observe_workspace
@@ -1365,6 +1379,25 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             attributed_work["source_bytes_hashed"] += len(result.content)
         return result
 
+    def measured_health_observed_read(*args: Any, **kwargs: Any) -> Any:
+        started = time.perf_counter()
+        result = original_health_read_observed_file(*args, **kwargs)
+        attributed_stage_timings["source"] += (
+            time.perf_counter() - started
+        ) * 1000
+        if result.content is not None:
+            attributed_work["source_bytes_read"] += len(result.content)
+            attributed_work["source_bytes_hashed"] += len(result.content)
+        return result
+
+    def measured_health_snapshot(*args: Any, **kwargs: Any) -> Any:
+        started = time.perf_counter()
+        result = original_health_snapshot_reader(*args, **kwargs)
+        attributed_stage_timings["manifest"] += (
+            time.perf_counter() - started
+        ) * 1000
+        return result
+
     def measured_prepare(*args: Any, **kwargs: Any) -> Any:
         started = time.perf_counter()
         prepared = original_prepare(*args, **kwargs)
@@ -1564,6 +1597,9 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
         if operation.startswith("query") or operation in {
             "full_build",
             "authoritative_noop",
+            "status_verified",
+            "refresh_noop",
+            "refresh_one_file",
         }:
             vector_store_module._sha256_file = measured_vector_sha256_file
             vector_store_module._sha256_file_safe = measured_vector_sha256_file
@@ -1571,7 +1607,12 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             vector_store_module._load_bound_generation = (
                 measured_load_bound_generation
             )
-        if operation in {"full_build", "authoritative_noop"}:
+        if operation in {
+            "full_build",
+            "authoritative_noop",
+            "refresh_noop",
+            "refresh_one_file",
+        }:
             indexer_module.scan_workspace_v5 = measured_scan
             indexer_module.observe_workspace = measured_inventory
             indexer_module.read_observed_file = measured_observed_read
@@ -1602,6 +1643,13 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             NumpyVectorStore.publish_generation = measured_publish_generation
             for name in persistence_names:
                 setattr(SQLiteStore, name, persistence_wrapper(name))
+        if operation in {"status_quick", "status_verified"}:
+            index_health_module.observe_workspace = measured_inventory
+            index_health_module.read_committed_index_snapshot = (
+                measured_health_snapshot
+            )
+        if operation == "status_verified":
+            index_health_module.read_observed_file = measured_health_observed_read
         if proof_enabled:
             sqlite_store_module._open_connection = proof_open_connection
             retrieval_module.build_repo_profile = bucket_wrapper(
@@ -1626,6 +1674,11 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             )
             indexer_module.write_manifest_v5 = original_indexer_write_manifest
             indexer_module.publish_manifest_v2 = original_indexer_publish_manifest_v2
+            index_health_module.observe_workspace = original_health_observe_workspace
+            index_health_module.read_observed_file = original_health_read_observed_file
+            index_health_module.read_committed_index_snapshot = (
+                original_health_snapshot_reader
+            )
             NumpyVectorStore.search = original_vector_search
             indexer_module.scan_workspace_v5 = original_scan
             indexer_module.observe_workspace = original_observe_workspace
@@ -1658,6 +1711,60 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
         duration_ms = (time.perf_counter() - worker_started) * 1000
         if result.exit_code != 0:
             raise ValueError(f"measured operation failed with exit {result.exit_code}")
+        if operation in {"refresh_noop", "refresh_one_file"}:
+            refresh_payload = json.loads(result.output)
+            refresh_work = refresh_payload["summary"]["work"]
+            attributed_work.update(
+                {
+                    "inventory_entries": int(refresh_work["inventory"]["entries"]),
+                    "inventory_errors": int(refresh_work["inventory"]["errors"]),
+                    "source_bytes_read": int(refresh_work["source"]["bytes_read"]),
+                    "source_bytes_hashed": int(
+                        refresh_work["source"]["bytes_hashed"]
+                    ),
+                    "path_index_builds": int(refresh_work["path_index"]["builds"]),
+                    "paths_canonicalized": int(
+                        refresh_work["path_index"]["paths_canonicalized"]
+                    ),
+                    "relations_read": int(
+                        refresh_work["graph"]["relations_scanned"]
+                    ),
+                    "relations_resolved": int(
+                        refresh_work["graph"]["relations_resolved"]
+                    ),
+                    "association_inputs": int(
+                        refresh_work["graph"]["association_inputs"]
+                    ),
+                    "association_writes": int(
+                        refresh_work["graph"]["association_writes"]
+                    ),
+                    "vector_bytes_read": int(refresh_work["vector"]["bytes_read"]),
+                    "vector_bytes_hashed": int(
+                        refresh_work["vector"]["bytes_hashed"]
+                    ),
+                    "vector_bytes_written": int(
+                        refresh_work["vector"]["bytes_written"]
+                    ),
+                    "vector_bytes_copied": int(
+                        refresh_work["vector"]["bytes_copied"]
+                    ),
+                    "vector_payload_passes": int(
+                        refresh_work["vector"]["payload_passes"]
+                    ),
+                    "tombstones": int(
+                        refresh_work["maintenance"]["tombstones_after"]
+                    ),
+                    "sqlite_pages": int(
+                        refresh_work["maintenance"]["sqlite_pages_after"]
+                    ),
+                    "sqlite_freelist": int(
+                        refresh_work["maintenance"]["sqlite_freelist_after"]
+                    ),
+                    "generation_count": int(
+                        refresh_work["vector"]["generations_after"]
+                    ),
+                }
+            )
         output_sha256 = hashlib.sha256(
             _measurement_output_bytes(operation, result.output)
         ).hexdigest()
@@ -1992,6 +2099,20 @@ def _clone_operation_repo(source: Path, operation: str, parent: Path) -> Path:
         if index.exists():
             shutil.rmtree(index)
     return destination
+
+
+def _prepare_one_file_refresh(repo: Path, mutation_id: str) -> Path:
+    if re.fullmatch(r"[a-z0-9-]+", mutation_id) is None:
+        raise ValueError("one-file refresh mutation identity is invalid")
+    sources = _generated_source_paths(repo)
+    if not sources:
+        raise ValueError("one-file refresh requires generated source")
+    source = sources[0]
+    source.write_bytes(
+        source.read_bytes()
+        + f"\n// p6-refresh-mutation:{mutation_id}\n".encode("utf-8")
+    )
+    return source
 
 
 def _repository_fingerprint(repo: Path) -> str:
@@ -2410,6 +2531,307 @@ def generate_edit_schedule(
         "trace_sha256": trace_sha256,
         "actions": actions,
     }
+
+
+def _churn_query_durations(repo: Path, config: Any, *, sample_count: int) -> list[float]:
+    from context_search_tool.retrieval import query_repository
+
+    def query_once() -> float:
+        started = time.perf_counter()
+        bundle = query_repository(repo, "benchword1", config)
+        duration_ms = (time.perf_counter() - started) * 1000
+        if not bundle.results:
+            raise ValueError("churn query returned no results")
+        return duration_ms
+
+    for _ in range(3):
+        query_once()
+    return [query_once() for _ in range(sample_count)]
+
+
+def _churn_p95(values: Sequence[float]) -> float:
+    if not values:
+        raise ValueError("churn timing samples are required")
+    ordered = sorted(float(value) for value in values)
+    return ordered[math.ceil(0.95 * len(ordered)) - 1]
+
+
+def _run_churn_refresh_action(
+    repo: Path,
+    action: Mapping[str, Any],
+    *,
+    config: Any,
+    deleted_payloads: dict[int, bytes],
+) -> Any:
+    from dataclasses import replace
+
+    from context_search_tool.indexer import refresh_repository
+    from context_search_tool.scanner import (
+        InventoryDiagnostic,
+        ObservedFileRead,
+        observe_workspace,
+        read_observed_file,
+    )
+
+    operation = str(action["operation"])
+    relative = Path(str(action["target"]))
+    target = repo / relative
+    inventory_observer = None
+    observed_reader = None
+
+    if operation == "modify":
+        target.write_bytes(
+            target.read_bytes()
+            + f"\n// p6-churn:{action['payload_sha256']}\n".encode("utf-8")
+        )
+    elif operation == "delete":
+        deleted_payloads[int(action["step"])] = target.read_bytes()
+        target.unlink()
+    elif operation == "restore":
+        source_step = int(action["source_step"])
+        payload = deleted_payloads.get(source_step)
+        if payload is None or target.exists():
+            raise ValueError("churn restore source is unavailable")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+    elif operation == "add":
+        if target.exists():
+            raise ValueError("churn addition target already exists")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            (
+                f"package generated.churn; class {target.stem} {{\n"
+                f"  String marker() {{ return \"{action['payload_sha256']}\"; }}\n"
+                "}\n"
+            ),
+            encoding="utf-8",
+        )
+    elif operation == "delete_added":
+        target.unlink()
+    elif operation == "equal_content_touch":
+        metadata = target.stat()
+        os.utime(
+            target,
+            ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1_000_000),
+        )
+    elif operation == "same_metadata_content_edit":
+        metadata = target.stat()
+        payload = target.read_bytes()
+        changed = payload.replace(b"benchword", b"BENCHword", 1)
+        if changed == payload or len(changed) != len(payload):
+            raise ValueError("churn same-metadata edit could not preserve size")
+        target.write_bytes(changed)
+        os.utime(target, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    elif operation in {"stable_skip", "retryable_skip"}:
+        target.write_bytes(
+            target.read_bytes()
+            + f"\n// p6-churn-skip:{action['step']}\n".encode("utf-8")
+        )
+        reason = "too_large" if operation == "stable_skip" else "unreadable"
+        retryable = operation == "retryable_skip"
+
+        def skipped_reader(
+            repo_path: Path,
+            observation: Any,
+            **kwargs: Any,
+        ) -> Any:
+            if observation.path == relative:
+                return ObservedFileRead(
+                    status="skipped",
+                    path=observation.path,
+                    content=None,
+                    sha256=None,
+                    size=observation.size,
+                    reason=reason,
+                    retryable=retryable,
+                    metadata=observation.metadata,
+                )
+            return read_observed_file(repo_path, observation, **kwargs)
+
+        observed_reader = skipped_reader
+    elif operation in {"directory_failure", "control_file_failure"}:
+        diagnostic = (
+            InventoryDiagnostic(
+                code="unscannable_subtree",
+                scope="directory",
+                path=relative.as_posix(),
+            )
+            if operation == "directory_failure"
+            else InventoryDiagnostic(
+                code="control_file_error",
+                scope="control",
+                path=relative.as_posix(),
+            )
+        )
+
+        def failed_inventory(repo_path: Path, effective_config: Any) -> Any:
+            inventory = observe_workspace(repo_path, effective_config)
+            return replace(
+                inventory,
+                complete=False,
+                unscannable_subtrees=(
+                    (relative.as_posix(),)
+                    if operation == "directory_failure"
+                    else inventory.unscannable_subtrees
+                ),
+                control_file_errors=(
+                    (diagnostic,)
+                    if operation == "control_file_failure"
+                    else inventory.control_file_errors
+                ),
+                diagnostics=tuple((*inventory.diagnostics, diagnostic)),
+            )
+
+        inventory_observer = failed_inventory
+    else:
+        raise ValueError(f"unknown churn operation: {operation}")
+
+    kwargs: dict[str, Any] = {"config": config}
+    if inventory_observer is not None:
+        kwargs["inventory_observer"] = inventory_observer
+    if observed_reader is not None:
+        kwargs["observed_reader"] = observed_reader
+    return refresh_repository(repo, **kwargs)
+
+
+def run_churn(
+    repo: str | Path,
+    manifest: str | Path,
+) -> dict[str, Any]:
+    from context_search_tool import index_health
+    from context_search_tool.config import load_config
+    from context_search_tool.retrieval import query_repository
+    from context_search_tool.sqlite_store import SQLiteStore
+    from context_search_tool.vector_store import NumpyVectorStore
+
+    repo_path = Path(repo).resolve()
+    manifest_path = Path(manifest).resolve()
+    if not repo_path.is_dir() or (repo_path / ".context-search").exists():
+        raise ValueError("churn requires a pristine generated repository")
+    contract = _load_json(manifest_path)
+    tier = _tier_for_repo(repo_path, contract)
+    fingerprint = _repository_fingerprint(repo_path)
+    if fingerprint != contract.get("expected_fingerprints", {}).get(tier):
+        raise ValueError("churn repository fingerprint differs from workload contract")
+    schedule = generate_edit_schedule(contract, tier)
+    commit, tree, dirty = _git_identity()
+    if dirty:
+        raise ValueError("churn refuses dirty production source")
+    harness_sha256 = _sha256_path(__file__)
+    workload_sha256 = _sha256_path(manifest_path)
+
+    _benchmark_progress("churn ready snapshot build started")
+    _run_measurement_worker("full_build", repo_path, "default")
+    config = load_config(repo_path)
+    baseline_disk = _disk_components(repo_path)
+    baseline_storage = _storage_work_counters(repo_path)
+    baseline_durations = _churn_query_durations(
+        repo_path,
+        config,
+        sample_count=20,
+    )
+
+    deleted_payloads: dict[int, bytes] = {}
+    generation_count_after_failure = 0
+    sampled_steps = 0
+    for action in schedule["actions"]:
+        step = int(action["step"])
+        operation = str(action["operation"])
+        _benchmark_progress(f"churn step {step}/100 {operation} started")
+        result = _run_churn_refresh_action(
+            repo_path,
+            action,
+            config=config,
+            deleted_payloads=deleted_payloads,
+        )
+        injected_failure = action["expected_outcome"] == "injected_failure"
+        if injected_failure:
+            if getattr(result, "ok", True) or getattr(result, "code", "") != (
+                "inventory_incomplete"
+            ):
+                raise ValueError("churn injected failure did not fail closed")
+            generation_count_after_failure = max(
+                generation_count_after_failure,
+                NumpyVectorStore.generation_pair_count(
+                    repo_path / ".context-search"
+                ),
+            )
+        elif not getattr(result, "ok", False):
+            raise ValueError(f"churn step failed: {operation}")
+
+        if action["sample_after"]:
+            sampled_steps += 1
+            health = index_health.inspect_repository_health(
+                repo_path,
+                mode="quick",
+            )
+            if not health.queryable:
+                raise ValueError("churn checkpoint is not queryable")
+            if not query_repository(repo_path, "benchword1", config).results:
+                raise ValueError("churn checkpoint query returned no results")
+            store = SQLiteStore(repo_path / ".context-search" / "index.sqlite")
+            NumpyVectorStore.verify_published_snapshot(
+                repo_path / ".context-search",
+                expected_ids=store.active_embedding_ids(),
+            )
+        _benchmark_progress(f"churn step {step}/100 complete")
+
+    if sampled_steps != 10:
+        raise ValueError("churn did not sample every frozen cycle")
+    final_durations = _churn_query_durations(
+        repo_path,
+        config,
+        sample_count=20,
+    )
+    baseline_p95 = _churn_p95(baseline_durations)
+    final_p95 = _churn_p95(final_durations)
+    if baseline_p95 <= 0:
+        raise ValueError("churn baseline query timing is invalid")
+    final_disk = _disk_components(repo_path)
+    final_storage = _storage_work_counters(repo_path)
+    disk_ratio = final_disk["total_bytes"] / max(1, baseline_disk["total_bytes"])
+    page_ratio = final_storage["sqlite_pages"] / max(
+        1,
+        baseline_storage["sqlite_pages"],
+    )
+    store = SQLiteStore(repo_path / ".context-search" / "index.sqlite")
+
+    final_commit, final_tree, final_dirty = _git_identity()
+    if (final_commit, final_tree, final_dirty) != (commit, tree, False):
+        raise ValueError("churn implementation identity changed during the run")
+    report = {
+        "schema_version": 1,
+        "report_kind": "benchmark",
+        "report_scope": "churn",
+        "mode": "final",
+        "identity": {
+            "implementation_commit": commit,
+            "production_tree": tree,
+            "harness_sha256": harness_sha256,
+            "workload_sha256": workload_sha256,
+            "dirty_production_source": False,
+        },
+        "workload": {
+            "schema_version": 1,
+            "generator_version": contract["generator"]["version"],
+            "generator_sha256": contract["generator"]["contract_sha256"],
+            "seed": contract["generator"]["seed"],
+            "tier": tier,
+            "fingerprint_sha256": fingerprint,
+        },
+        "churn": {
+            "steps": int(schedule["steps"]),
+            "disk_page_ratio": max(disk_ratio, page_ratio),
+            "tombstones_within_threshold": not store.maintenance_required(),
+            "query_p95_drift_ratio": max(
+                0.0,
+                (final_p95 / baseline_p95) - 1.0,
+            ),
+            "generation_count_after_failure": generation_count_after_failure,
+        },
+    }
+    validate_report_data(report, "benchmark-report-v1.json")
+    return report
 
 
 _BENCHMARK_REGISTRY_KEYS = {"version", "measurement_states", "cases"}
@@ -2880,7 +3302,13 @@ def run_benchmark(
             )
             if not (ready_repo / ".context-search").exists():
                 _run_measurement_worker("full_build", ready_repo, "default")
-        read_only_operation = operation in {"stats", "query", "explore"}
+        read_only_operation = operation in {
+            "stats",
+            "status_quick",
+            "status_verified",
+            "query",
+            "explore",
+        }
         resident_context = (
             _ResidentMeasurementSession(
                 operation,
@@ -2912,6 +3340,11 @@ def run_benchmark(
                     _benchmark_progress(
                         f"sample {sample_number}/{sample_count} warmup started"
                     )
+                    if operation == "refresh_one_file":
+                        _prepare_one_file_refresh(
+                            sample_repo,
+                            f"sample-{sample_number:03d}-warmup",
+                        )
                     _run_measurement_worker(
                         operation,
                         sample_repo,
@@ -2919,6 +3352,11 @@ def run_benchmark(
                     )
                     if operation == "full_build" and sample_index.exists():
                         shutil.rmtree(sample_index)
+                    if operation == "refresh_one_file":
+                        _prepare_one_file_refresh(
+                            sample_repo,
+                            f"sample-{sample_number:03d}-measured",
+                        )
                     _benchmark_progress(
                         f"sample {sample_number}/{sample_count} measured operation started"
                     )
@@ -3429,12 +3867,18 @@ def validate_performance_registry_coverage(
     }
     observed_tiers = {key[0] for key in actual}
     publication_tiers = {"smoke", "large", "scale-5k", "scale-10k"}
+    singleton_tiers = publication_tiers | {"stress"}
     if not observed_tiers or not (
-        len(observed_tiers) == 1 and observed_tiers <= publication_tiers
+        len(observed_tiers) == 1 and observed_tiers <= singleton_tiers
     ) and observed_tiers != publication_tiers:
         raise ValueError(
             "performance report must cover one complete publication tier or all tiers"
         )
+    if report["mode"] == "final" and observed_tiers == publication_tiers:
+        if "churn" not in report:
+            raise ValueError("complete final performance report requires churn")
+    elif "churn" in report:
+        raise ValueError("churn belongs only to complete final performance")
 
     expected: dict[tuple[str, str, str, str], tuple[int, str]] = {}
     registry = contract.get("benchmark_registry", {})
@@ -3522,7 +3966,7 @@ def assemble_reports(
                         )
                     }
                 )
-            else:
+            elif report["report_scope"] == "performance":
                 cases.extend(report["case_reports"])
         case_keys = [
             (
@@ -3548,10 +3992,16 @@ def assemble_reports(
             ],
         }
         churn_values = [report["churn"] for report in reports if "churn" in report]
-        if mode == "final":
+        observed_tiers = {case["workload"]["tier"] for case in cases}
+        publication_tiers = {"smoke", "large", "scale-5k", "scale-10k"}
+        if mode == "final" and observed_tiers == publication_tiers:
             if len(churn_values) != 1:
-                raise ValueError("final performance assembly requires one churn result")
+                raise ValueError(
+                    "complete final performance assembly requires one churn result"
+                )
             result["churn"] = json.loads(canonical_json(churn_values[0]))
+        elif churn_values:
+            raise ValueError("churn belongs only to complete final performance")
         validate_report_data(result, "benchmark-report-v1.json")
         if manifest is not None:
             validate_performance_registry_coverage(result, manifest)
@@ -3968,6 +4418,11 @@ def paired_runs(
                     ) and _operation_command(
                         measured_operation, clones[side], question
                     ) is not None
+                    if supported and measured_operation == "refresh_one_file":
+                        _prepare_one_file_refresh(
+                            clones[side],
+                            f"{pair_id}-{side}-measured",
+                        )
                     measured = (
                         _run_paired_worker(
                             roots[side],
@@ -4801,6 +5256,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 resume=args.resume,
             )
             _write_new_json(args.output, report)
+        elif args.command == "churn":
+            if os.path.lexists(args.output):
+                raise FileExistsError(args.output)
+            _write_new_json(
+                args.output,
+                run_churn(args.repo, args.manifest),
+            )
         elif args.command == "assemble":
             _write_new_json(
                 args.output,

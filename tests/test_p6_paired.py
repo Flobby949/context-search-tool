@@ -275,13 +275,15 @@ def test_paired_clones_each_side_per_pair_and_emits_private_verifiable_report(
         "baseline",
         "final",
     ]
-    # Every clone gets an untimed full build. Supported operations add timed calls;
-    # current Task-1 status is explicit unsupported on both implementations.
-    assert len(calls) == len(operations) * 2 * 2 + (len(operations) - 1) * 2 * 2
+    # Every clone gets an untimed full build. The entry status is unsupported;
+    # the final implementation adds the timed status call for its two clones.
+    assert len(calls) == (
+        len(operations) * 2 * 2 + (len(operations) - 1) * 2 * 2 + 2
+    )
     clone_paths = [clone for _, _, clone, _ in calls]
     assert len(set(clone_paths)) == len(operations) * 2 * 2
     assert sorted(clone_paths.count(clone) for clone in set(clone_paths)) == (
-        [1] * 4 + [2] * ((len(operations) - 1) * 2 * 2)
+        [1] * 2 + [2] * (len(operations) * 2 * 2 - 2)
     )
     assert [side for side, _, _, _ in calls[:4]] == [
         "baseline",
@@ -305,8 +307,20 @@ def test_paired_clones_each_side_per_pair_and_emits_private_verifiable_report(
         sample for sample in report["samples"]
         if sample["operation_id"] == "status_quick"
     ]
-    assert {sample["outcome"] for sample in status_samples} == {"unsupported"}
-    assert all(sample["duration_ms"] is None for sample in status_samples)
+    assert {sample["outcome"] for sample in status_samples} == {
+        "supported",
+        "unsupported",
+    }
+    assert all(
+        sample["duration_ms"] is None
+        for sample in status_samples
+        if sample["side"] == "baseline"
+    )
+    assert all(
+        sample["duration_ms"] is not None
+        for sample in status_samples
+        if sample["side"] == "final"
+    )
     query_samples = [
         sample for sample in report["samples"]
         if sample["operation_id"] == "query_lexical_high"
@@ -318,6 +332,66 @@ def test_paired_clones_each_side_per_pair_and_emits_private_verifiable_report(
     assert "baseline_root" not in payload
     assert "final_root" not in payload
     assert not list(tmp_path.glob("p6-paired-*"))
+
+
+def test_paired_one_file_refresh_dirties_only_supported_final_clone(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_harness()
+    repo, manifest = _pristine_repo_and_manifest(module, tmp_path)
+    contract = json.loads(manifest.read_text(encoding="utf-8"))
+    contract["protected_small_entry_comparable"] = ["refresh_one_file"]
+    manifest.write_text(json.dumps(contract), encoding="utf-8")
+    baseline_root = tmp_path / "baseline"
+    final_root = tmp_path / "final"
+    identities = {
+        baseline_root.resolve(): {
+            "implementation_commit": "1" * 40,
+            "production_tree": "2" * 40,
+        },
+        final_root.resolve(): {
+            "implementation_commit": "3" * 40,
+            "production_tree": "4" * 40,
+        },
+    }
+    preparations: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(module, "_paired_root_identity", identities.__getitem__)
+    monkeypatch.setattr(module, "_calibration", _calibration)
+
+    def fake_worker(
+        root: Path,
+        operation: str,
+        clone: Path,
+        case_id: str,
+        question: str,
+    ) -> dict[str, Any]:
+        if operation == "full_build":
+            (clone / ".context-search").mkdir(exist_ok=True)
+        return _measured()
+
+    def prepare(clone: Path, mutation_id: str) -> Path:
+        preparations.append((clone.name, mutation_id))
+        return clone / "generated" / "Generated000000.java"
+
+    monkeypatch.setattr(module, "_run_paired_worker", fake_worker)
+    monkeypatch.setattr(module, "_prepare_one_file_refresh", prepare)
+
+    report = module.paired_runs(
+        baseline_root,
+        final_root,
+        repo,
+        manifest,
+        pair_count=1,
+        operation_set="protected_small_entry_comparable",
+    )
+
+    assert preparations == [("final", "pair-001-final-measured")]
+    assert [
+        (sample["side"], sample["outcome"])
+        for sample in report["samples"]
+    ] == [("baseline", "unsupported"), ("final", "supported")]
 
 
 def test_paired_rejects_dirty_or_unfrozen_inputs_and_cleans_after_failure(

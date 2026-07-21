@@ -13,7 +13,8 @@
     "report_scope": {
       "enum": [
         "tier",
-        "performance"
+        "performance",
+        "churn"
       ]
     },
     "mode": {
@@ -1045,69 +1046,110 @@
         }
       },
       "else": {
-        "required": [
-          "case_reports"
-        ],
-        "not": {
-          "anyOf": [
-            {
-              "required": [
-                "environment"
-              ]
-            },
-            {
-              "required": [
-                "workload"
-              ]
-            },
-            {
-              "required": [
-                "operation"
-              ]
-            },
-            {
-              "required": [
-                "calibration"
-              ]
-            },
-            {
-              "required": [
-                "samples"
-              ]
-            },
-            {
-              "required": [
-                "summary"
-              ]
-            },
-            {
-              "required": [
-                "validity"
-              ]
+        "if": {
+          "properties": {
+            "report_scope": {
+              "const": "performance"
             }
-          ]
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "mode": {
-            "const": "final"
           },
-          "report_scope": {
-            "const": "performance"
+          "required": [
+            "report_scope"
+          ]
+        },
+        "then": {
+          "required": [
+            "case_reports"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "environment"
+                ]
+              },
+              {
+                "required": [
+                  "workload"
+                ]
+              },
+              {
+                "required": [
+                  "operation"
+                ]
+              },
+              {
+                "required": [
+                  "calibration"
+                ]
+              },
+              {
+                "required": [
+                  "samples"
+                ]
+              },
+              {
+                "required": [
+                  "summary"
+                ]
+              },
+              {
+                "required": [
+                  "validity"
+                ]
+              }
+            ]
           }
         },
-        "required": [
-          "mode",
-          "report_scope"
-        ]
-      },
-      "then": {
-        "required": [
-          "churn"
-        ]
+        "else": {
+          "properties": {
+            "mode": {
+              "const": "final"
+            }
+          },
+          "required": [
+            "workload",
+            "churn"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "environment"
+                ]
+              },
+              {
+                "required": [
+                  "operation"
+                ]
+              },
+              {
+                "required": [
+                  "calibration"
+                ]
+              },
+              {
+                "required": [
+                  "samples"
+                ]
+              },
+              {
+                "required": [
+                  "summary"
+                ]
+              },
+              {
+                "required": [
+                  "validity"
+                ]
+              },
+              {
+                "required": [
+                  "case_reports"
+                ]
+              }
+            ]
+          }
+        }
       }
     }
   ]

@@ -868,6 +868,28 @@ def test_cli_index_maps_busy_without_traceback(
     assert "Traceback" not in result.output
 
 
+def test_cli_index_sanitizes_remote_provider_http_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    secret = "SECRET https://user:password@provider.invalid/embeddings"
+    monkeypatch.setattr(
+        cli,
+        "index_repository",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            cli.requests.HTTPError(secret)
+        ),
+    )
+
+    result = CliRunner().invoke(app, ["index", str(repo)])
+
+    assert result.exit_code == 1
+    assert result.output == "Error: remote embedding request failed\n"
+    assert secret not in result.output
+
+
 @pytest.mark.parametrize(
     "arguments",
     [

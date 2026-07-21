@@ -355,6 +355,33 @@ def test_query_and_explore_use_real_positional_cli_shape(tmp_path: Path) -> None
     ]
 
 
+def test_status_and_refresh_use_real_json_cli_shape(tmp_path: Path) -> None:
+    module = _load_harness()
+    repo = tmp_path / "repo"
+
+    assert module._operation_cli_args("status_quick", repo, "default") == [
+        "status",
+        str(repo),
+        "--json",
+    ]
+    assert module._operation_cli_args("status_verified", repo, "default") == [
+        "status",
+        str(repo),
+        "--json",
+        "--verify",
+    ]
+    assert module._operation_cli_args("refresh_noop", repo, "default") == [
+        "refresh",
+        str(repo),
+        "--json",
+    ]
+    assert module._operation_cli_args("refresh_one_file", repo, "default") == [
+        "refresh",
+        str(repo),
+        "--json",
+    ]
+
+
 def test_query_worker_captures_private_numeric_production_trace(tmp_path: Path) -> None:
     module = _load_harness()
     repo = tmp_path / "repo"
@@ -447,6 +474,238 @@ def test_final_resident_measurement_state_is_supported() -> None:
     assert module._measurement_is_supported(
         "full_build", "cli_process_cold", "baseline"
     )
+    for operation in (
+        "status_quick",
+        "status_verified",
+        "refresh_noop",
+        "refresh_one_file",
+    ):
+        assert module._measurement_is_supported(
+            operation, "cli_process_cold", "final"
+        )
+
+
+def test_one_file_refresh_measurement_reestablishes_one_dirty_file_per_run(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    module = _load_harness()
+    repo, manifest = _tiny_workload(module, tmp_path)
+    contract = json.loads(manifest.read_text(encoding="utf-8"))
+    contract["benchmark_registry"]["cases"].append(
+        {
+            "operation_id": "refresh_one_file",
+            "case_id": "default",
+            "protected_operation_id": "refresh_one_file",
+            "case_family": "refresh",
+            "tiers": ["smoke"],
+            "planner_enabled": False,
+            "query_case_id": None,
+            "measurements": [
+                {
+                    "state": "cli_process_cold",
+                    "sample_count": 2,
+                    "baseline_outcome": "unsupported",
+                }
+            ],
+        }
+    )
+    contract["protected_small_entry_comparable"].append("refresh_one_file")
+    manifest.write_text(json.dumps(contract), encoding="utf-8")
+    preparations: list[tuple[Path, str]] = []
+    calls: list[tuple[str, Path]] = []
+
+    def prepare(sample_repo: Path, mutation_id: str) -> Path:
+        preparations.append((sample_repo, mutation_id))
+        source = sorted((sample_repo / "generated").glob("*.java"))[0]
+        source.write_bytes(
+            source.read_bytes() + f"// {mutation_id}\n".encode("utf-8")
+        )
+        return source
+
+    def fake_worker(operation: str, sample_repo: Path, case_id: str) -> dict[str, Any]:
+        calls.append((operation, sample_repo))
+        if operation == "full_build":
+            (sample_repo / ".context-search").mkdir()
+        return {
+            "duration_ms": 1.0,
+            "attribution": None,
+            "rss": {
+                "process_start_bytes": 10,
+                "peak_bytes": 20,
+                "current_bytes": 15,
+                "empty_harness_peak_bytes": 10,
+                "extra_peak_bytes": 10,
+            },
+            "product_subprocesses": 0,
+        }
+
+    monkeypatch.setattr(module, "_prepare_one_file_refresh", prepare)
+    monkeypatch.setattr(module, "_run_measurement_worker", fake_worker)
+    commit, tree, _dirty = module._git_identity()
+    monkeypatch.setattr(
+        module,
+        "_git_identity",
+        lambda _root=module.ROOT: (commit, tree, False),
+    )
+    monkeypatch.setattr(
+        module,
+        "_calibration",
+        lambda: {
+            "valid": True,
+            "sha256_bytes": 512 * 1024**2,
+            "sha256_mib_per_s": 1.0,
+            "numpy_rows": 80000,
+            "numpy_dimensions": 384,
+            "numpy_dot_ms": 1.0,
+            "sqlite_rows": 20000,
+            "sqlite_ms": 1.0,
+            "within_pair_percent": 0.0,
+        },
+    )
+
+    report = module.run_benchmark(
+        repo,
+        manifest,
+        operation="refresh_one_file",
+        case_id="default",
+        sample_count=2,
+        measurement_state="cli_process_cold",
+        mode="final",
+    )
+
+    assert [operation for operation, _ in calls] == [
+        "full_build",
+        "refresh_one_file",
+        "refresh_one_file",
+        "refresh_one_file",
+        "refresh_one_file",
+    ]
+    assert [mutation_id for _, mutation_id in preparations] == [
+        "sample-001-warmup",
+        "sample-001-measured",
+        "sample-002-warmup",
+        "sample-002-measured",
+    ]
+    assert preparations[0][0] == preparations[1][0]
+    assert preparations[2][0] == preparations[3][0]
+    assert preparations[0][0] != preparations[2][0]
+    assert report["summary"]["sample_count"] == 2
+
+
+def test_status_and_refresh_workers_report_real_bounded_work(tmp_path: Path) -> None:
+    module = _load_harness()
+    repo = tmp_path / "repo"
+    generated = repo / "generated"
+    generated.mkdir(parents=True)
+    source = generated / "Generated000000.java"
+    source.write_text(
+        "package generated; class Generated000000 { void work() {} }\n",
+        encoding="utf-8",
+    )
+    indexed_size = source.stat().st_size
+    module._run_measurement_worker("full_build", repo, "default")
+
+    quick = module._run_measurement_worker("status_quick", repo, "default")
+    verified = module._run_measurement_worker(
+        "status_verified", repo, "default"
+    )
+    noop = module._run_measurement_worker("refresh_noop", repo, "default")
+    module._prepare_one_file_refresh(repo, "integration-measured")
+    dirty_size = source.stat().st_size
+    one_file = module._run_measurement_worker(
+        "refresh_one_file", repo, "default"
+    )
+
+    quick_work = quick["attribution"]["work"]
+    assert quick_work["source_bytes_read"] == 0
+    assert quick_work["source_bytes_hashed"] == 0
+    assert quick_work["vector_bytes_read"] == 0
+    assert quick_work["vector_bytes_hashed"] == 0
+
+    verified_work = verified["attribution"]["work"]
+    assert verified_work["source_bytes_read"] == indexed_size
+    assert verified_work["source_bytes_hashed"] == indexed_size
+    assert verified_work["vector_bytes_read"] > 0
+    assert 0 < verified_work["vector_bytes_hashed"] <= verified_work[
+        "vector_bytes_read"
+    ]
+
+    noop_work = noop["attribution"]["work"]
+    assert noop_work["source_bytes_read"] == 0
+    assert noop_work["source_bytes_hashed"] == 0
+    assert noop_work["vector_bytes_read"] == 0
+    assert noop_work["vector_bytes_written"] == 0
+    assert noop_work["vector_bytes_copied"] == 0
+    assert noop_work["vector_payload_passes"] == 0
+    assert noop_work["path_index_builds"] == 0
+
+    one_file_work = one_file["attribution"]["work"]
+    assert one_file_work["source_bytes_read"] == dirty_size
+    assert one_file_work["source_bytes_hashed"] == dirty_size
+    assert one_file_work["embedding_batch_inputs"] > 0
+    assert one_file_work["vector_bytes_read"] > 0
+    assert one_file_work["vector_bytes_written"] > 0
+    assert one_file_work["generation_count"] == 1
+    assert quick["product_subprocesses"] == 0
+    assert verified["product_subprocesses"] == 0
+    assert noop["product_subprocesses"] == 0
+    assert one_file["product_subprocesses"] == 0
+
+
+def test_churn_action_runner_exercises_success_skip_and_failure_paths(
+    tmp_path: Path,
+) -> None:
+    from context_search_tool import index_health
+    from context_search_tool.config import load_config
+
+    module = _load_harness()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for index in range(6):
+        (repo / f"Type{index}.java").write_text(
+            f'class Type{index} {{ String value = "benchword{index}"; }}\n',
+            encoding="utf-8",
+        )
+    module._run_measurement_worker("full_build", repo, "default")
+    config = load_config(repo)
+    deleted: dict[int, bytes] = {}
+    actions = [
+        {"step": 1, "operation": "modify", "target": "Type0.java", "payload_sha256": "1" * 64},
+        {"step": 2, "operation": "delete", "target": "Type1.java"},
+        {"step": 3, "operation": "restore", "target": "Type1.java", "source_step": 2},
+        {"step": 4, "operation": "add", "target": "Added.java", "payload_sha256": "2" * 64},
+        {"step": 5, "operation": "delete_added", "target": "Added.java"},
+        {"step": 6, "operation": "equal_content_touch", "target": "Type2.java"},
+        {"step": 7, "operation": "same_metadata_content_edit", "target": "Type3.java"},
+        {"step": 8, "operation": "stable_skip", "target": "Type4.java"},
+        {"step": 9, "operation": "retryable_skip", "target": "Type5.java"},
+    ]
+    for action in actions:
+        result = module._run_churn_refresh_action(
+            repo,
+            action,
+            config=config,
+            deleted_payloads=deleted,
+        )
+        assert result.ok is True
+
+    for step, operation in ((10, "directory_failure"), (11, "control_file_failure")):
+        result = module._run_churn_refresh_action(
+            repo,
+            {
+                "step": step,
+                "operation": operation,
+                "target": "generated" if operation == "directory_failure" else ".gitignore",
+            },
+            config=config,
+            deleted_payloads=deleted,
+        )
+        assert result.ok is False
+        assert result.code == "inventory_incomplete"
+
+    health = index_health.inspect_repository_health(repo, mode="quick")
+    assert health.queryable is True
 
 
 def test_resident_session_uses_three_warmups_and_separate_work_proofs(

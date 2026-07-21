@@ -799,13 +799,82 @@ def test_final_churn_gate_fails_independently(field: str, invalid: Any) -> None:
         validator.validate(report)
 
 
-def test_baseline_may_omit_churn_but_final_performance_may_not() -> None:
+def test_final_single_tier_may_omit_churn_but_churn_scope_must_be_final() -> None:
     validator = _validator("benchmark-report-v1.json")
     report = _performance_report()
     validator.validate(report)
     report["mode"] = "final"
+    validator.validate(report)
+    report["report_scope"] = "churn"
+    report.pop("case_reports")
+    report["workload"] = deepcopy(_benchmark_report()["workload"])
+    report["churn"] = {
+        "steps": 100,
+        "disk_page_ratio": 1.0,
+        "tombstones_within_threshold": True,
+        "query_p95_drift_ratio": 0.0,
+        "generation_count_after_failure": 1,
+    }
+    validator.validate(report)
+    report["mode"] = "baseline"
     with pytest.raises(ValidationError):
         validator.validate(report)
+
+
+def test_standalone_churn_report_is_closed_and_assembles_without_fake_case(
+    tmp_path: Path,
+) -> None:
+    module = _load_harness()
+    tier = _benchmark_report()
+    tier["mode"] = "final"
+    churn = {
+        "schema_version": 1,
+        "report_kind": "benchmark",
+        "report_scope": "churn",
+        "mode": "final",
+        "identity": deepcopy(tier["identity"]),
+        "workload": deepcopy(tier["workload"]),
+        "churn": {
+            "steps": 100,
+            "disk_page_ratio": 1.0,
+            "tombstones_within_threshold": True,
+            "query_p95_drift_ratio": 0.0,
+            "generation_count_after_failure": 1,
+        },
+    }
+
+    module.validate_report_data(churn, "benchmark-report-v1.json")
+    churn_path = tmp_path / "churn.json"
+    churn_path.write_text(json.dumps(churn), encoding="utf-8")
+    tier_paths = []
+    for tier_name in ("smoke", "large", "scale-5k", "scale-10k"):
+        candidate = deepcopy(tier)
+        candidate["workload"]["tier"] = tier_name
+        path = tmp_path / f"{tier_name}.json"
+        path.write_text(json.dumps(candidate), encoding="utf-8")
+        tier_paths.append(path)
+
+    single = module.assemble_reports(
+        "performance",
+        [tier_paths[0]],
+        "final",
+    )
+    assert "churn" not in single
+    with pytest.raises(ValueError, match="requires one churn"):
+        module.assemble_reports("performance", tier_paths, "final")
+
+    combined = module.assemble_reports(
+        "performance",
+        [*tier_paths, churn_path],
+        "final",
+    )
+
+    assert combined["churn"] == churn["churn"]
+    assert len(combined["case_reports"]) == 4
+    assert all(
+        case["operation"] == tier["operation"]
+        for case in combined["case_reports"]
+    )
 
 
 def _walk(value: Any, path: tuple[str, ...] = ()) -> None:
@@ -1240,6 +1309,7 @@ def test_required_benchmark_subcommands_are_registered() -> None:
     required = {
         "generate",
         "run",
+        "churn",
         "assemble",
         "paired",
         "decide",

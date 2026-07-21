@@ -1729,6 +1729,30 @@ def test_mcp_index_maps_busy_to_existing_index_failed_envelope(
     }
 
 
+def test_mcp_index_sanitizes_remote_provider_http_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    secret = "SECRET https://user:password@provider.invalid/embeddings"
+    monkeypatch.setattr(
+        mcp_tools,
+        "index_repository",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            mcp_tools.requests.HTTPError(secret)
+        ),
+    )
+
+    assert context_search_index_tool(str(repo)) == {
+        "ok": False,
+        "error": {
+            "code": "index_failed",
+            "message": "remote embedding request failed",
+        },
+    }
+
+
 def test_mcp_stats_logs_stale_without_changing_payload(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
