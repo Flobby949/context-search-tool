@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from context_search_tool.chunker import chunk_text
-from context_search_tool.config import ToolConfig, render_config
+from context_search_tool.config import ToolConfig, load_config, render_config
 from context_search_tool.embeddings import EmbeddingProvider, provider_from_config
 from context_search_tool.graph_contract import (
     MAX_PRODUCER_RELATIONS_PER_FILE,
@@ -29,6 +29,7 @@ from context_search_tool.graph_lifecycle import (
 from context_search_tool.graph_plugins import GraphLanguagePlugin, PluginContext
 from context_search_tool.graph_resolution import resolve_graph_relations
 from context_search_tool.index_lock import exclusive_index_lock
+from context_search_tool.index_health import preflight_public_operation
 from context_search_tool.manifest import (
     SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION,
     Manifest,
@@ -102,7 +103,19 @@ class _PreparedFile:
     relations: list[CodeRelation]
 
 
-def index_repository(repo: Path, config: ToolConfig) -> IndexSummary:
+def index_repository(
+    repo: Path,
+    config: ToolConfig | None = None,
+    *,
+    config_loader: Callable[[Path], ToolConfig] | None = None,
+) -> IndexSummary:
+    preflight_public_operation(repo, "index")
+    if config is None:
+        config = (
+            load_config(repo)
+            if config_loader is None
+            else config_loader(repo)
+        )
     return build_v5_index_snapshot(
         repo,
         config,

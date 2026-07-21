@@ -901,3 +901,124 @@ def test_stale_cli_consumers_warn_exactly_once(
     )
     assert result.exit_code == 0
     assert result.output.count(warning) == 1
+
+
+def _p6_health_report(case_id: str):
+    from context_search_tool import index_health
+
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "p6_contracts"
+            / "index_health_v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    raw = next(
+        item["report"] for item in fixture["cases"] if item["id"] == case_id
+    )
+    return index_health.IndexHealthReport.from_dict(raw)
+
+
+def test_cli_status_json_uses_shared_envelope_verify_and_require(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert hasattr(cli, "index_health"), "P6 shared CLI status service is absent"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    report = _p6_health_report("healthy_metadata")
+    modes: list[str] = []
+
+    def inspect(_repo: Path, *, mode: str):
+        modes.append(mode)
+        return report
+
+    monkeypatch.setattr(cli.index_health, "inspect_repository_health", inspect)
+    runner = CliRunner()
+    result = runner.invoke(app, ["status", str(repo), "--json", "--verify"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert tuple(payload) == ("schema_version", "ok", "repo", "index_health")
+    assert payload["repo"] == str(repo)
+    assert payload["index_health"] == cli.index_health.serialize_index_health(report)
+    assert modes == ["verified"]
+
+    required = runner.invoke(
+        app,
+        ["status", str(repo), "--json", "--require", "verified"],
+    )
+    assert required.exit_code == 1
+    assert json.loads(required.stdout) == {
+        **payload,
+        "index_health": cli.index_health.serialize_index_health(report),
+    }
+    assert "status requirement 'verified' was not met" in required.stderr
+
+
+def test_cli_status_reports_missing_without_creating_any_artifact(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    runner = CliRunner()
+
+    json_result = runner.invoke(app, ["status", str(repo), "--json"])
+    human_result = runner.invoke(app, ["status", str(repo)])
+
+    assert json_result.exit_code == 0
+    payload = json.loads(json_result.stdout)
+    assert payload["schema_version"] == 1
+    assert payload["ok"] is True
+    assert payload["index_health"]["health"] == "missing"
+    assert human_result.exit_code == 0
+    assert "Health: missing" in human_result.stdout
+    assert "Recommended action: index" in human_result.stdout
+    assert not (repo / ".context-search").exists()
+
+
+def test_cli_status_json_repo_error_is_the_closed_status_envelope(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing"
+    result = CliRunner().invoke(app, ["status", str(missing), "--json"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout) == {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": "repo_not_found",
+            "message": "repository root was not found",
+        },
+    }
+
+
+def test_cli_stats_json_is_additive_and_contains_the_same_health_model(
+    tmp_path: Path,
+) -> None:
+    repo, runner = _indexed_repo(tmp_path)
+
+    result = runner.invoke(app, ["stats", str(repo), "--json", "--verify"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert tuple(payload) == ("ok", "repo", "stats", "embedding", "index_health")
+    assert payload["stats"]["total_files"] == 1
+    assert payload["stats"]["total_chunks"] >= 1
+    assert payload["stats"]["manifest_schema_version"] == 1
+    assert payload["stats"]["operational_schema_version"] is None
+    assert payload["stats"]["graph_schema_version"] == 5
+    assert payload["stats"]["disk_components"]["total_bytes"] == payload["stats"][
+        "disk_usage_bytes"
+    ]
+    assert payload["stats"]["last_work"] is None
+    assert payload["embedding"] == {
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384,
+    }
+    assert payload["index_health"]["schema_version"] == 1
+    assert payload["index_health"]["health"] == "degraded"
+    assert payload["index_health"]["freshness"]["inspection_mode"] == "verified"

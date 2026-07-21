@@ -2,19 +2,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+import errno
 import os
 from pathlib import Path
+import stat
+import time
 from typing import Any, Callable, Mapping, Sequence
 
+from context_search_tool.config import DEFAULT_CONFIG, ToolConfig, read_config
 from context_search_tool.graph_lifecycle import (
+    IncompatibleOperationalSchemaError,
+    IncompatibleSignalSchemaError,
     TARGET_SIGNAL_SCHEMA_VERSION,
     classify_raw_graph_schema,
     read_graph_capability,
 )
 from context_search_tool.manifest import (
+    IncompatibleManifestSchemaError,
     Manifest,
     ManifestV2,
     READABLE_MANIFEST_VERSIONS,
+    embedding_config_hash,
     inspect_raw_manifest_schema,
     load_manifest_snapshot,
 )
@@ -25,6 +33,8 @@ from context_search_tool.scanner import (
     ObservedFileRead,
     StableFileMetadata,
     WorkspaceInventory,
+    observe_workspace,
+    read_observed_file,
 )
 from context_search_tool.sqlite_store import (
     OperationalScanSkip,
@@ -173,6 +183,33 @@ EXCLUSION_REASON_ORDER = (
     "unsupported_language",
     "pruned_directory",
 )
+
+PUBLIC_OPERATIONS = frozenset(
+    {
+        "index",
+        "query",
+        "trace",
+        "context",
+        "explore",
+        "status",
+        "stats",
+        "explain",
+    }
+)
+
+
+class MissingIndexError(RuntimeError):
+    code = "missing_index"
+
+    def __init__(self) -> None:
+        super().__init__("index is missing")
+
+
+class IndexCorruptionError(RuntimeError):
+    code = "index_corrupt"
+
+    def __init__(self) -> None:
+        super().__init__("index is corrupt")
 
 
 class Health(StrEnum):
@@ -722,6 +759,7 @@ def probe_raw_index_capability(repo: Path) -> RawIndexCapability:
         raise ValueError("repository root must be a directory")
     internal = resolved_repo / ".context-search"
     database = internal / "index.sqlite"
+    manifest_path = internal / "manifest.json"
     if os.path.lexists(internal) and (internal.is_symlink() or not internal.is_dir()):
         return RawIndexCapability(
             status="corrupt",
@@ -731,7 +769,7 @@ def probe_raw_index_capability(repo: Path) -> RawIndexCapability:
             graph_version=None,
             error_code="unsafe_index_directory",
         )
-    if not os.path.lexists(database):
+    if not os.path.lexists(database) and not os.path.lexists(manifest_path):
         return RawIndexCapability(
             status="missing",
             index_exists=False,
@@ -807,6 +845,40 @@ def probe_raw_index_capability(repo: Path) -> RawIndexCapability:
         graph_version=sqlite_versions.graph_version,
         error_code=None,
     )
+
+
+def preflight_public_operation(
+    repo: Path,
+    operation: str,
+) -> RawIndexCapability:
+    """Inspect persisted schema capability before operation-specific work."""
+    if operation not in PUBLIC_OPERATIONS:
+        raise ValueError("unknown public operation")
+    capability = probe_raw_index_capability(repo)
+    if operation == "status":
+        return capability
+    if capability.status == "incompatible":
+        if capability.error_code == "future_manifest_schema":
+            raise IncompatibleManifestSchemaError(capability.manifest_version)
+        if capability.error_code == "future_operational_schema":
+            raise IncompatibleOperationalSchemaError(
+                capability.operational_version
+            )
+        if capability.error_code == "future_graph_schema":
+            raise IncompatibleSignalSchemaError(capability.graph_version)
+        raise IndexCorruptionError()
+    if operation == "index":
+        return capability
+    if capability.status == "missing":
+        raise MissingIndexError()
+    if capability.status == "corrupt":
+        if (
+            capability.error_code == "missing_manifest"
+            and operation in {"query", "trace", "context", "explore", "explain"}
+        ):
+            return capability
+        raise IndexCorruptionError()
+    return capability
 
 
 @dataclass(frozen=True)
@@ -1092,9 +1164,16 @@ def _legacy_committed_snapshot(
     graph = read_graph_capability(store)
     active_ids = tuple(sorted(store.active_embedding_ids()))
     try:
-        descriptor = NumpyVectorStore.published_descriptor(index_dir)
-    except ValueError:
-        descriptor = None
+        descriptor_snapshot = NumpyVectorStore.inspect_published_descriptor(
+            index_dir
+        )
+    except VectorDescriptorCorruptionError:
+        descriptor_snapshot = None
+    descriptor = (
+        descriptor_snapshot.descriptor
+        if descriptor_snapshot is not None
+        else None
+    )
     vector_valid = descriptor is not None and (
         descriptor.embedding_identity == manifest.embedding_config_hash
         and descriptor.row_count == len(active_ids)
@@ -1255,6 +1334,383 @@ def inspect_index_health(
         configured_embedding=configured_embedding,
         writer=writer,
     )
+
+
+def inspect_repository_health(repo: Path, *, mode: str) -> IndexHealthReport:
+    """Inspect repository health without creating index or configuration files."""
+    if mode not in {"quick", "verified"}:
+        raise ValueError("inspection mode must be quick or verified")
+    capability = preflight_public_operation(repo, "status")
+    if capability.status != "compatible":
+        return _preflight_report(capability)
+
+    config, configured_embedding = _read_inspection_configuration(repo)
+    adapters = InspectionAdapters(
+        raw_probe=lambda _repo: capability,
+        snapshot_reader=read_committed_index_snapshot,
+        inventory_reader=lambda inspected_repo, _unused: observe_workspace(
+            inspected_repo,
+            config,
+        ),
+        file_reader=read_observed_file,
+        vector_verifier=verify_committed_vector_snapshot,
+        configured_embedding_reader=lambda _repo: configured_embedding,
+        writer_probe=probe_writer_state,
+        clock_ms=lambda: time.time_ns() // 1_000_000,
+        max_file_bytes=config.index.max_file_bytes,
+    )
+    return inspect_index_health(repo, mode=mode, adapters=adapters)
+
+
+def status_success_envelope(
+    repo: str,
+    report: IndexHealthReport,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "ok": True,
+        "repo": repo,
+        "index_health": serialize_index_health(report),
+    }
+
+
+def status_error_envelope(code: str) -> dict[str, Any]:
+    messages = {
+        "repo_not_found": "repository root was not found",
+        "status_failed": "status inspection failed",
+    }
+    if code not in messages:
+        raise ValueError("unknown status error code")
+    return {
+        "schema_version": 1,
+        "ok": False,
+        "error": {"code": code, "message": messages[code]},
+    }
+
+
+def status_requirement_satisfied(
+    report: IndexHealthReport,
+    requirement: str,
+) -> bool:
+    if requirement == "verified":
+        return report.health == Health.HEALTHY_VERIFIED
+    if requirement == "metadata":
+        return report.health in {
+            Health.HEALTHY_METADATA,
+            Health.HEALTHY_VERIFIED,
+        }
+    if requirement == "queryable":
+        return report.queryable
+    raise ValueError("requirement must be verified, metadata, or queryable")
+
+
+def format_index_health_human(repo: Path, report: IndexHealthReport) -> str:
+    freshness = report.freshness
+    coverage = report.coverage
+    integrity = report.integrity
+    vectors = report.vectors
+    lines = [
+        f"Repository: {repo}",
+        f"Health: {report.health}",
+        (
+            f"Queryable: {_human_bool(report.queryable)} "
+            f"({report.queryability_evidence})"
+        ),
+        f"Availability: {report.availability}",
+        (
+            f"Freshness: {freshness.status} "
+            f"(inspection={freshness.inspection_mode}, "
+            f"generation={freshness.evidence_generation or 'unknown'})"
+        ),
+        (
+            f"Changes: added={_human_value(freshness.added)} "
+            f"changed={_human_value(freshness.changed)} "
+            f"deleted={_human_value(freshness.deleted)} "
+            f"content_verified={_human_value(freshness.content_verified)}"
+        ),
+        (
+            f"Coverage: {coverage.status} ({coverage.evidence}); "
+            f"indexed={_human_value(coverage.indexed_files)} "
+            f"skipped={_human_value(coverage.coverage_skips)} "
+            f"pending={_human_value(coverage.pending_inspection)}"
+        ),
+        (
+            f"Integrity: {integrity.status}; manifest={integrity.manifest} "
+            f"sqlite={integrity.sqlite} graph={integrity.graph} "
+            f"vector={integrity.vector}"
+        ),
+        (
+            f"Vectors: rows={_human_value(vectors.rows)}/"
+            f"{_human_value(vectors.eligible_chunks)} "
+            f"coverage={_human_value(vectors.coverage_ratio)} "
+            f"evidence={vectors.coverage_evidence}"
+        ),
+        f"Indexed embedding: {_human_embedding(report.indexed_embedding)}",
+        f"Configured embedding: {_human_embedding(report.configured_embedding)}",
+        f"Embedding match: {_human_value(report.embedding_config_match)}",
+        (
+            f"Writer: {report.writer.state} "
+            f"(active={_human_value(report.writer.active)}, "
+            f"evidence={report.writer.evidence})"
+        ),
+        (
+            "Refresh reasons: "
+            + (", ".join(report.refresh.reasons) or "(none)")
+        ),
+        f"Recommended action: {report.refresh.recommended_action}",
+    ]
+    if report.observation.limitations:
+        lines.append(
+            "Limitations: " + ", ".join(report.observation.limitations)
+        )
+    if freshness.samples:
+        lines.extend(
+            f"Sample: {item.category} {item.path} ({item.reason})"
+            for item in freshness.samples
+        )
+    if coverage.skip_samples:
+        lines.extend(
+            f"Skip: {item.path} ({item.reason}, retryable={_human_bool(item.retryable)})"
+            for item in coverage.skip_samples
+        )
+    return "\n".join(lines)
+
+
+def build_index_stats_payload(
+    repo: Path,
+    report: IndexHealthReport,
+) -> dict[str, Any]:
+    capability = preflight_public_operation(repo, "stats")
+    if report.health == Health.CORRUPT:
+        raise IndexCorruptionError()
+    index_dir = repo.resolve(strict=True) / ".context-search"
+    counts = SQLiteStore(index_dir / "index.sqlite").stats()
+    disk_components = index_disk_components(index_dir)
+    identity = report.indexed_embedding
+    if identity.status != "valid":
+        raise IndexCorruptionError()
+    last_work: dict[str, Any] | None = None
+    if capability.manifest_version == 2:
+        manifest = load_manifest_snapshot(repo).manifest
+        if not isinstance(manifest, ManifestV2):
+            raise IndexCorruptionError()
+        last_work = {
+            "operation": manifest.operation_mode,
+            "indexed_at_epoch_s": manifest.indexed_at_epoch_s,
+            "observation_generation": manifest.observation_generation,
+            "metrics": dict(manifest.work_metrics),
+        }
+    return {
+        "ok": True,
+        "repo": str(repo),
+        "stats": {
+            "total_files": counts["source_files"],
+            "total_chunks": counts["active_chunks"],
+            "deleted_chunks": counts["deleted_chunks"],
+            "symbols": counts["symbols"],
+            "lexical_tokens": counts["tokens"],
+            "disk_usage_bytes": disk_components["total_bytes"],
+            "indexed_files": report.coverage.indexed_files,
+            "coverage_skips": report.coverage.coverage_skips,
+            "vector_rows": report.vectors.rows,
+            "vector_eligible_chunks": report.vectors.eligible_chunks,
+            "vector_coverage_ratio": report.vectors.coverage_ratio,
+            "vector_coverage_evidence": report.vectors.coverage_evidence,
+            "manifest_schema_version": capability.manifest_version,
+            "operational_schema_version": capability.operational_version,
+            "graph_schema_version": capability.graph_version,
+            "disk_components": disk_components,
+            "last_work": last_work,
+        },
+        "embedding": {
+            "provider": identity.provider,
+            "model": identity.model,
+            "dimensions": identity.dimensions,
+        },
+        "index_health": serialize_index_health(report),
+    }
+
+
+def index_disk_components(index_dir: Path) -> dict[str, int]:
+    components = {
+        "sqlite_bytes": 0,
+        "vector_bytes": 0,
+        "manifest_bytes": 0,
+        "config_bytes": 0,
+        "feedback_bytes": 0,
+        "other_bytes": 0,
+    }
+    if index_dir.is_symlink() or not index_dir.is_dir():
+        return {**components, "total_bytes": 0}
+    for path in index_dir.rglob("*"):
+        try:
+            path_stat = path.lstat()
+        except OSError:
+            continue
+        if not stat.S_ISREG(path_stat.st_mode):
+            continue
+        name = path.name
+        if name == "index.sqlite" or name.startswith("index.sqlite-"):
+            key = "sqlite_bytes"
+        elif name == "manifest.json":
+            key = "manifest_bytes"
+        elif name == "config.toml":
+            key = "config_bytes"
+        elif (
+            name == "vector_snapshot.json"
+            or name.startswith("vectors.")
+            or name.startswith("vector_ids.")
+            or name in {"vectors.npy", "vector_ids.json"}
+        ):
+            key = "vector_bytes"
+        elif name.endswith(".jsonl") or name.endswith(".log"):
+            key = "feedback_bytes"
+        else:
+            key = "other_bytes"
+        components[key] += path_stat.st_size
+    return {**components, "total_bytes": sum(components.values())}
+
+
+def probe_writer_state(repo: Path) -> WriterProbe:
+    lock_path = repo.resolve(strict=True) / ".context-search" / "index.lock"
+    if not os.path.lexists(lock_path):
+        return WriterProbe.idle()
+    descriptor: int | None = None
+    locked = False
+    try:
+        path_stat = os.lstat(lock_path)
+        if stat.S_ISLNK(path_stat.st_mode) or not stat.S_ISREG(path_stat.st_mode):
+            return WriterProbe.unknown()
+        if hasattr(os, "getuid") and path_stat.st_uid != os.getuid():
+            return WriterProbe.unknown()
+        if stat.S_IMODE(path_stat.st_mode) != 0o600:
+            return WriterProbe.unknown()
+        flags = os.O_RDWR
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(lock_path, flags)
+        descriptor_stat = os.fstat(descriptor)
+        final_stat = os.lstat(lock_path)
+        if (
+            not stat.S_ISREG(descriptor_stat.st_mode)
+            or stat.S_ISLNK(final_stat.st_mode)
+            or (descriptor_stat.st_dev, descriptor_stat.st_ino)
+            != (final_stat.st_dev, final_stat.st_ino)
+        ):
+            return WriterProbe.unknown()
+        locked = _try_lock_descriptor(descriptor)
+        return WriterProbe.idle() if locked else WriterProbe.active_writer()
+    except OSError:
+        return WriterProbe.unknown()
+    finally:
+        if descriptor is not None:
+            if locked:
+                _unlock_probe_descriptor(descriptor)
+            os.close(descriptor)
+
+
+def _read_inspection_configuration(
+    repo: Path,
+) -> tuple[ToolConfig, EmbeddingIdentity]:
+    config_path = repo.resolve(strict=True) / ".context-search" / "config.toml"
+    if not os.path.lexists(config_path):
+        return DEFAULT_CONFIG, _nonvalid_embedding("missing", "config_missing")
+    try:
+        config_stat = os.lstat(config_path)
+    except OSError:
+        return DEFAULT_CONFIG, _nonvalid_embedding("invalid", "config_invalid")
+    if stat.S_ISLNK(config_stat.st_mode) or not stat.S_ISREG(config_stat.st_mode):
+        return DEFAULT_CONFIG, _nonvalid_embedding("invalid", "config_invalid")
+    try:
+        config = read_config(repo)
+    except (OSError, TypeError, ValueError):
+        return DEFAULT_CONFIG, _nonvalid_embedding("invalid", "config_invalid")
+    embedding = config.embedding
+    try:
+        identity = EmbeddingIdentity(
+            status="valid",
+            provider=embedding.provider,
+            model=embedding.model,
+            dimensions=embedding.dimensions,
+            config_hash=embedding_config_hash(embedding),
+            network_egress_capable=embedding.provider != "hash",
+            network_egress_evidence=(
+                "built_in_hash"
+                if embedding.provider == "hash"
+                else (
+                    "configured_network_provider"
+                    if embedding.provider in {"openai-compatible", "bge"}
+                    else "unknown_provider"
+                )
+            ),
+        )
+        identity._validate()
+    except (TypeError, ValueError):
+        return config, _nonvalid_embedding("invalid", "config_invalid")
+    return config, identity
+
+
+def _try_lock_descriptor(descriptor: int) -> bool:
+    if os.name == "posix":
+        try:
+            import fcntl
+        except ImportError:
+            raise OSError("lock probing is unavailable")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            if error.errno in {errno.EACCES, errno.EAGAIN}:
+                return False
+            raise
+        return True
+    if os.name == "nt":  # pragma: no cover - exercised on Windows CI only
+        import msvcrt
+
+        if os.fstat(descriptor).st_size < 1:
+            raise OSError("lock probing is unavailable")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+    raise OSError("lock probing is unavailable")
+
+
+def _unlock_probe_descriptor(descriptor: int) -> None:
+    if os.name == "posix":
+        import fcntl
+
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    elif os.name == "nt":  # pragma: no cover - exercised on Windows CI only
+        import msvcrt
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+
+
+def _human_embedding(identity: EmbeddingIdentity) -> str:
+    if identity.status != "valid":
+        return f"{identity.status} ({identity.network_egress_evidence})"
+    return (
+        f"provider={identity.provider} model={identity.model} "
+        f"dimensions={identity.dimensions} "
+        f"network_egress_capable={_human_bool(identity.network_egress_capable)}"
+    )
+
+
+def _human_bool(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _human_value(value: Any) -> str:
+    if value is None:
+        return "unknown"
+    if type(value) is bool:
+        return _human_bool(value)
+    return str(value)
 
 
 def _preflight_report(capability: RawIndexCapability) -> IndexHealthReport:
@@ -1977,10 +2433,15 @@ def _metadata_equal(
     observed: FileObservation,
     indexed: IndexedFileObservation,
 ) -> bool:
-    return (
+    stable_metadata_equal = (
         observed.language == indexed.language
         and observed.size == indexed.size
         and observed.mtime_ns == indexed.mtime_ns
+    )
+    if indexed.change_token_kind == "unavailable":
+        return stable_metadata_equal
+    return (
+        stable_metadata_equal
         and observed.change_token == indexed.change_token
         and observed.change_token_kind == indexed.change_token_kind
     )

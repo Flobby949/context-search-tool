@@ -10,6 +10,7 @@ from typing import Any
 
 import requests
 
+from context_search_tool import index_health
 from context_search_tool.config import ToolConfig, load_config
 from context_search_tool.context_pack import (
     CONTEXT_GROUPS,
@@ -30,11 +31,14 @@ from context_search_tool.indexer import (
     signal_schema_is_current,
 )
 from context_search_tool.graph_lifecycle import (
+    IncompatibleOperationalSchemaError,
     IncompatibleSignalSchemaError,
     IndexBusyError,
-    read_graph_capability,
 )
-from context_search_tool.manifest import embedding_config_hash, load_manifest
+from context_search_tool.manifest import (
+    IncompatibleManifestSchemaError,
+    embedding_config_hash,
+)
 from context_search_tool.models import (
     DocumentChunk,
     EvidenceAnchor,
@@ -65,10 +69,16 @@ _EXPLORE_FAILED_MESSAGE = "Controlled exploration failed"
 def context_search_index_tool(repo: str) -> dict[str, Any]:
     try:
         resolved_repo = find_repo_root(Path(repo))
-        _reject_future_signal_schema(resolved_repo)
-        config = load_config(resolved_repo)
-        summary = index_repository(resolved_repo, config)
-    except IncompatibleSignalSchemaError as exc:
+        index_health.preflight_public_operation(resolved_repo, "index")
+        summary = index_repository(
+            resolved_repo,
+            config_loader=load_config,
+        )
+    except (
+        IncompatibleManifestSchemaError,
+        IncompatibleOperationalSchemaError,
+        IncompatibleSignalSchemaError,
+    ) as exc:
         return _error(exc.code, str(exc))
     except (
         RepositoryNotFoundError,
@@ -104,15 +114,11 @@ def context_search_query_tool(
     except RepositoryNotFoundError as exc:
         return _error("repo_not_found", str(exc))
 
-    index_dir = index_dir_for(resolved_repo)
-    if not (index_dir / "index.sqlite").exists():
-        return _error(
-            "missing_index",
-            f"Missing index for {resolved_repo}. Run context_search_index first.",
-        )
+    preflight_error = _consumer_preflight_error(resolved_repo, "query")
+    if preflight_error is not None:
+        return preflight_error
 
     try:
-        _reject_future_signal_schema(resolved_repo)
         config = _load_query_config(resolved_repo, final_top_k)
         bundle = query_repository(
             resolved_repo,
@@ -134,7 +140,11 @@ def context_search_query_tool(
             final_top_k=final_top_k,
         )
         return payload
-    except IncompatibleSignalSchemaError as exc:
+    except (
+        IncompatibleManifestSchemaError,
+        IncompatibleOperationalSchemaError,
+        IncompatibleSignalSchemaError,
+    ) as exc:
         return _error(exc.code, str(exc))
     except (ValueError, requests.HTTPError) as exc:
         error_payload = _error("query_failed", str(exc))
@@ -161,15 +171,11 @@ def context_search_trace_tool(
     except RepositoryNotFoundError as exc:
         return _error("repo_not_found", str(exc))
 
-    index_dir = index_dir_for(resolved_repo)
-    if not (index_dir / "index.sqlite").exists():
-        return _error(
-            "missing_index",
-            f"Missing index for {resolved_repo}. Run context_search_index first.",
-        )
+    preflight_error = _consumer_preflight_error(resolved_repo, "trace")
+    if preflight_error is not None:
+        return preflight_error
 
     try:
-        _reject_future_signal_schema(resolved_repo)
         config = _load_query_config(resolved_repo, final_top_k)
         traced = trace_repository(
             resolved_repo,
@@ -179,7 +185,11 @@ def context_search_trace_tool(
             full_file=full_file,
         )
         return trace_payload(resolved_repo, query, traced.trace)
-    except IncompatibleSignalSchemaError as exc:
+    except (
+        IncompatibleManifestSchemaError,
+        IncompatibleOperationalSchemaError,
+        IncompatibleSignalSchemaError,
+    ) as exc:
         return _error(exc.code, str(exc))
     except RetrievalTraceError:
         return _error("trace_failed", "Retrieval trace failed")
@@ -203,17 +213,17 @@ def context_search_context_tool(
     except RepositoryNotFoundError as exc:
         return _error("repo_not_found", str(exc))
 
-    index_dir = index_dir_for(resolved_repo)
-    if not (index_dir / "index.sqlite").exists():
-        return _error(
-            "missing_index",
-            f"Missing index for {resolved_repo}. Run context_search_index first.",
-        )
+    preflight_error = _consumer_preflight_error(resolved_repo, "context")
+    if preflight_error is not None:
+        return preflight_error
 
     try:
-        _reject_future_signal_schema(resolved_repo)
         config = _load_query_config(resolved_repo, final_top_k)
-    except IncompatibleSignalSchemaError as exc:
+    except (
+        IncompatibleManifestSchemaError,
+        IncompatibleOperationalSchemaError,
+        IncompatibleSignalSchemaError,
+    ) as exc:
         return _error(exc.code, str(exc))
     except ValueError as exc:
         payload = _error("query_failed", str(exc))
@@ -306,17 +316,9 @@ def context_search_explore_tool(
     except RepositoryNotFoundError as exc:
         return _error("repo_not_found", str(exc))
 
-    index_dir = index_dir_for(resolved_repo)
-    if not (index_dir / "index.sqlite").exists():
-        return _error(
-            "missing_index",
-            f"Missing index for {resolved_repo}. Run context_search_index first.",
-        )
-
-    try:
-        _reject_future_signal_schema(resolved_repo)
-    except IncompatibleSignalSchemaError as exc:
-        return _error(exc.code, str(exc))
+    preflight_error = _consumer_preflight_error(resolved_repo, "explore")
+    if preflight_error is not None:
+        return preflight_error
 
     from context_search_tool.exploration import (
         explore_repository,
@@ -482,53 +484,61 @@ def context_search_explore_tool(
     return payload
 
 
-def context_search_stats_tool(repo: str) -> dict[str, Any]:
+def context_search_status_tool(
+    repo: str,
+    verify: bool = False,
+) -> dict[str, Any]:
+    try:
+        resolved_repo = find_repo_root(Path(repo))
+    except RepositoryNotFoundError:
+        return index_health.status_error_envelope("repo_not_found")
+    try:
+        report = index_health.inspect_repository_health(
+            resolved_repo,
+            mode="verified" if verify else "quick",
+        )
+    except Exception:
+        return index_health.status_error_envelope("status_failed")
+    return index_health.status_success_envelope(str(resolved_repo), report)
+
+
+def context_search_stats_tool(
+    repo: str,
+    verify: bool = False,
+) -> dict[str, Any]:
     try:
         resolved_repo = find_repo_root(Path(repo))
     except RepositoryNotFoundError as exc:
         return _error("repo_not_found", str(exc))
 
-    index_dir = index_dir_for(resolved_repo)
-    if not (index_dir / "index.sqlite").exists():
+    try:
+        index_health.preflight_public_operation(resolved_repo, "stats")
+        report = index_health.inspect_repository_health(
+            resolved_repo,
+            mode="verified" if verify else "quick",
+        )
+        payload = index_health.build_index_stats_payload(resolved_repo, report)
+    except index_health.MissingIndexError:
         return _error(
             "missing_index",
             f"Missing index for {resolved_repo}. Run context_search_index first.",
         )
-
-    try:
-        capability = _graph_capability(resolved_repo)
-    except IncompatibleSignalSchemaError as exc:
+    except (
+        IncompatibleManifestSchemaError,
+        IncompatibleOperationalSchemaError,
+        IncompatibleSignalSchemaError,
+    ) as exc:
         return _error(exc.code, str(exc))
-    if capability.status == "stale":
+    except index_health.IndexCorruptionError as exc:
+        return _error(exc.code, str(exc))
+    except Exception:
+        return _error("stats_failed", "statistics inspection failed")
+
+    if report.integrity.graph == "stale":
         logging.getLogger("context_search_tool.mcp_tools").warning(
             "graph_index_stale"
         )
-    config = load_config(resolved_repo)
-    store = SQLiteStore(index_dir / "index.sqlite")
-    counts = store.stats()
-    manifest = load_manifest(resolved_repo) if (index_dir / "manifest.json").exists() else None
-    provider = manifest.embedding_provider if manifest is not None else config.embedding.provider
-    model = manifest.embedding_model if manifest is not None else config.embedding.model
-    dimensions = (
-        manifest.embedding_dimensions if manifest is not None else config.embedding.dimensions
-    )
-    return {
-        "ok": True,
-        "repo": str(resolved_repo),
-        "stats": {
-            "total_files": counts["source_files"],
-            "total_chunks": counts["active_chunks"],
-            "deleted_chunks": counts["deleted_chunks"],
-            "symbols": counts["symbols"],
-            "lexical_tokens": counts["tokens"],
-            "disk_usage_bytes": _disk_usage(index_dir),
-        },
-        "embedding": {
-            "provider": provider,
-            "model": model,
-            "dimensions": dimensions,
-        },
-    }
+    return payload
 
 
 def context_search_explain_tool(repo: str, location: str) -> dict[str, Any]:
@@ -537,17 +547,16 @@ def context_search_explain_tool(repo: str, location: str) -> dict[str, Any]:
     except RepositoryNotFoundError as exc:
         return _error("repo_not_found", str(exc))
 
+    preflight_error = _consumer_preflight_error(resolved_repo, "explain")
+    if preflight_error is not None:
+        return preflight_error
+
     try:
         file_path, line = _parse_location(location, resolved_repo)
     except ValueError as exc:
         return _error("invalid_location", str(exc))
 
     index_dir = index_dir_for(resolved_repo)
-    if not (index_dir / "index.sqlite").exists():
-        return _error(
-            "missing_index",
-            f"Missing index for {resolved_repo}. Run context_search_index first.",
-        )
 
     try:
         store = SQLiteStore(index_dir / "index.sqlite")
@@ -587,16 +596,26 @@ def _load_query_config(repo: Path, final_top_k: int | None) -> ToolConfig:
     )
 
 
-def _reject_future_signal_schema(repo: Path) -> None:
-    db_path = index_dir_for(repo) / "index.sqlite"
-    if db_path.exists():
-        _graph_capability(repo)
-
-
-def _graph_capability(repo: Path):
-    return read_graph_capability(
-        SQLiteStore(index_dir_for(repo) / "index.sqlite")
-    )
+def _consumer_preflight_error(
+    repo: Path,
+    operation: str,
+) -> dict[str, Any] | None:
+    try:
+        index_health.preflight_public_operation(repo, operation)
+    except index_health.MissingIndexError:
+        return _error(
+            "missing_index",
+            f"Missing index for {repo}. Run context_search_index first.",
+        )
+    except (
+        IncompatibleManifestSchemaError,
+        IncompatibleOperationalSchemaError,
+        IncompatibleSignalSchemaError,
+    ) as exc:
+        return _error(exc.code, str(exc))
+    except index_health.IndexCorruptionError as exc:
+        return _error("query_failed", str(exc))
+    return None
 
 
 def _query_payload(bundle: QueryBundle) -> dict[str, Any]:
@@ -1496,12 +1515,6 @@ def _parse_location(location: str, repo: Path) -> tuple[Path, int]:
         except ValueError:
             raise ValueError("absolute path must be inside repo") from None
     return path, line
-
-
-def _disk_usage(path: Path) -> int:
-    if not path.exists():
-        return 0
-    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
 
 def _short_hash(value: str) -> str:

@@ -186,6 +186,14 @@ P6_TASK3_PRODUCTION_CHANGES = {
     "src/context_search_tool/vector_store.py",
 }
 
+P6_TASK4_PRODUCTION_CHANGES = {
+    "src/context_search_tool/cli.py",
+    "src/context_search_tool/index_health.py",
+    "src/context_search_tool/indexer.py",
+    "src/context_search_tool/mcp_server.py",
+    "src/context_search_tool/mcp_tools.py",
+}
+
 P4_IMPLEMENTATION_BASELINE = "b827707325d0ee4e9c6b2bcb3dee39955c263822"
 THIS_TEST_PATH = "tests/test_retrieval_core_boundaries.py"
 
@@ -259,6 +267,7 @@ INDEX_LOCK_ALLOWED_INTERNAL_IMPORTS = {
 }
 
 INDEX_HEALTH_ALLOWED_INTERNAL_IMPORTS = {
+    "context_search_tool.config",
     "context_search_tool.graph_lifecycle",
     "context_search_tool.manifest",
     "context_search_tool.scanner",
@@ -684,6 +693,7 @@ def test_graph_lifecycle_primitives_are_leaf_bounded_and_activated() -> None:
     assert "context_search_tool.graph_lifecycle" in indexer_imports
     assert "context_search_tool.graph_resolution" in indexer_imports
     assert "context_search_tool.index_lock" in indexer_imports
+    assert "context_search_tool.index_health" in indexer_imports
     assert "context_search_tool.scanner" in indexer_imports
 
     indexer_tree = ast.parse(indexer_path.read_text(encoding="utf-8"))
@@ -722,6 +732,31 @@ def test_graph_lifecycle_primitives_are_leaf_bounded_and_activated() -> None:
         for node in ast.walk(public_indexer)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     } >= {"build_v5_index_snapshot", "default_plugins"}
+    public_calls = {
+        node.func.id: node.lineno
+        for node in ast.walk(public_indexer)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert public_calls["preflight_public_operation"] < public_calls["load_config"]
+    assert public_calls["preflight_public_operation"] < public_calls["default_plugins"]
+
+    for path, function_name in (
+        (package / "cli.py", "index"),
+        (package / "mcp_tools.py", "context_search_index_tool"),
+    ):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        public_command = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == function_name
+        )
+        assert not [
+            node
+            for node in ast.walk(public_command)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "load_config"
+        ]
 
     retrieval_tree = _retrieval_tree()
     public_query = next(
@@ -873,6 +908,7 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         | P5_REVIEWED_PRODUCTION_CHANGES
         | P6_TASK2_PRODUCTION_CHANGES
         | P6_TASK3_PRODUCTION_CHANGES
+        | P6_TASK4_PRODUCTION_CHANGES
     )
 
     source_status = subprocess.run(
@@ -894,6 +930,7 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         P5_REVIEWED_PRODUCTION_CHANGES
         | P6_TASK2_PRODUCTION_CHANGES
         | P6_TASK3_PRODUCTION_CHANGES
+        | P6_TASK4_PRODUCTION_CHANGES
     )
 
     subprocess.run(

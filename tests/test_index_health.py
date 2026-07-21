@@ -571,3 +571,75 @@ def test_production_snapshot_adapter_binds_manifest_sqlite_and_vector_tuple(
     corrupted = module.read_committed_index_snapshot(repo)
     assert corrupted.manifest_valid is False
     assert corrupted.sqlite_valid is True
+
+
+def test_status_envelope_and_requirement_contract_use_the_frozen_report() -> None:
+    module = _health_module()
+    assert hasattr(module, "status_success_envelope"), (
+        "P6 status envelope serializer is absent"
+    )
+    assert hasattr(module, "status_requirement_satisfied"), (
+        "P6 status requirement helper is absent"
+    )
+    report = module.IndexHealthReport.from_dict(_case("healthy_metadata"))
+
+    envelope = module.status_success_envelope("fixture-repo", report)
+
+    fixture = json.loads(
+        (ROOT / "tests" / "fixtures" / "p6_contracts" / "status_envelopes_v1.json")
+        .read_text(encoding="utf-8")
+    )
+    assert envelope == fixture["success"]
+    assert tuple(envelope) == ("schema_version", "ok", "repo", "index_health")
+    assert module.status_requirement_satisfied(report, "metadata") is True
+    assert module.status_requirement_satisfied(report, "queryable") is True
+    assert module.status_requirement_satisfied(report, "verified") is False
+    with pytest.raises(ValueError, match="verified, metadata, or queryable"):
+        module.status_requirement_satisfied(report, "unknown")
+
+
+def test_production_status_missing_is_read_only_and_never_reads_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _health_module()
+    assert hasattr(module, "inspect_repository_health"), (
+        "P6 production status inspector is absent"
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    before = _tree_snapshot(repo)
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("missing status crossed schema-first preflight")
+
+    monkeypatch.setattr(module, "read_config", forbidden, raising=False)
+    report = module.inspect_repository_health(repo, mode="quick")
+
+    assert module.serialize_index_health(report) == _case("missing")
+    assert _tree_snapshot(repo) == before
+    assert not (repo / ".context-search").exists()
+
+
+def test_production_status_reads_legacy_v1_without_mutation(tmp_path: Path) -> None:
+    module = _health_module()
+    assert hasattr(module, "inspect_repository_health"), (
+        "P6 production status inspector is absent"
+    )
+    from context_search_tool.indexer import index_repository
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    before = _tree_snapshot(repo)
+
+    report = module.inspect_repository_health(repo, mode="verified")
+    rendered = module.serialize_index_health(report)
+
+    assert rendered["health"] == "degraded"
+    assert rendered["freshness"]["status"] == "unknown"
+    assert rendered["freshness"]["inspection_mode"] == "verified"
+    assert rendered["refresh"]["reasons"] == ["manifest_upgrade"]
+    assert rendered["queryable"] is True
+    assert _tree_snapshot(repo) == before

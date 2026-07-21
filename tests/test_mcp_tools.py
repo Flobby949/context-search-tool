@@ -1746,3 +1746,191 @@ def test_mcp_stats_logs_stale_without_changing_payload(
     assert payload["ok"] is True
     assert "warning" not in payload
     assert caplog.messages.count("graph_index_stale") == 1
+
+
+def _p6_mcp_health_report(case_id: str):
+    from context_search_tool import index_health
+
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "p6_contracts"
+            / "index_health_v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    raw = next(
+        item["report"] for item in fixture["cases"] if item["id"] == case_id
+    )
+    return index_health.IndexHealthReport.from_dict(raw)
+
+
+def test_mcp_status_uses_exact_shared_envelope_and_sanitized_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert hasattr(mcp_tools, "context_search_status_tool"), (
+        "P6 MCP status tool is absent"
+    )
+    assert hasattr(mcp_tools, "index_health"), "P6 shared MCP health service is absent"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    report = _p6_mcp_health_report("healthy_metadata")
+    modes: list[str] = []
+
+    def inspect(_repo: Path, *, mode: str):
+        modes.append(mode)
+        return report
+
+    monkeypatch.setattr(mcp_tools.index_health, "inspect_repository_health", inspect)
+    payload = mcp_tools.context_search_status_tool(str(repo), verify=True)
+
+    assert tuple(payload) == ("schema_version", "ok", "repo", "index_health")
+    assert payload == mcp_tools.index_health.status_success_envelope(str(repo), report)
+    assert modes == ["verified"]
+
+    missing = mcp_tools.context_search_status_tool(str(tmp_path / "missing"))
+    assert missing == {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": "repo_not_found",
+            "message": "repository root was not found",
+        },
+    }
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("PRIVATE_STATUS_FAILURE")
+
+    monkeypatch.setattr(mcp_tools.index_health, "inspect_repository_health", fail)
+    assert mcp_tools.context_search_status_tool(str(repo)) == {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": "status_failed",
+            "message": "status inspection failed",
+        },
+    }
+
+
+def test_cli_json_and_mcp_status_are_value_equal_for_one_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert hasattr(mcp_tools, "context_search_status_tool"), (
+        "P6 MCP status tool is absent"
+    )
+    assert hasattr(cli, "index_health"), "P6 CLI status service is absent"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    report = _p6_mcp_health_report("stale")
+
+    monkeypatch.setattr(
+        mcp_tools.index_health,
+        "inspect_repository_health",
+        lambda _repo, *, mode: report,
+    )
+    cli_payload = json.loads(
+        CliRunner().invoke(app, ["status", str(repo), "--json"]).stdout
+    )
+    mcp_payload = mcp_tools.context_search_status_tool(str(repo))
+
+    assert cli_payload == mcp_payload
+
+
+def test_mcp_status_missing_is_successful_and_read_only(tmp_path: Path) -> None:
+    assert hasattr(mcp_tools, "context_search_status_tool"), (
+        "P6 MCP status tool is absent"
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    payload = mcp_tools.context_search_status_tool(str(repo))
+
+    assert payload["schema_version"] == 1
+    assert payload["ok"] is True
+    assert payload["index_health"]["health"] == "missing"
+    assert not (repo / ".context-search").exists()
+
+
+@pytest.mark.parametrize(
+    ("manifest_version", "operational_version", "graph_version", "error_code"),
+    [
+        (3, None, None, "incompatible_manifest_schema"),
+        (2, 2, 5, "incompatible_operational_schema"),
+        (2, 1, 6, "incompatible_signal_schema"),
+    ],
+)
+def test_mcp_status_reports_future_but_stats_fails_before_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    manifest_version: int,
+    operational_version: int | None,
+    graph_version: int | None,
+    error_code: str,
+) -> None:
+    assert hasattr(mcp_tools, "context_search_status_tool"), (
+        "P6 MCP status tool is absent"
+    )
+    repo = tmp_path / error_code
+    repo.mkdir()
+    index_dir = repo / ".context-search"
+    index_dir.mkdir()
+    (index_dir / "manifest.json").write_text(
+        json.dumps({"schema_version": manifest_version}),
+        encoding="utf-8",
+    )
+    store = mcp_tools.SQLiteStore(index_dir / "index.sqlite")
+    store.initialize()
+    if operational_version is not None:
+        store.set_metadata("operational_schema_version", str(operational_version))
+    if graph_version is not None:
+        store.set_metadata("signal_schema_version", str(graph_version))
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("future schema crossed config preflight")
+
+    monkeypatch.setattr(mcp_tools, "load_config", forbidden)
+    status = mcp_tools.context_search_status_tool(str(repo))
+    stats = mcp_tools.context_search_stats_tool(str(repo))
+
+    assert status["ok"] is True
+    assert status["index_health"]["health"] == "incompatible"
+    assert stats == {
+        "ok": False,
+        "error": {
+            "code": error_code,
+            "message": {
+                "incompatible_manifest_schema": "incompatible manifest schema 3",
+                "incompatible_operational_schema": "incompatible operational schema 2",
+                "incompatible_signal_schema": "incompatible signal schema 6",
+            }[error_code],
+        },
+    }
+
+
+def test_mcp_stats_verify_is_additive_and_runs_one_inspection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    assert context_search_index_tool(str(repo))["ok"] is True
+    report = _p6_mcp_health_report("healthy_verified")
+    modes: list[str] = []
+
+    def inspect(_repo: Path, *, mode: str):
+        modes.append(mode)
+        return report
+
+    assert hasattr(mcp_tools, "index_health"), "P6 shared MCP health service is absent"
+    monkeypatch.setattr(mcp_tools.index_health, "inspect_repository_health", inspect)
+    payload = mcp_tools.context_search_stats_tool(str(repo), verify=True)
+
+    assert tuple(payload) == ("ok", "repo", "stats", "embedding", "index_health")
+    assert modes == ["verified"]
+    assert payload["stats"]["total_files"] == 2
+    assert payload["embedding"]["provider"] == "hash"
+    assert payload["index_health"] == mcp_tools.index_health.serialize_index_health(
+        report
+    )
