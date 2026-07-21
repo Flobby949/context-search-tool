@@ -1,3 +1,4 @@
+import json
 import math
 import warnings
 from pathlib import Path
@@ -355,6 +356,132 @@ def test_vector_generation_fault_never_repoints_published_descriptor(
         )
 
     assert NumpyVectorStore.load_published(tmp_path).ids == ("a",)
+
+
+def test_descriptor_v2_quick_validation_uses_sizes_without_loading_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert hasattr(NumpyVectorStore, "prepare_generation_v2"), (
+        "P6 descriptor-v2 preparation is absent"
+    )
+    assert hasattr(NumpyVectorStore, "inspect_published_descriptor"), (
+        "P6 quick descriptor inspection is absent"
+    )
+    store = NumpyVectorStore.fresh(tmp_path)
+    store.upsert_many(
+        [
+            ("a", np.asarray([1.0, 0.0], dtype=np.float32)),
+            ("b", np.asarray([0.0, 1.0], dtype=np.float32)),
+        ]
+    )
+    prepared = store.prepare_generation_v2(
+        generation="g2",
+        embedding_identity="hash-v1:2",
+        normalization="l2",
+    )
+    store.publish_generation(prepared)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("quick descriptor inspection loaded vector payload")
+
+    monkeypatch.setattr(vector_store_module, "_load_generation", forbidden)
+    snapshot = NumpyVectorStore.inspect_published_descriptor(tmp_path)
+
+    assert snapshot is not None
+    assert snapshot.descriptor.schema_version == 2
+    assert snapshot.descriptor.normalization == "l2"
+    assert snapshot.descriptor.vectors_bytes == (
+        tmp_path / "vectors.g2.npy"
+    ).stat().st_size
+    assert snapshot.descriptor.ids_bytes == (
+        tmp_path / "vector_ids.g2.json"
+    ).stat().st_size
+    assert snapshot.byte_size == (tmp_path / "vector_snapshot.json").stat().st_size
+    assert len(snapshot.sha256) == 64
+
+
+def test_descriptor_v2_verified_load_checks_exact_ids_and_normalization(
+    tmp_path: Path,
+) -> None:
+    assert hasattr(NumpyVectorStore, "verify_published_snapshot"), (
+        "P6 verified vector inspection is absent"
+    )
+    store = NumpyVectorStore.fresh(tmp_path)
+    store.upsert_many(
+        [
+            ("a", np.asarray([1.0, 0.0], dtype=np.float32)),
+            ("b", np.asarray([0.0, 1.0], dtype=np.float32)),
+        ]
+    )
+    prepared = store.prepare_generation_v2(
+        generation="g2",
+        embedding_identity="hash-v1:2",
+        normalization="l2",
+    )
+    store.publish_generation(prepared)
+
+    verified = NumpyVectorStore.verify_published_snapshot(
+        tmp_path,
+        expected_ids={"a", "b"},
+        expected_embedding_identity="hash-v1:2",
+    )
+    assert verified.ids == ("a", "b")
+    with pytest.raises(ValueError, match="exact vector IDs"):
+        NumpyVectorStore.verify_published_snapshot(
+            tmp_path,
+            expected_ids={"a", "missing"},
+        )
+
+    vectors_path = tmp_path / "vectors.g2.npy"
+    np.save(vectors_path, np.asarray([[2.0, 0.0], [0.0, 2.0]], dtype=np.float32))
+    descriptor_path = tmp_path / "vector_snapshot.json"
+    descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    descriptor["vectors_sha256"] = vector_store_module._sha256_file(vectors_path)
+    descriptor["vectors_bytes"] = vectors_path.stat().st_size
+    descriptor_path.write_text(
+        json.dumps(descriptor, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="normalization"):
+        NumpyVectorStore.verify_published_snapshot(tmp_path, expected_ids={"a", "b"})
+
+
+def test_descriptor_v2_rejects_future_schema_size_damage_and_symlink(
+    tmp_path: Path,
+) -> None:
+    assert hasattr(vector_store_module, "IncompatibleVectorDescriptorSchemaError"), (
+        "P6 descriptor compatibility error is absent"
+    )
+    store = NumpyVectorStore.fresh(tmp_path)
+    store.upsert_many([("a", np.asarray([1.0, 0.0], dtype=np.float32))])
+    prepared = store.prepare_generation_v2(
+        generation="g2",
+        embedding_identity="hash-v1:2",
+        normalization="none",
+    )
+    store.publish_generation(prepared)
+    descriptor_path = tmp_path / "vector_snapshot.json"
+    original = descriptor_path.read_text(encoding="utf-8")
+    future = json.loads(original)
+    future["schema_version"] = 3
+    descriptor_path.write_text(json.dumps(future), encoding="utf-8")
+
+    with pytest.raises(vector_store_module.IncompatibleVectorDescriptorSchemaError):
+        NumpyVectorStore.inspect_published_descriptor(tmp_path)
+
+    descriptor_path.write_text(original, encoding="utf-8")
+    ids_path = tmp_path / "vector_ids.g2.json"
+    ids_path.write_bytes(ids_path.read_bytes() + b" ")
+    with pytest.raises(ValueError, match="size"):
+        NumpyVectorStore.inspect_published_descriptor(tmp_path)
+
+    ids_path.unlink()
+    outside = tmp_path.parent / "outside-ids.json"
+    outside.write_text('["a"]\n', encoding="utf-8")
+    ids_path.symlink_to(outside)
+    with pytest.raises(ValueError, match="non-symlink"):
+        NumpyVectorStore.inspect_published_descriptor(tmp_path)
 
 
 def test_provider_from_config_supports_bge() -> None:

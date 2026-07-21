@@ -542,6 +542,39 @@ def test_migration_fault_rolls_back_to_complete_v4(tmp_path: Path) -> None:
     assert _schema_projection(path) == before
 
 
+def test_operational_additive_ddl_fault_rolls_back_to_exact_v5(
+    tmp_path: Path,
+) -> None:
+    store = _v5_store(tmp_path)
+
+    def operational_projection() -> tuple[object, ...]:
+        with sqlite3.connect(store.db_path) as connection:
+            return (
+                tuple(
+                    connection.execute(
+                        "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
+                    )
+                ),
+                tuple(connection.execute("PRAGMA table_info(source_files)")),
+                tuple(
+                    connection.execute(
+                        "SELECT key, value, updated_at FROM index_metadata ORDER BY key"
+                    )
+                ),
+            )
+
+    before = operational_projection()
+
+    def fail() -> None:
+        raise RuntimeError("operational ddl fault")
+
+    with pytest.raises(RuntimeError, match="operational ddl fault"):
+        store.initialize_operational_schema_v1(before_commit=fail)
+
+    assert operational_projection() == before
+    assert store.get_metadata("operational_schema_version") is None
+
+
 def test_v5_codecs_root_unit_recallable_filter_and_legacy_view(tmp_path: Path) -> None:
     store = _v5_store(tmp_path)
     chunk = _chunk("chunk", "src/Target.java")

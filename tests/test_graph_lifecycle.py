@@ -104,6 +104,32 @@ def test_graph_capability_rejects_future_or_malformed_versions() -> None:
         read_graph_capability(_Metadata({"signal_schema_version": "future"}))
 
 
+def test_operational_capability_is_independent_and_fails_closed() -> None:
+    from context_search_tool import graph_lifecycle as lifecycle
+
+    assert hasattr(lifecycle, "read_operational_capability"), (
+        "P6 operational capability reader is absent"
+    )
+    assert hasattr(lifecycle, "IncompatibleOperationalSchemaError"), (
+        "P6 operational compatibility error is absent"
+    )
+
+    legacy = lifecycle.read_operational_capability(_Metadata({}))
+    current = lifecycle.read_operational_capability(
+        _Metadata({"operational_schema_version": "1"})
+    )
+    assert (legacy.status, legacy.schema_version) == ("legacy", 0)
+    assert (current.status, current.schema_version) == ("current", 1)
+
+    error_type = lifecycle.IncompatibleOperationalSchemaError
+    for value in ("2", "future", "-1"):
+        with pytest.raises(error_type) as caught:
+            lifecycle.read_operational_capability(
+                _Metadata({"operational_schema_version": value})
+            )
+        assert caught.value.code == "incompatible_operational_schema"
+
+
 def test_exclusive_index_lock_is_retained_and_contended_process_fails_closed(
     tmp_path: Path,
 ) -> None:

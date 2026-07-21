@@ -8,8 +8,10 @@ from context_search_tool.graph_contract import RESOLUTION_STATES
 
 TARGET_SIGNAL_SCHEMA_VERSION = 5
 TARGET_GRAPH_RESOLUTION_VERSION = 1
+TARGET_OPERATIONAL_SCHEMA_VERSION = 1
 
 SIGNAL_SCHEMA_VERSION_KEY = "signal_schema_version"
+OPERATIONAL_SCHEMA_VERSION_KEY = "operational_schema_version"
 GRAPH_RESOLUTION_STATE_KEY = "graph_resolution_state"
 GRAPH_RESOLUTION_VERSION_KEY = "graph_resolution_version"
 GRAPH_STALE_REASON_KEY = "graph_stale_reason"
@@ -38,6 +40,14 @@ class IncompatibleSignalSchemaError(RuntimeError):
         super().__init__(f"incompatible signal schema {stored_version}")
 
 
+class IncompatibleOperationalSchemaError(RuntimeError):
+    code = "incompatible_operational_schema"
+
+    def __init__(self, stored_version: object) -> None:
+        self.stored_version = stored_version
+        super().__init__(f"incompatible operational schema {stored_version}")
+
+
 class IndexBusyError(RuntimeError):
     code = "index_busy"
 
@@ -49,6 +59,10 @@ class GraphIntegrityError(ValueError):
     code = "graph_integrity_error"
 
 
+class OperationalIntegrityError(ValueError):
+    code = "operational_integrity_error"
+
+
 @dataclass(frozen=True)
 class GraphCapability:
     schema_version: int
@@ -58,6 +72,12 @@ class GraphCapability:
     relation_evidence_allowed: bool
     full_reindex_required: bool
     stale_reason: str
+
+
+@dataclass(frozen=True)
+class OperationalCapability:
+    schema_version: int
+    status: Literal["legacy", "current"]
 
 
 @dataclass(frozen=True)
@@ -152,6 +172,21 @@ def read_graph_capability(metadata: MetadataReader) -> GraphCapability:
         full_reindex_required=full_reindex_required,
         stale_reason=stale_reason,
     )
+
+
+def read_operational_capability(metadata: MetadataReader) -> OperationalCapability:
+    raw_version = metadata.get_metadata(OPERATIONAL_SCHEMA_VERSION_KEY)
+    if raw_version is None or raw_version == "":
+        return OperationalCapability(schema_version=0, status="legacy")
+    try:
+        version = int(raw_version)
+    except (TypeError, ValueError) as error:
+        raise IncompatibleOperationalSchemaError(raw_version) from error
+    if version < 0 or str(version) != str(raw_version):
+        raise IncompatibleOperationalSchemaError(raw_version)
+    if version != TARGET_OPERATIONAL_SCHEMA_VERSION:
+        raise IncompatibleOperationalSchemaError(version)
+    return OperationalCapability(schema_version=version, status="current")
 
 
 def resolution_state_is_valid(value: str) -> bool:

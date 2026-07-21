@@ -9,21 +9,35 @@ from typing import Any, Callable, Mapping, Sequence
 from context_search_tool.graph_lifecycle import (
     TARGET_SIGNAL_SCHEMA_VERSION,
     classify_raw_graph_schema,
+    read_graph_capability,
 )
 from context_search_tool.manifest import (
+    Manifest,
+    ManifestV2,
     READABLE_MANIFEST_VERSIONS,
     inspect_raw_manifest_schema,
+    load_manifest_snapshot,
 )
 from context_search_tool.scanner import (
     CoverageSkipObservation,
     FileObservation,
     InventoryDiagnostic,
     ObservedFileRead,
+    StableFileMetadata,
     WorkspaceInventory,
 )
 from context_search_tool.sqlite_store import (
+    OperationalScanSkip,
+    OperationalSnapshot,
+    OperationalSourceObservation,
+    SQLiteStore,
     TARGET_OPERATIONAL_SCHEMA_VERSION,
     inspect_raw_sqlite_schema_versions,
+)
+from context_search_tool.vector_store import (
+    NumpyVectorStore,
+    PublishedVectorDescriptor,
+    VectorDescriptorCorruptionError,
 )
 
 
@@ -826,6 +840,7 @@ class CommittedIndexSnapshot:
     sqlite_valid: bool
     vector_identity_valid: bool
     indexed_embedding: EmbeddingIdentity
+    active_embedding_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -850,6 +865,317 @@ class VectorVerification:
     @classmethod
     def interrupted(cls) -> VectorVerification:
         return cls("interrupted", (), ())
+
+
+def read_committed_index_snapshot(repo: Path) -> CommittedIndexSnapshot:
+    resolved = repo.resolve(strict=True)
+    index_dir = resolved / ".context-search"
+    store = SQLiteStore(index_dir / "index.sqlite")
+    loaded_manifest = load_manifest_snapshot(resolved)
+    manifest = loaded_manifest.manifest
+    operational = store.read_operational_snapshot()
+    if isinstance(manifest, Manifest):
+        return _legacy_committed_snapshot(store, index_dir, manifest)
+    if operational is None:
+        return _unbound_v2_snapshot(store, index_dir, manifest)
+
+    descriptor_snapshot: PublishedVectorDescriptor | None
+    try:
+        descriptor_snapshot = NumpyVectorStore.inspect_published_descriptor(index_dir)
+    except VectorDescriptorCorruptionError:
+        descriptor_snapshot = None
+    manifest_valid = _manifest_matches_operational(
+        manifest,
+        loaded_manifest.sha256,
+        operational,
+    )
+    vector_valid = _vector_matches_bound_snapshot(
+        manifest,
+        operational,
+        descriptor_snapshot,
+    )
+    descriptor = (
+        descriptor_snapshot.descriptor if descriptor_snapshot is not None else None
+    )
+    return CommittedIndexSnapshot(
+        ready_generation=operational.binding.manifest_generation,
+        manifest_version=manifest.schema_version,
+        operational_version=operational.operational_version,
+        graph_version=operational.graph_version,
+        graph_status=operational.graph_status,
+        graph_stale_reason=operational.graph_stale_reason,
+        queryable=(
+            operational.graph_status == "ready" and manifest_valid and vector_valid
+        ),
+        indexed_at_epoch_s=operational.binding.indexed_at_epoch_s,
+        indexed_files=tuple(
+            _indexed_file_observation(item)
+            for item in operational.source_observations
+        ),
+        coverage_skips=tuple(
+            _coverage_skip_observation(item) for item in operational.scan_skips
+        ),
+        eligible_chunks=operational.chunk_count,
+        vector_rows=descriptor.row_count if descriptor is not None else 0,
+        vector_generation=(
+            descriptor.generation
+            if descriptor is not None
+            else operational.binding.vector_generation
+        ),
+        vector_dimensions=(
+            descriptor.dimensions
+            if descriptor is not None
+            else manifest.embedding_dimensions
+        ),
+        manifest_valid=manifest_valid,
+        sqlite_valid=True,
+        vector_identity_valid=vector_valid,
+        indexed_embedding=_indexed_embedding(manifest),
+        active_embedding_ids=operational.active_embedding_ids,
+    )
+
+
+def verify_committed_vector_snapshot(
+    repo: Path,
+    snapshot: CommittedIndexSnapshot,
+) -> VectorVerification:
+    if not snapshot.vector_identity_valid:
+        return VectorVerification.invalid()
+    try:
+        verified = NumpyVectorStore.verify_published_snapshot(
+            repo.resolve(strict=True) / ".context-search",
+        )
+    except ValueError:
+        return VectorVerification.invalid()
+    if verified.descriptor_snapshot.descriptor.generation != snapshot.vector_generation:
+        return VectorVerification.interrupted()
+    expected = set(snapshot.active_embedding_ids)
+    actual = set(verified.ids)
+    if expected != actual:
+        return VectorVerification.invalid(
+            missing_ids=tuple(sorted(expected - actual)),
+            orphan_ids=tuple(sorted(actual - expected)),
+        )
+    return VectorVerification.valid()
+
+
+def _manifest_matches_operational(
+    manifest: ManifestV2,
+    manifest_sha256: str,
+    operational: OperationalSnapshot,
+) -> bool:
+    binding = operational.binding
+    return all(
+        (
+            manifest.schema_version == binding.manifest_schema_version,
+            manifest.manifest_generation == binding.manifest_generation,
+            manifest_sha256 == binding.manifest_sha256,
+            manifest.index_config_hash == binding.index_config_hash,
+            manifest.source_content_fingerprint
+            == binding.source_content_fingerprint,
+            manifest.source_observation_fingerprint
+            == binding.source_observation_fingerprint,
+            manifest.observation_generation == binding.observation_generation,
+            manifest.vector_descriptor_schema_version
+            == binding.vector_descriptor_schema_version,
+            manifest.vector_generation == binding.vector_generation,
+            manifest.vector_descriptor_sha256
+            == binding.vector_descriptor_sha256,
+            manifest.vector_bytes == binding.vector_bytes,
+            manifest.vector_ids_bytes == binding.vector_ids_bytes,
+            manifest.indexed_at_epoch_s == binding.indexed_at_epoch_s,
+            manifest.operational_schema_version
+            == operational.operational_version,
+            manifest.operation_mode == binding.operation_mode,
+            manifest.work_metrics == binding.work_metrics,
+            manifest.total_files == operational.source_count,
+            manifest.total_chunks == operational.chunk_count,
+        )
+    )
+
+
+def _vector_matches_bound_snapshot(
+    manifest: ManifestV2,
+    operational: OperationalSnapshot,
+    snapshot: PublishedVectorDescriptor | None,
+) -> bool:
+    if snapshot is None:
+        return False
+    descriptor = snapshot.descriptor
+    binding = operational.binding
+    return all(
+        (
+            descriptor.schema_version == binding.vector_descriptor_schema_version,
+            descriptor.generation == binding.vector_generation,
+            snapshot.sha256 == binding.vector_descriptor_sha256,
+            descriptor.vectors_bytes == binding.vector_bytes,
+            descriptor.ids_bytes == binding.vector_ids_bytes,
+            descriptor.schema_version == manifest.vector_descriptor_schema_version,
+            descriptor.generation == manifest.vector_generation,
+            snapshot.sha256 == manifest.vector_descriptor_sha256,
+            descriptor.row_count == len(operational.active_embedding_ids),
+            descriptor.dimensions == manifest.embedding_dimensions,
+            _descriptor_embedding_matches(descriptor.embedding_identity, manifest),
+        )
+    )
+
+
+def _descriptor_embedding_matches(identity: str, manifest: ManifestV2) -> bool:
+    return identity in {
+        manifest.embedding_config_hash,
+        f"{manifest.embedding_model}:{manifest.embedding_dimensions}",
+    }
+
+
+def _indexed_file_observation(
+    item: OperationalSourceObservation,
+) -> IndexedFileObservation:
+    return IndexedFileObservation(
+        path=item.path.as_posix(),
+        language=item.language,
+        size=item.size,
+        mtime_ns=item.mtime_ns,
+        change_token=item.change_token,
+        change_token_kind=item.change_token_kind,
+        sha256=item.sha256,
+    )
+
+
+def _coverage_skip_observation(
+    item: OperationalScanSkip,
+) -> CoverageSkipObservation:
+    metadata = (
+        StableFileMetadata(
+            size=item.size,
+            mtime_ns=item.mtime_ns,
+            change_token=item.change_token,
+            change_token_kind=item.change_token_kind,
+            device=0,
+            inode=0,
+            mode=0,
+        )
+        if item.size is not None and item.mtime_ns is not None
+        else None
+    )
+    return CoverageSkipObservation(
+        path=item.path,
+        language=item.language or "",
+        reason=item.reason,
+        retryable=item.retryable,
+        metadata=metadata,
+    )
+
+
+def _indexed_embedding(manifest: Manifest | ManifestV2) -> EmbeddingIdentity:
+    if manifest.embedding_provider == "hash":
+        return EmbeddingIdentity.hash_v1(
+            manifest.embedding_config_hash,
+            manifest.embedding_dimensions,
+        )
+    return EmbeddingIdentity(
+        status="valid",
+        provider=manifest.embedding_provider,
+        model=manifest.embedding_model,
+        dimensions=manifest.embedding_dimensions,
+        config_hash=manifest.embedding_config_hash,
+        network_egress_capable=True,
+        network_egress_evidence="persisted_manifest",
+    )
+
+
+def _legacy_committed_snapshot(
+    store: SQLiteStore,
+    index_dir: Path,
+    manifest: Manifest,
+) -> CommittedIndexSnapshot:
+    sources = store.source_files_snapshot()
+    graph = read_graph_capability(store)
+    active_ids = tuple(sorted(store.active_embedding_ids()))
+    try:
+        descriptor = NumpyVectorStore.published_descriptor(index_dir)
+    except ValueError:
+        descriptor = None
+    vector_valid = descriptor is not None and (
+        descriptor.embedding_identity == manifest.embedding_config_hash
+        and descriptor.row_count == len(active_ids)
+        and descriptor.dimensions == manifest.embedding_dimensions
+    )
+    raw_indexed_at = store.get_metadata("indexed_at")
+    try:
+        indexed_at = int(raw_indexed_at) if raw_indexed_at is not None else None
+    except ValueError:
+        indexed_at = None
+    return CommittedIndexSnapshot(
+        ready_generation=(descriptor.generation if descriptor is not None else "legacy-v1"),
+        manifest_version=1,
+        operational_version=None,
+        graph_version=graph.schema_version,
+        graph_status=graph.status,
+        graph_stale_reason=graph.stale_reason,
+        queryable=graph.status in {"legacy", "ready"} and vector_valid,
+        indexed_at_epoch_s=indexed_at,
+        indexed_files=tuple(
+            IndexedFileObservation(
+                path=item.path.as_posix(),
+                language=item.language,
+                size=item.size,
+                mtime_ns=item.mtime_ns,
+                change_token=None,
+                change_token_kind="unavailable",
+                sha256=item.sha256,
+            )
+            for item in sources
+        ),
+        coverage_skips=(),
+        eligible_chunks=manifest.total_chunks,
+        vector_rows=descriptor.row_count if descriptor is not None else 0,
+        vector_generation=descriptor.generation if descriptor is not None else "",
+        vector_dimensions=(
+            descriptor.dimensions if descriptor is not None else manifest.embedding_dimensions
+        ),
+        manifest_valid=True,
+        sqlite_valid=True,
+        vector_identity_valid=vector_valid,
+        indexed_embedding=_indexed_embedding(manifest),
+        active_embedding_ids=active_ids,
+    )
+
+
+def _unbound_v2_snapshot(
+    store: SQLiteStore,
+    index_dir: Path,
+    manifest: ManifestV2,
+) -> CommittedIndexSnapshot:
+    graph = read_graph_capability(store)
+    active_ids = tuple(sorted(store.active_embedding_ids()))
+    try:
+        descriptor_snapshot = NumpyVectorStore.inspect_published_descriptor(index_dir)
+    except VectorDescriptorCorruptionError:
+        descriptor_snapshot = None
+    descriptor = (
+        descriptor_snapshot.descriptor if descriptor_snapshot is not None else None
+    )
+    return CommittedIndexSnapshot(
+        ready_generation=manifest.manifest_generation,
+        manifest_version=2,
+        operational_version=None,
+        graph_version=graph.schema_version,
+        graph_status=graph.status,
+        graph_stale_reason=graph.stale_reason or "migration_incomplete",
+        queryable=False,
+        indexed_at_epoch_s=manifest.indexed_at_epoch_s,
+        indexed_files=(),
+        coverage_skips=(),
+        eligible_chunks=manifest.total_chunks,
+        vector_rows=descriptor.row_count if descriptor is not None else 0,
+        vector_generation=manifest.vector_generation,
+        vector_dimensions=manifest.embedding_dimensions,
+        manifest_valid=True,
+        sqlite_valid=False,
+        vector_identity_valid=False,
+        indexed_embedding=_indexed_embedding(manifest),
+        active_embedding_ids=active_ids,
+    )
 
 
 @dataclass(frozen=True)

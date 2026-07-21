@@ -457,3 +457,117 @@ def test_incomplete_inventory_is_stale_and_never_infers_deletions(
     assert rendered["refresh"]["reasons"] == ["inventory_incomplete"]
     assert rendered["refresh"]["recommended_action"] == "retry_inspection"
     assert rendered["observation"]["unscannable_subtree_count"] == 1
+
+
+def test_production_snapshot_adapter_binds_manifest_sqlite_and_vector_tuple(
+    tmp_path: Path,
+) -> None:
+    module = _health_module()
+    assert hasattr(module, "read_committed_index_snapshot"), (
+        "P6 production snapshot adapter is absent"
+    )
+    assert hasattr(module, "verify_committed_vector_snapshot"), (
+        "P6 production vector verifier is absent"
+    )
+    from context_search_tool import manifest as manifest_module
+    from context_search_tool import sqlite_store as sqlite_module
+    from context_search_tool.vector_store import NumpyVectorStore
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    index_dir = repo / ".context-search"
+    store = sqlite_module.SQLiteStore(index_dir / "index.sqlite")
+    store.initialize()
+    store.set_metadata("signal_schema_version", "4")
+    store.migrate_signal_schema_v5()
+    store.initialize_operational_schema_v1()
+    store.replace_operational_observations(
+        observation_generation=7,
+        source_observations=(),
+        scan_skips=(),
+    )
+
+    vectors = NumpyVectorStore.fresh(index_dir, dimensions=2)
+    prepared_vectors = vectors.prepare_generation_v2(
+        generation="vectors-0007",
+        embedding_identity="hash-v1:2",
+        normalization="l2",
+    )
+    vectors.publish_generation(prepared_vectors)
+    descriptor = NumpyVectorStore.inspect_published_descriptor(index_dir)
+    assert descriptor is not None
+
+    manifest = manifest_module.ManifestV2(
+        embedding_config_hash="1" * 64,
+        embedding_provider="hash",
+        embedding_model="hash-v1",
+        embedding_dimensions=2,
+        index_config_hash="2" * 64,
+        source_content_fingerprint=sqlite_module.operational_content_fingerprint(()),
+        source_observation_fingerprint=(
+            sqlite_module.operational_observation_fingerprint((), ())
+        ),
+        observation_generation=7,
+        manifest_generation="manifest-0007",
+        vector_descriptor_schema_version=2,
+        vector_generation="vectors-0007",
+        vector_descriptor_sha256=descriptor.sha256,
+        vector_bytes=descriptor.descriptor.vectors_bytes,
+        vector_ids_bytes=descriptor.descriptor.ids_bytes,
+        indexed_at_epoch_s=1234,
+        operational_schema_version=1,
+        operation_mode="authoritative_index",
+        work_metrics=(),
+        total_files=0,
+        total_chunks=0,
+    )
+    prepared_manifest = manifest_module.prepare_manifest_v2(manifest)
+    manifest_module.publish_manifest_v2(repo, prepared_manifest)
+    binding = sqlite_module.OperationalReadyBinding(
+        index_config_hash=manifest.index_config_hash,
+        source_content_fingerprint=manifest.source_content_fingerprint,
+        source_observation_fingerprint=manifest.source_observation_fingerprint,
+        observation_generation=manifest.observation_generation,
+        manifest_schema_version=2,
+        manifest_generation=manifest.manifest_generation,
+        manifest_sha256=prepared_manifest.sha256,
+        vector_descriptor_schema_version=2,
+        vector_generation=manifest.vector_generation,
+        vector_descriptor_sha256=descriptor.sha256,
+        vector_bytes=manifest.vector_bytes,
+        vector_ids_bytes=manifest.vector_ids_bytes,
+        indexed_at_epoch_s=manifest.indexed_at_epoch_s,
+        operation_mode=manifest.operation_mode,
+        work_metrics=(),
+    )
+    store.commit_operational_ready_v1(
+        binding=binding,
+        topology_fingerprint="4" * 64,
+        expected_embedding_ids=set(),
+        expected_source_count=0,
+        expected_chunk_count=0,
+        external_validator=lambda: None,
+    )
+
+    snapshot = module.read_committed_index_snapshot(repo)
+    verification = module.verify_committed_vector_snapshot(repo, snapshot)
+
+    assert snapshot.ready_generation == "manifest-0007"
+    assert snapshot.manifest_valid is True
+    assert snapshot.sqlite_valid is True
+    assert snapshot.vector_identity_valid is True
+    assert snapshot.active_embedding_ids == ()
+    assert snapshot.vector_generation == "vectors-0007"
+    assert verification == module.VectorVerification.valid()
+
+    damaged = json.loads(
+        (index_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    damaged["total_files"] = 1
+    (index_dir / "manifest.json").write_text(
+        json.dumps(damaged, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    corrupted = module.read_committed_index_snapshot(repo)
+    assert corrupted.manifest_valid is False
+    assert corrupted.sqlite_valid is True

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -28,16 +29,21 @@ from context_search_tool.graph_lifecycle import (
     GRAPH_RESOLUTION_STATE_KEY,
     GRAPH_RESOLUTION_VERSION_KEY,
     GRAPH_STALE_REASON_KEY,
+    OPERATIONAL_SCHEMA_VERSION_KEY,
     PROJECT_UNIT_TOPOLOGY_FINGERPRINT_KEY,
     SIGNAL_SCHEMA_VERSION_KEY,
     GraphCapability,
     GraphIntegrityError,
     GraphIntegrityResult,
+    IncompatibleOperationalSchemaError,
     IncompatibleSignalSchemaError,
     IndexBusyError,
+    OperationalIntegrityError,
+    TARGET_OPERATIONAL_SCHEMA_VERSION,
     TARGET_GRAPH_RESOLUTION_VERSION,
     TARGET_SIGNAL_SCHEMA_VERSION,
     read_graph_capability,
+    read_operational_capability,
 )
 from context_search_tool.models import (
     CodeRelation,
@@ -57,8 +63,52 @@ TEST_ASSOCIATION_SOURCE_GENERATION_KEY = (
     "graph_test_association_source_generation"
 )
 FILE_WRITE_IN_PROGRESS_KEY = "graph_file_write_in_progress"
-OPERATIONAL_SCHEMA_VERSION_KEY = "operational_schema_version"
-TARGET_OPERATIONAL_SCHEMA_VERSION = 1
+_OPERATIONAL_INDEX_CONFIG_HASH_KEY = "operational_index_config_hash"
+_OPERATIONAL_CONTENT_FINGERPRINT_KEY = "operational_content_fingerprint"
+_OPERATIONAL_OBSERVATION_FINGERPRINT_KEY = "operational_observation_fingerprint"
+_OPERATIONAL_OBSERVATION_GENERATION_KEY = "operational_observation_generation"
+_OPERATIONAL_MANIFEST_SCHEMA_KEY = "operational_manifest_schema_version"
+_OPERATIONAL_MANIFEST_GENERATION_KEY = "operational_manifest_generation"
+_OPERATIONAL_MANIFEST_SHA256_KEY = "operational_manifest_sha256"
+_OPERATIONAL_DESCRIPTOR_SCHEMA_KEY = "operational_descriptor_schema_version"
+_OPERATIONAL_VECTOR_GENERATION_KEY = "operational_vector_generation"
+_OPERATIONAL_DESCRIPTOR_SHA256_KEY = "operational_descriptor_sha256"
+_OPERATIONAL_VECTOR_BYTES_KEY = "operational_vector_bytes"
+_OPERATIONAL_VECTOR_IDS_BYTES_KEY = "operational_vector_ids_bytes"
+_OPERATIONAL_INDEXED_AT_KEY = "operational_indexed_at_epoch_s"
+_OPERATIONAL_MODE_KEY = "operational_operation_mode"
+_OPERATIONAL_WORK_METRICS_KEY = "operational_work_metrics"
+_OPERATIONAL_SOURCE_COUNT_KEY = "operational_source_count"
+_OPERATIONAL_CHUNK_COUNT_KEY = "operational_chunk_count"
+_OPERATIONAL_EMBEDDING_IDS_SHA256_KEY = "operational_embedding_ids_sha256"
+_OPERATION_MODES = frozenset({"index", "authoritative_index", "quick_refresh"})
+_WORK_STRING_METRICS = {
+    "vector.descriptor_action": frozenset({"reused", "published"}),
+}
+_SCAN_SKIP_REASONS = frozenset(
+    {
+        "too_large",
+        "binary",
+        "unreadable",
+        "unsafe_path",
+        "changed_during_read",
+        "unsupported_encoding",
+    }
+)
+_CHANGE_TOKEN_KINDS = frozenset(
+    {
+        "ctime_ns",
+        "stat_fallback",
+        "unavailable",
+        "mtime_ns+ctime_ns",
+        "mtime_ns",
+        "platform_specific",
+    }
+)
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_GENERATION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+_WORK_METRIC_RE = re.compile(r"[a-z][a-z0-9_.]*\Z")
+_MAX_WORK_METRICS = 128
 
 
 @dataclass(frozen=True)
@@ -67,6 +117,68 @@ class RawSQLiteSchemaVersions:
     operational_version: int | None
     graph_version: int | None
     error_code: str | None
+
+
+@dataclass(frozen=True)
+class OperationalSourceObservation:
+    path: Path
+    language: str
+    sha256: str
+    size: int
+    mtime_ns: int
+    change_token: int | str | None
+    change_token_kind: str
+    observation_generation: int
+
+
+@dataclass(frozen=True)
+class OperationalScanSkip:
+    path: Path
+    reason: str
+    language: str | None
+    size: int | None
+    mtime_ns: int | None
+    change_token: int | str | None
+    change_token_kind: str
+    retryable: bool
+    first_observation_generation: int
+    last_observation_generation: int
+    last_retry_generation: int | None
+    metadata: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class OperationalReadyBinding:
+    index_config_hash: str
+    source_content_fingerprint: str
+    source_observation_fingerprint: str
+    observation_generation: int
+    manifest_schema_version: int
+    manifest_generation: str
+    manifest_sha256: str
+    vector_descriptor_schema_version: int
+    vector_generation: str
+    vector_descriptor_sha256: str
+    vector_bytes: int
+    vector_ids_bytes: int
+    indexed_at_epoch_s: int
+    operation_mode: str
+    work_metrics: tuple[tuple[str, int | str], ...]
+
+
+@dataclass(frozen=True)
+class OperationalSnapshot:
+    operational_version: int
+    graph_version: int
+    graph_status: str
+    graph_stale_reason: str
+    binding: OperationalReadyBinding
+    source_observations: tuple[OperationalSourceObservation, ...]
+    scan_skips: tuple[OperationalScanSkip, ...]
+    active_embedding_ids: tuple[str, ...]
+    source_count: int
+    chunk_count: int
+    tombstone_count: int
 
 
 def inspect_raw_sqlite_schema_versions(
@@ -153,6 +265,433 @@ class SQLiteStore:
                 *_v4_graph_schema_statements(),
             ):
                 connection.execute(statement)
+
+    def initialize_operational_schema_v1(
+        self,
+        *,
+        before_commit: Callable[[], None] | None = None,
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> None:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            capability = read_operational_capability(
+                _ConnectionMetadataReader(connection)
+            )
+            if capability.status == "current":
+                _require_operational_schema_v1(connection)
+                return
+            connection.execute("BEGIN IMMEDIATE")
+            capability = read_operational_capability(
+                _ConnectionMetadataReader(connection)
+            )
+            if capability.status == "current":
+                _require_operational_schema_v1(connection)
+                connection.rollback()
+                return
+            for statement in _common_schema_statements():
+                connection.execute(statement)
+            _add_column_if_missing(
+                connection,
+                "source_files",
+                "change_token",
+                "TEXT",
+            )
+            _add_column_if_missing(
+                connection,
+                "source_files",
+                "change_token_kind",
+                "TEXT NOT NULL DEFAULT 'unavailable'",
+            )
+            _add_column_if_missing(
+                connection,
+                "source_files",
+                "observation_generation",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            for statement in _operational_schema_v1_statements():
+                connection.execute(statement)
+            if before_commit is not None:
+                before_commit()
+            connection.commit()
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
+
+    def replace_operational_observations(
+        self,
+        *,
+        observation_generation: int,
+        source_observations: tuple[OperationalSourceObservation, ...],
+        scan_skips: tuple[OperationalScanSkip, ...],
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> None:
+        if type(observation_generation) is not int or observation_generation < 0:
+            raise ValueError("observation generation must be non-negative")
+        sources = _validate_source_observations(
+            source_observations,
+            observation_generation,
+        )
+        skips = _validate_scan_skips(scan_skips, observation_generation)
+        source_paths = {_path_key(item.path) for item in sources}
+        if source_paths & {_path_key(item.path) for item in skips}:
+            raise ValueError("source and scan-skip paths must not overlap")
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            read_operational_capability(_ConnectionMetadataReader(connection))
+            _require_operational_schema_v1(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            read_operational_capability(_ConnectionMetadataReader(connection))
+            _require_operational_schema_v1(connection)
+            persisted_paths = {
+                str(row["path"])
+                for row in connection.execute(
+                    "SELECT path FROM source_files ORDER BY path"
+                ).fetchall()
+            }
+            if persisted_paths != source_paths:
+                raise OperationalIntegrityError(
+                    "operational source observations do not match source files"
+                )
+            for item in sources:
+                connection.execute(
+                    """
+                    UPDATE source_files
+                    SET language = ?, sha256 = ?, size = ?, mtime_ns = ?,
+                        change_token = ?, change_token_kind = ?,
+                        observation_generation = ?
+                    WHERE path = ?
+                    """,
+                    (
+                        item.language,
+                        item.sha256,
+                        item.size,
+                        item.mtime_ns,
+                        _encode_change_token(item.change_token),
+                        item.change_token_kind,
+                        item.observation_generation,
+                        _path_key(item.path),
+                    ),
+                )
+            connection.execute("DELETE FROM scan_skips")
+            for item in skips:
+                connection.execute(
+                    """
+                    INSERT INTO scan_skips (
+                        path, reason, language, size, mtime_ns, change_token,
+                        change_token_kind, retryable, metadata,
+                        first_observation_generation,
+                        last_observation_generation, last_retry_generation
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _path_key(item.path),
+                        item.reason,
+                        item.language,
+                        item.size,
+                        item.mtime_ns,
+                        _encode_change_token(item.change_token),
+                        item.change_token_kind,
+                        int(item.retryable),
+                        _canonical_json(dict(item.metadata)),
+                        item.first_observation_generation,
+                        item.last_observation_generation,
+                        item.last_retry_generation,
+                    ),
+                )
+            connection.commit()
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
+
+    def select_retryable_scan_skips(
+        self,
+        *,
+        limit: int,
+        retry_generation: int,
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> tuple[OperationalScanSkip, ...]:
+        if type(limit) is not int or limit < 0:
+            raise ValueError("retry limit must be non-negative")
+        if type(retry_generation) is not int or retry_generation < 0:
+            raise ValueError("retry generation must be non-negative")
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            read_operational_capability(_ConnectionMetadataReader(connection))
+            _require_operational_schema_v1(connection)
+            if limit == 0:
+                return ()
+            connection.execute("BEGIN IMMEDIATE")
+            read_operational_capability(_ConnectionMetadataReader(connection))
+            _require_operational_schema_v1(connection)
+            rows = connection.execute(
+                """
+                SELECT path, reason, language, size, mtime_ns, change_token,
+                       change_token_kind, retryable, metadata,
+                       first_observation_generation,
+                       last_observation_generation, last_retry_generation
+                FROM scan_skips
+                WHERE retryable = 1
+                ORDER BY
+                    CASE WHEN last_retry_generation IS NULL THEN 0 ELSE 1 END,
+                    last_retry_generation,
+                    first_observation_generation,
+                    path
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            paths = [str(row["path"]) for row in rows]
+            if paths:
+                connection.executemany(
+                    """
+                    UPDATE scan_skips
+                    SET last_retry_generation = ?
+                    WHERE path = ?
+                    """,
+                    [(retry_generation, path) for path in paths],
+                )
+            connection.commit()
+            return tuple(
+                _scan_skip_from_row(row, retry_generation=retry_generation)
+                for row in rows
+            )
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
+
+    def read_operational_snapshot(self) -> OperationalSnapshot | None:
+        if not self.db_path.exists():
+            return None
+        connection = _open_connection(self.db_path, _DEFAULT_BUSY_TIMEOUT_MS)
+        try:
+            connection.execute("BEGIN")
+            capability = read_operational_capability(
+                _ConnectionMetadataReader(connection)
+            )
+            if capability.status == "legacy":
+                return None
+            _require_operational_schema_v1(connection)
+            binding = _read_operational_binding(connection)
+            sources, skips = _read_operational_observations(connection)
+            _validate_bound_operational_observations(binding, sources, skips)
+            graph = read_graph_capability(_ConnectionMetadataReader(connection))
+            source_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) AS count FROM source_files"
+                ).fetchone()["count"]
+            )
+            chunk_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) AS count FROM chunks WHERE deleted_at IS NULL"
+                ).fetchone()["count"]
+            )
+            tombstone_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) AS count FROM chunks WHERE deleted_at IS NOT NULL"
+                ).fetchone()["count"]
+            )
+            embedding_ids = tuple(
+                sorted(
+                    str(row["embedding_id"])
+                    for row in connection.execute(
+                        """
+                        SELECT embedding_id
+                        FROM chunks
+                        WHERE deleted_at IS NULL AND embedding_id IS NOT NULL
+                        ORDER BY embedding_id
+                        """
+                    ).fetchall()
+                )
+            )
+            _validate_bound_counts(
+                connection,
+                source_count=source_count,
+                chunk_count=chunk_count,
+                embedding_ids=embedding_ids,
+            )
+            return OperationalSnapshot(
+                operational_version=capability.schema_version,
+                graph_version=graph.schema_version,
+                graph_status=graph.status,
+                graph_stale_reason=graph.stale_reason,
+                binding=binding,
+                source_observations=sources,
+                scan_skips=skips,
+                active_embedding_ids=embedding_ids,
+                source_count=source_count,
+                chunk_count=chunk_count,
+                tombstone_count=tombstone_count,
+            )
+        finally:
+            if connection.in_transaction:
+                connection.rollback()
+            connection.close()
+
+    def commit_operational_ready_v1(
+        self,
+        *,
+        binding: OperationalReadyBinding,
+        topology_fingerprint: str,
+        expected_embedding_ids: set[str],
+        expected_source_count: int,
+        expected_chunk_count: int,
+        external_validator: Callable[[], None],
+        tombstone_purge_limit: int = 0,
+        before_commit: Callable[[], None] | None = None,
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> GraphIntegrityResult:
+        normalized_binding = _validate_operational_binding(binding)
+        if normalized_binding != binding:
+            raise ValueError("operational work metrics must be canonical")
+        if not re.fullmatch(r"[0-9a-f]{64}", topology_fingerprint):
+            raise ValueError("topology fingerprint must be a full SHA-256")
+        if type(tombstone_purge_limit) is not int or tombstone_purge_limit < 0:
+            raise ValueError("tombstone purge limit must be non-negative")
+        if type(expected_source_count) is not int or expected_source_count < 0:
+            raise ValueError("expected source count must be non-negative")
+        if type(expected_chunk_count) is not int or expected_chunk_count < 0:
+            raise ValueError("expected chunk count must be non-negative")
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            read_operational_capability(_ConnectionMetadataReader(connection))
+            _require_target_schema(connection)
+            _require_operational_schema_v1(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            read_operational_capability(_ConnectionMetadataReader(connection))
+            _require_target_schema(connection)
+            _require_operational_schema_v1(connection)
+            integrity = _graph_integrity(connection)
+            if not integrity.ok:
+                raise GraphIntegrityError("graph integrity check failed")
+            _validate_v5_snapshot(
+                connection,
+                expected_embedding_ids=expected_embedding_ids,
+                expected_source_count=expected_source_count,
+                expected_chunk_count=expected_chunk_count,
+                expected_producer_resolution_generation=None,
+            )
+            sources, skips = _read_operational_observations(connection)
+            _validate_bound_operational_observations(binding, sources, skips)
+            external_validator()
+            if tombstone_purge_limit:
+                self._purge_tombstones(connection, tombstone_purge_limit)
+            now = _now()
+            _write_operational_binding(
+                connection,
+                binding,
+                source_count=expected_source_count,
+                chunk_count=expected_chunk_count,
+                embedding_ids=tuple(sorted(expected_embedding_ids)),
+                now=now,
+            )
+            _set_metadata_row(
+                connection,
+                PROJECT_UNIT_TOPOLOGY_FINGERPRINT_KEY,
+                topology_fingerprint,
+                now,
+            )
+            _set_metadata_row(
+                connection,
+                GRAPH_RESOLUTION_VERSION_KEY,
+                str(TARGET_GRAPH_RESOLUTION_VERSION),
+                now,
+            )
+            _set_metadata_row(connection, GRAPH_STALE_REASON_KEY, "", now)
+            _set_metadata_row(connection, FULL_REINDEX_REQUIRED_KEY, "0", now)
+            _set_metadata_row(connection, "indexed_at", str(binding.indexed_at_epoch_s), now)
+            _set_metadata_row(
+                connection,
+                OPERATIONAL_SCHEMA_VERSION_KEY,
+                str(TARGET_OPERATIONAL_SCHEMA_VERSION),
+                now,
+            )
+            _set_metadata_row(connection, GRAPH_RESOLUTION_STATE_KEY, "ready", now)
+            if before_commit is not None:
+                before_commit()
+            connection.commit()
+            return integrity
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
+
+    def _purge_tombstones(
+        self,
+        connection: sqlite3.Connection,
+        limit: int,
+    ) -> int:
+        rows = connection.execute(
+            """
+            SELECT chunk_id
+            FROM chunks
+            WHERE deleted_at IS NOT NULL
+            ORDER BY deleted_at, chunk_id
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        chunk_ids = [str(row["chunk_id"]) for row in rows]
+        if not chunk_ids:
+            return 0
+        signal_rows = connection.execute(
+            _in_query(
+                """
+                SELECT signal_id FROM code_signals
+                WHERE chunk_id IN ({placeholders})
+                """,
+                chunk_ids,
+            ),
+            chunk_ids,
+        ).fetchall()
+        signal_ids = [str(row["signal_id"]) for row in signal_rows]
+        self._delete_search_payloads(connection, chunk_ids)
+        connection.execute(
+            _in_query(
+                "DELETE FROM code_relations WHERE source_chunk_id IN ({placeholders})",
+                chunk_ids,
+            ),
+            chunk_ids,
+        )
+        if signal_ids:
+            connection.execute(
+                _in_query(
+                    "DELETE FROM code_relations WHERE target_signal_id IN ({placeholders})",
+                    signal_ids,
+                ),
+                signal_ids,
+            )
+        connection.execute(
+            _in_query(
+                "DELETE FROM code_signals WHERE chunk_id IN ({placeholders})",
+                chunk_ids,
+            ),
+            chunk_ids,
+        )
+        connection.execute(
+            _in_query(
+                "DELETE FROM chunks WHERE chunk_id IN ({placeholders})",
+                chunk_ids,
+            ),
+            chunk_ids,
+        )
+        return len(chunk_ids)
 
     def inspect_signal_schema_version(self) -> int:
         if not self.db_path.exists():
@@ -3088,6 +3627,676 @@ def _chunks_matching_member_name(
     ).fetchall()
 
 
+def operational_content_fingerprint(
+    sources: tuple[OperationalSourceObservation, ...],
+) -> str:
+    rows = []
+    seen: set[str] = set()
+    for item in sorted(sources, key=lambda value: _path_key(value.path)):
+        _validate_source_observation(item)
+        path = _operational_path(item.path)
+        if path in seen:
+            raise ValueError("duplicate operational source path")
+        seen.add(path)
+        rows.append(
+            {
+                "path": path,
+                "language": item.language,
+                "sha256": item.sha256,
+            }
+        )
+    return _sha256_canonical({"sources": rows})
+
+
+def operational_observation_fingerprint(
+    sources: tuple[OperationalSourceObservation, ...],
+    skips: tuple[OperationalScanSkip, ...],
+) -> str:
+    source_rows = []
+    seen: set[str] = set()
+    for item in sorted(sources, key=lambda value: _path_key(value.path)):
+        _validate_source_observation(item)
+        path = _operational_path(item.path)
+        if path in seen:
+            raise ValueError("duplicate operational observation path")
+        seen.add(path)
+        source_rows.append(
+            {
+                "path": path,
+                "language": item.language,
+                "size": item.size,
+                "mtime_ns": item.mtime_ns,
+                "change_token": item.change_token,
+                "change_token_kind": item.change_token_kind,
+            }
+        )
+    skip_rows = []
+    for item in sorted(skips, key=lambda value: _path_key(value.path)):
+        normalized = _validate_scan_skip(item)
+        path = _operational_path(normalized.path)
+        if path in seen:
+            raise ValueError("duplicate operational observation path")
+        seen.add(path)
+        skip_rows.append(
+            {
+                "path": path,
+                "reason": normalized.reason,
+                "language": normalized.language,
+                "size": normalized.size,
+                "mtime_ns": normalized.mtime_ns,
+                "change_token": normalized.change_token,
+                "change_token_kind": normalized.change_token_kind,
+                "retryable": normalized.retryable,
+                "metadata": dict(normalized.metadata),
+            }
+        )
+    return _sha256_canonical({"sources": source_rows, "scan_skips": skip_rows})
+
+
+def _operational_schema_v1_statements() -> tuple[str, ...]:
+    return (
+        """
+        CREATE TABLE IF NOT EXISTS scan_skips (
+            path TEXT PRIMARY KEY,
+            reason TEXT NOT NULL CHECK (
+                reason IN (
+                    'too_large', 'binary', 'unreadable', 'unsafe_path',
+                    'changed_during_read', 'unsupported_encoding'
+                )
+            ),
+            language TEXT,
+            size INTEGER,
+            mtime_ns INTEGER,
+            change_token TEXT,
+            change_token_kind TEXT NOT NULL,
+            retryable INTEGER NOT NULL CHECK (retryable IN (0, 1)),
+            metadata TEXT NOT NULL,
+            first_observation_generation INTEGER NOT NULL,
+            last_observation_generation INTEGER NOT NULL,
+            last_retry_generation INTEGER
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_scan_skips_retry
+        ON scan_skips(retryable, last_retry_generation, path)
+        """,
+    )
+
+
+def _add_column_if_missing(
+    connection: sqlite3.Connection,
+    table: str,
+    column: str,
+    declaration: str,
+) -> None:
+    if not re.fullmatch(r"[a-z_]+", table) or not re.fullmatch(
+        r"[a-z_]+", column
+    ):
+        raise ValueError("invalid operational schema identifier")
+    if not _has_column(connection, table, column):
+        connection.execute(
+            f"ALTER TABLE {table} ADD COLUMN {column} {declaration}"
+        )
+
+
+def _require_operational_schema_v1(connection: sqlite3.Connection) -> None:
+    required_source_columns = {
+        "path",
+        "language",
+        "sha256",
+        "size",
+        "mtime_ns",
+        "change_token",
+        "change_token_kind",
+        "observation_generation",
+    }
+    required_skip_columns = {
+        "path",
+        "reason",
+        "language",
+        "size",
+        "mtime_ns",
+        "change_token",
+        "change_token_kind",
+        "retryable",
+        "metadata",
+        "first_observation_generation",
+        "last_observation_generation",
+        "last_retry_generation",
+    }
+    if (
+        not _table_exists(connection, "source_files")
+        or not _table_exists(connection, "scan_skips")
+        or not required_source_columns <= _table_columns(connection, "source_files")
+        or not required_skip_columns <= _table_columns(connection, "scan_skips")
+    ):
+        raise OperationalIntegrityError("operational schema v1 is incomplete")
+
+
+def _validate_source_observations(
+    sources: tuple[OperationalSourceObservation, ...],
+    generation: int,
+) -> tuple[OperationalSourceObservation, ...]:
+    if not isinstance(sources, tuple):
+        raise ValueError("source observations must be an immutable tuple")
+    normalized = tuple(sorted(sources, key=lambda item: _path_key(item.path)))
+    seen: set[str] = set()
+    for item in normalized:
+        _validate_source_observation(item)
+        path = _operational_path(item.path)
+        if path in seen:
+            raise ValueError("duplicate operational source path")
+        if item.observation_generation != generation:
+            raise ValueError("source observation generation mismatch")
+        seen.add(path)
+    return normalized
+
+
+def _validate_source_observation(item: OperationalSourceObservation) -> None:
+    if not isinstance(item, OperationalSourceObservation):
+        raise ValueError("invalid source observation")
+    _operational_path(item.path)
+    if not item.language or not _SHA256_RE.fullmatch(item.sha256):
+        raise ValueError("invalid source observation identity")
+    for value in (item.size, item.mtime_ns, item.observation_generation):
+        if type(value) is not int or value < 0:
+            raise ValueError("invalid source observation metadata")
+    _validate_change_token(item.change_token, item.change_token_kind)
+
+
+def _validate_scan_skips(
+    skips: tuple[OperationalScanSkip, ...],
+    generation: int,
+) -> tuple[OperationalScanSkip, ...]:
+    if not isinstance(skips, tuple):
+        raise ValueError("scan skips must be an immutable tuple")
+    normalized = tuple(
+        _validate_scan_skip(item)
+        for item in sorted(skips, key=lambda value: _path_key(value.path))
+    )
+    seen: set[str] = set()
+    for item in normalized:
+        path = _operational_path(item.path)
+        if path in seen:
+            raise ValueError("duplicate scan-skip path")
+        if item.last_observation_generation != generation:
+            raise ValueError("scan-skip observation generation mismatch")
+        seen.add(path)
+    return normalized
+
+
+def _validate_scan_skip(item: OperationalScanSkip) -> OperationalScanSkip:
+    if not isinstance(item, OperationalScanSkip):
+        raise ValueError("invalid scan skip")
+    _operational_path(item.path)
+    if item.reason not in _SCAN_SKIP_REASONS:
+        raise ValueError("invalid scan-skip reason")
+    if item.language is not None and not item.language:
+        raise ValueError("invalid scan-skip language")
+    for value in (item.size, item.mtime_ns, item.last_retry_generation):
+        if value is not None and (type(value) is not int or value < 0):
+            raise ValueError("invalid scan-skip metadata")
+    for value in (
+        item.first_observation_generation,
+        item.last_observation_generation,
+    ):
+        if type(value) is not int or value < 0:
+            raise ValueError("invalid scan-skip generation")
+    if item.first_observation_generation > item.last_observation_generation:
+        raise ValueError("invalid scan-skip generation range")
+    if type(item.retryable) is not bool:
+        raise ValueError("invalid scan-skip retryability")
+    _validate_change_token(item.change_token, item.change_token_kind)
+    metadata = _normalize_skip_metadata(item.metadata)
+    return OperationalScanSkip(
+        path=item.path,
+        reason=item.reason,
+        language=item.language,
+        size=item.size,
+        mtime_ns=item.mtime_ns,
+        change_token=item.change_token,
+        change_token_kind=item.change_token_kind,
+        retryable=item.retryable,
+        first_observation_generation=item.first_observation_generation,
+        last_observation_generation=item.last_observation_generation,
+        last_retry_generation=item.last_retry_generation,
+        metadata=metadata,
+    )
+
+
+def _normalize_skip_metadata(
+    metadata: tuple[tuple[str, str], ...],
+) -> tuple[tuple[str, str], ...]:
+    if not isinstance(metadata, tuple) or len(metadata) > 16:
+        raise ValueError("invalid scan-skip metadata")
+    normalized: dict[str, str] = {}
+    for item in metadata:
+        if not isinstance(item, tuple) or len(item) != 2:
+            raise ValueError("invalid scan-skip metadata")
+        key, value = item
+        if (
+            not isinstance(key, str)
+            or not key
+            or len(key) > 64
+            or not isinstance(value, str)
+            or len(value) > 128
+            or key in normalized
+        ):
+            raise ValueError("invalid scan-skip metadata")
+        normalized[key] = value
+    return tuple(sorted(normalized.items()))
+
+
+def _validate_change_token(token: object, kind: str) -> None:
+    if kind not in _CHANGE_TOKEN_KINDS:
+        raise ValueError("invalid change-token kind")
+    if token is not None and type(token) not in {int, str}:
+        raise ValueError("invalid change token")
+
+
+def _encode_change_token(token: int | str | None) -> str | None:
+    if token is None:
+        return None
+    return _canonical_json(token)
+
+
+def _decode_change_token(raw: object) -> int | str | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise OperationalIntegrityError("invalid persisted change token")
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise OperationalIntegrityError("invalid persisted change token") from error
+    if value is not None and type(value) not in {int, str}:
+        raise OperationalIntegrityError("invalid persisted change token")
+    return value
+
+
+def _read_operational_observations(
+    connection: sqlite3.Connection,
+) -> tuple[
+    tuple[OperationalSourceObservation, ...],
+    tuple[OperationalScanSkip, ...],
+]:
+    source_rows = connection.execute(
+        """
+        SELECT path, language, sha256, size, mtime_ns, change_token,
+               change_token_kind, observation_generation
+        FROM source_files
+        ORDER BY path
+        """
+    ).fetchall()
+    skip_rows = connection.execute(
+        """
+        SELECT path, reason, language, size, mtime_ns, change_token,
+               change_token_kind, retryable, metadata,
+               first_observation_generation, last_observation_generation,
+               last_retry_generation
+        FROM scan_skips
+        ORDER BY path
+        """
+    ).fetchall()
+    try:
+        sources = tuple(_source_observation_from_row(row) for row in source_rows)
+        skips = tuple(_scan_skip_from_row(row) for row in skip_rows)
+        generation = sources[0].observation_generation if sources else None
+        if generation is not None:
+            _validate_source_observations(sources, generation)
+        for item in skips:
+            _validate_scan_skip(item)
+    except (TypeError, ValueError) as error:
+        if isinstance(error, OperationalIntegrityError):
+            raise
+        raise OperationalIntegrityError("invalid operational observations") from error
+    return sources, skips
+
+
+def _source_observation_from_row(row: sqlite3.Row) -> OperationalSourceObservation:
+    return OperationalSourceObservation(
+        path=Path(str(row["path"])),
+        language=str(row["language"]),
+        sha256=str(row["sha256"]),
+        size=_row_int(row, "size"),
+        mtime_ns=_row_int(row, "mtime_ns"),
+        change_token=_decode_change_token(row["change_token"]),
+        change_token_kind=str(row["change_token_kind"]),
+        observation_generation=_row_int(row, "observation_generation"),
+    )
+
+
+def _scan_skip_from_row(
+    row: sqlite3.Row,
+    *,
+    retry_generation: int | None = None,
+) -> OperationalScanSkip:
+    try:
+        metadata_raw = json.loads(str(row["metadata"]))
+    except json.JSONDecodeError as error:
+        raise OperationalIntegrityError("invalid scan-skip metadata") from error
+    if not isinstance(metadata_raw, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in metadata_raw.items()
+    ):
+        raise OperationalIntegrityError("invalid scan-skip metadata")
+    return _validate_scan_skip(
+        OperationalScanSkip(
+            path=Path(str(row["path"])),
+            reason=str(row["reason"]),
+            language=(str(row["language"]) if row["language"] is not None else None),
+            size=_optional_row_int(row, "size"),
+            mtime_ns=_optional_row_int(row, "mtime_ns"),
+            change_token=_decode_change_token(row["change_token"]),
+            change_token_kind=str(row["change_token_kind"]),
+            retryable=_row_bool(row, "retryable"),
+            first_observation_generation=_row_int(
+                row, "first_observation_generation"
+            ),
+            last_observation_generation=_row_int(
+                row, "last_observation_generation"
+            ),
+            last_retry_generation=(
+                retry_generation
+                if retry_generation is not None
+                else _optional_row_int(row, "last_retry_generation")
+            ),
+            metadata=tuple(sorted(metadata_raw.items())),
+        )
+    )
+
+
+def _row_int(row: sqlite3.Row, key: str) -> int:
+    value = row[key]
+    if type(value) is not int:
+        raise OperationalIntegrityError(f"invalid operational integer: {key}")
+    return value
+
+
+def _optional_row_int(row: sqlite3.Row, key: str) -> int | None:
+    return None if row[key] is None else _row_int(row, key)
+
+
+def _row_bool(row: sqlite3.Row, key: str) -> bool:
+    value = _row_int(row, key)
+    if value not in {0, 1}:
+        raise OperationalIntegrityError(f"invalid operational boolean: {key}")
+    return bool(value)
+
+
+def _validate_bound_operational_observations(
+    binding: OperationalReadyBinding,
+    sources: tuple[OperationalSourceObservation, ...],
+    skips: tuple[OperationalScanSkip, ...],
+) -> None:
+    if any(
+        item.observation_generation != binding.observation_generation
+        for item in sources
+    ) or any(
+        item.last_observation_generation != binding.observation_generation
+        for item in skips
+    ):
+        raise OperationalIntegrityError("observation generation mismatch")
+    try:
+        content_fingerprint = operational_content_fingerprint(sources)
+        observation_fingerprint = operational_observation_fingerprint(
+            sources, skips
+        )
+    except ValueError as error:
+        raise OperationalIntegrityError(
+            "invalid bound operational observations"
+        ) from error
+    if content_fingerprint != binding.source_content_fingerprint:
+        raise OperationalIntegrityError("source content fingerprint mismatch")
+    if observation_fingerprint != binding.source_observation_fingerprint:
+        raise OperationalIntegrityError("source observation fingerprint mismatch")
+
+
+def _validate_operational_binding(
+    binding: OperationalReadyBinding,
+) -> OperationalReadyBinding:
+    if not isinstance(binding, OperationalReadyBinding):
+        raise ValueError("invalid operational ready binding")
+    for value in (
+        binding.index_config_hash,
+        binding.source_content_fingerprint,
+        binding.source_observation_fingerprint,
+        binding.manifest_sha256,
+        binding.vector_descriptor_sha256,
+    ):
+        if not _SHA256_RE.fullmatch(value):
+            raise ValueError("invalid operational binding digest")
+    if binding.manifest_schema_version != 2:
+        raise ValueError("invalid bound manifest schema")
+    if binding.vector_descriptor_schema_version != 2:
+        raise ValueError("invalid bound vector descriptor schema")
+    if not _GENERATION_RE.fullmatch(binding.manifest_generation):
+        raise ValueError("invalid bound manifest generation")
+    if not _GENERATION_RE.fullmatch(binding.vector_generation):
+        raise ValueError("invalid bound vector generation")
+    for value in (
+        binding.observation_generation,
+        binding.vector_bytes,
+        binding.vector_ids_bytes,
+        binding.indexed_at_epoch_s,
+    ):
+        if type(value) is not int or value < 0:
+            raise ValueError("invalid operational binding count")
+    if binding.operation_mode not in _OPERATION_MODES:
+        raise ValueError("invalid operational operation mode")
+    return OperationalReadyBinding(
+        **{
+            **binding.__dict__,
+            "work_metrics": _normalize_work_metrics(binding.work_metrics),
+        }
+    )
+
+
+def _normalize_work_metrics(
+    metrics: tuple[tuple[str, int | str], ...],
+) -> tuple[tuple[str, int | str], ...]:
+    if not isinstance(metrics, tuple) or len(metrics) > _MAX_WORK_METRICS:
+        raise ValueError("invalid operational work metrics")
+    normalized: dict[str, int | str] = {}
+    for item in metrics:
+        if not isinstance(item, tuple) or len(item) != 2:
+            raise ValueError("invalid operational work metrics")
+        key, value = item
+        if (
+            not isinstance(key, str)
+            or len(key) > 128
+            or not _WORK_METRIC_RE.fullmatch(key)
+            or key in normalized
+        ):
+            raise ValueError("invalid operational work metrics")
+        if type(value) is int:
+            if value < 0:
+                raise ValueError("invalid operational work metrics")
+        elif (
+            not isinstance(value, str)
+            or value not in _WORK_STRING_METRICS.get(key, frozenset())
+        ):
+            raise ValueError("invalid operational work metrics")
+        normalized[key] = value
+    return tuple(sorted(normalized.items()))
+
+
+_OPERATIONAL_BINDING_KEYS = (
+    _OPERATIONAL_INDEX_CONFIG_HASH_KEY,
+    _OPERATIONAL_CONTENT_FINGERPRINT_KEY,
+    _OPERATIONAL_OBSERVATION_FINGERPRINT_KEY,
+    _OPERATIONAL_OBSERVATION_GENERATION_KEY,
+    _OPERATIONAL_MANIFEST_SCHEMA_KEY,
+    _OPERATIONAL_MANIFEST_GENERATION_KEY,
+    _OPERATIONAL_MANIFEST_SHA256_KEY,
+    _OPERATIONAL_DESCRIPTOR_SCHEMA_KEY,
+    _OPERATIONAL_VECTOR_GENERATION_KEY,
+    _OPERATIONAL_DESCRIPTOR_SHA256_KEY,
+    _OPERATIONAL_VECTOR_BYTES_KEY,
+    _OPERATIONAL_VECTOR_IDS_BYTES_KEY,
+    _OPERATIONAL_INDEXED_AT_KEY,
+    _OPERATIONAL_MODE_KEY,
+    _OPERATIONAL_WORK_METRICS_KEY,
+)
+
+
+def _write_operational_binding(
+    connection: sqlite3.Connection,
+    binding: OperationalReadyBinding,
+    *,
+    source_count: int,
+    chunk_count: int,
+    embedding_ids: tuple[str, ...],
+    now: int,
+) -> None:
+    values = {
+        _OPERATIONAL_INDEX_CONFIG_HASH_KEY: binding.index_config_hash,
+        _OPERATIONAL_CONTENT_FINGERPRINT_KEY: binding.source_content_fingerprint,
+        _OPERATIONAL_OBSERVATION_FINGERPRINT_KEY: (
+            binding.source_observation_fingerprint
+        ),
+        _OPERATIONAL_OBSERVATION_GENERATION_KEY: str(
+            binding.observation_generation
+        ),
+        _OPERATIONAL_MANIFEST_SCHEMA_KEY: str(binding.manifest_schema_version),
+        _OPERATIONAL_MANIFEST_GENERATION_KEY: binding.manifest_generation,
+        _OPERATIONAL_MANIFEST_SHA256_KEY: binding.manifest_sha256,
+        _OPERATIONAL_DESCRIPTOR_SCHEMA_KEY: str(
+            binding.vector_descriptor_schema_version
+        ),
+        _OPERATIONAL_VECTOR_GENERATION_KEY: binding.vector_generation,
+        _OPERATIONAL_DESCRIPTOR_SHA256_KEY: binding.vector_descriptor_sha256,
+        _OPERATIONAL_VECTOR_BYTES_KEY: str(binding.vector_bytes),
+        _OPERATIONAL_VECTOR_IDS_BYTES_KEY: str(binding.vector_ids_bytes),
+        _OPERATIONAL_INDEXED_AT_KEY: str(binding.indexed_at_epoch_s),
+        _OPERATIONAL_MODE_KEY: binding.operation_mode,
+        _OPERATIONAL_WORK_METRICS_KEY: _canonical_json(dict(binding.work_metrics)),
+        _OPERATIONAL_SOURCE_COUNT_KEY: str(source_count),
+        _OPERATIONAL_CHUNK_COUNT_KEY: str(chunk_count),
+        _OPERATIONAL_EMBEDDING_IDS_SHA256_KEY: _embedding_ids_digest(embedding_ids),
+    }
+    for key, value in values.items():
+        _set_metadata_row(connection, key, value, now)
+
+
+def _read_operational_binding(
+    connection: sqlite3.Connection,
+) -> OperationalReadyBinding:
+    values = {
+        key: _required_metadata(connection, key) for key in _OPERATIONAL_BINDING_KEYS
+    }
+    try:
+        raw_metrics = json.loads(values[_OPERATIONAL_WORK_METRICS_KEY])
+    except json.JSONDecodeError as error:
+        raise OperationalIntegrityError("invalid operational work metrics") from error
+    if not isinstance(raw_metrics, dict):
+        raise OperationalIntegrityError("invalid operational work metrics")
+    try:
+        binding = OperationalReadyBinding(
+            index_config_hash=values[_OPERATIONAL_INDEX_CONFIG_HASH_KEY],
+            source_content_fingerprint=values[_OPERATIONAL_CONTENT_FINGERPRINT_KEY],
+            source_observation_fingerprint=values[
+                _OPERATIONAL_OBSERVATION_FINGERPRINT_KEY
+            ],
+            observation_generation=_metadata_int_value(
+                values[_OPERATIONAL_OBSERVATION_GENERATION_KEY]
+            ),
+            manifest_schema_version=_metadata_int_value(
+                values[_OPERATIONAL_MANIFEST_SCHEMA_KEY]
+            ),
+            manifest_generation=values[_OPERATIONAL_MANIFEST_GENERATION_KEY],
+            manifest_sha256=values[_OPERATIONAL_MANIFEST_SHA256_KEY],
+            vector_descriptor_schema_version=_metadata_int_value(
+                values[_OPERATIONAL_DESCRIPTOR_SCHEMA_KEY]
+            ),
+            vector_generation=values[_OPERATIONAL_VECTOR_GENERATION_KEY],
+            vector_descriptor_sha256=values[_OPERATIONAL_DESCRIPTOR_SHA256_KEY],
+            vector_bytes=_metadata_int_value(values[_OPERATIONAL_VECTOR_BYTES_KEY]),
+            vector_ids_bytes=_metadata_int_value(
+                values[_OPERATIONAL_VECTOR_IDS_BYTES_KEY]
+            ),
+            indexed_at_epoch_s=_metadata_int_value(
+                values[_OPERATIONAL_INDEXED_AT_KEY]
+            ),
+            operation_mode=values[_OPERATIONAL_MODE_KEY],
+            work_metrics=tuple(raw_metrics.items()),
+        )
+        return _validate_operational_binding(binding)
+    except (TypeError, ValueError) as error:
+        if isinstance(error, OperationalIntegrityError):
+            raise
+        raise OperationalIntegrityError("invalid operational ready binding") from error
+
+
+def _validate_bound_counts(
+    connection: sqlite3.Connection,
+    *,
+    source_count: int,
+    chunk_count: int,
+    embedding_ids: tuple[str, ...],
+) -> None:
+    if _metadata_int_value(
+        _required_metadata(connection, _OPERATIONAL_SOURCE_COUNT_KEY)
+    ) != source_count:
+        raise OperationalIntegrityError("bound source count mismatch")
+    if _metadata_int_value(
+        _required_metadata(connection, _OPERATIONAL_CHUNK_COUNT_KEY)
+    ) != chunk_count:
+        raise OperationalIntegrityError("bound chunk count mismatch")
+    if _required_metadata(
+        connection, _OPERATIONAL_EMBEDDING_IDS_SHA256_KEY
+    ) != _embedding_ids_digest(embedding_ids):
+        raise OperationalIntegrityError("bound embedding IDs mismatch")
+
+
+def _required_metadata(connection: sqlite3.Connection, key: str) -> str:
+    value = _metadata_value(connection, key)
+    if value is None or value == "":
+        raise OperationalIntegrityError(f"missing operational binding: {key}")
+    return value
+
+
+def _metadata_int_value(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise OperationalIntegrityError("invalid operational integer") from error
+    if value < 0 or str(value) != raw:
+        raise OperationalIntegrityError("invalid operational integer")
+    return value
+
+
+def _embedding_ids_digest(ids: tuple[str, ...]) -> str:
+    return _sha256_canonical(list(ids))
+
+
+def _operational_path(path: Path) -> str:
+    if not isinstance(path, Path):
+        raise ValueError("operational path must be a Path")
+    rendered = path.as_posix()
+    if (
+        path.is_absolute()
+        or rendered in {"", "."}
+        or ".." in path.parts
+        or "\\" in rendered
+    ):
+        raise ValueError("operational path must be repository-relative POSIX")
+    return rendered
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _sha256_canonical(value: object) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
 def _common_schema_statements() -> tuple[str, ...]:
     return (
         """
@@ -3878,7 +5087,12 @@ def _table_columns(
     connection: sqlite3.Connection,
     table: str,
 ) -> frozenset[str]:
-    if table not in {"code_signals", "code_relations"}:
+    if table not in {
+        "code_signals",
+        "code_relations",
+        "source_files",
+        "scan_skips",
+    }:
         raise ValueError("unsupported schema table")
     return frozenset(
         str(row["name"])

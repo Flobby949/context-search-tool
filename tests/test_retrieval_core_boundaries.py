@@ -178,6 +178,14 @@ P6_TASK2_PRODUCTION_CHANGES = {
     "src/context_search_tool/index_health.py",
 }
 
+P6_TASK3_PRODUCTION_CHANGES = {
+    "src/context_search_tool/graph_lifecycle.py",
+    "src/context_search_tool/index_health.py",
+    "src/context_search_tool/manifest.py",
+    "src/context_search_tool/sqlite_store.py",
+    "src/context_search_tool/vector_store.py",
+}
+
 P4_IMPLEMENTATION_BASELINE = "b827707325d0ee4e9c6b2bcb3dee39955c263822"
 THIS_TEST_PATH = "tests/test_retrieval_core_boundaries.py"
 
@@ -255,6 +263,7 @@ INDEX_HEALTH_ALLOWED_INTERNAL_IMPORTS = {
     "context_search_tool.manifest",
     "context_search_tool.scanner",
     "context_search_tool.sqlite_store",
+    "context_search_tool.vector_store",
 }
 
 
@@ -732,6 +741,10 @@ def test_graph_lifecycle_primitives_are_leaf_bounded_and_activated() -> None:
     assert "_plan_probes_v5" in exploration_runner
 
     assert "build_v5_index_snapshot" in indexer_path.read_text(encoding="utf-8")
+    indexer_source = indexer_path.read_text(encoding="utf-8")
+    assert "prepare_generation_v2" not in indexer_source
+    assert "publish_manifest_v2" not in indexer_source
+    assert "commit_operational_ready_v1" not in indexer_source
 
     for name in ("graph_lifecycle.py", "graph_resolution.py", "index_lock.py"):
         assert _import_roots(package / name).isdisjoint(
@@ -859,6 +872,7 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         EXPECTED_P4_PRODUCTION_DIFF
         | P5_REVIEWED_PRODUCTION_CHANGES
         | P6_TASK2_PRODUCTION_CHANGES
+        | P6_TASK3_PRODUCTION_CHANGES
     )
 
     source_status = subprocess.run(
@@ -877,7 +891,9 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
     ).stdout.splitlines()
     dirty_source_paths = {line[3:] for line in source_status}
     assert dirty_source_paths <= (
-        P5_REVIEWED_PRODUCTION_CHANGES | P6_TASK2_PRODUCTION_CHANGES
+        P5_REVIEWED_PRODUCTION_CHANGES
+        | P6_TASK2_PRODUCTION_CHANGES
+        | P6_TASK3_PRODUCTION_CHANGES
     )
 
     subprocess.run(
