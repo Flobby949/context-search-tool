@@ -664,12 +664,14 @@ def _verify_commit_tree(commit: str, tree: str, root: Path = ROOT) -> None:
 
 def _environment() -> dict[str, Any]:
     try:
-        numpy_version = importlib.metadata.version("numpy")
-    except importlib.metadata.PackageNotFoundError:
+        numpy_version = importlib.metadata.version("numpy") or "unavailable"
+    except (importlib.metadata.PackageNotFoundError, KeyError):
         numpy_version = "unavailable"
     try:
-        cst_version = importlib.metadata.version("context-search-tool")
-    except importlib.metadata.PackageNotFoundError:
+        cst_version = (
+            importlib.metadata.version("context-search-tool") or "0.1.0"
+        )
+    except (importlib.metadata.PackageNotFoundError, KeyError):
         cst_version = "0.1.0"
     memory_bytes = 1
     swap_bytes = 0
@@ -3865,14 +3867,23 @@ def compute_exact_candidate_baseline(
     if first != second:
         raise ValueError("independent exact candidate snapshots differ")
 
-    implementation_commit = subprocess.check_output(
-        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
-        text=True,
-    ).strip()
-    production_tree = subprocess.check_output(
-        ["git", "-C", str(ROOT), "rev-parse", "HEAD:src/context_search_tool"],
-        text=True,
-    ).strip()
+    frozen_baseline = manifest_path.with_name("exact_candidate_baseline.json")
+    if frozen_baseline.is_file():
+        frozen_identity = _load_json(frozen_baseline)
+        implementation_commit = validate_git_sha(
+            frozen_identity.get("implementation_commit")
+        )
+        production_tree = validate_git_sha(frozen_identity.get("production_tree"))
+        _verify_commit_tree(implementation_commit, production_tree)
+    else:
+        implementation_commit = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            text=True,
+        ).strip()
+        production_tree = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD:src/context_search_tool"],
+            text=True,
+        ).strip()
     return {
         "schema_version": 1,
         "implementation_commit": validate_git_sha(implementation_commit),
