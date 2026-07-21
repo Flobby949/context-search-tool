@@ -63,6 +63,10 @@ ACTUAL_TREE = subprocess.check_output(
     ["git", "-C", str(ROOT), "rev-parse", "HEAD:src/context_search_tool"],
     text=True,
 ).strip()
+ACTUAL_ROOT_TREE = subprocess.check_output(
+    ["git", "-C", str(ROOT), "rev-parse", "HEAD^{tree}"],
+    text=True,
+).strip()
 
 OBSERVATION_KEYS = [
     "started_at_epoch_ms",
@@ -743,8 +747,10 @@ def _entry_record(module: Any) -> dict[str, Any]:
     "name",
     [
         "benchmark-report-v1.json",
+        "acceptance-report-v1.json",
         "decision-record-v1.json",
         "matrix-summary-v1.json",
+        "matrix-report-v1.json",
         "entry-record-v1.json",
         "environment-report-v1.json",
         "quality-report-v1.json",
@@ -877,6 +883,226 @@ def test_standalone_churn_report_is_closed_and_assembles_without_fake_case(
     )
 
 
+def test_matrix_assembler_requires_exact_unique_12_cell_cross_product(
+    tmp_path: Path,
+) -> None:
+    module = _load_harness()
+    input_dir = tmp_path / "cells"
+    evidence_id = f"p6-acceptance-{ACTUAL_COMMIT}"
+    workflow_sha256 = hashlib.sha256(WORKFLOW.read_bytes()).hexdigest()
+    lock_sha256 = hashlib.sha256((ROOT / "uv.lock").read_bytes()).hexdigest()
+    for os_name in ("ubuntu-latest", "macos-latest", "windows-latest"):
+        for python_version in ("3.11", "3.12", "3.13", "3.14"):
+            cell = input_dir / f"{os_name}-py{python_version}"
+            cell.mkdir(parents=True)
+            junit = b'<testsuite tests="1"><testcase name="ok"/></testsuite>\n'
+            (cell / "junit.xml").write_bytes(junit)
+            summary = {
+                "schema_version": 1,
+                "implementation_commit": ACTUAL_COMMIT,
+                "production_tree": ACTUAL_TREE,
+                "workflow_sha256": workflow_sha256,
+                "os": os_name,
+                "architecture": "arm64" if os_name == "macos-latest" else "x86_64",
+                "python_version": python_version,
+                "dependency_lock_sha256": lock_sha256,
+                "tests": {
+                    "passed": 1,
+                    "failed": 0,
+                    "errors": 0,
+                    "skipped": 0,
+                    "xfail": 0,
+                    "skip_node_ids": [],
+                },
+                "junit_sha256": hashlib.sha256(junit).hexdigest(),
+                "run": {
+                    "evidence_id": evidence_id,
+                    "run_id": "123",
+                    "run_attempt": 1,
+                },
+                "conclusion": "success",
+            }
+            (cell / "matrix-summary-v1.json").write_text(
+                json.dumps(summary),
+                encoding="utf-8",
+            )
+
+    report = module.assemble_matrix_report(input_dir, evidence_id=evidence_id)
+
+    module.validate_report_data(report, "matrix-report-v1.json")
+    assert report["report_kind"] == "matrix"
+    assert len(report["cells"]) == 12
+    assert {
+        (cell["os"], cell["python_version"])
+        for cell in report["cells"]
+    } == {
+        (os_name, python_version)
+        for os_name in ("ubuntu-latest", "macos-latest", "windows-latest")
+        for python_version in ("3.11", "3.12", "3.13", "3.14")
+    }
+
+    missing = next(input_dir.rglob("matrix-summary-v1.json"))
+    missing.unlink()
+    with pytest.raises(ValueError, match="exactly 12"):
+        module.assemble_matrix_report(input_dir, evidence_id=evidence_id)
+
+
+def test_final_batch_operation_sets_expand_to_complete_tier_registries() -> None:
+    module = _load_harness()
+    contract = _load(PERFORMANCE / "workload_manifest.json")
+    expected = {
+        ("smoke", "all-smoke"): 38,
+        ("large", "all-large"): 38,
+        ("scale-5k", "all-scale"): 9,
+        ("scale-10k", "all-scale"): 9,
+        ("stress", "capacity-informational"): 5,
+    }
+    for (tier, operation_set), count in expected.items():
+        requests = module._benchmark_set_requests(contract, tier, operation_set)
+        assert len(requests) == count
+        assert len(
+            {
+                (
+                    request["operation"],
+                    request["case_id"],
+                    request["measurement_state"],
+                )
+                for request in requests
+            }
+        ) == count
+
+    with pytest.raises(ValueError, match="does not match"):
+        module._benchmark_set_requests(contract, "large", "all-scale")
+
+
+def test_final_environment_uses_final_benchmark_identity_and_raw_lock_hash(
+    tmp_path: Path,
+) -> None:
+    module = _load_harness()
+    entry = _entry_record(module)
+    parent = subprocess.check_output(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD^"],
+        text=True,
+    ).strip()
+    entry["entry_commit"] = parent
+    entry["review_commit"] = parent
+    entry["production_tree"] = subprocess.check_output(
+        ["git", "-C", str(ROOT), "rev-parse", f"{parent}:src/context_search_tool"],
+        text=True,
+    ).strip()
+    benchmark = _performance_report(mode="final")
+    entry_path = tmp_path / "entry.json"
+    benchmark_path = tmp_path / "benchmark.json"
+    entry_path.write_text(json.dumps(entry), encoding="utf-8")
+    benchmark_path.write_text(json.dumps(benchmark), encoding="utf-8")
+
+    report = module.assemble_reports(
+        "environment",
+        [entry_path, benchmark_path],
+        "final",
+    )
+
+    assert report["implementation_commit"] == benchmark["identity"][
+        "implementation_commit"
+    ]
+    assert report["production_tree"] == benchmark["identity"]["production_tree"]
+    assert report["environment"]["dependency_lock_sha256"] == hashlib.sha256(
+        (ROOT / "uv.lock").read_bytes()
+    ).hexdigest()
+    with pytest.raises(ValueError, match="mode differs"):
+        module.assemble_reports(
+            "environment",
+            [entry_path, benchmark_path],
+            "baseline",
+        )
+
+
+def test_quality_assembler_emits_only_closed_aggregate_and_tdd_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_harness()
+    profiles = {
+        "final-p5.json": ("p5_language_graphs", 12),
+        "final-p4.json": ("p4_exploration", 4),
+        "final-p2.json": ("p2_context_pack", 5),
+        "final-ci.json": ("ci", 8),
+    }
+    inputs = []
+    for name, (profile, passed) in profiles.items():
+        path = tmp_path / name
+        path.write_text(
+            json.dumps(
+                {
+                    "profile": profile,
+                    "aggregate": {"selected": passed, "passed": passed},
+                }
+            ),
+            encoding="utf-8",
+        )
+        inputs.append(path)
+    for name in ("final-real-a.json", "final-real-b.json"):
+        path = tmp_path / name
+        path.write_text(json.dumps({"aggregate": {"passed": 2}}), encoding="utf-8")
+        inputs.append(path)
+    full = tmp_path / "final-full.xml"
+    full.write_text("<testsuite/>", encoding="utf-8")
+    inputs.append(full)
+    for task in range(1, 11):
+        path = tmp_path / f"tdd-task-{task}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "task": task,
+                    "pre_change_commit": GIT,
+                    "pre_change_production_tree": GIT,
+                    "final_staged_tree": GIT,
+                    "red": {
+                        "failed_node_ids": [f"tests/test_task_{task}.py::test_red"],
+                        "test_identity_sha256": HASH,
+                    },
+                    "green": {"passed": task},
+                }
+            ),
+            encoding="utf-8",
+        )
+        inputs.append(path)
+
+    monkeypatch.setattr(module, "_validate_entry_quality", lambda *_args: None)
+    monkeypatch.setattr(module, "_validate_pinned_real", lambda *_args: None)
+    monkeypatch.setattr(module, "validate_tdd_record_data", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "parse_junit",
+        lambda _path: {
+            "sha256": HASH,
+            "passed": 2835,
+            "skipped": 9,
+            "xfail": 0,
+            "errors": 0,
+            "failed": 0,
+            "skip_node_ids": list(module.FROZEN_ENTRY_SKIP_NODE_IDS),
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "_git_identity",
+        lambda _root=module.ROOT: (ACTUAL_COMMIT, ACTUAL_TREE, False),
+    )
+
+    report = module.assemble_quality_report(inputs)
+
+    module.validate_report_data(report, "quality-report-v1.json")
+    assert report["full_suite"]["passed"] == 2835
+    assert report["profiles"]["p5_language_graphs"] == {
+        "passed": 12,
+        "selected": 12,
+        "trace_coverage": 1,
+    }
+    assert [record["task"] for record in report["tdd"]] == list(range(1, 11))
+    assert "failed_node_ids" not in json.dumps(report)
+
+
 def _walk(value: Any, path: tuple[str, ...] = ()) -> None:
     forbidden_keys = {
         "source_body",
@@ -941,6 +1167,400 @@ def test_decision_records_are_closed_and_do_not_authorize_implementation() -> No
     exact["implementation_authorized"] = True
     with pytest.raises(ValidationError):
         validator.validate(exact)
+
+
+def test_ann_decision_is_derived_from_same_sample_stage_and_rss_evidence() -> None:
+    module = _load_harness()
+    report = _benchmark_report()
+    report["mode"] = "final"
+    report["workload"]["tier"] = "large"
+    report["operation"].update(
+        {
+            "operation_id": "query",
+            "case_id": "semantic_high",
+            "case_family": "query",
+            "measurement_state": "mcp_resident_warm",
+            "outcome": "supported",
+        }
+    )
+    sample = report["samples"][0]
+    sample["duration_ms"] = 500.0
+    sample["stage_timings_ms"]["end_to_end"] = 500.0
+    sample["stage_timings_ms"]["semantic"] = 200.0
+    report["summary"].update(
+        {
+            "median_ms": 500.0,
+            "p50_ms": 500.0,
+            "p95_ms": 500.0,
+            "max_ms": 500.0,
+        }
+    )
+
+    retained = module.decide_ann(report, evidence_report_sha256=HASH)
+    assert retained["decision"] == "retained"
+    assert retained["reason_codes"] == [
+        "semantic_within_budget",
+        "rss_within_budget",
+        "semantic_dominant",
+    ]
+
+    sample["stage_timings_ms"]["semantic"] = 400.0
+    triggered = module.decide_ann(report, evidence_report_sha256=HASH)
+    assert triggered["decision"] == "prototype_requires_amendment"
+    assert triggered["trigger_crossed"] is True
+
+
+def test_service_watch_decision_uses_per_sample_load_counterfactual_and_closed_gates() -> None:
+    module = _load_harness()
+    performance = _performance_report(mode="final")
+    identity = performance["identity"]
+    operation = "query_planner_off"
+    samples = []
+    for pair_id, side in module.alternating_pairs(30):
+        order_index = 1 if not any(
+            sample["pair_id"] == pair_id for sample in samples[-1:]
+        ) else 2
+        samples.append(
+            {
+                "pair_id": pair_id,
+                "order_index": order_index,
+                "side": side,
+                "operation_id": operation,
+                "case_id": "planner_off_ordinary",
+                "repository_fingerprint_sha256": HASH,
+                "outcome": "supported",
+                "duration_ms": 1000.0,
+                "immutable_state_load_ms": 500.0,
+                "rss": {"extra_peak_bytes": 1},
+                "vector_payload_bytes": 1,
+                "product_subprocesses": 0,
+            }
+        )
+    calibration = {
+        "valid": True,
+        "sha256_bytes": 536870912,
+        "sha256_mib_per_s": 100.0,
+        "numpy_rows": 80000,
+        "numpy_dimensions": 384,
+        "numpy_dot_ms": 10.0,
+        "sqlite_rows": 20000,
+        "sqlite_ms": 5.0,
+        "within_pair_percent": 0.0,
+    }
+    paired = {
+        "schema_version": 1,
+        "kind": "paired",
+        "operation_set": "protected_small_entry_comparable",
+        "pair_count": 30,
+        "workload": {
+            "manifest_sha256": HASH,
+            "generator_version": "p6-generator-v1",
+            "generator_sha256": HASH,
+            "seed": 20260718,
+            "tier": "smoke",
+            "pristine_fingerprint_sha256": HASH,
+        },
+        "harness_sha256": HASH,
+        "implementations": {
+            "baseline": {
+                "implementation_commit": GIT,
+                "production_tree": GIT,
+            },
+            "final": {
+                "implementation_commit": identity["implementation_commit"],
+                "production_tree": identity["production_tree"],
+            },
+        },
+        "calibrations": {
+            "baseline": calibration,
+            "final": calibration,
+            "maximum_drift_percent": 0.0,
+            "within_ten_percent": True,
+        },
+        "protected_operation_ids": [operation],
+        "samples": samples,
+        "summaries": module._paired_summaries(samples, [operation]),
+    }
+    acceptance = {
+        "schema_version": 1,
+        "report_kind": "acceptance",
+        "implementation_commit": identity["implementation_commit"],
+        "production_tree": identity["production_tree"],
+        "inputs": {
+            "baseline": HASH,
+            "final": HASH,
+            "paired": HASH,
+            "churn": HASH,
+        },
+        "gates": {
+            "registry_coverage": True,
+            "absolute_large_budgets": True,
+            "scale_budgets": True,
+            "churn": True,
+            "protected_regression": True,
+        },
+        "conclusion": "success",
+    }
+
+    eligible = module.decide_service_watch(
+        performance,
+        paired,
+        acceptance,
+        evidence_report_sha256=HASH,
+    )
+    assert eligible["decision"] == "eligible_for_separate_design"
+    assert eligible["reason_codes"] == ["eligibility_met"]
+
+    for sample in paired["samples"]:
+        sample["immutable_state_load_ms"] = 100.0
+    paired["summaries"] = module._paired_summaries(samples, [operation])
+    deferred = module.decide_service_watch(
+        performance,
+        paired,
+        acceptance,
+        evidence_report_sha256=HASH,
+    )
+    assert deferred["decision"] == "deferred"
+    assert set(deferred["reason_codes"]) == {
+        "load_not_dominant",
+        "counterfactual_insufficient",
+    }
+
+
+def test_absolute_and_scale_acceptance_gates_reject_forbidden_status_reads() -> None:
+    module = _load_harness()
+
+    def gate_case(
+        tier: str,
+        operation_id: str,
+        case_id: str = "default",
+        state: str = "cli_process_cold",
+        *,
+        duration_ms: float = 100.0,
+    ) -> dict[str, Any]:
+        case = _benchmark_report()
+        case["workload"]["tier"] = tier
+        case["operation"].update(
+            {
+                "operation_id": operation_id,
+                "case_id": case_id,
+                "measurement_state": state,
+                "outcome": "supported",
+            }
+        )
+        sample = case["samples"][0]
+        sample["duration_ms"] = duration_ms
+        sample["stage_timings_ms"]["end_to_end"] = duration_ms
+        sample["work"]["inventory_entries"] = {
+            "scale-5k": 5000,
+            "scale-10k": 10000,
+        }.get(tier, 20000)
+        sample["disk"].update(
+            {
+                "vector_payload_bytes": 100,
+                "vector_id_bytes": 1,
+                "descriptor_bytes": 1,
+                "total_bytes": 200,
+            }
+        )
+        case["summary"].update(
+            {
+                "median_ms": duration_ms,
+                "p50_ms": duration_ms,
+                "p95_ms": duration_ms,
+                "max_ms": duration_ms,
+            }
+        )
+        return case
+
+    cases = []
+    full = gate_case("large", "full_build")
+    full["samples"][0]["work"]["generation_count"] = 1
+    cases.append(full)
+    authoritative = gate_case("large", "authoritative_noop")
+    authoritative["samples"][0]["work"]["source_bytes_hashed"] = 512 * 1024**2
+    authoritative["samples"][0]["work"]["source_bytes_read"] = 512 * 1024**2
+    cases.append(authoritative)
+    quick = gate_case("large", "status_quick")
+    cases.append(quick)
+    verified = gate_case("large", "status_verified")
+    verified["samples"][0]["work"]["source_bytes_hashed"] = 512 * 1024**2
+    verified["samples"][0]["work"]["source_bytes_read"] = 512 * 1024**2
+    verified["samples"][0]["stage_timings_ms"]["source"] = 1000.0
+    cases.append(verified)
+    cases.append(gate_case("large", "refresh_noop"))
+    one_file = gate_case("large", "refresh_one_file")
+    one_file["samples"][0]["work"].update(
+        {
+            "vector_bytes_read": 100,
+            "vector_bytes_written": 100,
+            "vector_payload_passes": 2,
+            "path_index_builds": 1,
+        }
+    )
+    cases.append(one_file)
+    query_ids = [
+        "lexical_high",
+        "lexical_low",
+        "lexical_zero",
+        "path_symbol_ambiguity",
+        "direct_ascii",
+        "direct_cjk",
+        "signal_metadata",
+        "semantic_high",
+        "planner_off_ordinary",
+    ]
+    for query_id in query_ids:
+        for state in ("cli_process_cold", "mcp_resident_warm"):
+            query = gate_case("large", "query", query_id, state)
+            query["operation"]["case_family"] = "query"
+            query["samples"][0]["stage_timings_ms"]["semantic"] = 10.0
+            cases.append(query)
+    explore = gate_case(
+        "large",
+        "explore",
+        "p4_explore",
+        "mcp_resident_warm",
+    )
+    explore["operation"]["case_family"] = "explore"
+    explore["samples"][0]["work"]["vector_payload_passes"] = 3
+    cases.append(explore)
+
+    for tier, multiplier in (("scale-5k", 1), ("scale-10k", 2)):
+        for operation_id in (
+            "full_build",
+            "authoritative_noop",
+            "status_quick",
+            "status_verified",
+            "refresh_noop",
+            "refresh_one_file",
+        ):
+            case = gate_case(
+                tier,
+                operation_id,
+                duration_ms=100.0 * multiplier,
+            )
+            work = case["samples"][0]["work"]
+            if operation_id == "full_build":
+                work["generation_count"] = 1
+            if operation_id == "authoritative_noop":
+                work["source_bytes_read"] = 100 * multiplier
+                work["source_bytes_hashed"] = 100 * multiplier
+            if operation_id == "refresh_one_file":
+                work["vector_bytes_read"] = 10 * multiplier
+                work["vector_bytes_written"] = 10 * multiplier
+            cases.append(case)
+
+    final = {"case_reports": cases}
+    module._large_acceptance_gates(final)
+    module._scale_acceptance_gates(final)
+
+    quick["samples"][0]["work"]["source_bytes_read"] = 1
+    with pytest.raises(ValueError, match="quick status body/vector reads"):
+        module._large_acceptance_gates(final)
+
+
+def test_acceptance_compare_binds_all_inputs_and_emits_only_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_harness()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"protected_small_entry_comparable": ["full_build"]}),
+        encoding="utf-8",
+    )
+    calibration = {
+        "sha256_mib_per_s": 100.0,
+        "numpy_dot_ms": 10.0,
+        "sqlite_ms": 5.0,
+    }
+    case = {
+        "workload": {"tier": "large"},
+        "operation": {
+            "operation_id": "full_build",
+            "case_id": "default",
+            "measurement_state": "cli_process_cold",
+        },
+        "calibration": calibration,
+    }
+    baseline = {
+        "mode": "baseline",
+        "identity": {
+            "implementation_commit": GIT,
+            "production_tree": GIT,
+            "workload_sha256": HASH,
+        },
+        "case_reports": [deepcopy(case)],
+    }
+    final_identity = {
+        "implementation_commit": ACTUAL_COMMIT,
+        "production_tree": ACTUAL_TREE,
+        "workload_sha256": HASH,
+    }
+    final = {
+        "mode": "final",
+        "identity": final_identity,
+        "case_reports": [deepcopy(case)],
+        "churn": {"steps": 100},
+    }
+    churn = {
+        "mode": "final",
+        "report_scope": "churn",
+        "identity": final_identity,
+        "churn": {"steps": 100},
+    }
+    paired = {
+        "pair_count": 30,
+        "implementations": {
+            "baseline": {"implementation_commit": GIT},
+            "final": {
+                "implementation_commit": ACTUAL_COMMIT,
+                "production_tree": ACTUAL_TREE,
+            },
+        },
+        "protected_operation_ids": ["full_build"],
+        "summaries": [
+            {
+                "operation_id": "full_build",
+                "baseline": {"outcome": "supported", "cv_population": 0.01},
+                "final": {"outcome": "supported", "cv_population": 0.01},
+                "median_ratio": 1.05,
+            }
+        ],
+    }
+    monkeypatch.setattr(module, "validate_report_data", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "validate_paired_report", lambda *_args: None)
+    monkeypatch.setattr(
+        module,
+        "validate_performance_registry_coverage",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(module, "_large_acceptance_gates", lambda *_args: None)
+    monkeypatch.setattr(module, "_scale_acceptance_gates", lambda *_args: None)
+
+    report = module.compare_acceptance_reports(
+        baseline,
+        final,
+        paired,
+        churn,
+        manifest=manifest,
+        input_sha256={
+            "baseline": HASH,
+            "final": HASH,
+            "paired": HASH,
+            "churn": HASH,
+        },
+    )
+
+    assert report["conclusion"] == "success"
+    assert all(report["gates"].values())
+    assert report["inputs"] == {
+        "baseline": HASH,
+        "final": HASH,
+        "paired": HASH,
+        "churn": HASH,
+    }
 
 
 def test_index_health_goldens_have_exact_required_order_and_states() -> None:
@@ -1839,8 +2459,8 @@ def test_pair_decision_publish_and_tdd_invariants(tmp_path: Path) -> None:
     assert module.alternating_pairs(3) == [
         ("pair-001", "baseline"),
         ("pair-001", "final"),
-        ("pair-002", "baseline"),
         ("pair-002", "final"),
+        ("pair-002", "baseline"),
         ("pair-003", "baseline"),
         ("pair-003", "final"),
     ]
@@ -1855,10 +2475,7 @@ def test_pair_decision_publish_and_tdd_invariants(tmp_path: Path) -> None:
     _validator("decision-record-v1.json").validate(decision)
     assert "implementation_authorized" not in decision
 
-    node_id = (
-        "tests/test_p6_benchmark.py::"
-        "test_pair_decision_publish_and_tdd_invariants"
-    )
+    node_id = "tests/test_query_intent.py::test_query_intent"
     arguments = ["-q", node_id]
     identity, test_hashes = module._test_identity([node_id], arguments)
     record = {
@@ -1887,25 +2504,31 @@ def test_pair_decision_publish_and_tdd_invariants(tmp_path: Path) -> None:
             "completed_at_epoch_ms": 4,
             "test_identity_sha256": identity,
         },
-        "final_staged_tree": GIT,
+        "final_staged_tree": ACTUAL_ROOT_TREE,
     }
-    module.validate_tdd_record_data(record, staged_tree=GIT)
+    module.validate_tdd_record_data(record, staged_tree=ACTUAL_ROOT_TREE)
     changed = deepcopy(record)
     changed["green"]["test_identity_sha256"] = "2" * 64
     with pytest.raises(ValueError):
-        module.validate_tdd_record_data(changed, staged_tree=GIT)
+        module.validate_tdd_record_data(changed, staged_tree=ACTUAL_ROOT_TREE)
     with pytest.raises(ValueError):
         module.validate_tdd_record_data(record, staged_tree="2" * 40)
     changed_arguments = deepcopy(record)
     changed_arguments["pytest"]["arguments"] = ["-vv", node_id]
     with pytest.raises(ValueError, match="does not bind"):
-        module.validate_tdd_record_data(changed_arguments, staged_tree=GIT)
+        module.validate_tdd_record_data(
+            changed_arguments,
+            staged_tree=ACTUAL_ROOT_TREE,
+        )
     changed_nodes = deepcopy(record)
     changed_nodes["pytest"]["node_ids"] = [
-        "tests/test_p6_benchmark.py::test_required_benchmark_subcommands_are_registered"
+        "tests/test_query_intent.py::test_changed_node"
     ]
     with pytest.raises(ValueError, match="does not bind"):
-        module.validate_tdd_record_data(changed_nodes, staged_tree=GIT)
+        module.validate_tdd_record_data(
+            changed_nodes,
+            staged_tree=ACTUAL_ROOT_TREE,
+        )
 
     source = tmp_path / "decision.json"
     source.write_text(json.dumps(decision), encoding="utf-8")

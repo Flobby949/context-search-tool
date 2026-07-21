@@ -164,6 +164,7 @@ def test_internal_worker_reports_self_rss_and_no_product_children(
             - result["rss"]["empty_harness_peak_bytes"],
         )
         attribution = result["attribution"]
+        assert attribution["immutable_state_load_ms"] > 0
         assert attribution["work"]["inventory_entries"] == 1
         assert attribution["work"]["source_bytes_read"] > 0
         assert attribution["work"]["source_bytes_hashed"] == attribution["work"][

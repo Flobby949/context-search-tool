@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "P6 Protected Quality Report v1",
+  "$id": "https://context-search-tool.invalid/schemas/p6/quality-report-v1.json",
+  "title": "P6 Quality Report v1",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -8,18 +9,25 @@
     "implementation_commit",
     "production_tree",
     "full_suite",
-    "profiles"
+    "profiles",
+    "tdd"
   ],
   "properties": {
-    "schema_version": {
-      "const": 1
-    },
-    "implementation_commit": {
-      "$ref": "#/$defs/git"
-    },
-    "production_tree": {
-      "$ref": "#/$defs/git"
-    },
+    "schema_version": {"const": 1},
+    "implementation_commit": {"$ref": "#/$defs/git"},
+    "production_tree": {"$ref": "#/$defs/git"},
+    "full_suite": {"$ref": "#/$defs/full_suite"},
+    "profiles": {"$ref": "#/$defs/profiles"},
+    "tdd": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {"$ref": "#/$defs/tdd"}
+    }
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "full_suite": {
       "type": "object",
       "additionalProperties": false,
@@ -32,30 +40,38 @@
         "skip_node_ids"
       ],
       "properties": {
-        "passed": {
-          "const": 2625
-        },
-        "skipped": {
-          "const": 9
-        },
-        "xfail": {
-          "const": 0
-        },
-        "errors": {
-          "const": 0
-        },
-        "junit_sha256": {
-          "$ref": "#/$defs/sha"
-        },
+        "passed": {"type": "integer", "minimum": 2625},
+        "skipped": {"const": 9},
+        "xfail": {"const": 0},
+        "errors": {"const": 0},
+        "junit_sha256": {"$ref": "#/$defs/sha"},
         "skip_node_ids": {
           "type": "array",
           "minItems": 9,
           "maxItems": 9,
           "uniqueItems": true,
-          "items": {
-            "type": "string"
-          }
+          "items": {"type": "string", "minLength": 1}
         }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "selected", "trace_coverage"],
+      "properties": {
+        "passed": {"type": "integer", "minimum": 1},
+        "selected": {"type": "integer", "minimum": 1},
+        "trace_coverage": {"const": 1}
+      }
+    },
+    "pinned_real": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "selected", "byte_identical"],
+      "properties": {
+        "passed": {"const": 2},
+        "selected": {"const": 2},
+        "byte_identical": {"const": true}
       }
     },
     "profiles": {
@@ -69,117 +85,34 @@
         "pinned_real"
       ],
       "properties": {
-        "p5_language_graphs": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "passed",
-            "selected",
-            "trace_coverage"
-          ],
-          "properties": {
-            "passed": {
-              "const": 12
-            },
-            "selected": {
-              "const": 12
-            },
-            "trace_coverage": {
-              "const": 1
-            }
-          }
-        },
-        "p4_exploration": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "passed",
-            "selected",
-            "trace_coverage"
-          ],
-          "properties": {
-            "passed": {
-              "const": 4
-            },
-            "selected": {
-              "const": 4
-            },
-            "trace_coverage": {
-              "const": 1
-            }
-          }
-        },
-        "p2_context_pack": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "passed",
-            "selected",
-            "trace_coverage"
-          ],
-          "properties": {
-            "passed": {
-              "const": 5
-            },
-            "selected": {
-              "const": 5
-            },
-            "trace_coverage": {
-              "const": 1
-            }
-          }
-        },
-        "ci": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "passed",
-            "selected",
-            "trace_coverage"
-          ],
-          "properties": {
-            "passed": {
-              "const": 8
-            },
-            "selected": {
-              "const": 8
-            },
-            "trace_coverage": {
-              "const": 1
-            }
-          }
-        },
-        "pinned_real": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "passed",
-            "selected",
-            "byte_identical"
-          ],
-          "properties": {
-            "passed": {
-              "const": 2
-            },
-            "selected": {
-              "const": 2
-            },
-            "byte_identical": {
-              "const": true
-            }
-          }
-        }
+        "p5_language_graphs": {"$ref": "#/$defs/profile"},
+        "p4_exploration": {"$ref": "#/$defs/profile"},
+        "p2_context_pack": {"$ref": "#/$defs/profile"},
+        "ci": {"$ref": "#/$defs/profile"},
+        "pinned_real": {"$ref": "#/$defs/pinned_real"}
       }
-    }
-  },
-  "$defs": {
-    "sha": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
     },
-    "git": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{40}$"
+    "tdd": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task",
+        "pre_change_commit",
+        "pre_change_production_tree",
+        "final_staged_tree",
+        "test_identity_sha256",
+        "red_failed",
+        "green_passed"
+      ],
+      "properties": {
+        "task": {"type": "integer", "minimum": 1, "maximum": 10},
+        "pre_change_commit": {"$ref": "#/$defs/git"},
+        "pre_change_production_tree": {"$ref": "#/$defs/git"},
+        "final_staged_tree": {"$ref": "#/$defs/git"},
+        "test_identity_sha256": {"$ref": "#/$defs/sha"},
+        "red_failed": {"type": "integer", "minimum": 1},
+        "green_passed": {"type": "integer", "minimum": 1}
+      }
     }
   }
 }

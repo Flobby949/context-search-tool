@@ -103,6 +103,7 @@ def _calibration() -> dict[str, Any]:
 def _measured(duration_ms: float = 1.0) -> dict[str, Any]:
     return {
         "duration_ms": duration_ms,
+        "attribution": {"immutable_state_load_ms": duration_ms / 2},
         "rss": {
             "process_start_bytes": 1,
             "peak_bytes": 2,
@@ -272,8 +273,8 @@ def test_paired_clones_each_side_per_pair_and_emits_private_verifiable_report(
     assert [sample["side"] for sample in report["samples"][:4]] == [
         "baseline",
         "final",
-        "baseline",
         "final",
+        "baseline",
     ]
     # Every clone gets an untimed full build. The entry status is unsupported;
     # the final implementation adds the timed status call for its two clones.
@@ -300,8 +301,10 @@ def test_paired_clones_each_side_per_pair_and_emits_private_verifiable_report(
                 and sample["pair_id"] == pair_id
             ]
             assert len(measured) == 2
-            assert measured[0]["side"] == "baseline"
-            assert measured[1]["side"] == "final"
+            assert {sample["side"] for sample in measured} == {
+                "baseline",
+                "final",
+            }
             assert calls
     status_samples = [
         sample for sample in report["samples"]
@@ -326,12 +329,23 @@ def test_paired_clones_each_side_per_pair_and_emits_private_verifiable_report(
         if sample["operation_id"] == "query_lexical_high"
     ]
     assert {sample["case_id"] for sample in query_samples} == {"lexical_high"}
+    assert all(
+        sample["immutable_state_load_ms"] == sample["duration_ms"] / 2
+        for sample in report["samples"]
+        if sample["outcome"] == "supported"
+    )
+    assert all(
+        sample["vector_payload_bytes"] >= 0
+        for sample in report["samples"]
+        if sample["outcome"] == "supported"
+    )
     payload = json.dumps(report, sort_keys=True)
     assert str(tmp_path) not in payload
     assert "lexicalburst" not in payload
     assert "baseline_root" not in payload
     assert "final_root" not in payload
     assert not list(tmp_path.glob("p6-paired-*"))
+    module.validate_paired_report(report)
 
 
 def test_paired_one_file_refresh_dirties_only_supported_final_clone(

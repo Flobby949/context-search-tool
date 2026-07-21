@@ -283,9 +283,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--repo", type=Path, required=True)
     run.add_argument("--manifest", type=Path, required=True)
     run.add_argument("--output", type=Path, required=True)
-    run.add_argument("--operation", required=True)
-    run.add_argument("--case-id", required=True)
-    run.add_argument("--samples", type=int, required=True)
+    run.add_argument("--operation")
+    run.add_argument("--operations")
+    run.add_argument("--case-id")
+    run.add_argument("--samples", type=int)
     run.add_argument(
         "--measurement-state",
         choices=(
@@ -293,7 +294,6 @@ def build_parser() -> argparse.ArgumentParser:
             "mcp_resident_warm",
             "filesystem_cold_diagnostic",
         ),
-        required=True,
     )
     run.add_argument("--mode", choices=("baseline", "final"), default="baseline")
     run.add_argument("--checkpoint-dir", type=Path)
@@ -306,10 +306,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     assemble = subparsers.add_parser("assemble", help="assemble validated evidence")
     assemble.add_argument(
-        "--kind", choices=("entry", "environment", "performance"), required=True
+        "--kind",
+        choices=("entry", "environment", "matrix", "performance", "quality"),
+        required=True,
     )
     assemble.add_argument("--mode", choices=("baseline", "final"), default="baseline")
-    assemble.add_argument("--input", type=Path, action="append", required=True)
+    assemble.add_argument("--input", type=Path, action="append", default=[])
+    assemble.add_argument("--input-dir", type=Path)
+    assemble.add_argument("--evidence-id")
     assemble.add_argument("--output", type=Path, required=True)
     assemble.add_argument("--manifest", type=Path, default=DEFAULT_WORKLOAD_MANIFEST)
 
@@ -327,9 +331,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     decide = subparsers.add_parser("decide", help="emit a closed decision record")
     decide.add_argument(
-        "--kind", choices=("exact_ann", "service_watch"), required=True
+        "--kind",
+        choices=("ann", "exact_ann", "service-watch", "service_watch"),
+        required=True,
     )
-    decide.add_argument("--input", type=Path, required=True)
+    decide.add_argument("--input", "--report", dest="input", type=Path, required=True)
+    decide.add_argument("--paired", type=Path)
+    decide.add_argument("--acceptance", type=Path)
     decide.add_argument("--output", type=Path, required=True)
     decide.add_argument("--trigger-crossed", action="store_true")
     decide.add_argument("--reason", action="append", default=[])
@@ -355,7 +363,12 @@ def build_parser() -> argparse.ArgumentParser:
     compare = subparsers.add_parser("compare", help="compare paired benchmark reports")
     compare.add_argument("--baseline", type=Path, required=True)
     compare.add_argument("--final", type=Path, required=True)
-    compare.add_argument("--output", type=Path, required=True)
+    compare.add_argument("--paired", type=Path)
+    compare.add_argument("--churn", type=Path)
+    compare.add_argument("--require-churn", action="store_true")
+    compare.add_argument("--require-scale-5k-10k", action="store_true")
+    compare.add_argument("--output", type=Path)
+    compare.add_argument("--manifest", type=Path, default=DEFAULT_WORKLOAD_MANIFEST)
 
     publish = subparsers.add_parser("publish", help="publish canonical validated JSON")
     publish.add_argument("--input", type=Path, required=True)
@@ -578,9 +591,17 @@ def validate_report_data(report: Any, schema_name: str | None = None) -> None:
     if not isinstance(report, Mapping):
         raise ValueError("report must be a JSON object")
     _assert_finite(report)
+    if schema_name is None and report.get("kind") == "paired":
+        validate_paired_report(report)
+        validate_private_payload(report)
+        return
     if schema_name is None:
         if report.get("report_kind") == "benchmark":
             schema_name = "benchmark-report-v1.json"
+        elif report.get("report_kind") == "acceptance":
+            schema_name = "acceptance-report-v1.json"
+        elif report.get("report_kind") == "matrix":
+            schema_name = "matrix-report-v1.json"
         elif report.get("decision_kind") in {"exact_ann", "service_watch"}:
             schema_name = "decision-record-v1.json"
         elif {"entry_commit", "review_commit", "lineage"}.issubset(report):
@@ -629,6 +650,59 @@ def validate_report_data(report: Any, schema_name: str | None = None) -> None:
             ]
             if len(identities) != len(set(identities)):
                 raise ValueError("benchmark performance report contains duplicate cases")
+    elif schema_name == "matrix-report-v1.json":
+        expected_cells = {
+            (os_name, python_version)
+            for os_name in ("ubuntu-latest", "macos-latest", "windows-latest")
+            for python_version in ("3.11", "3.12", "3.13", "3.14")
+        }
+        actual_cells = {
+            (cell["os"], cell["python_version"]) for cell in report["cells"]
+        }
+        if actual_cells != expected_cells or len(report["cells"]) != 12:
+            raise ValueError("matrix report does not contain the exact cell cross product")
+        expected_evidence_id = f"p6-acceptance-{report['implementation_commit']}"
+        if report["run"]["evidence_id"] != expected_evidence_id:
+            raise ValueError("matrix evidence ID does not bind its implementation")
+    elif schema_name == "quality-report-v1.json":
+        expected_profiles = {
+            "p5_language_graphs": 12,
+            "p4_exploration": 4,
+            "p2_context_pack": 5,
+            "ci": 8,
+        }
+        for profile, count in expected_profiles.items():
+            if report["profiles"][profile] != {
+                "passed": count,
+                "selected": count,
+                "trace_coverage": 1,
+            }:
+                raise ValueError("quality profile aggregate differs from frozen counts")
+        if report["profiles"]["pinned_real"] != {
+            "passed": 2,
+            "selected": 2,
+            "byte_identical": True,
+        }:
+            raise ValueError("pinned-real quality aggregate differs from frozen counts")
+        if report["full_suite"]["skip_node_ids"] != sorted(
+            FROZEN_ENTRY_SKIP_NODE_IDS
+        ):
+            raise ValueError("quality skip identities differ from the frozen audit")
+        if [record["task"] for record in report["tdd"]] != list(range(1, 11)):
+            raise ValueError("quality TDD summaries are not the exact ordered task set")
+    elif schema_name == "decision-record-v1.json":
+        if report["decision_kind"] == "exact_ann":
+            expected = (
+                "prototype_requires_amendment"
+                if report["trigger_crossed"]
+                else "retained"
+            )
+            if report["decision"] != expected:
+                raise ValueError("ANN decision disagrees with its trigger")
+        elif (report["decision"] == "eligible_for_separate_design") != (
+            report["reason_codes"] == ["eligibility_met"]
+        ):
+            raise ValueError("service/watch decision disagrees with its reasons")
     identity_pairs = (
         ("implementation_commit", "production_tree"),
         ("entry_commit", "production_tree"),
@@ -1057,6 +1131,109 @@ def _measurement_output_bytes(operation: str, output: str) -> bytes:
     return output.encode("utf-8")
 
 
+def _legacy_measurement_worker(
+    request: Mapping[str, Any],
+    *,
+    worker_started: float,
+    process_start: int,
+) -> dict[str, Any]:
+    """Measure the frozen pre-P6 product with the current P6 harness."""
+    from typer.testing import CliRunner
+
+    import context_search_tool.cli as cli_module
+    import context_search_tool.manifest as manifest_module
+    import context_search_tool.vector_store as vector_store_module
+
+    operation = str(request.get("operation", ""))
+    repo = Path(str(request["repo"])).resolve()
+    case_id = str(request.get("case_id", ""))
+    original_popen = subprocess.Popen
+    original_load_config = cli_module.load_config
+    original_manifest_assert = manifest_module.assert_manifest_compatible
+    original_load_generation = vector_store_module._load_generation
+    child_count = 0
+    immutable_state_load_ms = 0.0
+    stage_timings = {"config": 0.0, "manifest": 0.0, "semantic": 0.0}
+
+    def counted_popen(*args: Any, **kwargs: Any) -> Any:
+        nonlocal child_count
+        child_count += 1
+        return original_popen(*args, **kwargs)
+
+    def measured_load_config(*args: Any, **kwargs: Any) -> Any:
+        nonlocal immutable_state_load_ms
+        started = time.perf_counter()
+        result = original_load_config(*args, **kwargs)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        stage_timings["config"] += elapsed_ms
+        immutable_state_load_ms += elapsed_ms
+        return result
+
+    def measured_manifest_assert(*args: Any, **kwargs: Any) -> Any:
+        nonlocal immutable_state_load_ms
+        started = time.perf_counter()
+        result = original_manifest_assert(*args, **kwargs)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        stage_timings["manifest"] += elapsed_ms
+        immutable_state_load_ms += elapsed_ms
+        return result
+
+    def measured_load_generation(*args: Any, **kwargs: Any) -> Any:
+        nonlocal immutable_state_load_ms
+        started = time.perf_counter()
+        result = original_load_generation(*args, **kwargs)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        stage_timings["semantic"] += elapsed_ms
+        immutable_state_load_ms += elapsed_ms
+        return result
+
+    subprocess.Popen = counted_popen
+    cli_module.load_config = measured_load_config
+    manifest_module.assert_manifest_compatible = measured_manifest_assert
+    vector_store_module._load_generation = measured_load_generation
+    try:
+        result = CliRunner().invoke(
+            cli_module.app,
+            _operation_cli_args(operation, repo, case_id),
+        )
+    finally:
+        subprocess.Popen = original_popen
+        cli_module.load_config = original_load_config
+        manifest_module.assert_manifest_compatible = original_manifest_assert
+        vector_store_module._load_generation = original_load_generation
+    duration_ms = (time.perf_counter() - worker_started) * 1000
+    if result.exit_code != 0:
+        raise ValueError(f"measured operation failed with exit {result.exit_code}")
+    peak = _rss_bytes()
+    current = _current_rss_bytes()
+    benchmark_schema = _load_json(SCHEMA_ROOT / "benchmark-report-v1.json")
+    work_names = benchmark_schema["properties"]["samples"]["items"]["properties"][
+        "work"
+    ]["required"]
+    return {
+        "duration_ms": duration_ms,
+        "rss": {
+            "process_start_bytes": process_start,
+            "peak_bytes": peak,
+            "current_bytes": current,
+            "empty_harness_peak_bytes": process_start,
+            "extra_peak_bytes": max(0, peak - process_start),
+        },
+        "attribution": {
+            "immutable_state_load_ms": immutable_state_load_ms,
+            "trace_duration_ms": 0.0,
+            "source_counts": {},
+            "stages": [],
+            "stage_timings_ms": stage_timings,
+            "work": {name: 0 for name in work_names},
+        },
+        "output_sha256": hashlib.sha256(
+            _measurement_output_bytes(operation, result.output)
+        ).hexdigest(),
+        "product_subprocesses": child_count,
+    }
+
+
 def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     worker_started = time.perf_counter()
     worker_kind = str(request.get("kind", "operation"))
@@ -1085,7 +1262,16 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     from typer.testing import CliRunner
 
     import context_search_tool.cli as cli_module
-    import context_search_tool.index_health as index_health_module
+    try:
+        import context_search_tool.index_health as index_health_module
+    except ModuleNotFoundError as exc:
+        if exc.name != "context_search_tool.index_health":
+            raise
+        return _legacy_measurement_worker(
+            request,
+            worker_started=worker_started,
+            process_start=process_start,
+        )
     import context_search_tool.indexer as indexer_module
     import context_search_tool.manifest as manifest_module
     import context_search_tool.retrieval as retrieval_module
@@ -1152,6 +1338,7 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
         "graph": 0.0,
         "vector_publication": 0.0,
     }
+    immutable_state_load_ms = 0.0
     attributed_work = {
         "inventory_entries": 0,
         "source_bytes_read": 0,
@@ -1317,20 +1504,22 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
         return counted
 
     def measured_load_config(*args: Any, **kwargs: Any) -> Any:
+        nonlocal immutable_state_load_ms
         started = time.perf_counter()
         result = original_load_config(*args, **kwargs)
-        attributed_stage_timings["config"] += (
-            time.perf_counter() - started
-        ) * 1000
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        attributed_stage_timings["config"] += elapsed_ms
+        immutable_state_load_ms += elapsed_ms
         return result
 
     def manifest_wrapper(original: Any) -> Any:
         def measured(*args: Any, **kwargs: Any) -> Any:
+            nonlocal immutable_state_load_ms
             started = time.perf_counter()
             result = original(*args, **kwargs)
-            attributed_stage_timings["manifest"] += (
-                time.perf_counter() - started
-            ) * 1000
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            attributed_stage_timings["manifest"] += elapsed_ms
+            immutable_state_load_ms += elapsed_ms
             return result
 
         return measured
@@ -1524,22 +1713,30 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
         return original_vector_sha256_file(path)
 
     def measured_load_generation(index_dir: Path, descriptor: Any) -> Any:
+        nonlocal immutable_state_load_ms
         vectors_path = index_dir / descriptor.vectors_file
         ids_path = index_dir / descriptor.ids_file
         attributed_work["vector_bytes_read"] += (
             vectors_path.stat().st_size + ids_path.stat().st_size
         )
         attributed_work["vector_payload_passes"] += 1
-        return original_load_generation(index_dir, descriptor)
+        started = time.perf_counter()
+        result = original_load_generation(index_dir, descriptor)
+        immutable_state_load_ms += (time.perf_counter() - started) * 1000
+        return result
 
     def measured_load_bound_generation(index_dir: Path, descriptor: Any) -> Any:
+        nonlocal immutable_state_load_ms
         vectors_path = index_dir / descriptor.vectors_file
         ids_path = index_dir / descriptor.ids_file
         attributed_work["vector_bytes_read"] += (
             vectors_path.stat().st_size + ids_path.stat().st_size
         )
         attributed_work["vector_payload_passes"] += 1
-        return original_load_bound_generation(index_dir, descriptor)
+        started = time.perf_counter()
+        result = original_load_bound_generation(index_dir, descriptor)
+        immutable_state_load_ms += (time.perf_counter() - started) * 1000
+        return result
 
     def counted_popen(*args: Any, **kwargs: Any) -> Any:
         nonlocal child_count
@@ -1771,6 +1968,7 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     peak = _rss_bytes()
     current = _current_rss_bytes()
     attribution = {
+        "immutable_state_load_ms": immutable_state_load_ms,
         "trace_duration_ms": (
             captured_trace.duration_ms if captured_trace is not None else 0
         ),
@@ -3570,6 +3768,113 @@ def run_benchmark(
     return report
 
 
+def _benchmark_set_requests(
+    contract: Mapping[str, Any],
+    tier: str,
+    operation_set: str,
+) -> list[dict[str, Any]]:
+    expected_set = {
+        "smoke": "all-smoke",
+        "large": "all-large",
+        "scale-5k": "all-scale",
+        "scale-10k": "all-scale",
+        "stress": "capacity-informational",
+    }.get(tier)
+    if operation_set != expected_set:
+        raise ValueError("benchmark operation set does not match repository tier")
+    requests = []
+    for case in contract["benchmark_registry"]["cases"]:
+        if tier not in case["tiers"]:
+            continue
+        for measurement in case["measurements"]:
+            requests.append(
+                {
+                    "operation": case["operation_id"],
+                    "case_id": case["case_id"],
+                    "sample_count": measurement["sample_count"],
+                    "measurement_state": measurement["state"],
+                }
+            )
+    if not requests:
+        raise ValueError("benchmark operation set is empty")
+    return requests
+
+
+def run_benchmark_set(
+    repo: str | Path,
+    manifest: str | Path,
+    *,
+    operation_set: str,
+    mode: str,
+    checkpoint_dir: str | Path,
+    resume: bool,
+) -> dict[str, Any]:
+    repo_path = Path(repo).resolve()
+    manifest_path = Path(manifest).resolve()
+    contract = _load_json(manifest_path)
+    tier = _tier_for_repo(repo_path, contract)
+    requests = _benchmark_set_requests(contract, tier, operation_set)
+    checkpoint_root = Path(checkpoint_dir).resolve()
+    ready_repo = checkpoint_root / "shared-ready"
+    if resume:
+        if not (ready_repo / ".context-search").is_dir():
+            raise ValueError("benchmark resume requires its frozen shared ready root")
+    else:
+        if os.path.lexists(ready_repo):
+            raise FileExistsError(ready_repo)
+        checkpoint_root.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(repo_path, ready_repo)
+        if not (ready_repo / ".context-search").is_dir():
+            _benchmark_progress("shared ready-repository setup started")
+            _run_measurement_worker("full_build", ready_repo, "default")
+    if _repository_fingerprint(ready_repo) != _repository_fingerprint(repo_path):
+        raise ValueError("shared benchmark setup changed generated content")
+    reports = []
+    for index, request in enumerate(requests, start=1):
+        operation = request["operation"]
+        case_id = request["case_id"]
+        state = request["measurement_state"]
+        _benchmark_progress(
+            f"case {index}/{len(requests)} {operation}/{case_id}/{state} started"
+        )
+        case_checkpoint = (
+            checkpoint_root / f"{index:03d}-{operation}-{case_id}-{state}"
+        )
+        reports.append(
+            run_benchmark(
+                repo_path if operation == "full_build" else ready_repo,
+                manifest_path,
+                operation=operation,
+                case_id=case_id,
+                sample_count=request["sample_count"],
+                measurement_state=state,
+                mode=mode,
+                checkpoint_dir=case_checkpoint,
+                resume=(
+                    resume
+                    and _measurement_is_supported(operation, state, mode)
+                    and (case_checkpoint / "run.json").is_file()
+                ),
+            )
+        )
+    with tempfile.TemporaryDirectory(
+        prefix="p6-benchmark-set-",
+        dir=repo_path.parent,
+    ) as raw:
+        raw_root = Path(raw)
+        paths = []
+        for index, report in enumerate(reports, start=1):
+            path = raw_root / f"case-{index:03d}.json"
+            _write_new_json(path, report)
+            paths.append(path)
+        return assemble_reports(
+            "performance",
+            paths,
+            mode,
+            manifest=manifest_path,
+        )
+
+
 def parse_junit(path: str | Path) -> dict[str, Any]:
     raw = Path(path).read_bytes()
     root = ET.fromstring(raw)
@@ -3605,6 +3910,86 @@ def parse_junit(path: str | Path) -> dict[str, Any]:
         "failed": failures,
         "skip_node_ids": sorted(skip_nodes),
     }
+
+
+def assemble_matrix_report(
+    input_dir: str | Path,
+    *,
+    evidence_id: str,
+) -> dict[str, Any]:
+    root = Path(input_dir)
+    if not root.is_dir():
+        raise ValueError("matrix input directory does not exist")
+    summaries = sorted(root.rglob("matrix-summary-v1.json"))
+    if len(summaries) != 12:
+        raise ValueError("matrix assembly requires exactly 12 cell summaries")
+    cells = []
+    common_keys = (
+        "implementation_commit",
+        "production_tree",
+        "workflow_sha256",
+        "dependency_lock_sha256",
+        "run",
+    )
+    common: dict[str, Any] | None = None
+    for summary_path in summaries:
+        summary = _load_json(summary_path)
+        validate_report_data(summary, "matrix-summary-v1.json")
+        junit_path = summary_path.with_name("junit.xml")
+        if not junit_path.is_file() or _sha256_path(junit_path) != summary[
+            "junit_sha256"
+        ]:
+            raise ValueError("matrix JUnit identity differs from its cell summary")
+        projected = {key: summary[key] for key in common_keys}
+        if common is None:
+            common = projected
+        elif canonical_json(projected) != canonical_json(common):
+            raise ValueError("matrix cells contain mixed run or implementation identity")
+        cells.append(
+            {
+                "os": summary["os"],
+                "architecture": summary["architecture"],
+                "python_version": summary["python_version"],
+                "tests": summary["tests"],
+                "junit_sha256": summary["junit_sha256"],
+            }
+        )
+    if common is None:
+        raise AssertionError("matrix common identity is absent")
+    expected_cells = {
+        (os_name, python_version)
+        for os_name in ("ubuntu-latest", "macos-latest", "windows-latest")
+        for python_version in ("3.11", "3.12", "3.13", "3.14")
+    }
+    actual_cells = {(cell["os"], cell["python_version"]) for cell in cells}
+    if actual_cells != expected_cells or len(actual_cells) != len(cells):
+        raise ValueError("matrix cells do not form the exact OS/Python cross product")
+    if common["run"]["evidence_id"] != evidence_id or evidence_id != (
+        f"p6-acceptance-{common['implementation_commit']}"
+    ):
+        raise ValueError("matrix evidence ID does not bind the implementation commit")
+    if common["workflow_sha256"] != _sha256_path(
+        ROOT / ".github" / "workflows" / "p6-functional-matrix.yml"
+    ):
+        raise ValueError("matrix workflow identity differs from the local commit")
+    if common["dependency_lock_sha256"] != _sha256_path(ROOT / "uv.lock"):
+        raise ValueError("matrix dependency lock differs from the local commit")
+    report = {
+        "schema_version": 1,
+        "report_kind": "matrix",
+        "implementation_commit": common["implementation_commit"],
+        "production_tree": common["production_tree"],
+        "workflow_sha256": common["workflow_sha256"],
+        "dependency_lock_sha256": common["dependency_lock_sha256"],
+        "run": common["run"],
+        "cells": sorted(
+            cells,
+            key=lambda cell: (cell["os"], cell["python_version"]),
+        ),
+        "conclusion": "success",
+    }
+    validate_report_data(report, "matrix-report-v1.json")
+    return report
 
 
 def parse_hash_manifest(path: str | Path) -> dict[str, str]:
@@ -3919,6 +4304,111 @@ def validate_performance_registry_coverage(
             raise ValueError("performance sample count differs from benchmark registry")
 
 
+def assemble_quality_report(inputs: Sequence[str | Path]) -> dict[str, Any]:
+    paths = [Path(path) for path in inputs]
+    by_name = {path.name: path for path in paths}
+    expected_names = {
+        "final-p5.json",
+        "final-p4.json",
+        "final-p2.json",
+        "final-ci.json",
+        "final-real-a.json",
+        "final-real-b.json",
+        "final-full.xml",
+        *(f"tdd-task-{task}.json" for task in range(1, 11)),
+    }
+    if len(by_name) != len(paths) or set(by_name) != expected_names:
+        missing = sorted(expected_names - set(by_name))
+        extra = sorted(set(by_name) - expected_names)
+        raise ValueError(
+            f"quality evidence input set mismatch: missing={missing}, extra={extra}"
+        )
+
+    profile_inputs = {
+        "final-p5.json": "entry-p5.json",
+        "final-p4.json": "entry-p4.json",
+        "final-p2.json": "entry-p2.json",
+        "final-ci.json": "entry-ci.json",
+    }
+    profiles: dict[str, Any] = {}
+    for final_name, contract_name in profile_inputs.items():
+        path = by_name[final_name]
+        _validate_entry_quality(path, contract_name)
+        value = _load_json(path)
+        profile_name, expected_count, _, _ = _ENTRY_QUALITY_PROFILES[contract_name]
+        aggregate = value["aggregate"]
+        if aggregate["selected"] != expected_count or aggregate["passed"] != expected_count:
+            raise ValueError("quality profile aggregate differs from the frozen contract")
+        profiles[profile_name] = {
+            "passed": aggregate["passed"],
+            "selected": aggregate["selected"],
+            "trace_coverage": 1,
+        }
+
+    _validate_pinned_real(
+        by_name["final-real-a.json"], by_name["final-real-b.json"]
+    )
+    profiles["pinned_real"] = {
+        "passed": 2,
+        "selected": 2,
+        "byte_identical": True,
+    }
+
+    junit = parse_junit(by_name["final-full.xml"])
+    frozen_skips = sorted(FROZEN_ENTRY_SKIP_NODE_IDS)
+    if (
+        junit["passed"] < 2625
+        or junit["skipped"] != 9
+        or junit["xfail"] != 0
+        or junit["errors"] != 0
+        or junit["failed"] != 0
+        or junit["skip_node_ids"] != frozen_skips
+    ):
+        raise ValueError("final JUnit does not satisfy the frozen quality contract")
+
+    tdd_summaries = []
+    for task in range(1, 11):
+        record = _load_json(by_name[f"tdd-task-{task}.json"])
+        validate_tdd_record_data(record)
+        if record["task"] != task:
+            raise ValueError("TDD record task differs from its input identity")
+        tdd_summaries.append(
+            {
+                "task": task,
+                "pre_change_commit": record["pre_change_commit"],
+                "pre_change_production_tree": record[
+                    "pre_change_production_tree"
+                ],
+                "final_staged_tree": record["final_staged_tree"],
+                "test_identity_sha256": record["red"]["test_identity_sha256"],
+                "red_failed": len(record["red"]["failed_node_ids"]),
+                "green_passed": record["green"]["passed"],
+            }
+        )
+
+    implementation_commit, production_tree, dirty = _git_identity()
+    if dirty:
+        raise ValueError("quality assembly requires a clean production tree")
+    report = {
+        "schema_version": 1,
+        "implementation_commit": implementation_commit,
+        "production_tree": production_tree,
+        "full_suite": {
+            "passed": junit["passed"],
+            "skipped": junit["skipped"],
+            "xfail": junit["xfail"],
+            "errors": junit["errors"],
+            "junit_sha256": junit["sha256"],
+            "skip_node_ids": junit["skip_node_ids"],
+        },
+        "profiles": profiles,
+        "tdd": tdd_summaries,
+    }
+    validate_report_data(report, "quality-report-v1.json")
+    validate_private_payload(report)
+    return report
+
+
 def assemble_reports(
     kind: str,
     inputs: Sequence[str | Path],
@@ -3926,6 +4416,8 @@ def assemble_reports(
     *,
     manifest: str | Path | None = None,
 ) -> dict[str, Any]:
+    if kind == "quality":
+        return assemble_quality_report(inputs)
     if not inputs:
         raise ValueError("assemble requires inputs")
     paths = [Path(path) for path in inputs]
@@ -4055,6 +4547,10 @@ def assemble_reports(
         return result
 
     if kind == "environment":
+        if len(paths) != 2 or len(json_values) != 2:
+            raise ValueError(
+                "environment assembly requires exactly entry and benchmark JSON"
+            )
         entry_values = [
             value for _, value in json_values if "entry_commit" in value
         ]
@@ -4067,6 +4563,8 @@ def assemble_reports(
         benchmark = benchmark_values[0]
         validate_report_data(entry, "entry-record-v1.json")
         validate_report_data(benchmark, "benchmark-report-v1.json")
+        if benchmark["mode"] != mode:
+            raise ValueError("environment assembly benchmark mode differs from request")
         if benchmark["report_scope"] == "tier":
             cases = [benchmark]
         else:
@@ -4093,8 +4591,10 @@ def assemble_reports(
         calibrations = [case["calibration"] for case in cases]
         result = {
             "schema_version": 1,
-            "implementation_commit": entry["entry_commit"],
-            "production_tree": entry["production_tree"],
+            "implementation_commit": benchmark["identity"][
+                "implementation_commit"
+            ],
+            "production_tree": benchmark["identity"]["production_tree"],
             "environment": {
                 "python": environment["python"],
                 "sqlite": environment["sqlite"],
@@ -4116,7 +4616,7 @@ def assemble_reports(
                 "background_cpu_percent": max(
                     case["environment"]["background_cpu_percent"] for case in cases
                 ),
-                "dependency_lock_sha256": entry["dependency_sha256"],
+                "dependency_lock_sha256": _sha256_path(ROOT / "uv.lock"),
             },
             "calibration": {
                 "sha256_mib_per_s": statistics.median(
@@ -4331,6 +4831,154 @@ def _paired_summaries(
     return summaries
 
 
+def validate_paired_report(report: Mapping[str, Any]) -> None:
+    top_keys = {
+        "schema_version",
+        "kind",
+        "operation_set",
+        "pair_count",
+        "workload",
+        "harness_sha256",
+        "implementations",
+        "calibrations",
+        "protected_operation_ids",
+        "samples",
+        "summaries",
+    }
+    if set(report) != top_keys or report.get("schema_version") != 1:
+        raise ValueError("paired report fields do not match the closed contract")
+    if (
+        report.get("kind") != "paired"
+        or report.get("operation_set") != "protected_small_entry_comparable"
+    ):
+        raise ValueError("paired report identity is invalid")
+    pair_count = report["pair_count"]
+    if not isinstance(pair_count, int) or isinstance(pair_count, bool) or pair_count < 1:
+        raise ValueError("paired report pair count is invalid")
+    workload = report["workload"]
+    if not isinstance(workload, Mapping) or set(workload) != {
+        "manifest_sha256",
+        "generator_version",
+        "generator_sha256",
+        "seed",
+        "tier",
+        "pristine_fingerprint_sha256",
+    }:
+        raise ValueError("paired workload identity is not closed")
+    for key in ("manifest_sha256", "generator_sha256", "pristine_fingerprint_sha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", str(workload[key])):
+            raise ValueError("paired workload digest is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(report["harness_sha256"])):
+        raise ValueError("paired harness digest is invalid")
+    implementations = report["implementations"]
+    if not isinstance(implementations, Mapping) or set(implementations) != {
+        "baseline",
+        "final",
+    }:
+        raise ValueError("paired implementation identities are invalid")
+    for identity in implementations.values():
+        if not isinstance(identity, Mapping) or set(identity) != {
+            "implementation_commit",
+            "production_tree",
+        }:
+            raise ValueError("paired implementation identity is not closed")
+        validate_git_sha(str(identity["implementation_commit"]))
+        validate_git_sha(str(identity["production_tree"]))
+    calibrations = report["calibrations"]
+    if not isinstance(calibrations, Mapping) or set(calibrations) != {
+        "baseline",
+        "final",
+        "maximum_drift_percent",
+        "within_ten_percent",
+    }:
+        raise ValueError("paired calibration identity is not closed")
+    if calibrations["within_ten_percent"] is not True or not (
+        0 <= float(calibrations["maximum_drift_percent"]) <= 10
+    ):
+        raise ValueError("paired calibration drift exceeds the frozen limit")
+    operations = report["protected_operation_ids"]
+    if (
+        not isinstance(operations, list)
+        or not operations
+        or len(operations) != len(set(operations))
+        or not all(isinstance(value, str) and value for value in operations)
+    ):
+        raise ValueError("paired protected operations are invalid")
+    samples = report["samples"]
+    if not isinstance(samples, list) or len(samples) != len(operations) * pair_count * 2:
+        raise ValueError("paired report sample cardinality is invalid")
+    sample_keys = {
+        "pair_id",
+        "order_index",
+        "side",
+        "operation_id",
+        "case_id",
+        "repository_fingerprint_sha256",
+        "outcome",
+        "duration_ms",
+        "immutable_state_load_ms",
+        "rss",
+        "vector_payload_bytes",
+        "product_subprocesses",
+    }
+    expected_pair_orders = {
+        pair_id: [side for candidate, side in alternating_pairs(pair_count) if candidate == pair_id]
+        for pair_id in {candidate for candidate, _ in alternating_pairs(pair_count)}
+    }
+    for operation_id in operations:
+        operation_samples = [
+            sample for sample in samples if sample.get("operation_id") == operation_id
+        ]
+        if len(operation_samples) != pair_count * 2:
+            raise ValueError("paired operation sample cardinality is invalid")
+        for pair_index in range(1, pair_count + 1):
+            pair_id = f"pair-{pair_index:03d}"
+            paired = [
+                sample for sample in operation_samples if sample.get("pair_id") == pair_id
+            ]
+            if [sample.get("side") for sample in paired] != expected_pair_orders[pair_id]:
+                raise ValueError("paired execution order is not alternating")
+            if [sample.get("order_index") for sample in paired] != [1, 2]:
+                raise ValueError("paired execution order index is invalid")
+            for sample in paired:
+                if not isinstance(sample, Mapping) or set(sample) != sample_keys:
+                    raise ValueError("paired sample fields are not closed")
+                if (
+                    sample["repository_fingerprint_sha256"]
+                    != workload["pristine_fingerprint_sha256"]
+                    or sample["product_subprocesses"] != 0
+                    or sample["outcome"] not in {"supported", "unsupported"}
+                ):
+                    raise ValueError("paired sample identity is invalid")
+                if sample["outcome"] == "unsupported":
+                    if any(
+                        sample[key] is not None
+                        for key in (
+                            "duration_ms",
+                            "immutable_state_load_ms",
+                            "rss",
+                            "vector_payload_bytes",
+                        )
+                    ):
+                        raise ValueError("unsupported paired sample contains measurements")
+                elif (
+                    not isinstance(sample["duration_ms"], (int, float))
+                    or float(sample["duration_ms"]) <= 0
+                    or not isinstance(
+                        sample["immutable_state_load_ms"], (int, float)
+                    )
+                    or float(sample["immutable_state_load_ms"]) < 0
+                    or not isinstance(sample["rss"], Mapping)
+                    or not isinstance(sample["vector_payload_bytes"], int)
+                    or isinstance(sample["vector_payload_bytes"], bool)
+                    or sample["vector_payload_bytes"] < 0
+                ):
+                    raise ValueError("supported paired sample is incomplete")
+    expected_summaries = _paired_summaries(samples, operations)
+    if canonical_json(report["summaries"]) != canonical_json(expected_summaries):
+        raise ValueError("paired summaries differ from raw samples")
+
+
 def paired_runs(
     baseline_root: Path,
     final_root: Path,
@@ -4434,6 +5082,22 @@ def paired_runs(
                         if supported
                         else None
                     )
+                    attribution = (
+                        measured.get("attribution")
+                        if isinstance(measured, Mapping)
+                        else None
+                    )
+                    if measured is not None and not isinstance(attribution, Mapping):
+                        raise ValueError("paired sample lacks measured attribution")
+                    immutable_state_load_ms = (
+                        attribution.get("immutable_state_load_ms")
+                        if attribution is not None
+                        else None
+                    )
+                    if measured is not None and not isinstance(
+                        immutable_state_load_ms, (int, float)
+                    ):
+                        raise ValueError("paired sample lacks immutable-state timing")
                     samples.append(
                         {
                             "pair_id": pair_id,
@@ -4448,7 +5112,17 @@ def paired_runs(
                                 if measured is not None
                                 else None
                             ),
+                            "immutable_state_load_ms": (
+                                float(immutable_state_load_ms)
+                                if immutable_state_load_ms is not None
+                                else None
+                            ),
                             "rss": measured["rss"] if measured is not None else None,
+                            "vector_payload_bytes": (
+                                _disk_components(clones[side])["vector_payload_bytes"]
+                                if measured is not None
+                                else None
+                            ),
                             "product_subprocesses": (
                                 measured["product_subprocesses"]
                                 if measured is not None
@@ -4483,6 +5157,7 @@ def paired_runs(
         "summaries": _paired_summaries(samples, operations),
     }
     _assert_finite(result)
+    validate_paired_report(result)
     validate_private_payload(result)
     return result
 
@@ -4505,6 +5180,395 @@ def compare_reports(baseline: Any, final: Any) -> dict[str, Any]:
         "median_ratio": final_ms / baseline_ms if baseline_ms else 0.0,
         "valid": baseline["validity"]["valid"] and final["validity"]["valid"],
     }
+
+
+def _acceptance_case(
+    report: Mapping[str, Any],
+    tier: str,
+    operation_id: str,
+    case_id: str,
+    measurement_state: str,
+) -> Mapping[str, Any]:
+    matches = [
+        case
+        for case in report["case_reports"]
+        if (
+            case["workload"]["tier"],
+            case["operation"]["operation_id"],
+            case["operation"]["case_id"],
+            case["operation"]["measurement_state"],
+        )
+        == (tier, operation_id, case_id, measurement_state)
+    ]
+    if len(matches) != 1:
+        raise ValueError("P6 acceptance case identity is missing or ambiguous")
+    case = matches[0]
+    if case["operation"]["outcome"] != "supported" or not case["validity"][
+        "valid"
+    ]:
+        raise ValueError("P6 acceptance case is unsupported or invalid")
+    return case
+
+
+def _nearest_rank_p95(values: Sequence[float]) -> float:
+    if not values:
+        raise ValueError("P6 acceptance distribution is empty")
+    ordered = sorted(float(value) for value in values)
+    return ordered[math.ceil(0.95 * len(ordered)) - 1]
+
+
+def _acceptance_ratio(numerator: float, denominator: float, label: str) -> float:
+    if denominator <= 0:
+        raise ValueError(f"P6 acceptance denominator is invalid: {label}")
+    return numerator / denominator
+
+
+def _require_acceptance(condition: bool, label: str) -> None:
+    if not condition:
+        raise ValueError(f"P6 acceptance gate failed: {label}")
+
+
+def _max_sample_value(case: Mapping[str, Any], *keys: str) -> float:
+    values = []
+    for sample in case["samples"]:
+        value: Any = sample
+        for key in keys:
+            value = value[key]
+        values.append(float(value))
+    if not values:
+        raise ValueError("P6 acceptance case has no samples")
+    return max(values)
+
+
+def _large_acceptance_gates(final: Mapping[str, Any]) -> None:
+    mib = 1024**2
+    gib = 1024**3
+    large_source_bytes = 512 * mib
+    cold = "cli_process_cold"
+    warm = "mcp_resident_warm"
+
+    full = _acceptance_case(final, "large", "full_build", "default", cold)
+    _require_acceptance(full["summary"]["median_ms"] <= 300_000, "large full-build median")
+    _require_acceptance(full["summary"]["max_ms"] <= 420_000, "large full-build maximum")
+    _require_acceptance(_max_sample_value(full, "rss", "peak_bytes") <= 2 * gib, "large full-build RSS")
+    _require_acceptance(_max_sample_value(full, "disk", "total_bytes") <= 2.5 * gib, "large full-build disk")
+    for sample in full["samples"]:
+        generation_bytes = sample["disk"]["vector_payload_bytes"] + sample["disk"]["vector_id_bytes"]
+        published_bytes = generation_bytes + sample["disk"]["descriptor_bytes"]
+        _require_acceptance(
+            published_bytes <= max(1, generation_bytes) * 2.10,
+            "vector publication disk",
+        )
+        _require_acceptance(sample["work"]["generation_count"] == 1, "vector generation count")
+
+    authoritative = _acceptance_case(
+        final, "large", "authoritative_noop", "default", cold
+    )
+    _require_acceptance(authoritative["summary"]["median_ms"] <= 15_000, "large authoritative no-op median")
+    _require_acceptance(authoritative["summary"]["max_ms"] <= 25_000, "large authoritative no-op maximum")
+    _require_acceptance(_max_sample_value(authoritative, "rss", "extra_peak_bytes") <= 512 * mib, "large authoritative no-op RSS")
+    for sample in authoritative["samples"]:
+        work = sample["work"]
+        _require_acceptance(work["source_bytes_hashed"] == large_source_bytes, "authoritative source hash bytes")
+        _require_acceptance(
+            all(
+                work[name] == 0
+                for name in (
+                    "peak_queued_files",
+                    "peak_queued_chunks",
+                    "peak_queued_text_bytes",
+                    "vector_rows_queued",
+                    "embedding_batch_calls",
+                    "embedding_batch_inputs",
+                )
+            ),
+            "authoritative no-op parse/embed work",
+        )
+
+    quick = _acceptance_case(final, "large", "status_quick", "default", cold)
+    _require_acceptance(quick["summary"]["p95_ms"] <= 2_000, "quick status p95")
+    _require_acceptance(_max_sample_value(quick, "rss", "extra_peak_bytes") <= 256 * mib, "quick status RSS")
+    for sample in quick["samples"]:
+        work = sample["work"]
+        _require_acceptance(
+            all(
+                work[name] == 0
+                for name in (
+                    "source_bytes_read",
+                    "source_bytes_hashed",
+                    "vector_bytes_read",
+                    "vector_bytes_hashed",
+                )
+            ),
+            "quick status body/vector reads",
+        )
+
+    verified = _acceptance_case(
+        final, "large", "status_verified", "default", cold
+    )
+    _require_acceptance(verified["summary"]["max_ms"] <= 12_000, "verified status maximum")
+    _require_acceptance(_max_sample_value(verified, "rss", "extra_peak_bytes") <= 256 * mib, "verified status RSS")
+    throughputs = []
+    for sample in verified["samples"]:
+        source_ms = float(sample["stage_timings_ms"]["source"])
+        _require_acceptance(source_ms > 0, "verified status source timing")
+        throughputs.append(
+            float(sample["work"]["source_bytes_hashed"]) * 1000 / source_ms / mib
+        )
+    _require_acceptance(statistics.median(throughputs) >= 75, "verified status source throughput")
+
+    refresh_noop = _acceptance_case(
+        final, "large", "refresh_noop", "default", cold
+    )
+    _require_acceptance(refresh_noop["summary"]["p95_ms"] <= 2_500, "no-op refresh p95")
+    zero_refresh_work = (
+        "source_bytes_read",
+        "source_bytes_hashed",
+        "peak_queued_files",
+        "peak_queued_chunks",
+        "peak_queued_text_bytes",
+        "vector_rows_queued",
+        "embedding_batch_calls",
+        "embedding_batch_inputs",
+        "flush_count",
+        "vector_bytes_written",
+        "vector_bytes_copied",
+        "association_writes",
+    )
+    for sample in refresh_noop["samples"]:
+        _require_acceptance(
+            all(sample["work"][name] == 0 for name in zero_refresh_work),
+            "no-op refresh zero work",
+        )
+
+    refresh_one = _acceptance_case(
+        final, "large", "refresh_one_file", "default", cold
+    )
+    _require_acceptance(refresh_one["summary"]["p95_ms"] <= 5_000, "one-file refresh p95")
+    for sample in refresh_one["samples"]:
+        work = sample["work"]
+        generation_bytes = sample["disk"]["vector_payload_bytes"] + sample["disk"]["vector_id_bytes"]
+        _require_acceptance(
+            sample["rss"]["extra_peak_bytes"]
+            <= sample["disk"]["vector_payload_bytes"] * 2.2 + 256 * mib,
+            "one-file refresh RSS",
+        )
+        _require_acceptance(work["vector_bytes_read"] <= generation_bytes * 1.10, "one-file vector reads")
+        _require_acceptance(work["vector_bytes_written"] <= generation_bytes * 1.10, "one-file vector writes")
+        _require_acceptance(work["vector_payload_passes"] <= 2, "one-file prior vector passes")
+        _require_acceptance(work["path_index_builds"] <= 1, "one-file declared path fan-out")
+        _require_acceptance(work["inventory_errors"] == 0, "one-file inventory completeness")
+
+    query_cases = [
+        case
+        for case in final["case_reports"]
+        if case["workload"]["tier"] == "large"
+        and case["operation"]["operation_id"] == "query"
+        and case["operation"]["measurement_state"] in {cold, warm}
+    ]
+    _require_acceptance(len(query_cases) == 18, "large ordinary query coverage")
+    for case in query_cases:
+        state = case["operation"]["measurement_state"]
+        _require_acceptance(case["operation"]["outcome"] == "supported", "ordinary query support")
+        limit = 750 if state == warm else 2_000
+        _require_acceptance(case["summary"]["p95_ms"] <= limit, "ordinary query p95")
+        if state == warm:
+            semantic_p95 = _nearest_rank_p95(
+                [sample["stage_timings_ms"]["semantic"] for sample in case["samples"]]
+            )
+            _require_acceptance(semantic_p95 <= 300, "semantic stage p95")
+        for sample in case["samples"]:
+            _require_acceptance(
+                sample["rss"]["extra_peak_bytes"]
+                <= sample["disk"]["vector_payload_bytes"] * 1.35 + 256 * mib,
+                "ordinary query RSS",
+            )
+
+    explore = _acceptance_case(final, "large", "explore", "p4_explore", warm)
+    _require_acceptance(explore["summary"]["p95_ms"] <= 2_500, "bounded explore p95")
+    for sample in explore["samples"]:
+        _require_acceptance(sample["work"]["vector_payload_passes"] <= 3, "bounded explore retrieval calls")
+        _require_acceptance(
+            sample["rss"]["extra_peak_bytes"]
+            <= sample["disk"]["vector_payload_bytes"] * 1.35 + 256 * mib,
+            "bounded explore RSS",
+        )
+
+
+def _scale_acceptance_gates(final: Mapping[str, Any]) -> None:
+    cold = "cli_process_cold"
+
+    def cases(operation: str) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+        return (
+            _acceptance_case(final, "scale-5k", operation, "default", cold),
+            _acceptance_case(final, "scale-10k", operation, "default", cold),
+        )
+
+    full_5k, full_10k = cases("full_build")
+    _require_acceptance(
+        _acceptance_ratio(full_10k["summary"]["median_ms"], full_5k["summary"]["median_ms"], "full-build time") <= 2.7,
+        "5k-to-10k full-build time",
+    )
+    _require_acceptance(
+        _acceptance_ratio(_max_sample_value(full_10k, "rss", "peak_bytes"), _max_sample_value(full_5k, "rss", "peak_bytes"), "full-build RSS") <= 2.7,
+        "5k-to-10k full-build RSS",
+    )
+
+    noop_5k, noop_10k = cases("authoritative_noop")
+    _require_acceptance(
+        _acceptance_ratio(noop_10k["summary"]["median_ms"], noop_5k["summary"]["median_ms"], "authoritative time") <= 2.4,
+        "5k-to-10k authoritative time",
+    )
+    _require_acceptance(
+        _acceptance_ratio(_max_sample_value(noop_10k, "work", "source_bytes_hashed"), _max_sample_value(noop_5k, "work", "source_bytes_hashed"), "authoritative source work") <= 2.4,
+        "5k-to-10k authoritative source work",
+    )
+
+    for operation in ("status_quick", "status_verified", "refresh_noop"):
+        lower, upper = cases(operation)
+        _require_acceptance(
+            _acceptance_ratio(upper["summary"]["median_ms"], lower["summary"]["median_ms"], f"{operation} time") <= 2.4,
+            f"5k-to-10k {operation} time",
+        )
+        _require_acceptance(
+            _acceptance_ratio(_max_sample_value(upper, "work", "inventory_entries"), _max_sample_value(lower, "work", "inventory_entries"), f"{operation} entries") <= 2.4,
+            f"5k-to-10k {operation} entry work",
+        )
+
+    one_5k, one_10k = cases("refresh_one_file")
+    _require_acceptance(
+        _acceptance_ratio(one_10k["summary"]["median_ms"], one_5k["summary"]["median_ms"], "one-file time") <= 2.4,
+        "5k-to-10k one-file time",
+    )
+    for counter in ("vector_bytes_read", "vector_bytes_written"):
+        _require_acceptance(
+            _acceptance_ratio(_max_sample_value(one_10k, "work", counter), _max_sample_value(one_5k, "work", counter), f"one-file {counter}") <= 2.4,
+            f"5k-to-10k one-file {counter}",
+        )
+    _require_acceptance(
+        _acceptance_ratio(_max_sample_value(one_10k, "rss", "extra_peak_bytes"), _max_sample_value(one_5k, "rss", "extra_peak_bytes"), "one-file RSS") <= 2.4,
+        "5k-to-10k one-file RSS",
+    )
+
+
+def compare_acceptance_reports(
+    baseline: Mapping[str, Any],
+    final: Mapping[str, Any],
+    paired: Mapping[str, Any],
+    churn: Mapping[str, Any],
+    *,
+    manifest: str | Path,
+    input_sha256: Mapping[str, str],
+) -> dict[str, Any]:
+    validate_report_data(baseline, "benchmark-report-v1.json")
+    validate_report_data(final, "benchmark-report-v1.json")
+    validate_paired_report(paired)
+    validate_report_data(churn, "benchmark-report-v1.json")
+    validate_performance_registry_coverage(baseline, manifest)
+    validate_performance_registry_coverage(final, manifest)
+    _require_acceptance(baseline["mode"] == "baseline", "baseline mode")
+    _require_acceptance(final["mode"] == "final", "final mode")
+    _require_acceptance(churn["mode"] == "final" and churn["report_scope"] == "churn", "churn identity")
+    _require_acceptance(
+        baseline["identity"]["workload_sha256"]
+        == final["identity"]["workload_sha256"]
+        == churn["identity"]["workload_sha256"],
+        "workload identity",
+    )
+    _require_acceptance(
+        final["identity"]["implementation_commit"]
+        == churn["identity"]["implementation_commit"]
+        == paired["implementations"]["final"]["implementation_commit"],
+        "final implementation identity",
+    )
+    _require_acceptance(
+        final["identity"]["production_tree"]
+        == churn["identity"]["production_tree"]
+        == paired["implementations"]["final"]["production_tree"],
+        "final production identity",
+    )
+    _require_acceptance(
+        baseline["identity"]["implementation_commit"]
+        == paired["implementations"]["baseline"]["implementation_commit"],
+        "baseline implementation identity",
+    )
+    _require_acceptance(final.get("churn") == churn["churn"], "embedded churn evidence")
+
+    baseline_cases = {
+        (
+            case["workload"]["tier"],
+            case["operation"]["operation_id"],
+            case["operation"]["case_id"],
+            case["operation"]["measurement_state"],
+        ): case
+        for case in baseline["case_reports"]
+    }
+    for case in final["case_reports"]:
+        key = (
+            case["workload"]["tier"],
+            case["operation"]["operation_id"],
+            case["operation"]["case_id"],
+            case["operation"]["measurement_state"],
+        )
+        baseline_case = baseline_cases[key]
+        for metric in ("sha256_mib_per_s", "numpy_dot_ms", "sqlite_ms"):
+            drift = abs(
+                float(case["calibration"][metric])
+                - float(baseline_case["calibration"][metric])
+            ) / min(
+                float(case["calibration"][metric]),
+                float(baseline_case["calibration"][metric]),
+            )
+            _require_acceptance(drift <= 0.10, f"calibration drift {metric}")
+
+    _large_acceptance_gates(final)
+    _scale_acceptance_gates(final)
+    _require_acceptance(paired["pair_count"] >= 30, "paired sample count")
+    expected_operations = _load_json(manifest)["protected_small_entry_comparable"]
+    _require_acceptance(
+        paired["protected_operation_ids"] == expected_operations,
+        "protected paired operation coverage",
+    )
+    entry_unsupported = {
+        "status_quick",
+        "status_verified",
+        "refresh_noop",
+        "refresh_one_file",
+    }
+    for summary in paired["summaries"]:
+        operation_id = summary["operation_id"]
+        _require_acceptance(summary["final"]["outcome"] == "supported", "final paired support")
+        if operation_id in entry_unsupported:
+            _require_acceptance(summary["baseline"]["outcome"] == "unsupported", "entry unsupported identity")
+            continue
+        _require_acceptance(summary["baseline"]["outcome"] == "supported", "entry paired support")
+        _require_acceptance(summary["baseline"]["cv_population"] <= 0.08, "baseline paired CV")
+        _require_acceptance(summary["final"]["cv_population"] <= 0.08, "final paired CV")
+        _require_acceptance(summary["median_ratio"] <= 1.10, "protected latency regression")
+
+    if set(input_sha256) != {"baseline", "final", "paired", "churn"} or any(
+        re.fullmatch(r"[0-9a-f]{64}", str(value)) is None
+        for value in input_sha256.values()
+    ):
+        raise ValueError("P6 acceptance input digests are invalid")
+    report = {
+        "schema_version": 1,
+        "report_kind": "acceptance",
+        "implementation_commit": final["identity"]["implementation_commit"],
+        "production_tree": final["identity"]["production_tree"],
+        "inputs": dict(input_sha256),
+        "gates": {
+            "registry_coverage": True,
+            "absolute_large_budgets": True,
+            "scale_budgets": True,
+            "churn": True,
+            "protected_regression": True,
+        },
+        "conclusion": "success",
+    }
+    validate_report_data(report, "acceptance-report-v1.json")
+    validate_private_payload(report)
+    return report
 
 
 def generate_repository(
@@ -4892,7 +5956,8 @@ def alternating_pairs(count: int) -> list[tuple[str, str]]:
     result: list[tuple[str, str]] = []
     for index in range(1, count + 1):
         pair_id = f"pair-{index:03d}"
-        result.extend(((pair_id, "baseline"), (pair_id, "final")))
+        sides = ("baseline", "final") if index % 2 else ("final", "baseline")
+        result.extend((pair_id, side) for side in sides)
     return result
 
 
@@ -4942,6 +6007,166 @@ def make_decision(
     return decision
 
 
+def _decision_benchmark_cases(report: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    validate_report_data(report, "benchmark-report-v1.json")
+    if report["mode"] != "final":
+        raise ValueError("P6 decisions require final benchmark evidence")
+    if report["report_scope"] == "tier":
+        return [report]
+    if report["report_scope"] == "performance":
+        return list(report["case_reports"])
+    raise ValueError("P6 decisions require tier or performance evidence")
+
+
+def decide_ann(
+    report: Mapping[str, Any],
+    *,
+    evidence_report_sha256: str,
+) -> dict[str, Any]:
+    cases = _decision_benchmark_cases(report)
+    semantic_cases = [
+        case
+        for case in cases
+        if case["workload"]["tier"] == "large"
+        and case["operation"]["operation_id"] == "query"
+        and case["operation"]["case_id"] == "semantic_high"
+        and case["operation"]["measurement_state"] == "mcp_resident_warm"
+        and case["operation"]["outcome"] == "supported"
+    ]
+    if len(semantic_cases) != 1:
+        raise ValueError("ANN decision requires one large resident semantic case")
+    case = semantic_cases[0]
+    samples = case["samples"]
+    semantic_p95 = _nearest_rank_p95(
+        [sample["stage_timings_ms"]["semantic"] for sample in samples]
+    )
+    semantic_ratios = [
+        float(sample["stage_timings_ms"]["semantic"])
+        / float(sample["stage_timings_ms"]["end_to_end"])
+        for sample in samples
+        if float(sample["stage_timings_ms"]["end_to_end"]) > 0
+    ]
+    if len(semantic_ratios) != len(samples):
+        raise ValueError("ANN decision contains invalid end-to-end timing")
+    semantic_over = semantic_p95 > 300
+    semantic_dominant = statistics.median(semantic_ratios) >= 0.40
+    rss_over = any(
+        sample["rss"]["extra_peak_bytes"]
+        > sample["disk"]["vector_payload_bytes"] * 1.35 + 256 * 1024**2
+        for sample in samples
+    )
+    rss_dominant = rss_over and statistics.median(
+        [
+            _acceptance_ratio(
+                float(sample["disk"]["vector_payload_bytes"]),
+                max(1.0, float(sample["rss"]["extra_peak_bytes"])),
+                "ANN RSS attribution",
+            )
+            for sample in samples
+        ]
+    ) >= 0.40
+    trigger_crossed = (semantic_over or rss_over) and (
+        semantic_dominant or rss_dominant
+    )
+    reason_codes = [
+        "semantic_over_budget" if semantic_over else "semantic_within_budget",
+        "rss_over_budget" if rss_over else "rss_within_budget",
+    ]
+    if semantic_dominant:
+        reason_codes.append("semantic_dominant")
+    if rss_dominant:
+        reason_codes.append("rss_dominant")
+    return make_decision(
+        "exact_ann",
+        implementation_commit=report["identity"]["implementation_commit"],
+        production_tree=report["identity"]["production_tree"],
+        evidence_report_sha256=evidence_report_sha256,
+        reason_codes=reason_codes,
+        trigger_crossed=trigger_crossed,
+    )
+
+
+def decide_service_watch(
+    report: Mapping[str, Any],
+    paired: Mapping[str, Any],
+    acceptance: Mapping[str, Any],
+    *,
+    evidence_report_sha256: str,
+) -> dict[str, Any]:
+    _decision_benchmark_cases(report)
+    validate_paired_report(paired)
+    validate_report_data(acceptance, "acceptance-report-v1.json")
+    final_identity = paired["implementations"]["final"]
+    if (
+        acceptance["conclusion"] != "success"
+        or acceptance["implementation_commit"]
+        != report["identity"]["implementation_commit"]
+        or acceptance["production_tree"] != report["identity"]["production_tree"]
+        or final_identity["implementation_commit"]
+        != report["identity"]["implementation_commit"]
+        or final_identity["production_tree"] != report["identity"]["production_tree"]
+    ):
+        raise ValueError("service/watch evidence identities disagree")
+    samples = [
+        sample
+        for sample in paired["samples"]
+        if sample["operation_id"] == "query_planner_off"
+        and sample["side"] == "final"
+        and sample["outcome"] == "supported"
+    ]
+    if len(samples) < 30:
+        raise ValueError("service/watch decision requires 30 final paired samples")
+    ratios = []
+    counterfactual = []
+    durations = []
+    rss_within = True
+    for sample in samples:
+        duration = float(sample["duration_ms"])
+        load = float(sample["immutable_state_load_ms"])
+        if duration <= 0 or load < 0 or load > duration:
+            raise ValueError("service/watch paired timing is invalid")
+        durations.append(duration)
+        ratios.append(load / duration)
+        counterfactual.append(max(0.0, duration - load))
+        rss_within = rss_within and (
+            sample["rss"]["extra_peak_bytes"]
+            <= sample["vector_payload_bytes"] * 1.35 + 256 * 1024**2
+        )
+    duration_p95 = _nearest_rank_p95(durations)
+    counterfactual_p95 = _nearest_rank_p95(counterfactual)
+    counterfactual_sufficient = (
+        counterfactual_p95 <= 750
+        or _acceptance_ratio(
+            duration_p95,
+            max(counterfactual_p95, 0.001),
+            "service/watch counterfactual",
+        )
+        >= 2.0
+    )
+    load_dominant = statistics.median(ratios) >= 0.40 or (
+        duration_p95 > 750 and counterfactual_p95 <= 750
+    )
+    eligible = load_dominant and counterfactual_sufficient and rss_within
+    reason_codes = []
+    if eligible:
+        reason_codes.append("eligibility_met")
+    else:
+        if not load_dominant:
+            reason_codes.append("load_not_dominant")
+        if not counterfactual_sufficient:
+            reason_codes.append("counterfactual_insufficient")
+        if not rss_within:
+            reason_codes.append("rss_exceeded")
+    return make_decision(
+        "service_watch",
+        implementation_commit=report["identity"]["implementation_commit"],
+        production_tree=report["identity"]["production_tree"],
+        evidence_report_sha256=evidence_report_sha256,
+        reason_codes=reason_codes,
+        trigger_crossed=eligible,
+    )
+
+
 def validate_tdd_record_data(record: Any, *, staged_tree: str | None = None) -> None:
     validate_report_data(record, "tdd-record-v1.json")
     if record["red"]["test_identity_sha256"] != record["green"][
@@ -4954,6 +6179,7 @@ def validate_tdd_record_data(record: Any, *, staged_tree: str | None = None) -> 
         record["pytest"]["node_ids"],
         record["pytest"]["arguments"],
         file_hashes=record["test_file_hashes"],
+        tree=record["final_staged_tree"],
     )
     if record["red"]["test_identity_sha256"] != expected_identity:
         raise ValueError("TDD record identity does not bind hashes, arguments, and nodes")
@@ -4968,6 +6194,7 @@ def _test_identity(
     arguments: Sequence[str],
     *,
     file_hashes: Mapping[str, str] | None = None,
+    tree: str | None = None,
 ) -> tuple[str, dict[str, str]]:
     paths = sorted({node.split("::", 1)[0] for node in node_ids})
     if not paths:
@@ -4982,10 +6209,29 @@ def _test_identity(
             raise ValueError("pytest node path is missing")
     else:
         hashes = dict(sorted(file_hashes.items()))
-        for path, expected in hashes.items():
-            candidate = ROOT / path
-            if not candidate.is_file() or _sha256_path(candidate) != expected:
-                raise ValueError(f"frozen TDD input changed: {path}")
+        if tree is None:
+            for path, expected in hashes.items():
+                candidate = ROOT / path
+                if not candidate.is_file() or _sha256_path(candidate) != expected:
+                    raise ValueError(f"frozen TDD input changed: {path}")
+        else:
+            validate_git_sha(tree)
+            try:
+                if subprocess.check_output(
+                    ["git", "-C", str(ROOT), "cat-file", "-t", tree],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip() != "tree":
+                    raise ValueError("final staged object is not a Git tree")
+                for path, expected in hashes.items():
+                    payload = subprocess.check_output(
+                        ["git", "-C", str(ROOT), "show", f"{tree}:{path}"],
+                        stderr=subprocess.DEVNULL,
+                    )
+                    if hashlib.sha256(payload).hexdigest() != expected:
+                        raise ValueError(f"frozen TDD tree input changed: {path}")
+            except subprocess.CalledProcessError as exc:
+                raise ValueError("frozen TDD tree input is unavailable") from exc
         if not set(paths).issubset(hashes):
             raise ValueError("pytest node files are absent from frozen TDD inputs")
     identity_payload = {
@@ -5147,6 +6393,7 @@ def tdd_green_record(
         node_ids,
         arguments,
         file_hashes=pending["test_file_hashes"],
+        tree=staged_tree,
     )
     if identity != pending["red"]["test_identity_sha256"]:
         raise ValueError("test identity changed between RED and GREEN")
@@ -5244,17 +6491,67 @@ def main(argv: Sequence[str] | None = None) -> int:
             checkpoint_dir = args.checkpoint_dir or Path(
                 f"{args.output}.checkpoints"
             )
-            report = run_benchmark(
-                args.repo,
-                args.manifest,
-                operation=args.operation,
-                case_id=args.case_id,
-                sample_count=args.samples,
-                measurement_state=args.measurement_state,
-                mode=args.mode,
-                checkpoint_dir=checkpoint_dir,
-                resume=args.resume,
-            )
+            inferred_operations = args.operations
+            if inferred_operations is None and all(
+                value is None
+                for value in (
+                    args.operation,
+                    args.case_id,
+                    args.samples,
+                    args.measurement_state,
+                )
+            ):
+                contract = _load_json(args.manifest)
+                tier = _tier_for_repo(args.repo.resolve(), contract)
+                inferred_operations = {
+                    "smoke": "all-smoke",
+                    "large": "all-large",
+                    "scale-5k": "all-scale",
+                    "scale-10k": "all-scale",
+                    "stress": "capacity-informational",
+                }[tier]
+            if inferred_operations is not None:
+                if any(
+                    value is not None
+                    for value in (
+                        args.operation,
+                        args.case_id,
+                        args.samples,
+                        args.measurement_state,
+                    )
+                ):
+                    raise ValueError(
+                        "--operations cannot be mixed with one-case arguments"
+                    )
+                report = run_benchmark_set(
+                    args.repo,
+                    args.manifest,
+                    operation_set=inferred_operations,
+                    mode=args.mode,
+                    checkpoint_dir=checkpoint_dir,
+                    resume=args.resume,
+                )
+            else:
+                if (
+                    args.operation is None
+                    or args.case_id is None
+                    or args.samples is None
+                    or args.measurement_state is None
+                ):
+                    raise ValueError(
+                        "one-case run requires operation, case, samples, and state"
+                    )
+                report = run_benchmark(
+                    args.repo,
+                    args.manifest,
+                    operation=args.operation,
+                    case_id=args.case_id,
+                    sample_count=args.samples,
+                    measurement_state=args.measurement_state,
+                    mode=args.mode,
+                    checkpoint_dir=checkpoint_dir,
+                    resume=args.resume,
+                )
             _write_new_json(args.output, report)
         elif args.command == "churn":
             if os.path.lexists(args.output):
@@ -5264,14 +6561,29 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_churn(args.repo, args.manifest),
             )
         elif args.command == "assemble":
-            _write_new_json(
-                args.output,
-                assemble_reports(
+            if args.kind == "matrix":
+                if args.input or args.input_dir is None or args.evidence_id is None:
+                    raise ValueError(
+                        "matrix assembly requires --input-dir and --evidence-id only"
+                    )
+                assembled = assemble_matrix_report(
+                    args.input_dir,
+                    evidence_id=args.evidence_id,
+                )
+            else:
+                if args.input_dir is not None or args.evidence_id is not None:
+                    raise ValueError(
+                        "--input-dir and --evidence-id belong only to matrix assembly"
+                    )
+                assembled = assemble_reports(
                     args.kind,
                     args.input,
                     args.mode,
                     manifest=args.manifest,
-                ),
+                )
+            _write_new_json(
+                args.output,
+                assembled,
             )
         elif args.command == "paired":
             _write_new_json(
@@ -5287,15 +6599,46 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "decide":
             evidence = _load_json(args.input)
-            validate_report_data(evidence)
-            decision = make_decision(
-                args.kind,
-                implementation_commit=evidence["identity"]["implementation_commit"],
-                production_tree=evidence["identity"]["production_tree"],
-                evidence_report_sha256=_sha256_path(args.input),
-                trigger_crossed=args.trigger_crossed,
-                reason_codes=args.reason,
-            )
+            normalized_kind = args.kind.replace("-", "_")
+            if normalized_kind in {"ann", "exact_ann"} and not (
+                args.reason or args.trigger_crossed
+            ):
+                if args.paired is not None or args.acceptance is not None:
+                    raise ValueError("ANN decision does not accept service/watch inputs")
+                decision = decide_ann(
+                    evidence,
+                    evidence_report_sha256=_sha256_path(args.input),
+                )
+            elif normalized_kind in {"ann", "exact_ann"}:
+                if args.paired is not None or args.acceptance is not None:
+                    raise ValueError("ANN decision does not accept service/watch inputs")
+                validate_report_data(evidence)
+                decision = make_decision(
+                    "exact_ann",
+                    implementation_commit=evidence["identity"][
+                        "implementation_commit"
+                    ],
+                    production_tree=evidence["identity"]["production_tree"],
+                    evidence_report_sha256=_sha256_path(args.input),
+                    trigger_crossed=args.trigger_crossed,
+                    reason_codes=args.reason,
+                )
+            else:
+                if (
+                    args.paired is None
+                    or args.acceptance is None
+                    or args.reason
+                    or args.trigger_crossed
+                ):
+                    raise ValueError(
+                        "service/watch decision requires paired and acceptance evidence"
+                    )
+                decision = decide_service_watch(
+                    evidence,
+                    _load_json(args.paired),
+                    _load_json(args.acceptance),
+                    evidence_report_sha256=_sha256_path(args.acceptance),
+                )
             _write_new_json(args.output, decision)
         elif args.command == "validate":
             report = _load_json(args.report)
@@ -5309,10 +6652,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ):
                     validate_performance_registry_coverage(report, args.manifest)
         elif args.command == "compare":
-            _write_new_json(
-                args.output,
-                compare_reports(_load_json(args.baseline), _load_json(args.final)),
+            if (
+                args.paired is None
+                or args.churn is None
+                or not args.require_churn
+                or not args.require_scale_5k_10k
+            ):
+                raise ValueError(
+                    "acceptance compare requires paired, churn, and both requirement flags"
+                )
+            comparison = compare_acceptance_reports(
+                _load_json(args.baseline),
+                _load_json(args.final),
+                _load_json(args.paired),
+                _load_json(args.churn),
+                manifest=args.manifest,
+                input_sha256={
+                    "baseline": _sha256_path(args.baseline),
+                    "final": _sha256_path(args.final),
+                    "paired": _sha256_path(args.paired),
+                    "churn": _sha256_path(args.churn),
+                },
             )
+            if args.output is None:
+                sys.stdout.write(canonical_json(comparison))
+            else:
+                _write_new_json(args.output, comparison)
         elif args.command == "publish":
             publish_report(args.input, args.output, manifest=args.manifest)
         elif args.command == "tdd-red":
@@ -5352,6 +6717,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 node_ids,
                 arguments,
                 file_hashes=hash_values,
+                tree=args.staged_tree,
             )
             red_failed_nodes, red_assertions = _red_log_evidence(
                 args.red_log.read_text(encoding="utf-8")
