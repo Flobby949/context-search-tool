@@ -1934,3 +1934,159 @@ def test_mcp_stats_verify_is_additive_and_runs_one_inspection(
     assert payload["index_health"] == mcp_tools.index_health.serialize_index_health(
         report
     )
+
+
+def test_mcp_refresh_uses_exact_envelope_and_never_runs_implicitly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refresh_tool = getattr(mcp_tools, "context_search_refresh_tool", None)
+    assert callable(refresh_tool), "P6 MCP refresh tool is absent"
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    assert context_search_index_tool(str(repo))["ok"] is True
+    source = repo / "ApplyAuditServiceImpl.java"
+    source.write_text(
+        'class ApplyAuditServiceImpl { String changed() { return "changed"; } }\n',
+        encoding="utf-8",
+    )
+
+    payload = refresh_tool(str(repo))
+
+    assert tuple(payload) == (
+        "schema_version",
+        "ok",
+        "repo",
+        "summary",
+        "embedding",
+        "index_health",
+    )
+    assert payload["ok"] is True
+    assert payload["summary"]["files"]["content_changed"] == 1
+    assert payload["embedding"]["indexed_before"] == payload["embedding"][
+        "configured"
+    ]
+    assert payload["index_health"]["freshness"]["status"] == "metadata_fresh"
+
+    missing = refresh_tool(str(tmp_path / "missing"))
+    assert missing == {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": "repo_not_found",
+            "message": "repository root was not found",
+            "network_egress_outcome": "not_attempted",
+        },
+    }
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("query-like surface invoked refresh")
+
+    monkeypatch.setattr(mcp_tools, "refresh_repository", forbidden)
+    assert context_search_query_tool(str(repo), "ApplyAudit")["ok"] is True
+    assert context_search_trace_tool(str(repo), "ApplyAudit")["ok"] is True
+    assert context_search_context_tool(str(repo), "ApplyAudit")["ok"] is True
+    assert mcp_tools.context_search_explore_tool(str(repo), "ApplyAudit")["ok"] is True
+
+
+@pytest.mark.parametrize(
+    ("code", "outcome", "message"),
+    [
+        ("missing_index", "not_attempted", "an existing v2 index is required"),
+        (
+            "incompatible_manifest_schema",
+            "not_attempted",
+            "manifest schema is incompatible",
+        ),
+        (
+            "incompatible_operational_schema",
+            "not_attempted",
+            "operational schema is incompatible",
+        ),
+        (
+            "incompatible_signal_schema",
+            "not_attempted",
+            "signal schema is incompatible",
+        ),
+        ("index_busy", "not_attempted", "another index writer is active"),
+        (
+            "authoritative_index_required",
+            "not_attempted",
+            "authoritative indexing is required",
+        ),
+        (
+            "inventory_incomplete",
+            "not_attempted",
+            "repository inventory is incomplete",
+        ),
+        (
+            "workspace_changed",
+            "performed",
+            "repository changed during refresh",
+        ),
+        ("refresh_failed", "possible", "refresh failed"),
+    ],
+)
+def test_mcp_refresh_errors_are_closed_sanitized_and_preserve_egress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    code: str,
+    outcome: str,
+    message: str,
+) -> None:
+    from context_search_tool.indexer import RefreshFailure
+
+    refresh_tool = getattr(mcp_tools, "context_search_refresh_tool", None)
+    assert callable(refresh_tool), "P6 MCP refresh tool is absent"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(
+        mcp_tools,
+        "refresh_repository",
+        lambda *_args, **_kwargs: RefreshFailure(
+            code=code,
+            message="SECRET https://provider.invalid response body",
+            network_egress_outcome=outcome,
+        ),
+    )
+
+    payload = refresh_tool(str(repo))
+
+    assert payload == {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": message,
+            "network_egress_outcome": outcome,
+        },
+    }
+    assert "SECRET" not in json.dumps(payload)
+
+
+def test_mcp_refresh_post_success_inspection_failure_has_no_partial_siblings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refresh_tool = getattr(mcp_tools, "context_search_refresh_tool", None)
+    assert callable(refresh_tool), "P6 MCP refresh tool is absent"
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    assert context_search_index_tool(str(repo))["ok"] is True
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("SECRET_INSPECTION_FAILURE")
+
+    monkeypatch.setattr(mcp_tools.index_health, "inspect_repository_health", fail)
+    payload = refresh_tool(str(repo))
+
+    assert payload == {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": "refresh_failed",
+            "message": "refresh failed",
+            "network_egress_outcome": "not_attempted",
+        },
+    }
+    assert set(payload) == {"schema_version", "ok", "error"}

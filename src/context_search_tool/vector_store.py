@@ -81,6 +81,7 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 READABLE_VECTOR_DESCRIPTOR_VERSIONS = frozenset({1, 2})
 WRITE_VECTOR_DESCRIPTOR_VERSION = 2
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
+_CLEANUP_JOURNAL_MODES = frozenset({"DELETE", "TRUNCATE", "PERSIST"})
 _FaultHook = Callable[[str], None]
 
 
@@ -179,7 +180,7 @@ class NumpyVectorStore:
         return sum(roles == {"vectors", "ids"} for roles in generations.values())
 
     @classmethod
-    def cleanup_unreferenced_generations(
+    def unreferenced_generation_count(
         cls,
         index_dir: Path,
         *,
@@ -188,23 +189,95 @@ class NumpyVectorStore:
         if not _GENERATION_RE.fullmatch(keep_generation):
             raise ValueError("invalid retained vector generation")
         if not index_dir.is_dir() or index_dir.is_symlink():
+            return 0
+        generations = {
+            parsed[0]
+            for path in index_dir.iterdir()
+            if (parsed := _generation_artifact_name(path.name)) is not None
+            and parsed[0] != keep_generation
+        }
+        return len(generations)
+
+    @classmethod
+    def cleanup_unreferenced_generations(
+        cls,
+        index_dir: Path,
+        *,
+        keep_generation: str,
+        journal_mode: str,
+    ) -> int:
+        if not _GENERATION_RE.fullmatch(keep_generation):
+            raise ValueError("invalid retained vector generation")
+        if not index_dir.is_dir() or index_dir.is_symlink():
             raise ValueError("vector index directory is unsafe")
+        candidates = cls._safe_unreferenced_generation_artifacts(
+            index_dir,
+            keep_generation=keep_generation,
+        )
+        if not candidates:
+            return 0
+        normalized_journal_mode = str(journal_mode).upper()
+        if normalized_journal_mode not in _CLEANUP_JOURNAL_MODES:
+            raise ValueError("vector cleanup requires a supported rollback-journal mode")
         removed_generations: set[str] = set()
+        for path, generation in candidates:
+            os.unlink(path)
+            removed_generations.add(generation)
+        return len(removed_generations)
+
+    @classmethod
+    def has_safe_unreferenced_generation_artifacts(
+        cls,
+        index_dir: Path,
+        *,
+        keep_generation: str,
+    ) -> bool:
+        if not _GENERATION_RE.fullmatch(keep_generation):
+            raise ValueError("invalid retained vector generation")
+        if not index_dir.is_dir() or index_dir.is_symlink():
+            raise ValueError("vector index directory is unsafe")
+        return bool(
+            cls._safe_unreferenced_generation_artifacts(
+                index_dir,
+                keep_generation=keep_generation,
+            )
+        )
+
+    @staticmethod
+    def _safe_unreferenced_generation_artifacts(
+        index_dir: Path,
+        *,
+        keep_generation: str,
+    ) -> tuple[tuple[Path, str], ...]:
+        try:
+            directory_stat = os.lstat(index_dir)
+        except OSError as error:
+            raise ValueError("vector index directory is unsafe") from error
+        if (
+            stat.S_ISLNK(directory_stat.st_mode)
+            or not stat.S_ISDIR(directory_stat.st_mode)
+            or (
+                hasattr(os, "getuid")
+                and directory_stat.st_uid != os.getuid()
+            )
+            or stat.S_IMODE(directory_stat.st_mode) & 0o022
+        ):
+            raise ValueError("vector index directory is unsafe")
+
+        candidates: list[tuple[Path, str]] = []
         for path in sorted(index_dir.iterdir(), key=lambda item: item.name):
             parsed = _generation_artifact(path)
             if parsed is None or parsed[0] == keep_generation:
                 continue
             generation, _role = parsed
-            path_stat = os.lstat(path)
-            if (
-                stat.S_ISLNK(path_stat.st_mode)
-                or not stat.S_ISREG(path_stat.st_mode)
-                or (hasattr(os, "getuid") and path_stat.st_uid != os.getuid())
-            ):
+            try:
+                path_stat = os.lstat(path)
+            except OSError:
                 continue
-            os.unlink(path)
-            removed_generations.add(generation)
-        return len(removed_generations)
+            if stat.S_IMODE(path_stat.st_mode) & 0o022:
+                continue
+            candidates.append((path, generation))
+        return tuple(candidates)
 
     @classmethod
     def verify_published_snapshot(
@@ -591,16 +664,10 @@ class NumpyVectorStore:
 
 
 def _generation_artifact(path: Path) -> tuple[str, str] | None:
-    match = re.fullmatch(r"vectors\.([A-Za-z0-9][A-Za-z0-9_-]*)\.npy", path.name)
-    role = "vectors"
-    if match is None:
-        match = re.fullmatch(
-            r"vector_ids\.([A-Za-z0-9][A-Za-z0-9_-]*)\.json",
-            path.name,
-        )
-        role = "ids"
-    if match is None:
+    parsed = _generation_artifact_name(path.name)
+    if parsed is None:
         return None
+    generation, role = parsed
     try:
         path_stat = os.lstat(path)
     except OSError:
@@ -608,6 +675,20 @@ def _generation_artifact(path: Path) -> tuple[str, str] | None:
     if stat.S_ISLNK(path_stat.st_mode) or not stat.S_ISREG(path_stat.st_mode):
         return None
     if hasattr(os, "getuid") and path_stat.st_uid != os.getuid():
+        return None
+    return generation, role
+
+
+def _generation_artifact_name(name: str) -> tuple[str, str] | None:
+    match = re.fullmatch(r"vectors\.([A-Za-z0-9][A-Za-z0-9_-]*)\.npy", name)
+    role = "vectors"
+    if match is None:
+        match = re.fullmatch(
+            r"vector_ids\.([A-Za-z0-9][A-Za-z0-9_-]*)\.json",
+            name,
+        )
+        role = "ids"
+    if match is None:
         return None
     return match.group(1), role
 

@@ -194,6 +194,7 @@ PUBLIC_OPERATIONS = frozenset(
         "explore",
         "status",
         "stats",
+        "refresh",
         "explain",
     }
 )
@@ -915,6 +916,7 @@ class CommittedIndexSnapshot:
     indexed_embedding: EmbeddingIdentity
     active_embedding_ids: tuple[str, ...] = ()
     index_config_hash: str | None = None
+    vector_generation_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -1007,6 +1009,17 @@ def read_committed_index_snapshot(repo: Path) -> CommittedIndexSnapshot:
         indexed_embedding=_indexed_embedding(manifest),
         active_embedding_ids=operational.active_embedding_ids,
         index_config_hash=operational.binding.index_config_hash,
+        vector_generation_count=(
+            1
+            + NumpyVectorStore.unreferenced_generation_count(
+                index_dir,
+                keep_generation=(
+                    descriptor.generation
+                    if descriptor is not None
+                    else manifest.vector_generation
+                ),
+            )
+        ),
     )
 
 
@@ -1158,6 +1171,35 @@ def _indexed_embedding(manifest: Manifest | ManifestV2) -> EmbeddingIdentity:
     )
 
 
+def indexed_embedding_identity(
+    manifest: Manifest | ManifestV2,
+) -> EmbeddingIdentity:
+    return _indexed_embedding(manifest)
+
+
+def configured_embedding_identity(config: ToolConfig) -> EmbeddingIdentity:
+    embedding = config.embedding
+    identity = EmbeddingIdentity(
+        status="valid",
+        provider=embedding.provider,
+        model=embedding.model,
+        dimensions=embedding.dimensions,
+        config_hash=embedding_config_hash(embedding),
+        network_egress_capable=embedding.provider != "hash",
+        network_egress_evidence=(
+            "built_in_hash"
+            if embedding.provider == "hash"
+            else (
+                "configured_network_provider"
+                if embedding.provider in {"openai-compatible", "bge"}
+                else "unknown_provider"
+            )
+        ),
+    )
+    identity._validate()
+    return identity
+
+
 def _legacy_committed_snapshot(
     store: SQLiteStore,
     index_dir: Path,
@@ -1220,6 +1262,15 @@ def _legacy_committed_snapshot(
         vector_identity_valid=vector_valid,
         indexed_embedding=_indexed_embedding(manifest),
         active_embedding_ids=active_ids,
+        vector_generation_count=(
+            1
+            + NumpyVectorStore.unreferenced_generation_count(
+                index_dir,
+                keep_generation=descriptor.generation,
+            )
+            if descriptor is not None
+            else NumpyVectorStore.generation_pair_count(index_dir)
+        ),
     )
 
 
@@ -1258,6 +1309,13 @@ def _unbound_v2_snapshot(
         indexed_embedding=_indexed_embedding(manifest),
         active_embedding_ids=active_ids,
         index_config_hash=manifest.index_config_hash,
+        vector_generation_count=(
+            1
+            + NumpyVectorStore.unreferenced_generation_count(
+                index_dir,
+                keep_generation=manifest.vector_generation,
+            )
+        ),
     )
 
 
@@ -1398,6 +1456,94 @@ def status_error_envelope(code: str) -> dict[str, Any]:
         "ok": False,
         "error": {"code": code, "message": messages[code]},
     }
+
+
+_REFRESH_ERROR_MESSAGES = {
+    "repo_not_found": "repository root was not found",
+    "missing_index": "an existing v2 index is required",
+    "incompatible_manifest_schema": "manifest schema is incompatible",
+    "incompatible_operational_schema": "operational schema is incompatible",
+    "incompatible_signal_schema": "signal schema is incompatible",
+    "index_busy": "another index writer is active",
+    "authoritative_index_required": "authoritative indexing is required",
+    "inventory_incomplete": "repository inventory is incomplete",
+    "workspace_changed": "repository changed during refresh",
+    "refresh_failed": "refresh failed",
+}
+_REFRESH_EGRESS_OUTCOMES = frozenset({"not_attempted", "possible", "performed"})
+
+
+def refresh_error_envelope(
+    code: str,
+    network_egress_outcome: str = "not_attempted",
+) -> dict[str, Any]:
+    if code not in _REFRESH_ERROR_MESSAGES:
+        code = "refresh_failed"
+    if network_egress_outcome not in _REFRESH_EGRESS_OUTCOMES:
+        network_egress_outcome = "possible"
+    return {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": _REFRESH_ERROR_MESSAGES[code],
+            "network_egress_outcome": network_egress_outcome,
+        },
+    }
+
+
+def refresh_success_envelope(
+    repo: str,
+    *,
+    summary: Any,
+    indexed_before: EmbeddingIdentity,
+    configured: EmbeddingIdentity,
+    network_egress_performed: bool,
+    report: IndexHealthReport,
+) -> dict[str, Any]:
+    summary_payload = summary.to_dict()
+    indexed_before._validate()
+    configured._validate()
+    if _embedding_key(indexed_before) != _embedding_key(configured):
+        raise ValueError("refresh embedding identity mismatch")
+    if type(network_egress_performed) is not bool:
+        raise ValueError("refresh network egress fact must be boolean")
+    embedded_chunks = summary_payload["chunks"]["embedded"]
+    if type(embedded_chunks) is not int or embedded_chunks < 0:
+        raise ValueError("refresh embedded chunk count is invalid")
+    return {
+        "schema_version": 1,
+        "ok": True,
+        "repo": repo,
+        "summary": summary_payload,
+        "embedding": {
+            "indexed_before": serialize_embedding_identity(indexed_before),
+            "configured": serialize_embedding_identity(configured),
+            "network_egress_performed": network_egress_performed,
+            "embedded_chunks": embedded_chunks,
+        },
+        "index_health": serialize_index_health(report),
+    }
+
+
+def format_refresh_human(envelope: Mapping[str, Any]) -> str:
+    if envelope.get("ok") is not True:
+        raise ValueError("refresh success envelope is required")
+    summary = _mapping(envelope.get("summary"), "refresh summary")
+    files = _mapping(summary.get("files"), "refresh files")
+    embedding = _mapping(envelope.get("embedding"), "refresh embedding")
+    health = _mapping(envelope.get("index_health"), "refresh health")
+    freshness = _mapping(health.get("freshness"), "refresh freshness")
+    return (
+        f"Refreshed {envelope['repo']}: "
+        f"direct_dirty={files['direct_dirty']} "
+        f"content_changed={files['content_changed']} "
+        f"metadata_only={files['metadata_only']} "
+        f"dependent={files['dependent_rebuild']} "
+        f"deleted={files['deleted']} parsed={files['parsed']} "
+        f"embedded={embedding['embedded_chunks']}; "
+        f"freshness={freshness['status']} health={health['health']}"
+    )
 
 
 def status_requirement_satisfied(
@@ -1639,26 +1785,8 @@ def _read_inspection_configuration(
         config = read_config(repo)
     except (OSError, TypeError, ValueError):
         return DEFAULT_CONFIG, _nonvalid_embedding("invalid", "config_invalid")
-    embedding = config.embedding
     try:
-        identity = EmbeddingIdentity(
-            status="valid",
-            provider=embedding.provider,
-            model=embedding.model,
-            dimensions=embedding.dimensions,
-            config_hash=embedding_config_hash(embedding),
-            network_egress_capable=embedding.provider != "hash",
-            network_egress_evidence=(
-                "built_in_hash"
-                if embedding.provider == "hash"
-                else (
-                    "configured_network_provider"
-                    if embedding.provider in {"openai-compatible", "bge"}
-                    else "unknown_provider"
-                )
-            ),
-        )
-        identity._validate()
+        identity = configured_embedding_identity(config)
     except (TypeError, ValueError):
         return config, _nonvalid_embedding("invalid", "config_invalid")
     return config, identity
@@ -2127,6 +2255,13 @@ def _observed_report(
         diagnostics.append(
             {"code": "vector_identity_mismatch", "scope": "vector", "path": None}
         )
+    if max(
+        opening_snapshot.vector_generation_count,
+        closing_snapshot.vector_generation_count,
+    ) > 1:
+        diagnostics.append(
+            {"code": "orphan_generation", "scope": "vector", "path": None}
+        )
     for item in skip_samples:
         diagnostics.append(
             {"code": "coverage_pending", "scope": "coverage", "path": item["path"]}
@@ -2426,6 +2561,11 @@ def _embedding_dict(value: EmbeddingIdentity) -> dict[str, Any]:
         "network_egress_capable": value.network_egress_capable,
         "network_egress_evidence": value.network_egress_evidence,
     }
+
+
+def serialize_embedding_identity(value: EmbeddingIdentity) -> dict[str, Any]:
+    value._validate()
+    return _embedding_dict(value)
 
 
 def _embedding_key(value: EmbeddingIdentity) -> tuple[str, str, int, str]:

@@ -11,6 +11,7 @@ def test_mcp_server_imports() -> None:
     assert callable(mcp_server.context_search_query)
     assert callable(mcp_server.context_search_trace)
     assert callable(mcp_server.context_search_context)
+    assert callable(mcp_server.context_search_refresh)
     assert callable(mcp_server.context_search_stats)
     assert callable(mcp_server.context_search_explain)
     assert "raw ranked search" in mcp_server.context_search_query.__doc__.lower()
@@ -81,6 +82,11 @@ def test_p6_status_and_stats_public_signatures_are_frozen() -> None:
     assert tuple(stats_parameters) == ("repo", "verify")
     assert stats_parameters["verify"].default is False
 
+    refresh_parameters = inspect.signature(
+        mcp_server.context_search_refresh
+    ).parameters
+    assert tuple(refresh_parameters) == ("repo",)
+
 
 def test_p6_status_description_promises_read_only_provider_free_inspection() -> None:
     from context_search_tool import mcp_server
@@ -93,3 +99,13 @@ def test_p6_status_description_promises_read_only_provider_free_inspection() -> 
     assert "read-only" in description
     assert "provider" in description
     assert "without" in description
+
+
+def test_p6_refresh_description_discloses_mutation_and_remote_source_text() -> None:
+    from context_search_tool import mcp_server
+
+    description = (mcp_server.context_search_refresh.__doc__ or "").lower()
+
+    assert "mutat" in description
+    assert "new/content-changed" in description
+    assert "remote" in description

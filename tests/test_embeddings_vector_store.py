@@ -1,4 +1,5 @@
 import json
+import inspect
 import math
 import warnings
 from pathlib import Path
@@ -526,6 +527,7 @@ def test_vector_generation_cleanup_keeps_only_safe_referenced_pair(
     removed = NumpyVectorStore.cleanup_unreferenced_generations(
         tmp_path,
         keep_generation="g2",
+        journal_mode="DELETE",
     )
 
     assert removed == 1
@@ -536,3 +538,110 @@ def test_vector_generation_cleanup_keeps_only_safe_referenced_pair(
     assert (tmp_path / "vector_ids.g2.json").exists()
     assert unsafe.is_symlink()
     assert outside.read_bytes() == b"outside"
+
+
+@pytest.mark.parametrize("journal_mode", ["WAL", "MEMORY", "OFF", "unknown"])
+def test_vector_generation_cleanup_fails_closed_for_unsafe_journal_modes(
+    tmp_path: Path,
+    journal_mode: str,
+) -> None:
+    assert "journal_mode" in inspect.signature(
+        NumpyVectorStore.cleanup_unreferenced_generations
+    ).parameters, "P6 cleanup journal guard is absent"
+    store = NumpyVectorStore.fresh(tmp_path)
+    store.upsert_many([("a", np.asarray([1.0, 0.0], dtype=np.float32))])
+    first = store.prepare_generation_v2(
+        generation="g1",
+        embedding_identity="hash-v1:2",
+        normalization="none",
+    )
+    store.publish_generation(first)
+    second = store.prepare_generation_v2(
+        generation="g2",
+        embedding_identity="hash-v1:2",
+        normalization="none",
+    )
+    store.publish_generation(second)
+
+    with pytest.raises(ValueError, match="rollback-journal"):
+        NumpyVectorStore.cleanup_unreferenced_generations(
+            tmp_path,
+            keep_generation="g2",
+            journal_mode=journal_mode,
+        )
+
+    assert NumpyVectorStore.generation_pair_count(tmp_path) == 2
+    assert (tmp_path / "vectors.g1.npy").exists()
+    assert (tmp_path / "vector_ids.g1.json").exists()
+
+
+@pytest.mark.parametrize("journal_mode", ["DELETE", "truncate", "Persist"])
+def test_vector_generation_cleanup_accepts_only_closed_rollback_journal_set(
+    tmp_path: Path,
+    journal_mode: str,
+) -> None:
+    assert "journal_mode" in inspect.signature(
+        NumpyVectorStore.cleanup_unreferenced_generations
+    ).parameters, "P6 cleanup journal guard is absent"
+    store = NumpyVectorStore.fresh(tmp_path)
+    store.upsert_many([("a", np.asarray([1.0, 0.0], dtype=np.float32))])
+    first = store.prepare_generation_v2(
+        generation="g1",
+        embedding_identity="hash-v1:2",
+        normalization="none",
+    )
+    store.publish_generation(first)
+    second = store.prepare_generation_v2(
+        generation="g2",
+        embedding_identity="hash-v1:2",
+        normalization="none",
+    )
+    store.publish_generation(second)
+
+    removed = NumpyVectorStore.cleanup_unreferenced_generations(
+        tmp_path,
+        keep_generation="g2",
+        journal_mode=journal_mode,
+    )
+
+    assert removed == 1
+    assert NumpyVectorStore.generation_pair_count(tmp_path) == 1
+
+
+def test_vector_generation_cleanup_leaves_unsafe_mode_and_unknown_names(
+    tmp_path: Path,
+) -> None:
+    assert "journal_mode" in inspect.signature(
+        NumpyVectorStore.cleanup_unreferenced_generations
+    ).parameters, "P6 cleanup journal guard is absent"
+    store = NumpyVectorStore.fresh(tmp_path)
+    store.upsert_many([("a", np.asarray([1.0, 0.0], dtype=np.float32))])
+    first = store.prepare_generation_v2(
+        generation="g1",
+        embedding_identity="hash-v1:2",
+        normalization="none",
+    )
+    store.publish_generation(first)
+    second = store.prepare_generation_v2(
+        generation="g2",
+        embedding_identity="hash-v1:2",
+        normalization="none",
+    )
+    store.publish_generation(second)
+    unsafe_vector = tmp_path / "vectors.g1.npy"
+    unsafe_ids = tmp_path / "vector_ids.g1.json"
+    unsafe_vector.chmod(0o666)
+    unsafe_ids.chmod(0o666)
+    unknown = tmp_path / "vectors.g1.npy.backup"
+    unknown.write_bytes(b"keep")
+
+    removed = NumpyVectorStore.cleanup_unreferenced_generations(
+        tmp_path,
+        keep_generation="g2",
+        journal_mode="DELETE",
+    )
+
+    assert removed == 0
+    assert unsafe_vector.exists()
+    assert unsafe_ids.exists()
+    assert unknown.read_bytes() == b"keep"

@@ -109,6 +109,7 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _GENERATION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 _WORK_METRIC_RE = re.compile(r"[a-z][a-z0-9_.]*\Z")
 _MAX_WORK_METRICS = 128
+_TOMBSTONE_THRESHOLD_MINIMUM = 5_000
 
 
 @dataclass(frozen=True)
@@ -691,61 +692,158 @@ class SQLiteStore:
         connection: sqlite3.Connection,
         limit: int,
     ) -> int:
-        rows = connection.execute(
-            """
-            SELECT chunk_id
-            FROM chunks
-            WHERE deleted_at IS NOT NULL
-            ORDER BY deleted_at, chunk_id
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-        chunk_ids = [str(row["chunk_id"]) for row in rows]
-        if not chunk_ids:
+        if limit <= 0:
             return 0
-        signal_rows = connection.execute(
-            _in_query(
+        counts = _maintenance_counts(connection)
+        changes_before = connection.total_changes
+
+        relation_limit = _bounded_purge_count(
+            counts["deleted_relations"], limit
+        )
+        if relation_limit:
+            relation_rows = connection.execute(
                 """
-                SELECT signal_id FROM code_signals
-                WHERE chunk_id IN ({placeholders})
+                SELECT relation_id
+                FROM code_relations
+                WHERE deleted_at IS NOT NULL
+                ORDER BY deleted_at, relation_id
+                LIMIT ?
                 """,
-                chunk_ids,
-            ),
-            chunk_ids,
-        ).fetchall()
-        signal_ids = [str(row["signal_id"]) for row in signal_rows]
-        self._delete_search_payloads(connection, chunk_ids)
-        connection.execute(
-            _in_query(
-                "DELETE FROM code_relations WHERE source_chunk_id IN ({placeholders})",
-                chunk_ids,
-            ),
-            chunk_ids,
-        )
-        if signal_ids:
-            connection.execute(
-                _in_query(
-                    "DELETE FROM code_relations WHERE target_signal_id IN ({placeholders})",
+                (relation_limit,),
+            ).fetchall()
+            relation_ids = [str(row["relation_id"]) for row in relation_rows]
+            if relation_ids:
+                connection.execute(
+                    _in_query(
+                        "DELETE FROM code_relations "
+                        "WHERE relation_id IN ({placeholders})",
+                        relation_ids,
+                    ),
+                    relation_ids,
+                )
+
+        signal_limit = _bounded_purge_count(counts["deleted_signals"], limit)
+        if signal_limit:
+            signal_rows = connection.execute(
+                """
+                SELECT signal_id
+                FROM code_signals
+                WHERE deleted_at IS NOT NULL
+                ORDER BY deleted_at, signal_id
+                LIMIT ?
+                """,
+                (signal_limit,),
+            ).fetchall()
+            signal_ids = [str(row["signal_id"]) for row in signal_rows]
+            if signal_ids:
+                placeholders = ", ".join("?" for _ in signal_ids)
+                connection.execute(
+                    f"""
+                        DELETE FROM code_relations
+                        WHERE deleted_at IS NOT NULL
+                          AND (
+                            source_signal_id IN ({placeholders})
+                            OR target_signal_id IN ({placeholders})
+                          )
+                        """,
+                    (*signal_ids, *signal_ids),
+                )
+                connection.execute(
+                    _in_query(
+                        "DELETE FROM code_signals "
+                        "WHERE signal_id IN ({placeholders})",
+                        signal_ids,
+                    ),
                     signal_ids,
-                ),
-                signal_ids,
-            )
-        connection.execute(
-            _in_query(
-                "DELETE FROM code_signals WHERE chunk_id IN ({placeholders})",
-                chunk_ids,
-            ),
-            chunk_ids,
-        )
-        connection.execute(
-            _in_query(
-                "DELETE FROM chunks WHERE chunk_id IN ({placeholders})",
-                chunk_ids,
-            ),
-            chunk_ids,
-        )
-        return len(chunk_ids)
+                )
+
+        chunk_limit = _bounded_purge_count(counts["deleted_chunks"], limit)
+        if chunk_limit:
+            rows = connection.execute(
+                """
+                SELECT chunk_id
+                FROM chunks
+                WHERE deleted_at IS NOT NULL
+                ORDER BY deleted_at, chunk_id
+                LIMIT ?
+                """,
+                (chunk_limit,),
+            ).fetchall()
+            chunk_ids = [str(row["chunk_id"]) for row in rows]
+            if chunk_ids:
+                signal_rows = connection.execute(
+                    _in_query(
+                        """
+                        SELECT signal_id FROM code_signals
+                        WHERE chunk_id IN ({placeholders})
+                        """,
+                        chunk_ids,
+                    ),
+                    chunk_ids,
+                ).fetchall()
+                signal_ids = [str(row["signal_id"]) for row in signal_rows]
+                self._delete_search_payloads(connection, chunk_ids)
+                connection.execute(
+                    _in_query(
+                        "DELETE FROM code_relations "
+                        "WHERE deleted_at IS NOT NULL "
+                        "AND source_chunk_id IN ({placeholders})",
+                        chunk_ids,
+                    ),
+                    chunk_ids,
+                )
+                if signal_ids:
+                    connection.execute(
+                        _in_query(
+                            "DELETE FROM code_relations "
+                            "WHERE deleted_at IS NOT NULL "
+                            "AND target_signal_id IN ({placeholders})",
+                            signal_ids,
+                        ),
+                        signal_ids,
+                    )
+                connection.execute(
+                    _in_query(
+                        "DELETE FROM code_signals "
+                        "WHERE deleted_at IS NOT NULL "
+                        "AND chunk_id IN ({placeholders})",
+                        chunk_ids,
+                    ),
+                    chunk_ids,
+                )
+                connection.execute(
+                    _in_query(
+                        "DELETE FROM chunks WHERE chunk_id IN ({placeholders})",
+                        chunk_ids,
+                    ),
+                    chunk_ids,
+                )
+
+        symbol_limit = _bounded_purge_count(counts["orphan_symbols"], limit)
+        if symbol_limit:
+            symbol_rows = connection.execute(
+                """
+                SELECT symbols.symbol_id
+                FROM symbols
+                LEFT JOIN chunk_symbols
+                  ON chunk_symbols.symbol_id = symbols.symbol_id
+                WHERE chunk_symbols.symbol_id IS NULL
+                ORDER BY symbols.symbol_id
+                LIMIT ?
+                """,
+                (symbol_limit,),
+            ).fetchall()
+            symbol_ids = [int(row["symbol_id"]) for row in symbol_rows]
+            if symbol_ids:
+                connection.execute(
+                    _in_query(
+                        "DELETE FROM symbols WHERE symbol_id IN ({placeholders})",
+                        symbol_ids,
+                    ),
+                    symbol_ids,
+                )
+
+        return connection.total_changes - changes_before
 
     def inspect_signal_schema_version(self) -> int:
         if not self.db_path.exists():
@@ -2298,6 +2396,55 @@ class SQLiteStore:
                 connection.execute("PRAGMA freelist_count").fetchone()[0]
             )
         return page_count, freelist_count
+
+    def journal_mode(self) -> str:
+        """Return the current SQLite journal mode without changing it."""
+        if not self.db_path.exists():
+            return "UNKNOWN"
+        connection = _open_connection(self.db_path, _DEFAULT_BUSY_TIMEOUT_MS)
+        try:
+            row = connection.execute("PRAGMA journal_mode").fetchone()
+        finally:
+            connection.close()
+        if row is None or row[0] is None:
+            return "UNKNOWN"
+        return str(row[0]).upper()
+
+    def maintenance_counts(self) -> dict[str, int]:
+        if not self.db_path.exists():
+            return {
+                "active_chunks": 0,
+                "deleted_chunks": 0,
+                "active_signals": 0,
+                "deleted_signals": 0,
+                "active_relations": 0,
+                "deleted_relations": 0,
+                "active_symbols": 0,
+                "orphan_symbols": 0,
+                "active_associations": 0,
+                "orphan_associations": 0,
+            }
+        connection = _open_connection(self.db_path, _DEFAULT_BUSY_TIMEOUT_MS)
+        try:
+            return _maintenance_counts(connection)
+        finally:
+            connection.close()
+
+    def maintenance_required(self) -> bool:
+        counts = self.maintenance_counts()
+        return any(
+            deleted > _maintenance_threshold(active)
+            for active, deleted in (
+                (counts["active_chunks"], counts["deleted_chunks"]),
+                (counts["active_signals"], counts["deleted_signals"]),
+                (counts["active_relations"], counts["deleted_relations"]),
+                (counts["active_symbols"], counts["orphan_symbols"]),
+                (
+                    counts["active_associations"],
+                    counts["orphan_associations"],
+                ),
+            )
+        )
 
     def tombstone_count(self) -> int:
         if not self.db_path.exists():
@@ -5491,6 +5638,77 @@ def _fts_query(tokens: list[str]) -> str:
 def _quote_fts_token(token: str) -> str:
     escaped = token.replace('"', '""')
     return f'"{escaped}"'
+
+
+def _maintenance_threshold(active_rows: int) -> int:
+    return max(_TOMBSTONE_THRESHOLD_MINIMUM, (active_rows + 19) // 20)
+
+
+def _bounded_purge_count(deleted_rows: int, limit: int) -> int:
+    return min(limit, deleted_rows)
+
+
+def _maintenance_counts(connection: sqlite3.Connection) -> dict[str, int]:
+    def count(sql: str) -> int:
+        return int(connection.execute(sql).fetchone()[0])
+
+    active_chunks = count("SELECT COUNT(*) FROM chunks WHERE deleted_at IS NULL")
+    deleted_chunks = count(
+        "SELECT COUNT(*) FROM chunks WHERE deleted_at IS NOT NULL"
+    )
+    active_signals = count(
+        "SELECT COUNT(*) FROM code_signals WHERE deleted_at IS NULL"
+    )
+    deleted_signals = count(
+        "SELECT COUNT(*) FROM code_signals WHERE deleted_at IS NOT NULL"
+    )
+    active_relations = count(
+        "SELECT COUNT(*) FROM code_relations WHERE deleted_at IS NULL"
+    )
+    deleted_relations = count(
+        "SELECT COUNT(*) FROM code_relations WHERE deleted_at IS NOT NULL"
+    )
+    active_symbols = count(
+        """
+        SELECT COUNT(DISTINCT symbols.symbol_id)
+        FROM symbols
+        JOIN chunk_symbols ON chunk_symbols.symbol_id = symbols.symbol_id
+        """
+    )
+    orphan_symbols = count(
+        """
+        SELECT COUNT(*)
+        FROM symbols
+        LEFT JOIN chunk_symbols ON chunk_symbols.symbol_id = symbols.symbol_id
+        WHERE chunk_symbols.symbol_id IS NULL
+        """
+    )
+    active_associations = count(
+        """
+        SELECT COUNT(*)
+        FROM code_relations
+        WHERE producer = 'test_association' AND deleted_at IS NULL
+        """
+    )
+    orphan_associations = count(
+        """
+        SELECT COUNT(*)
+        FROM code_relations
+        WHERE producer = 'test_association' AND deleted_at IS NOT NULL
+        """
+    )
+    return {
+        "active_chunks": active_chunks,
+        "deleted_chunks": deleted_chunks,
+        "active_signals": active_signals,
+        "deleted_signals": deleted_signals,
+        "active_relations": active_relations,
+        "deleted_relations": deleted_relations,
+        "active_symbols": active_symbols,
+        "orphan_symbols": orphan_symbols,
+        "active_associations": active_associations,
+        "orphan_associations": orphan_associations,
+    }
 
 
 def _in_query(sql: str, values: list[Any]) -> str:

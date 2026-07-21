@@ -12,6 +12,7 @@ from context_search_tool.mcp_tools import (
     context_search_explore_tool,
     context_search_index_tool,
     context_search_query_tool,
+    context_search_refresh_tool,
     context_search_status_tool,
     context_search_stats_tool,
     context_search_trace_tool,
@@ -116,6 +117,12 @@ def context_search_status(
 ) -> dict[str, Any]:
     """Inspect index health read-only without calling an embedding provider."""
     return context_search_status_tool(repo, verify=verify)
+
+
+@mcp.tool()
+def context_search_refresh(repo: str) -> dict[str, Any]:
+    """Mutate an index; new/content-changed text may reach a remote provider."""
+    return context_search_refresh_tool(repo)
 
 
 @mcp.tool()

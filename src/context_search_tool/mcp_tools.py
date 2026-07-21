@@ -27,7 +27,10 @@ from context_search_tool.formatters import (
 )
 from context_search_tool.indexer import (
     IncompatibleIndexError,
+    RefreshFailure,
+    RefreshSuccess,
     index_repository,
+    refresh_repository,
     signal_schema_is_current,
 )
 from context_search_tool.graph_lifecycle import (
@@ -500,6 +503,46 @@ def context_search_status_tool(
     except Exception:
         return index_health.status_error_envelope("status_failed")
     return index_health.status_success_envelope(str(resolved_repo), report)
+
+
+def context_search_refresh_tool(repo: str) -> dict[str, Any]:
+    """Mutate an existing index and return the closed RefreshEnvelope v1."""
+    try:
+        resolved_repo = find_repo_root(Path(repo))
+    except RepositoryNotFoundError:
+        return index_health.refresh_error_envelope("repo_not_found")
+    try:
+        result = refresh_repository(
+            resolved_repo,
+            config_loader=load_config,
+        )
+    except Exception:
+        return index_health.refresh_error_envelope("refresh_failed")
+    if isinstance(result, RefreshFailure):
+        return index_health.refresh_error_envelope(
+            result.code,
+            result.network_egress_outcome,
+        )
+    if not isinstance(result, RefreshSuccess):
+        return index_health.refresh_error_envelope("refresh_failed", "possible")
+    try:
+        report = index_health.inspect_repository_health(
+            resolved_repo,
+            mode="quick",
+        )
+        return index_health.refresh_success_envelope(
+            str(resolved_repo),
+            summary=result.summary,
+            indexed_before=result.indexed_before,
+            configured=result.configured,
+            network_egress_performed=result.network_egress_performed,
+            report=report,
+        )
+    except Exception:
+        return index_health.refresh_error_envelope(
+            "refresh_failed",
+            "performed" if result.network_egress_performed else "not_attempted",
+        )
 
 
 def context_search_stats_tool(

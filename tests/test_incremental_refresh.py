@@ -20,6 +20,7 @@ from context_search_tool.index_lock import exclusive_index_lock
 from context_search_tool.indexer import build_v5_index_snapshot, index_repository
 from context_search_tool.manifest import Manifest, ManifestV2, load_manifest, write_manifest
 from context_search_tool.scanner import (
+    ObservedFileRead,
     observe_workspace,
     read_observed_file,
     scan_workspace_v5,
@@ -639,3 +640,384 @@ def test_quick_refresh_future_schemas_and_stable_corruption_are_exact(
     assert result.code == "authoritative_index_required"
     assert result.network_egress_outcome == "not_attempted"
     assert _snapshot_bytes(corrupt) == before
+
+
+def test_quick_refresh_retries_confirmed_orphans_before_preparing_a_third_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from context_search_tool import index_health
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int generationOne; }\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    index_dir = repo / ".context-search"
+    original_cleanup = NumpyVectorStore.cleanup_unreferenced_generations
+
+    def cleanup_failure(cls, *_args: Any, **_kwargs: Any) -> int:
+        raise OSError("injected cleanup failure")
+
+    monkeypatch.setattr(
+        NumpyVectorStore,
+        "cleanup_unreferenced_generations",
+        classmethod(cleanup_failure),
+    )
+    source.write_text("class App { int generationTwo; }\n", encoding="utf-8")
+    first = _refresh(repo)
+
+    assert first.ok is True
+    assert NumpyVectorStore.generation_pair_count(index_dir) == 2
+    report = index_health.inspect_repository_health(repo, mode="quick")
+    assert report.diagnostics is not None
+    assert any(item.code == "orphan_generation" for item in report.diagnostics)
+
+    source.write_text("class App { int generationThree; }\n", encoding="utf-8")
+    retry_failed = _refresh(repo)
+
+    assert retry_failed.ok is False
+    assert retry_failed.code == "refresh_failed"
+    assert retry_failed.network_egress_outcome == "not_attempted"
+    assert NumpyVectorStore.generation_pair_count(index_dir) == 2
+
+    monkeypatch.setattr(
+        NumpyVectorStore,
+        "cleanup_unreferenced_generations",
+        original_cleanup,
+    )
+
+    def fail_after_prepare(stage: str) -> None:
+        if stage == "vectors_prepared":
+            raise RuntimeError("post-prepare fault")
+
+    prepared_failure = _refresh(repo, fault_hook=fail_after_prepare)
+    assert prepared_failure.ok is False
+    assert NumpyVectorStore.generation_pair_count(index_dir) == 2
+
+    recovered = _refresh(repo)
+    assert recovered.ok is True
+    assert NumpyVectorStore.generation_pair_count(index_dir) == 1
+    assert index_health.inspect_repository_health(repo, mode="quick").health == (
+        "healthy_metadata"
+    )
+
+
+def test_authoritative_v1_migration_cleans_safe_historical_generations(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    current = load_manifest(repo)
+    assert isinstance(current, ManifestV2)
+    index_dir = repo / ".context-search"
+    _descriptor, vector_store = NumpyVectorStore.load_published_snapshot(
+        index_dir,
+        expected_embedding_identity=current.embedding_config_hash,
+    )
+    vector_store.prepare_generation_v2(
+        generation="historical-p5",
+        embedding_identity=current.embedding_config_hash,
+        normalization="none",
+    )
+    write_manifest(
+        repo,
+        Manifest(
+            embedding_config_hash=current.embedding_config_hash,
+            embedding_provider=current.embedding_provider,
+            embedding_model=current.embedding_model,
+            embedding_dimensions=current.embedding_dimensions,
+            total_files=current.total_files,
+            total_chunks=current.total_chunks,
+        ),
+    )
+    assert NumpyVectorStore.generation_pair_count(index_dir) == 2
+
+    summary = index_repository(repo, DEFAULT_CONFIG)
+
+    assert summary.files_seen == 1
+    assert isinstance(load_manifest(repo), ManifestV2)
+    assert NumpyVectorStore.generation_pair_count(index_dir) == 1
+    NumpyVectorStore.verify_published_snapshot(
+        index_dir,
+        expected_ids=SQLiteStore(index_dir / "index.sqlite").active_embedding_ids(),
+    )
+
+
+def test_quick_refresh_maintenance_purges_each_table_and_orphan_symbols(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int before; }\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    db_path = repo / ".context-search" / "index.sqlite"
+    row_count = 5_001
+
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO code_signals (
+                signal_id, chunk_id, file_path, kind, name, qualified_name,
+                signature, arity, project_unit_key, producer, start_line,
+                end_line, start_column, end_column, language, recallable,
+                tokens, metadata, deleted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    f"deleted-signal-{index}",
+                    f"deleted-chunk-{index}",
+                    "deleted.java",
+                    "method",
+                    "deleted",
+                    "Deleted.deleted",
+                    "deleted()",
+                    0,
+                    ".",
+                    "fixture",
+                    1,
+                    1,
+                    0,
+                    1,
+                    "java",
+                    0,
+                    "[]",
+                    "{}",
+                    1,
+                )
+                for index in range(row_count)
+            ),
+        )
+        connection.executemany(
+            """
+            INSERT INTO code_relations (
+                relation_id, source_signal_id, source_chunk_id,
+                source_file_path, target_name, kind, confidence, target_kind,
+                target_qualified_name, target_signature, target_arity,
+                target_project_unit_key, target_signal_id, resolution,
+                producer, producer_confidence, resolution_confidence,
+                metadata, deleted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    f"deleted-relation-{index}",
+                    f"deleted-signal-{index}",
+                    f"deleted-chunk-{index}",
+                    "deleted.java",
+                    "Deleted.target",
+                    "tests",
+                    1.0,
+                    "method",
+                    "Deleted.target",
+                    "target()",
+                    0,
+                    ".",
+                    "",
+                    "unresolved",
+                    "test_association",
+                    1.0,
+                    None,
+                    "{}",
+                    1,
+                )
+                for index in range(row_count)
+            ),
+        )
+        connection.executemany(
+            """
+            INSERT INTO symbols (
+                name, kind, start_line, end_line, language, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (f"orphan-{index}", "field", 1, 1, "java", "{}")
+                for index in range(row_count)
+            ),
+        )
+        connection.commit()
+
+    source.write_text("class App { int after; }\n", encoding="utf-8")
+    result = _refresh(repo)
+
+    assert result.ok is True
+    assert result.summary.work.maintenance.tombstones_purged > 0
+    with sqlite3.connect(db_path) as connection:
+        deleted_signals = connection.execute(
+            "SELECT COUNT(*) FROM code_signals WHERE deleted_at IS NOT NULL"
+        ).fetchone()[0]
+        deleted_relations = connection.execute(
+            "SELECT COUNT(*) FROM code_relations WHERE deleted_at IS NOT NULL"
+        ).fetchone()[0]
+        orphan_symbols = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM symbols
+            LEFT JOIN chunk_symbols USING (symbol_id)
+            WHERE chunk_symbols.symbol_id IS NULL
+            """
+        ).fetchone()[0]
+    assert deleted_signals <= 5_000
+    assert deleted_relations <= 5_000
+    assert orphan_symbols <= 5_000
+    assert NumpyVectorStore.verify_published_snapshot(
+        repo / ".context-search",
+        expected_ids=SQLiteStore(db_path).active_embedding_ids(),
+    )
+
+
+def test_quick_refresh_100_step_scaled_churn_preserves_exact_ready_state(
+    tmp_path: Path,
+) -> None:
+    from context_search_tool import index_health
+    from context_search_tool.retrieval import query_repository
+
+    schedule = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures"
+            / "p6_performance"
+            / "workload_manifest.json"
+        ).read_text(encoding="utf-8")
+    )["edit_schedule"]
+    assert schedule["steps"] == 100
+    assert schedule["cycle_length"] == 10
+    assert schedule["sample_every_steps"] == 10
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    base_paths = [repo / f"Type{index}.java" for index in range(6)]
+    for index, path in enumerate(base_paths):
+        path.write_text(
+            f'class Type{index} {{ String stableToken() {{ return "stableToken"; }} }}\n',
+            encoding="utf-8",
+        )
+    index_repository(repo, DEFAULT_CONFIG)
+    original_second = base_paths[1].read_bytes()
+
+    sampled_generations: list[int] = []
+    for cycle in range(10):
+        added = repo / f"Added{cycle}.java"
+        actions = (
+            "modify",
+            "delete",
+            "restore",
+            "add",
+            "delete_added",
+            "equal_content_touch",
+            "same_metadata_content_edit",
+            "stable_skip",
+            "retryable_skip",
+            "injected_failure",
+        )
+        for offset, operation in enumerate(actions):
+            if operation == "modify":
+                base_paths[0].write_text(
+                    f'class Type0 {{ int cycle{cycle}; String stableToken() {{ return "stableToken"; }} }}\n',
+                    encoding="utf-8",
+                )
+                result = _refresh(repo)
+            elif operation == "delete":
+                base_paths[1].unlink()
+                result = _refresh(repo)
+            elif operation == "restore":
+                base_paths[1].write_bytes(original_second)
+                result = _refresh(repo)
+            elif operation == "add":
+                added.write_text(
+                    f"class Added{cycle} {{}}\n",
+                    encoding="utf-8",
+                )
+                result = _refresh(repo)
+            elif operation == "delete_added":
+                added.unlink()
+                result = _refresh(repo)
+            elif operation == "equal_content_touch":
+                before = base_paths[2].stat()
+                os.utime(
+                    base_paths[2],
+                    ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000),
+                )
+                result = _refresh(repo)
+            elif operation == "same_metadata_content_edit":
+                before = base_paths[3].stat()
+                payload = base_paths[3].read_text(encoding="utf-8")
+                base_paths[3].write_text(
+                    payload.replace("Type3", "TyPe3"),
+                    encoding="utf-8",
+                )
+                os.utime(
+                    base_paths[3],
+                    ns=(before.st_atime_ns, before.st_mtime_ns),
+                )
+                result = _refresh(repo)
+            elif operation in {"stable_skip", "retryable_skip"}:
+                target = base_paths[4 if operation == "stable_skip" else 5]
+                target.write_text(
+                    f"class {target.stem} {{ int skipped{cycle}; }}\n",
+                    encoding="utf-8",
+                )
+
+                def skipped_reader(
+                    repo_path: Path,
+                    observation: Any,
+                    **kwargs: Any,
+                ) -> ObservedFileRead:
+                    if observation.path == target.relative_to(repo):
+                        return ObservedFileRead(
+                            status="skipped",
+                            path=observation.path,
+                            content=None,
+                            sha256=None,
+                            size=observation.size,
+                            reason=(
+                                "too_large"
+                                if operation == "stable_skip"
+                                else "unreadable"
+                            ),
+                            retryable=operation == "retryable_skip",
+                            metadata=observation.metadata,
+                        )
+                    return read_observed_file(repo_path, observation, **kwargs)
+
+                result = _refresh(repo, observed_reader=skipped_reader)
+            else:
+                complete = observe_workspace(repo, DEFAULT_CONFIG)
+                incomplete = replace(
+                    complete,
+                    complete=False,
+                    unscannable_subtrees=("injected",),
+                )
+                result = _refresh(
+                    repo,
+                    inventory_observer=lambda *_args: incomplete,
+                )
+
+            step = cycle * 10 + offset + 1
+            if operation == "injected_failure":
+                assert result.ok is False
+                assert result.code == "inventory_incomplete"
+            else:
+                assert result.ok is True
+            if step % schedule["sample_every_steps"] == 0:
+                report = index_health.inspect_repository_health(repo, mode="quick")
+                assert report.queryable is True
+                bundle = query_repository(repo, "stableToken", DEFAULT_CONFIG)
+                assert bundle.results
+                store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+                NumpyVectorStore.verify_published_snapshot(
+                    repo / ".context-search",
+                    expected_ids=store.active_embedding_ids(),
+                )
+                sampled_generations.append(
+                    NumpyVectorStore.generation_pair_count(repo / ".context-search")
+                )
+
+    assert len(sampled_generations) == 10
+    assert max(sampled_generations) == 1
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    assert store.tombstone_count() <= 5_000

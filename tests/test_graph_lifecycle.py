@@ -689,6 +689,95 @@ def test_public_query_and_index_use_complete_rollback_journal_snapshots(
     assert "newSnapshotToken" in final_bundle.results[0].content
 
 
+def test_refresh_ready_commit_is_the_vector_cleanup_reader_barrier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from context_search_tool.retrieval import query_repository
+    from context_search_tool.retrieval_core import selection
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "SnapshotService.java"
+    source.write_text(
+        'class SnapshotService { String oldToken() { return "oldToken"; } }\n',
+        encoding="utf-8",
+    )
+    build_v5_index_snapshot(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+        scanner=scan_workspace_v5,
+    )
+    source.write_text(
+        'class SnapshotService { String newToken() { return "newToken"; } }\n',
+        encoding="utf-8",
+    )
+
+    writer_before_ready = threading.Event()
+    release_writer = threading.Event()
+    reader_materializing = threading.Event()
+    release_reader = threading.Event()
+    cleanup_started = threading.Event()
+
+    def hold_writer(stage: str) -> None:
+        if stage == "external_artifacts_validated":
+            writer_before_ready.set()
+            assert release_writer.wait(timeout=5)
+
+    original_assemble = selection.assemble_query_output
+
+    def hold_reader(*args, **kwargs):
+        reader_materializing.set()
+        assert release_reader.wait(timeout=5)
+        return original_assemble(*args, **kwargs)
+
+    monkeypatch.setattr(selection, "assemble_query_output", hold_reader)
+    original_cleanup = NumpyVectorStore.cleanup_unreferenced_generations
+
+    def observe_cleanup(*args, **kwargs):
+        cleanup_started.set()
+        return original_cleanup(*args, **kwargs)
+
+    monkeypatch.setattr(
+        NumpyVectorStore,
+        "cleanup_unreferenced_generations",
+        observe_cleanup,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        writer = executor.submit(
+            refresh_repository,
+            repo,
+            DEFAULT_CONFIG,
+            graph_plugins=[JavaGraphProducer()],
+            fault_hook=hold_writer,
+        )
+        reader = None
+        try:
+            assert writer_before_ready.wait(timeout=5)
+            reader = executor.submit(
+                query_repository,
+                repo,
+                "oldToken",
+                DEFAULT_CONFIG,
+            )
+            assert reader_materializing.wait(timeout=5)
+            release_writer.set()
+            assert not cleanup_started.wait(timeout=0.05)
+            assert not writer.done()
+            release_reader.set()
+            assert reader.result(timeout=5).results
+            assert writer.result(timeout=5).ok is True
+        finally:
+            release_writer.set()
+            release_reader.set()
+
+    assert cleanup_started.is_set()
+
+
 def test_public_index_uses_stable_error_at_shortened_busy_timeout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -35,6 +35,9 @@ from context_search_tool.graph_plugins import GraphLanguagePlugin, PluginContext
 from context_search_tool.graph_resolution import resolve_graph_relations
 from context_search_tool.index_lock import exclusive_index_lock
 from context_search_tool.index_health import (
+    EmbeddingIdentity,
+    configured_embedding_identity,
+    indexed_embedding_identity,
     preflight_public_operation,
     probe_raw_index_capability,
 )
@@ -273,6 +276,8 @@ class RefreshSummaryV1:
 @dataclass(frozen=True)
 class RefreshSuccess:
     summary: RefreshSummaryV1
+    indexed_before: EmbeddingIdentity
+    configured: EmbeddingIdentity
     freshness: str = "metadata_fresh"
     network_egress_performed: bool = False
     ok: bool = True
@@ -486,6 +491,7 @@ def build_v5_index_snapshot(
             repo,
             effective_config,
         )
+        _retry_existing_vector_generation_cleanup(repo, store)
         _initialize_index_controls(
             repo,
             effective_config,
@@ -571,11 +577,18 @@ def _refresh_repository_locked(
     index_dir = repo / ".context-search"
     store = SQLiteStore(index_dir / "index.sqlite")
     baseline = _load_quick_baseline(repo, store)
+    generations_before = NumpyVectorStore.generation_pair_count(index_dir)
+    _cleanup_unreferenced_vector_generations(
+        index_dir,
+        store,
+        keep_generation=baseline.descriptor.descriptor.generation,
+    )
     pages_before, freelist_before = store.storage_page_metrics()
     tombstones_before = store.tombstone_count()
-    generations_before = NumpyVectorStore.generation_pair_count(index_dir)
     effective_index_hash = index_config_hash(config)
     embedding_identity = embedding_config_hash(config.embedding)
+    indexed_before = indexed_embedding_identity(baseline.manifest)
+    configured = configured_embedding_identity(config)
 
     observation_started = time.time_ns() // 1_000_000
     opening = inventory_observer(repo, config)
@@ -607,14 +620,19 @@ def _refresh_repository_locked(
             baseline=baseline,
             opening=opening,
             closing=closing,
-            generations=generations_before,
+            generations_before=generations_before,
+            generations_after=NumpyVectorStore.generation_pair_count(index_dir),
             tombstones=tombstones_before,
             pages_before=pages_before,
             pages_after=pages_after,
             freelist_before=freelist_before,
             freelist_after=freelist_after,
         )
-        return RefreshSuccess(summary=summary)
+        return RefreshSuccess(
+            summary=summary,
+            indexed_before=indexed_before,
+            configured=configured,
+        )
 
     prior_sources = {
         item.path: item for item in baseline.operational.source_observations
@@ -1095,6 +1113,8 @@ def _refresh_repository_locked(
     _validate_refresh_summary(summary)
     return RefreshSuccess(
         summary=summary,
+        indexed_before=indexed_before,
+        configured=configured,
         network_egress_performed=tracker.outcome == "performed",
     )
 
@@ -1183,7 +1203,8 @@ def _quick_noop_summary(
     baseline: _QuickBaseline,
     opening: WorkspaceInventory,
     closing: WorkspaceInventory,
-    generations: int,
+    generations_before: int,
+    generations_after: int,
     tombstones: int,
     pages_before: int,
     pages_after: int,
@@ -1205,8 +1226,8 @@ def _quick_noop_summary(
                 + _inventory_entry_count(closing),
             ),
             vector=RefreshVectorWork(
-                generations_before=generations,
-                generations_after=generations,
+                generations_before=generations_before,
+                generations_after=generations_after,
             ),
             maintenance=RefreshMaintenanceWork(
                 tombstones_before=tombstones,
@@ -2299,6 +2320,20 @@ def _persist_prepared_index(
     fault_hook: Callable[[str], None] | None,
 ) -> _PersistenceWork:
     active_fault_hook = None if prepared.suppress_fault_hooks else fault_hook
+    publisher = NumpyVectorStore.fresh(
+        repo / ".context-search",
+        dimensions=prepared.effective_config.embedding.dimensions,
+    )
+    vector_generation = prepared.prepared_vector_generation
+    quick_refresh = prepared.prepared_manifest.manifest.operation_mode == "quick_refresh"
+    if quick_refresh:
+        if prepared.frozen_vector_generation is not None:
+            vector_generation = publisher.materialize_frozen_generation(
+                prepared.frozen_vector_generation,
+                fault_hook=active_fault_hook,
+            )
+        _fault(active_fault_hook, "vectors_prepared")
+
     if prepared.stored_signal_version < TARGET_SIGNAL_SCHEMA_VERSION:
         store.initialize_v5(stale_reason=prepared.stale_reason)
     else:
@@ -2350,17 +2385,13 @@ def _persist_prepared_index(
     )
     _fault(active_fault_hook, "operational_observations_persisted")
 
-    publisher = NumpyVectorStore.fresh(
-        repo / ".context-search",
-        dimensions=prepared.effective_config.embedding.dimensions,
-    )
-    vector_generation = prepared.prepared_vector_generation
-    if prepared.frozen_vector_generation is not None:
-        vector_generation = publisher.materialize_frozen_generation(
-            prepared.frozen_vector_generation,
-            fault_hook=active_fault_hook,
-        )
-    _fault(active_fault_hook, "vectors_prepared")
+    if not quick_refresh:
+        if prepared.frozen_vector_generation is not None:
+            vector_generation = publisher.materialize_frozen_generation(
+                prepared.frozen_vector_generation,
+                fault_hook=active_fault_hook,
+            )
+        _fault(active_fault_hook, "vectors_prepared")
     if prepared.publish_vector_descriptor:
         publisher.publish_generation(
             vector_generation,
@@ -2420,18 +2451,10 @@ def _persist_prepared_index(
         operation_mode=manifest.operation_mode,
         work_metrics=manifest.work_metrics,
     )
-    stats_before_ready = store.stats()
     tombstones_before_ready = store.tombstone_count()
-    tombstone_threshold = max(
-        5_000,
-        int(stats_before_ready["active_chunks"] * 0.05),
-    )
     tombstone_purge_limit = (
-        1_000
-        if (
-            manifest.operation_mode == "quick_refresh"
-            and stats_before_ready["deleted_chunks"] > tombstone_threshold
-        )
+        5_000
+        if manifest.operation_mode == "quick_refresh" and store.maintenance_required()
         else 0
     )
     store.commit_operational_ready_v1(
@@ -2449,19 +2472,56 @@ def _persist_prepared_index(
     )
     _fault(active_fault_hook, "after_ready_commit")
     tombstones_after_ready = store.tombstone_count()
-    if manifest.operation_mode == "quick_refresh":
-        try:
-            NumpyVectorStore.cleanup_unreferenced_generations(
-                repo / ".context-search",
-                keep_generation=manifest.vector_generation,
-            )
-        except (OSError, ValueError):
-            logger.warning("vector_generation_cleanup_failed")
-        _fault(active_fault_hook, "generation_cleanup_complete")
+    try:
+        _cleanup_unreferenced_vector_generations(
+            repo / ".context-search",
+            store,
+            keep_generation=manifest.vector_generation,
+        )
+    except (OSError, ValueError):
+        logger.warning("vector_generation_cleanup_failed")
+    _fault(active_fault_hook, "generation_cleanup_complete")
     return _PersistenceWork(
         relations_resolved=producer_resolved + association_resolved,
         association_writes=len(associations),
         tombstones_purged=max(0, tombstones_before_ready - tombstones_after_ready),
+    )
+
+
+def _retry_existing_vector_generation_cleanup(
+    repo: Path,
+    store: SQLiteStore,
+) -> None:
+    try:
+        descriptor = NumpyVectorStore.inspect_published_descriptor(
+            repo / ".context-search"
+        )
+    except (OSError, RuntimeError, ValueError):
+        return
+    if descriptor is None:
+        return
+    _cleanup_unreferenced_vector_generations(
+        repo / ".context-search",
+        store,
+        keep_generation=descriptor.descriptor.generation,
+    )
+
+
+def _cleanup_unreferenced_vector_generations(
+    index_dir: Path,
+    store: SQLiteStore,
+    *,
+    keep_generation: str,
+) -> int:
+    if not NumpyVectorStore.has_safe_unreferenced_generation_artifacts(
+        index_dir,
+        keep_generation=keep_generation,
+    ):
+        return 0
+    return NumpyVectorStore.cleanup_unreferenced_generations(
+        index_dir,
+        keep_generation=keep_generation,
+        journal_mode=store.journal_mode(),
     )
 
 

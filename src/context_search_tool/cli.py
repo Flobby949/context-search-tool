@@ -31,7 +31,10 @@ from context_search_tool.formatters import (
 )
 from context_search_tool.indexer import (
     IncompatibleIndexError,
+    RefreshFailure,
+    RefreshSuccess,
     index_repository,
+    refresh_repository,
 )
 from context_search_tool.graph_lifecycle import (
     IncompatibleOperationalSchemaError,
@@ -439,6 +442,71 @@ def status(
 
 
 @app.command()
+def refresh(
+    repo: Optional[Path] = typer.Argument(None),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+) -> None:
+    """Mutates an index; new/content-changed text may be sent to a remote provider."""
+    try:
+        resolved_repo = find_repo_root(repo)
+    except RepositoryNotFoundError:
+        _exit_refresh_error(
+            index_health.refresh_error_envelope("repo_not_found"),
+            json_output=json_output,
+        )
+    try:
+        result = refresh_repository(
+            resolved_repo,
+            config_loader=load_config,
+        )
+    except Exception:
+        _exit_refresh_error(
+            index_health.refresh_error_envelope("refresh_failed"),
+            json_output=json_output,
+        )
+    if isinstance(result, RefreshFailure):
+        _exit_refresh_error(
+            index_health.refresh_error_envelope(
+                result.code,
+                result.network_egress_outcome,
+            ),
+            json_output=json_output,
+        )
+    if not isinstance(result, RefreshSuccess):
+        _exit_refresh_error(
+            index_health.refresh_error_envelope("refresh_failed", "possible"),
+            json_output=json_output,
+        )
+    try:
+        report = index_health.inspect_repository_health(resolved_repo, mode="quick")
+        envelope = index_health.refresh_success_envelope(
+            str(resolved_repo),
+            summary=result.summary,
+            indexed_before=result.indexed_before,
+            configured=result.configured,
+            network_egress_performed=result.network_egress_performed,
+            report=report,
+        )
+    except Exception:
+        _exit_refresh_error(
+            index_health.refresh_error_envelope(
+                "refresh_failed",
+                (
+                    "performed"
+                    if result.network_egress_performed
+                    else "not_attempted"
+                ),
+            ),
+            json_output=json_output,
+        )
+    typer.echo(
+        _json(envelope)
+        if json_output
+        else index_health.format_refresh_human(envelope)
+    )
+
+
+@app.command()
 def stats(
     repo: Optional[Path] = typer.Argument(None),
     json_output: bool = typer.Option(False, "--json", help="Output JSON."),
@@ -708,6 +776,20 @@ def _exit_stats_error(
 def _exit_context_error(code: str, message: str) -> None:
     typer.echo(f"Error: {code}: {message}", err=True)
     raise typer.Exit(code=1) from None
+
+
+def _exit_refresh_error(
+    envelope: dict[str, object],
+    *,
+    json_output: bool,
+) -> None:
+    if json_output:
+        typer.echo(_json(envelope))
+    else:
+        error = envelope["error"]
+        assert isinstance(error, dict)
+        typer.echo(f"Error: {error['message']}", err=True)
+    raise typer.Exit(code=1)
 
 
 def _exit_explore_error() -> None:

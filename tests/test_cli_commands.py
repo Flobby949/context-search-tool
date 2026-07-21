@@ -1023,3 +1023,96 @@ def test_cli_stats_json_is_additive_and_contains_the_same_health_model(
     assert payload["index_health"]["schema_version"] == 1
     assert payload["index_health"]["health"] == "healthy_verified"
     assert payload["index_health"]["freshness"]["inspection_mode"] == "verified"
+
+
+def test_cli_refresh_json_human_help_and_closed_errors(tmp_path: Path) -> None:
+    repo, runner = _indexed_repo(tmp_path)
+    source = repo / "AppController.py"
+    source.write_text(
+        "def app():\n    return 'changed'\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["refresh", str(repo), "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert tuple(payload) == (
+        "schema_version",
+        "ok",
+        "repo",
+        "summary",
+        "embedding",
+        "index_health",
+    )
+    assert payload["schema_version"] == 1
+    assert payload["ok"] is True
+    assert payload["repo"] == str(repo)
+    assert payload["summary"]["operation"] == "quick_refresh"
+    assert payload["summary"]["files"]["content_changed"] == 1
+    assert payload["embedding"]["indexed_before"] == payload["embedding"][
+        "configured"
+    ]
+    assert payload["embedding"]["embedded_chunks"] == payload["summary"][
+        "chunks"
+    ]["embedded"]
+    assert payload["embedding"]["network_egress_performed"] is False
+    assert payload["index_health"]["health"] == "healthy_metadata"
+
+    human = runner.invoke(app, ["refresh", str(repo)])
+    assert human.exit_code == 0
+    assert "Refreshed" in human.stdout
+    assert "metadata" in human.stdout.lower()
+    assert "embedded=" in human.stdout
+
+    help_result = runner.invoke(app, ["refresh", "--help"])
+    assert help_result.exit_code == 0
+    disclosure = help_result.stdout.lower()
+    assert "mutat" in disclosure
+    assert "new/content-changed" in disclosure
+    assert "remote" in disclosure
+
+    unindexed = tmp_path / "unindexed"
+    unindexed.mkdir()
+    missing_index = runner.invoke(app, ["refresh", str(unindexed), "--json"])
+    assert missing_index.exit_code == 1
+    assert json.loads(missing_index.stdout) == {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": "missing_index",
+            "message": "an existing v2 index is required",
+            "network_egress_outcome": "not_attempted",
+        },
+    }
+
+    missing_repo = runner.invoke(
+        app,
+        ["refresh", str(tmp_path / "does-not-exist"), "--json"],
+    )
+    assert missing_repo.exit_code == 1
+    assert json.loads(missing_repo.stdout) == {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": "repo_not_found",
+            "message": "repository root was not found",
+            "network_egress_outcome": "not_attempted",
+        },
+    }
+
+
+def test_cli_query_like_surfaces_never_invoke_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert hasattr(cli, "refresh_repository"), "P6 CLI refresh service is absent"
+    repo, runner = _indexed_repo(tmp_path)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("query-like CLI surface invoked refresh")
+
+    monkeypatch.setattr(cli, "refresh_repository", forbidden)
+    for command in ("query", "trace", "context", "explore"):
+        result = runner.invoke(app, [command, str(repo), "AppController", "--json"])
+        assert result.exit_code == 0, (command, result.stdout, result.stderr)
