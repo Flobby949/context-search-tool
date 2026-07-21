@@ -9,11 +9,13 @@ import numpy as np
 import pytest
 
 from context_search_tool import vector_store as vector_store_module
-from context_search_tool.config import EmbeddingConfig
+from context_search_tool.config import DEFAULT_CONFIG, EmbeddingConfig
 from context_search_tool.embeddings import (
     HashEmbeddingProvider,
     OpenAICompatibleEmbeddingProvider,
 )
+from context_search_tool.indexer import index_repository, read_v5_vector_snapshot
+from context_search_tool.sqlite_store import GraphReadSession, SQLiteStore
 from context_search_tool.vector_store import NumpyVectorStore
 
 
@@ -166,6 +168,148 @@ def test_vector_search_does_not_warn_for_finite_realistic_matrix(
     assert captured == []
     assert len(results) == 5
     assert all(math.isfinite(result.score) for result in results)
+
+
+def test_exact_top_k_avoids_full_score_sort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rng = np.random.default_rng(20260721)
+    random_vectors = rng.normal(size=(257, 16)).astype(np.float32)
+    random_query = rng.normal(size=16).astype(np.float32)
+    cases = [
+        ("empty", [], np.empty((0, 2), dtype=np.float32), [1.0, 0.0], 3, set()),
+        ("one", ["only"], [[3.0, 4.0]], [3.0, 4.0], 5, set()),
+        (
+            "ties",
+            ["z", "b", "a", "m", "c"],
+            [[1.0, 0.0]] * 5,
+            [1.0, 0.0],
+            3,
+            set(),
+        ),
+        (
+            "deleted",
+            ["a", "b", "c", "d"],
+            [[1.0, 0.0], [0.9, 0.1], [0.8, 0.2], [0.0, 1.0]],
+            [1.0, 0.0],
+            2,
+            {"a", "c"},
+        ),
+        (
+            "nonfinite",
+            ["finite", "inf", "nan", "zero"],
+            [[1.0, 0.0], [np.inf, 1.0], [np.nan, 1.0], [0.0, 0.0]],
+            [1.0, np.nan],
+            3,
+            set(),
+        ),
+        (
+            "random",
+            [f"chunk-{index:04d}" for index in range(len(random_vectors))],
+            random_vectors,
+            random_query,
+            7,
+            {"chunk-0003", "chunk-0100"},
+        ),
+    ]
+    result_type = vector_store_module.VectorSearchResult
+    constructions = 0
+
+    def counted_result(*args, **kwargs):
+        nonlocal constructions
+        constructions += 1
+        return result_type(*args, **kwargs)
+
+    monkeypatch.setattr(vector_store_module, "VectorSearchResult", counted_result)
+
+    for name, ids, raw_vectors, raw_query, top_k, deleted in cases:
+        vectors = np.asarray(raw_vectors, dtype=np.float32)
+        if vectors.ndim == 1:
+            vectors = vectors.reshape(0, len(raw_query))
+        query = np.asarray(raw_query, dtype=np.float32)
+        normalized_query = vector_store_module._normalize_vector(query)
+        normalized_vectors = vector_store_module._normalize_matrix(vectors)
+        scores = np.einsum(
+            "ij,j->i",
+            normalized_vectors,
+            normalized_query,
+            optimize=True,
+        )
+        scores = np.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
+        expected = [
+            result_type(chunk_id=chunk_id, score=float(score))
+            for chunk_id, score in zip(ids, scores)
+            if chunk_id not in deleted
+        ]
+        expected.sort(key=lambda item: (-item.score, item.chunk_id))
+        expected = expected[:top_k]
+        store = NumpyVectorStore.fresh(
+            tmp_path / name,
+            dimensions=len(raw_query),
+        )
+        store.upsert_many(list(zip(ids, vectors)))
+        constructions = 0
+
+        actual = store.search(query, top_k=top_k, deleted_ids=deleted)
+
+        assert actual == expected
+        assert constructions <= len(expected)
+
+
+def test_ready_query_uses_bound_small_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "service.py").write_text(
+        "def ready_vector_query():\n    return 'ready'\n",
+        encoding="utf-8",
+    )
+    index_repository(repo, DEFAULT_CONFIG)
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    expected_ids = store.active_embedding_ids()
+    real_np_load = vector_store_module.np.load
+    mmap_modes: list[str | None] = []
+
+    def recorded_np_load(*args, **kwargs):
+        mmap_modes.append(kwargs.get("mmap_mode"))
+        return real_np_load(*args, **kwargs)
+
+    def forbidden_payload_work(*_args, **_kwargs):
+        raise AssertionError("ready query performed full payload verification")
+
+    monkeypatch.setattr(vector_store_module.np, "load", recorded_np_load)
+    monkeypatch.setattr(vector_store_module, "_sha256_file", forbidden_payload_work)
+    monkeypatch.setattr(
+        vector_store_module,
+        "_sha256_file_safe",
+        forbidden_payload_work,
+    )
+    monkeypatch.setattr(
+        vector_store_module,
+        "_validate_l2_normalization",
+        forbidden_payload_work,
+    )
+    monkeypatch.setattr(
+        GraphReadSession,
+        "active_embedding_ids",
+        forbidden_payload_work,
+    )
+
+    with store.graph_read_session() as session:
+        assert session.capability.status == "ready"
+        snapshot = read_v5_vector_snapshot(repo, DEFAULT_CONFIG, session)
+
+    assert snapshot is not None
+    assert snapshot.ids == tuple(sorted(expected_ids))
+    descriptor = NumpyVectorStore.inspect_published_descriptor(
+        repo / ".context-search"
+    )
+    assert descriptor is not None
+    assert descriptor.descriptor.normalization == "l2"
+    assert mmap_modes == ["r"]
 
 
 def test_numpy_vector_store_rejects_mismatched_persisted_ids(tmp_path: Path) -> None:

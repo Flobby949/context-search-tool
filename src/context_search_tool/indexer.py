@@ -880,7 +880,7 @@ def _refresh_repository_locked(
         frozen_vectors = vector_store.freeze_generation_v2(
             generation=uuid.uuid4().hex,
             embedding_identity=embedding_identity,
-            normalization="none",
+            normalization="l2",
         )
         prepared_vectors = PreparedVectorGeneration(
             index_dir,
@@ -1973,7 +1973,7 @@ def _prepare_authoritative_index(
         frozen_vectors = vector_store.freeze_generation_v2(
             generation=uuid.uuid4().hex,
             embedding_identity=embedding_identity,
-            normalization="none",
+            normalization="l2",
         )
         prepared_vectors = PreparedVectorGeneration(
             repo / ".context-search",
@@ -2592,10 +2592,22 @@ def read_v5_vector_snapshot(
 ) -> NumpyVectorStore | None:
     if not graph_session.capability.structured:
         return None
-    source_count, chunk_count = graph_session.source_chunk_counts()
-    expected_ids = graph_session.active_embedding_ids()
     embedding_identity = embedding_config_hash(config.embedding)
     try:
+        if graph_session.capability.status == "ready":
+            binding = graph_session.ready_vector_binding()
+            return NumpyVectorStore.load_bound_ready_snapshot(
+                repo.resolve() / ".context-search",
+                expected_descriptor_sha256=binding.descriptor_sha256,
+                expected_generation=binding.generation,
+                expected_vectors_bytes=binding.vector_bytes,
+                expected_ids_bytes=binding.vector_ids_bytes,
+                expected_row_count=binding.row_count,
+                expected_dimensions=config.embedding.dimensions,
+                expected_embedding_identity=embedding_identity,
+            )
+        source_count, chunk_count = graph_session.source_chunk_counts()
+        expected_ids = graph_session.active_embedding_ids()
         return _load_validated_v5_vector_tuple(
             repo=repo.resolve(),
             config=config,
@@ -2604,7 +2616,7 @@ def read_v5_vector_snapshot(
             expected_source_count=source_count,
             expected_chunk_count=chunk_count,
         )
-    except (GraphIntegrityError, OSError, ValueError) as error:
+    except (GraphIntegrityError, OSError, RuntimeError, ValueError) as error:
         if graph_session.capability.status == "ready":
             raise GraphIntegrityError("vector_snapshot_mismatch") from error
         logger.warning("vector_snapshot_mismatch")

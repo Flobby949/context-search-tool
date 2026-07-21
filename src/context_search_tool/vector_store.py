@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import io
 import json
 import os
@@ -90,6 +91,7 @@ class NumpyVectorStore:
         self.index_dir = index_dir
         self._ids: list[str] = []
         self._vectors = np.empty((0, 0), dtype=np.float32)
+        self._normalization: Literal["none", "l2"] = "none"
         self._load()
 
     @classmethod
@@ -105,6 +107,7 @@ class NumpyVectorStore:
         store.index_dir = index_dir
         store._ids = []
         store._vectors = np.empty((0, dimensions), dtype=np.float32)
+        store._normalization = "none"
         return store
 
     @classmethod
@@ -140,7 +143,43 @@ class NumpyVectorStore:
         store = cls.fresh(index_dir)
         store._ids = ids
         store._vectors = vectors
+        store._normalization = descriptor.normalization or "none"
         return descriptor, store
+
+    @classmethod
+    def load_bound_ready_snapshot(
+        cls,
+        index_dir: Path,
+        *,
+        expected_descriptor_sha256: str,
+        expected_generation: str,
+        expected_vectors_bytes: int,
+        expected_ids_bytes: int,
+        expected_row_count: int,
+        expected_dimensions: int,
+        expected_embedding_identity: str,
+    ) -> NumpyVectorStore:
+        snapshot = cls.inspect_published_descriptor(index_dir)
+        if snapshot is None:
+            raise VectorDescriptorCorruptionError("vector descriptor is missing")
+        descriptor = snapshot.descriptor
+        if (
+            descriptor.schema_version != WRITE_VECTOR_DESCRIPTOR_VERSION
+            or snapshot.sha256 != expected_descriptor_sha256
+            or descriptor.generation != expected_generation
+            or descriptor.vectors_bytes != expected_vectors_bytes
+            or descriptor.ids_bytes != expected_ids_bytes
+            or descriptor.row_count != expected_row_count
+            or descriptor.dimensions != expected_dimensions
+            or descriptor.embedding_identity != expected_embedding_identity
+        ):
+            raise VectorDescriptorCorruptionError("bound vector descriptor mismatch")
+        ids, vectors = _load_bound_generation(index_dir, descriptor)
+        store = cls.fresh(index_dir)
+        store._ids = ids
+        store._vectors = vectors
+        store._normalization = descriptor.normalization or "none"
+        return store
 
     @classmethod
     def published_descriptor(
@@ -311,6 +350,7 @@ class NumpyVectorStore:
             chunk_id: vector for chunk_id, vector in zip(self._ids, self._vectors)
         }
         dimensions = self._vectors.shape[1] if self._vectors.size else None
+        incoming_items: list[tuple[str, np.ndarray]] = []
 
         for chunk_id, vector in items:
             incoming = np.asarray(vector, dtype=np.float32).reshape(-1)
@@ -318,6 +358,18 @@ class NumpyVectorStore:
                 dimensions = incoming.shape[0]
             if incoming.shape[0] != dimensions:
                 raise ValueError("all vectors must have the same dimensions")
+            incoming_items.append((chunk_id, incoming))
+
+        if self._normalization == "l2":
+            normalized = _normalize_matrix(
+                np.vstack([vector for _chunk_id, vector in incoming_items])
+            )
+            incoming_items = [
+                (chunk_id, vector)
+                for (chunk_id, _incoming), vector in zip(incoming_items, normalized)
+            ]
+
+        for chunk_id, incoming in incoming_items:
             if chunk_id not in vectors_by_id:
                 self._ids.append(chunk_id)
             vectors_by_id[chunk_id] = incoming
@@ -373,8 +425,6 @@ class NumpyVectorStore:
     ) -> PreparedVectorGeneration:
         if normalization not in {"none", "l2"}:
             raise ValueError("vector normalization must be none or l2")
-        if normalization == "l2":
-            _validate_l2_normalization(self._vectors)
         return self._prepare_generation(
             generation=generation,
             embedding_identity=embedding_identity,
@@ -399,10 +449,13 @@ class NumpyVectorStore:
         )
         if normalization not in {"none", "l2"}:
             raise ValueError("vector normalization must be none or l2")
-        if normalization == "l2":
-            _validate_l2_normalization(self._vectors)
+        serialized_vectors = _vectors_for_persistence(
+            self._vectors,
+            normalization,
+            already_normalized=self._normalization == "l2",
+        )
         buffer = io.BytesIO()
-        np.save(buffer, self._vectors, allow_pickle=False)
+        np.save(buffer, serialized_vectors, allow_pickle=False)
         vectors_payload = buffer.getvalue()
         ids_payload = (
             json.dumps(self._ids, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -415,7 +468,9 @@ class NumpyVectorStore:
             ids_sha256=hashlib.sha256(ids_payload).hexdigest(),
             row_count=len(self._ids),
             dimensions=(
-                int(self._vectors.shape[1]) if self._vectors.ndim == 2 else 0
+                int(serialized_vectors.shape[1])
+                if serialized_vectors.ndim == 2
+                else 0
             ),
             embedding_identity=embedding_identity,
             schema_version=WRITE_VECTOR_DESCRIPTOR_VERSION,
@@ -538,8 +593,14 @@ class NumpyVectorStore:
         if vectors_path.exists() or ids_path.exists():
             raise ValueError("vector generation already exists")
 
+        serialized_vectors = _vectors_for_persistence(
+            self._vectors,
+            normalization,
+            already_normalized=self._normalization == "l2",
+        )
+
         def write_vectors(file) -> None:
-            np.save(file, self._vectors, allow_pickle=False)
+            np.save(file, serialized_vectors, allow_pickle=False)
 
         ids_payload = (
             json.dumps(self._ids, ensure_ascii=False, separators=(",", ":"))
@@ -575,7 +636,9 @@ class NumpyVectorStore:
             ),
             row_count=len(self._ids),
             dimensions=(
-                int(self._vectors.shape[1]) if self._vectors.ndim == 2 else 0
+                int(serialized_vectors.shape[1])
+                if serialized_vectors.ndim == 2
+                else 0
             ),
             embedding_identity=embedding_identity,
             schema_version=schema_version,
@@ -627,16 +690,66 @@ class NumpyVectorStore:
             return []
 
         query = _normalize_vector(np.asarray(query_vector, dtype=np.float32).reshape(-1))
-        vectors = _normalize_matrix(self._vectors)
+        vectors = (
+            self._vectors
+            if self._normalization == "l2"
+            else _normalize_matrix(self._vectors)
+        )
         scores = np.einsum("ij,j->i", vectors, query, optimize=True)
         scores = np.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
+        eligible_indexes = np.asarray(
+            [
+                index
+                for index, chunk_id in enumerate(self._ids)
+                if chunk_id not in deleted_ids
+            ],
+            dtype=np.int64,
+        )
+        if eligible_indexes.size == 0:
+            return []
+
+        result_count = min(top_k, int(eligible_indexes.size))
+        if result_count == int(eligible_indexes.size):
+            selected_indexes = eligible_indexes.tolist()
+        else:
+            eligible_scores = scores[eligible_indexes]
+            threshold = np.partition(eligible_scores, -result_count)[-result_count]
+            selected_indexes = eligible_indexes[eligible_scores > threshold].tolist()
+            boundary_indexes = eligible_indexes[eligible_scores == threshold].tolist()
+            selected_indexes.extend(
+                heapq.nsmallest(
+                    result_count - len(selected_indexes),
+                    boundary_indexes,
+                    key=self._ids.__getitem__,
+                )
+            )
         results = [
-            VectorSearchResult(chunk_id=chunk_id, score=float(score))
-            for chunk_id, score in zip(self._ids, scores)
-            if chunk_id not in deleted_ids
+            VectorSearchResult(
+                chunk_id=self._ids[index],
+                score=float(scores[index]),
+            )
+            for index in selected_indexes
         ]
         results.sort(key=lambda item: (-item.score, item.chunk_id))
-        return results[:top_k]
+        return results
+
+    @property
+    def normalization(self) -> Literal["none", "l2"]:
+        return self._normalization
+
+    def close(self) -> None:
+        vectors: object | None = self._vectors
+        seen: set[int] = set()
+        while vectors is not None and id(vectors) not in seen:
+            seen.add(id(vectors))
+            if isinstance(vectors, np.memmap):
+                mapping = getattr(vectors, "_mmap", None)
+                if mapping is not None:
+                    mapping.close()
+                break
+            vectors = getattr(vectors, "base", None)
+        self._ids = []
+        self._vectors = np.empty((0, 0), dtype=np.float32)
 
     def _load(self) -> None:
         if not self._vectors_path.exists() or not self._ids_path.exists():
@@ -894,8 +1007,43 @@ def _load_generation(
         or hash_file(ids_path) != descriptor.ids_sha256
     ):
         raise ValueError("vector generation hash mismatch")
+    return _read_generation_payload(
+        vectors_path,
+        ids_path,
+        descriptor,
+        mmap_mode=None,
+        validate_normalization=True,
+    )
+
+
+def _load_bound_generation(
+    index_dir: Path,
+    descriptor: VectorGenerationDescriptor,
+) -> tuple[list[str], np.ndarray]:
+    _validate_generation_paths(index_dir, descriptor)
+    return _read_generation_payload(
+        index_dir / descriptor.vectors_file,
+        index_dir / descriptor.ids_file,
+        descriptor,
+        mmap_mode="r",
+        validate_normalization=False,
+    )
+
+
+def _read_generation_payload(
+    vectors_path: Path,
+    ids_path: Path,
+    descriptor: VectorGenerationDescriptor,
+    *,
+    mmap_mode: Literal["r"] | None,
+    validate_normalization: bool,
+) -> tuple[list[str], np.ndarray]:
     try:
-        vectors = np.load(vectors_path, allow_pickle=False).astype(
+        vectors = np.load(
+            vectors_path,
+            allow_pickle=False,
+            mmap_mode=mmap_mode,
+        ).astype(
             np.float32,
             copy=False,
         )
@@ -914,7 +1062,7 @@ def _load_generation(
         raise ValueError("vector generation dimensions mismatch")
     if len(set(ids)) != len(ids):
         raise ValueError("vector generation IDs must be unique")
-    if descriptor.normalization == "l2":
+    if validate_normalization and descriptor.normalization == "l2":
         _validate_l2_normalization(vectors)
     return ids, vectors
 
@@ -1153,3 +1301,14 @@ def _normalize_matrix(vectors: np.ndarray) -> np.ndarray:
         out=np.zeros_like(vectors, dtype=np.float32),
         where=norms != 0,
     )
+
+
+def _vectors_for_persistence(
+    vectors: np.ndarray,
+    normalization: Literal["none", "l2"] | None,
+    *,
+    already_normalized: bool = False,
+) -> np.ndarray:
+    if normalization == "l2" and not already_normalized:
+        return _normalize_matrix(vectors)
+    return vectors

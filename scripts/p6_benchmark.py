@@ -8,6 +8,7 @@ only the frozen benchmark/report contracts exercised by the P6 harness tests.
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import hashlib
 import importlib.metadata
 import json
@@ -533,6 +534,10 @@ def _validate_query_work_contract(
     )
     direct_text_row_limit = retrieval_passes * chunks
     signal_row_limit = retrieval_passes * signals * planner_source_passes
+    vector_payload_pass_limit = retrieval_passes
+    vector_normalization_limit = retrieval_passes
+    vector_scored_row_limit = retrieval_passes * chunks
+    vector_sorted_row_limit = retrieval_passes * min(chunks, 80)
 
     for sample in case["samples"]:
         work = sample["work"]
@@ -551,6 +556,16 @@ def _validate_query_work_contract(
             raise ValueError("direct-text row budget violates query work contract")
         if int(work["signal_rows"]) > signal_row_limit:
             raise ValueError("signal row budget violates query work contract")
+        if int(work["vector_payload_passes"]) > vector_payload_pass_limit:
+            raise ValueError("vector payload pass budget violates query work contract")
+        if int(work["vector_bytes_hashed"]) > 0:
+            raise ValueError("vector payload hash violates query work contract")
+        if int(work["vector_normalization_count"]) > vector_normalization_limit:
+            raise ValueError("vector normalization violates query work contract")
+        if int(work["vector_scored_rows"]) > vector_scored_row_limit:
+            raise ValueError("vector score pass violates query work contract")
+        if int(work["vector_sorted_rows"]) > vector_sorted_row_limit:
+            raise ValueError("vector full-score sort violates query work contract")
 
 
 def validate_report_data(report: Any, schema_name: str | None = None) -> None:
@@ -1097,6 +1112,7 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     original_vector_sha256_file = vector_store_module._sha256_file
     original_vector_sha256_file_safe = vector_store_module._sha256_file_safe
     original_load_generation = vector_store_module._load_generation
+    original_load_bound_generation = vector_store_module._load_bound_generation
     original_open_connection = sqlite_store_module._open_connection
     original_build_repo_profile = retrieval_module.build_repo_profile
     persistence_names = (
@@ -1312,12 +1328,13 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
         deleted_ids: set[str],
     ) -> Any:
         row_count = len(store._ids)
-        attributed_work["vector_normalization_count"] += row_count
-        attributed_work["vector_scored_rows"] += row_count
-        attributed_work["vector_sorted_rows"] += sum(
-            chunk_id not in deleted_ids for chunk_id in store._ids
+        result = original_vector_search(store, query_vector, top_k, deleted_ids)
+        attributed_work["vector_normalization_count"] += 1 + (
+            row_count if store.normalization != "l2" else 0
         )
-        return original_vector_search(store, query_vector, top_k, deleted_ids)
+        attributed_work["vector_scored_rows"] += row_count
+        attributed_work["vector_sorted_rows"] += len(result)
+        return result
 
     def measured_scan(scan_repo: Path, config: Any) -> Any:
         started = time.perf_counter()
@@ -1482,6 +1499,15 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
         attributed_work["vector_payload_passes"] += 1
         return original_load_generation(index_dir, descriptor)
 
+    def measured_load_bound_generation(index_dir: Path, descriptor: Any) -> Any:
+        vectors_path = index_dir / descriptor.vectors_file
+        ids_path = index_dir / descriptor.ids_file
+        attributed_work["vector_bytes_read"] += (
+            vectors_path.stat().st_size + ids_path.stat().st_size
+        )
+        attributed_work["vector_payload_passes"] += 1
+        return original_load_bound_generation(index_dir, descriptor)
+
     def counted_popen(*args: Any, **kwargs: Any) -> Any:
         nonlocal child_count
         child_count += 1
@@ -1542,6 +1568,9 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             vector_store_module._sha256_file = measured_vector_sha256_file
             vector_store_module._sha256_file_safe = measured_vector_sha256_file
             vector_store_module._load_generation = measured_load_generation
+            vector_store_module._load_bound_generation = (
+                measured_load_bound_generation
+            )
         if operation in {"full_build", "authoritative_noop"}:
             indexer_module.scan_workspace_v5 = measured_scan
             indexer_module.observe_workspace = measured_inventory
@@ -1614,6 +1643,9 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             vector_store_module._sha256_file = original_vector_sha256_file
             vector_store_module._sha256_file_safe = original_vector_sha256_file_safe
             vector_store_module._load_generation = original_load_generation
+            vector_store_module._load_bound_generation = (
+                original_load_bound_generation
+            )
             sqlite_store_module._open_connection = original_open_connection
             retrieval_module.build_repo_profile = original_build_repo_profile
             for (owner, name), (_bucket, original) in query_proof_methods.items():
@@ -1685,6 +1717,23 @@ def _measurement_worker_main() -> int:
         return 2
 
 
+def _measurement_resident_worker_main() -> int:
+    try:
+        for line in sys.stdin:
+            request = json.loads(
+                line,
+                parse_constant=lambda value: (_ for _ in ()).throw(
+                    ValueError(f"non-finite JSON constant: {value}")
+                ),
+            )
+            sys.stdout.write(canonical_json(_measurement_worker(request)))
+            sys.stdout.flush()
+        return 0
+    except (OSError, ValueError) as exc:
+        print(f"p6-resident-measurement-worker: {exc}", file=sys.stderr)
+        return 2
+
+
 def _invoke_measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     finished = threading.Event()
     started = time.monotonic()
@@ -1729,6 +1778,155 @@ def _invoke_measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+class _ResidentMeasurementWorker:
+    def __init__(self) -> None:
+        self._process: subprocess.Popen[str] | None = None
+
+    def __enter__(self) -> _ResidentMeasurementWorker:
+        self._process = subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "__measure_resident"],
+            cwd=ROOT,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+        return self
+
+    def __exit__(self, exc_type: Any, _exc: Any, _traceback: Any) -> None:
+        process = self._process
+        self._process = None
+        if process is None:
+            return
+        if process.stdin is not None:
+            process.stdin.close()
+        try:
+            return_code = process.wait(timeout=10)
+        except subprocess.TimeoutExpired as error:
+            process.terminate()
+            process.wait(timeout=5)
+            if exc_type is None:
+                raise ValueError("resident measurement worker did not exit") from error
+            return
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+        if return_code != 0 and exc_type is None:
+            raise ValueError(
+                f"resident measurement worker failed with exit {return_code}"
+            )
+
+    def invoke(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        process = self._process
+        if process is None or process.stdin is None or process.stdout is None:
+            raise RuntimeError("resident measurement worker is not running")
+        try:
+            process.stdin.write(canonical_json(request))
+            process.stdin.flush()
+            payload = process.stdout.readline()
+        except (BrokenPipeError, OSError) as error:
+            raise ValueError("resident measurement worker communication failed") from error
+        if not payload:
+            raise ValueError("resident measurement worker returned no result")
+        try:
+            result = json.loads(payload)
+        except json.JSONDecodeError as error:
+            raise ValueError("resident measurement worker returned invalid JSON") from error
+        if result["product_subprocesses"] != 0:
+            raise ValueError("product benchmark operation spawned a child process")
+        return result
+
+
+def _merge_query_work_proof(
+    result: dict[str, Any],
+    proof: dict[str, Any],
+) -> None:
+    if proof["output_sha256"] != result["output_sha256"]:
+        raise ValueError("query work-proof output differs from measured output")
+    measured_attribution = result.get("attribution")
+    proof_attribution = proof.get("attribution")
+    if not isinstance(measured_attribution, dict) or not isinstance(
+        proof_attribution, dict
+    ):
+        raise ValueError("query attribution worker returned an invalid result")
+    measured_work = measured_attribution.get("work")
+    proof_work = proof_attribution.get("work")
+    if not isinstance(measured_work, dict) or not isinstance(proof_work, dict):
+        raise ValueError("query attribution worker returned invalid counters")
+    measured_work.update(
+        {name: int(proof_work[name]) for name in _QUERY_ATTRIBUTION_COUNTERS}
+    )
+
+
+class _ResidentMeasurementSession:
+    def __init__(self, operation: str, repo: Path, case_id: str) -> None:
+        if not operation.startswith(("query", "explore")):
+            raise ValueError("resident measurements support retrieval operations only")
+        self._operation = operation
+        self._repo = repo.resolve()
+        self._case_id = case_id
+        self._worker: _ResidentMeasurementWorker | None = None
+        self._empty_peak_bytes = 0
+        self._output_sha256 = ""
+
+    def __enter__(self) -> _ResidentMeasurementSession:
+        worker = _ResidentMeasurementWorker()
+        self._worker = worker.__enter__()
+        try:
+            empty = self._worker.invoke(self._request("empty"))
+            self._empty_peak_bytes = int(empty["rss"]["peak_bytes"])
+            for _ in range(3):
+                warmed = self._worker.invoke(self._request("operation"))
+                output_sha256 = str(warmed["output_sha256"])
+                if self._output_sha256 and output_sha256 != self._output_sha256:
+                    raise ValueError("resident warmup product output changed")
+                self._output_sha256 = output_sha256
+        except BaseException:
+            worker.__exit__(*sys.exc_info())
+            self._worker = None
+            raise
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        worker = self._worker
+        self._worker = None
+        if worker is not None:
+            worker.__exit__(exc_type, exc, traceback)
+
+    def measure(self) -> dict[str, Any]:
+        worker = self._worker
+        if worker is None:
+            raise RuntimeError("resident measurement session is not running")
+        result = worker.invoke(self._request("operation"))
+        if result["output_sha256"] != self._output_sha256:
+            raise ValueError("resident measured product output changed")
+        proof = worker.invoke(self._request("attribution"))
+        _merge_query_work_proof(result, proof)
+        result["rss"]["empty_harness_peak_bytes"] = self._empty_peak_bytes
+        result["rss"]["extra_peak_bytes"] = max(
+            0,
+            int(result["rss"]["peak_bytes"]) - self._empty_peak_bytes,
+        )
+        return result
+
+    def _request(self, kind: str) -> dict[str, Any]:
+        request: dict[str, Any] = {
+            "schema_version": 1,
+            "repo": str(self._repo),
+            "kind": kind,
+        }
+        if kind != "empty":
+            request.update(
+                {
+                    "operation": self._operation,
+                    "case_id": self._case_id,
+                }
+            )
+        return request
+
+
 def _run_measurement_worker(
     operation: str,
     repo: Path,
@@ -1756,24 +1954,7 @@ def _run_measurement_worker(
                 "case_id": case_id,
             }
         )
-        if proof["output_sha256"] != result["output_sha256"]:
-            raise ValueError("query work-proof output differs from measured output")
-        measured_attribution = result.get("attribution")
-        proof_attribution = proof.get("attribution")
-        if not isinstance(measured_attribution, dict) or not isinstance(
-            proof_attribution, dict
-        ):
-            raise ValueError("query attribution worker returned an invalid result")
-        measured_work = measured_attribution.get("work")
-        proof_work = proof_attribution.get("work")
-        if not isinstance(measured_work, dict) or not isinstance(proof_work, dict):
-            raise ValueError("query attribution worker returned invalid counters")
-        measured_work.update(
-            {
-                name: int(proof_work[name])
-                for name in _QUERY_ATTRIBUTION_COUNTERS
-            }
-        )
+        _merge_query_work_proof(result, proof)
     empty_peak = int(empty["rss"]["peak_bytes"])
     result["rss"]["empty_harness_peak_bytes"] = empty_peak
     result["rss"]["extra_peak_bytes"] = max(
@@ -1787,10 +1968,9 @@ def _measurement_is_supported(
     measurement_state: str,
     mode: str,
 ) -> bool:
-    if measurement_state in {
-        "mcp_resident_warm",
-        "filesystem_cold_diagnostic",
-    }:
+    if measurement_state == "mcp_resident_warm":
+        return mode == "final" and operation.startswith(("query", "explore"))
+    if measurement_state == "filesystem_cold_diagnostic":
         return False
     if mode == "baseline" and operation in {
         "status_quick",
@@ -2701,74 +2881,100 @@ def run_benchmark(
             if not (ready_repo / ".context-search").exists():
                 _run_measurement_worker("full_build", ready_repo, "default")
         read_only_operation = operation in {"stats", "query", "explore"}
-        for index in range(len(samples), sample_count if supported else 0):
-            sample_number = index + 1
-            sample_repo = (
-                ready_repo
-                if read_only_operation
-                else _clone_operation_repo(
-                    ready_repo or repo_path,
-                    operation,
-                    sample_parent,
+        resident_context = (
+            _ResidentMeasurementSession(
+                operation,
+                ready_repo,
+                request["execution_case"],
+            )
+            if supported
+            and measurement_state == "mcp_resident_warm"
+            and ready_repo is not None
+            else nullcontext()
+        )
+        with resident_context as resident_session:
+            for index in range(len(samples), sample_count if supported else 0):
+                sample_number = index + 1
+                sample_repo = (
+                    ready_repo
+                    if read_only_operation
+                    else _clone_operation_repo(
+                        ready_repo or repo_path,
+                        operation,
+                        sample_parent,
+                    )
                 )
-            )
-            if sample_repo is None:
-                raise AssertionError("supported benchmark has no sample repository")
-            sample_index = sample_repo / ".context-search"
-            # One identical, unmeasured worker warms filesystem/module state.
-            _benchmark_progress(
-                f"sample {sample_number}/{sample_count} warmup started"
-            )
-            _run_measurement_worker(
-                operation, sample_repo, request["execution_case"]
-            )
-            if operation == "full_build" and sample_index.exists():
-                shutil.rmtree(sample_index)
-            _benchmark_progress(
-                f"sample {sample_number}/{sample_count} measured operation started"
-            )
-            measured = _run_measurement_worker(
-                operation, sample_repo, request["execution_case"]
-            )
-            _benchmark_progress(f"sample {sample_number}/{sample_count} measured")
-            disk = _disk_components(sample_repo)
+                if sample_repo is None:
+                    raise AssertionError("supported benchmark has no sample repository")
+                sample_index = sample_repo / ".context-search"
+                if resident_session is None:
+                    # One identical, unmeasured worker warms filesystem/module state.
+                    _benchmark_progress(
+                        f"sample {sample_number}/{sample_count} warmup started"
+                    )
+                    _run_measurement_worker(
+                        operation,
+                        sample_repo,
+                        request["execution_case"],
+                    )
+                    if operation == "full_build" and sample_index.exists():
+                        shutil.rmtree(sample_index)
+                    _benchmark_progress(
+                        f"sample {sample_number}/{sample_count} measured operation started"
+                    )
+                    measured = _run_measurement_worker(
+                        operation,
+                        sample_repo,
+                        request["execution_case"],
+                    )
+                else:
+                    _benchmark_progress(
+                        f"sample {sample_number}/{sample_count} resident operation started"
+                    )
+                    measured = resident_session.measure()
+                _benchmark_progress(f"sample {sample_number}/{sample_count} measured")
+                disk = _disk_components(sample_repo)
 
-            duration_ms = float(measured["duration_ms"])
-            timings = {name: 0.0 for name in timing_names}
-            timings["end_to_end"] = duration_ms
-            attribution = measured.get("attribution")
-            if attribution is not None:
-                for timing_name, value in attribution.get(
-                    "stage_timings_ms", {}
-                ).items():
-                    timings[timing_name] += float(value)
-                trace_timing_names = {
-                    "query_understanding": "repo_profile",
-                    "semantic_recall": "semantic",
-                    "lexical_recall": "lexical",
-                    "path_symbol_recall": "path_symbol",
-                    "direct_text_recall": "direct_text",
-                    "signal_recall": "signal",
-                    "planner_hint_recall": "signal",
-                    "anchor_expansion": "graph",
-                    "relation_expansion": "graph",
-                }
-                for stage in attribution["stages"]:
-                    timing_name = trace_timing_names.get(stage["name"])
-                    if timing_name is not None:
-                        timings[timing_name] += float(stage["duration_ms"])
-            work = {name: 0 for name in counter_names}
-            if attribution is not None:
-                work.update(attribution.get("work", {}))
-            work["inventory_entries"] = source_files
-            work["inventory_dirs"] = sum(
-                path.is_dir() for path in (sample_repo / "generated").rglob("*")
-            ) + 1
-            if operation in {"full_build", "authoritative_noop"} and not unsupported:
-                work["source_bytes_read"] = source_bytes
-                work["source_bytes_hashed"] = source_bytes
-            work.update(_storage_work_counters(sample_repo))
-            sample = {
+                duration_ms = float(measured["duration_ms"])
+                timings = {name: 0.0 for name in timing_names}
+                timings["end_to_end"] = duration_ms
+                attribution = measured.get("attribution")
+                if attribution is not None:
+                    for timing_name, value in attribution.get(
+                        "stage_timings_ms", {}
+                    ).items():
+                        timings[timing_name] += float(value)
+                    trace_timing_names = {
+                        "query_understanding": "repo_profile",
+                        "semantic_recall": "semantic",
+                        "lexical_recall": "lexical",
+                        "path_symbol_recall": "path_symbol",
+                        "direct_text_recall": "direct_text",
+                        "signal_recall": "signal",
+                        "planner_hint_recall": "signal",
+                        "anchor_expansion": "graph",
+                        "relation_expansion": "graph",
+                    }
+                    for stage in attribution["stages"]:
+                        timing_name = trace_timing_names.get(stage["name"])
+                        if timing_name is not None:
+                            timings[timing_name] += float(stage["duration_ms"])
+                work = {name: 0 for name in counter_names}
+                if attribution is not None:
+                    work.update(attribution.get("work", {}))
+                work["inventory_entries"] = source_files
+                work["inventory_dirs"] = sum(
+                    path.is_dir()
+                    for path in (sample_repo / "generated").rglob("*")
+                ) + 1
+                if operation in {
+                    "full_build",
+                    "authoritative_noop",
+                } and not unsupported:
+                    work["source_bytes_read"] = source_bytes
+                    work["source_bytes_hashed"] = source_bytes
+                work.update(_storage_work_counters(sample_repo))
+                sample = {
                     "sample_id": f"sample-{sample_number:03d}",
                     "pair_id": None,
                     "duration_ms": duration_ms,
@@ -2777,19 +2983,19 @@ def run_benchmark(
                     "rss": measured["rss"],
                     "disk": disk,
                 }
-            samples.append(sample)
-            if checkpoint_path is not None and checkpoint_metadata is not None:
-                _write_benchmark_sample_checkpoint(
-                    checkpoint_path,
-                    metadata=checkpoint_metadata,
-                    index=sample_number,
-                    sample=sample,
-                )
-                _benchmark_progress(
-                    f"sample {sample_number}/{sample_count} checkpoint complete"
-                )
-            if not read_only_operation:
-                shutil.rmtree(sample_repo.parent)
+                samples.append(sample)
+                if checkpoint_path is not None and checkpoint_metadata is not None:
+                    _write_benchmark_sample_checkpoint(
+                        checkpoint_path,
+                        metadata=checkpoint_metadata,
+                        index=sample_number,
+                        sample=sample,
+                    )
+                    _benchmark_progress(
+                        f"sample {sample_number}/{sample_count} checkpoint complete"
+                    )
+                if not read_only_operation:
+                    shutil.rmtree(sample_repo.parent)
     if checkpoint_metadata is not None:
         current_commit, current_tree, current_dirty = _git_identity()
         current_identity = {
@@ -4724,4 +4930,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "__measure":
         raise SystemExit(_measurement_worker_main())
+    if len(sys.argv) == 2 and sys.argv[1] == "__measure_resident":
+        raise SystemExit(_measurement_resident_worker_main())
     raise SystemExit(main())

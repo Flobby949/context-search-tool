@@ -391,23 +391,19 @@ def test_query_worker_captures_private_numeric_production_trace(tmp_path: Path) 
         "final_selection",
     ]
     assert attribution["work"]["vector_scored_rows"] > 0
-    assert attribution["work"]["vector_normalization_count"] == attribution["work"][
-        "vector_scored_rows"
-    ]
+    assert attribution["work"]["vector_normalization_count"] == 1
     assert attribution["work"]["vector_sorted_rows"] <= attribution["work"][
         "vector_scored_rows"
     ]
     assert attribution["work"]["vector_bytes_read"] > 0
-    assert attribution["work"]["vector_bytes_hashed"] <= attribution["work"][
-        "vector_bytes_read"
-    ]
-    assert attribution["work"]["vector_payload_passes"] > 0
+    assert attribution["work"]["vector_bytes_hashed"] == 0
+    assert attribution["work"]["vector_payload_passes"] == 1
     assert attribution["work"]["repo_profile_vm_steps"] == 0
     assert attribution["work"]["repo_profile_rows"] == 0
     assert attribution["work"]["repo_profile_bytes"] == 0
-    assert attribution["work"]["active_ids_materialized"] > 0
+    assert attribution["work"]["active_ids_materialized"] == 0
     assert attribution["work"]["deleted_ids_materialized"] == 0
-    assert attribution["work"]["id_bytes_materialized"] > 0
+    assert attribution["work"]["id_bytes_materialized"] == 0
     assert attribution["work"]["lexical_vm_steps"] > 0
     assert attribution["work"]["lexical_rows"] > 0
     assert attribution["work"]["path_symbol_rows"] > 0
@@ -428,10 +424,19 @@ def test_query_worker_captures_private_numeric_production_trace(tmp_path: Path) 
     ]
 
 
-def test_nonimplemented_measurement_states_are_explicitly_unsupported() -> None:
+def test_final_resident_measurement_state_is_supported() -> None:
     module = _load_harness()
     assert not module._measurement_is_supported(
         "query_lexical", "mcp_resident_warm", "baseline"
+    )
+    assert module._measurement_is_supported(
+        "query", "mcp_resident_warm", "final"
+    )
+    assert module._measurement_is_supported(
+        "explore", "mcp_resident_warm", "final"
+    )
+    assert not module._measurement_is_supported(
+        "full_build", "mcp_resident_warm", "final"
     )
     assert not module._measurement_is_supported(
         "query_lexical", "filesystem_cold_diagnostic", "baseline"
@@ -442,6 +447,191 @@ def test_nonimplemented_measurement_states_are_explicitly_unsupported() -> None:
     assert module._measurement_is_supported(
         "full_build", "cli_process_cold", "baseline"
     )
+
+
+def test_resident_session_uses_three_warmups_and_separate_work_proofs(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    module = _load_harness()
+    assert hasattr(module, "_ResidentMeasurementSession"), (
+        "resident measurement session is absent"
+    )
+    requests: list[str] = []
+    proof_values = {
+        name: index
+        for index, name in enumerate(module._QUERY_ATTRIBUTION_COUNTERS, start=1)
+    }
+    rss = {
+        "process_start_bytes": 100,
+        "peak_bytes": 160,
+        "current_bytes": 140,
+        "empty_harness_peak_bytes": 100,
+        "extra_peak_bytes": 60,
+    }
+
+    class FakeWorker:
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+        def invoke(self, request: dict[str, Any]) -> dict[str, Any]:
+            kind = str(request["kind"])
+            requests.append(kind)
+            if kind == "empty":
+                return {
+                    "duration_ms": 0.0,
+                    "rss": rss,
+                    "attribution": None,
+                    "product_subprocesses": 0,
+                }
+            work = (
+                proof_values
+                if kind == "attribution"
+                else {"vector_scored_rows": 4}
+            )
+            return {
+                "duration_ms": 7.0 if kind == "operation" else 999.0,
+                "rss": rss,
+                "output_sha256": "a" * 64,
+                "attribution": {
+                    "trace_duration_ms": 3.0,
+                    "source_counts": {},
+                    "stages": [],
+                    "stage_timings_ms": {},
+                    "work": work,
+                },
+                "product_subprocesses": 0,
+            }
+
+    monkeypatch.setattr(module, "_ResidentMeasurementWorker", FakeWorker)
+
+    with module._ResidentMeasurementSession(
+        "query", tmp_path, "benchword1"
+    ) as session:
+        first = session.measure()
+        second = session.measure()
+
+    assert requests == [
+        "empty",
+        "operation",
+        "operation",
+        "operation",
+        "operation",
+        "attribution",
+        "operation",
+        "attribution",
+    ]
+    assert first["duration_ms"] == second["duration_ms"] == 7.0
+    assert first["attribution"]["work"]["vector_scored_rows"] == 4
+    assert all(
+        first["attribution"]["work"][name] == value
+        for name, value in proof_values.items()
+    )
+
+
+def test_final_resident_benchmark_reuses_one_session(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    module = _load_harness()
+    assert hasattr(module, "_ResidentMeasurementSession"), (
+        "resident measurement session is absent"
+    )
+    repo, manifest = _tiny_workload(module, tmp_path)
+    regular_calls: list[str] = []
+    sessions: list[tuple[str, Path, str]] = []
+    measured = 0
+
+    def fake_worker(operation: str, sample_repo: Path, case_id: str) -> dict[str, Any]:
+        regular_calls.append(operation)
+        assert operation == "full_build"
+        (sample_repo / ".context-search").mkdir()
+        return {
+            "duration_ms": 1.0,
+            "attribution": None,
+            "rss": {
+                "process_start_bytes": 10,
+                "peak_bytes": 20,
+                "current_bytes": 15,
+                "empty_harness_peak_bytes": 10,
+                "extra_peak_bytes": 10,
+            },
+            "product_subprocesses": 0,
+        }
+
+    class FakeSession:
+        def __init__(self, operation: str, sample_repo: Path, case_id: str) -> None:
+            sessions.append((operation, sample_repo, case_id))
+            assert (sample_repo / ".context-search").is_dir()
+
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+        def measure(self) -> dict[str, Any]:
+            nonlocal measured
+            measured += 1
+            return fake_sample()
+
+    def fake_sample() -> dict[str, Any]:
+        return {
+            "duration_ms": 2.0,
+            "attribution": None,
+            "rss": {
+                "process_start_bytes": 100,
+                "peak_bytes": 120,
+                "current_bytes": 110,
+                "empty_harness_peak_bytes": 100,
+                "extra_peak_bytes": 20,
+            },
+            "product_subprocesses": 0,
+        }
+
+    commit, tree, _dirty = module._git_identity()
+    monkeypatch.setattr(module, "_run_measurement_worker", fake_worker)
+    monkeypatch.setattr(module, "_ResidentMeasurementSession", FakeSession)
+    monkeypatch.setattr(
+        module,
+        "_git_identity",
+        lambda _root=module.ROOT: (commit, tree, False),
+    )
+    monkeypatch.setattr(
+        module,
+        "_calibration",
+        lambda: {
+            "valid": True,
+            "sha256_bytes": 512 * 1024**2,
+            "sha256_mib_per_s": 1.0,
+            "numpy_rows": 80000,
+            "numpy_dimensions": 384,
+            "numpy_dot_ms": 1.0,
+            "sqlite_rows": 20000,
+            "sqlite_ms": 1.0,
+            "within_pair_percent": 0.0,
+        },
+    )
+
+    report = module.run_benchmark(
+        repo,
+        manifest,
+        operation="query",
+        case_id="benchword1",
+        sample_count=2,
+        measurement_state="mcp_resident_warm",
+        mode="final",
+    )
+
+    assert regular_calls == ["full_build"]
+    assert len(sessions) == 1
+    assert sessions[0][0::2] == ("query", "benchword1")
+    assert measured == 2
+    assert report["operation"]["outcome"] == "supported"
+    assert report["summary"]["sample_count"] == 2
 
 
 def test_calibration_inputs_are_the_frozen_reference_workloads() -> None:

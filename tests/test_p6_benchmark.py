@@ -1203,6 +1203,38 @@ def test_query_work_contract_rejects_full_scan_amplification() -> None:
         module.validate_report_data(nonrecallable_signals, "benchmark-report-v1.json")
 
 
+def test_vector_work_contract_requires_one_score_pass() -> None:
+    module = _load_harness()
+    report = _benchmark_report()
+    report["mode"] = "final"
+    work = report["samples"][0]["work"]
+    work.update(
+        {
+            "vector_bytes_read": 1,
+            "vector_bytes_hashed": 0,
+            "vector_payload_passes": 1,
+            "vector_normalization_count": 1,
+            "vector_scored_rows": 4_000,
+            "vector_sorted_rows": 80,
+        }
+    )
+
+    module.validate_report_data(report, "benchmark-report-v1.json")
+
+    violations = (
+        ("vector_payload_passes", 2, "payload pass"),
+        ("vector_bytes_hashed", 1, "payload hash"),
+        ("vector_normalization_count", 4_000, "normalization"),
+        ("vector_scored_rows", 8_000, "score pass"),
+        ("vector_sorted_rows", 4_000, "full-score sort"),
+    )
+    for key, value, message in violations:
+        invalid = deepcopy(report)
+        invalid["samples"][0]["work"][key] = value
+        with pytest.raises(ValueError, match=message):
+            module.validate_report_data(invalid, "benchmark-report-v1.json")
+
+
 def test_required_benchmark_subcommands_are_registered() -> None:
     module = _load_harness()
     required = {

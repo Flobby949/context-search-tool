@@ -180,6 +180,16 @@ class OperationalReadyBinding:
 
 
 @dataclass(frozen=True)
+class ReadyVectorBinding:
+    descriptor_schema_version: int
+    generation: str
+    descriptor_sha256: str
+    vector_bytes: int
+    vector_ids_bytes: int
+    row_count: int
+
+
+@dataclass(frozen=True)
 class OperationalSnapshot:
     operational_version: int
     graph_version: int
@@ -3678,6 +3688,22 @@ class GraphReadSession:
             ).fetchone()["count"]
         )
         return source_count, chunk_count
+
+    def ready_vector_binding(self) -> ReadyVectorBinding:
+        if self.capability.status != "ready" or not self.capability.structured:
+            raise OperationalIntegrityError("ready vector binding is unavailable")
+        connection = self._require_connection()
+        binding = _read_operational_binding(connection)
+        return ReadyVectorBinding(
+            descriptor_schema_version=binding.vector_descriptor_schema_version,
+            generation=binding.vector_generation,
+            descriptor_sha256=binding.vector_descriptor_sha256,
+            vector_bytes=binding.vector_bytes,
+            vector_ids_bytes=binding.vector_ids_bytes,
+            row_count=_metadata_int_value(
+                _required_metadata(connection, _OPERATIONAL_CHUNK_COUNT_KEY)
+            ),
+        )
 
     def _require_connection(self) -> sqlite3.Connection:
         if self._connection is None:

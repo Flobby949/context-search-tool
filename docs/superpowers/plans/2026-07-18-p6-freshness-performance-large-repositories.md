@@ -2428,6 +2428,7 @@ Task 1.
 
 **Files:**
 
+- Modify: `src/context_search_tool/indexer.py`
 - Modify: `src/context_search_tool/vector_store.py`
 - Modify: `src/context_search_tool/retrieval.py`
 - Modify: `src/context_search_tool/retrieval_core/candidates.py`
@@ -2439,7 +2440,9 @@ Task 1.
 - Modify: `tests/test_retrieval_pipeline.py`
 - Modify: `tests/test_retrieval_core_characterization.py`
 - Modify: `tests/test_p6_benchmark.py`
+- Modify: `tests/test_p6_measurement_worker.py`
 - Modify: `tests/test_retrieval_core_boundaries.py`
+- Modify: this plan
 
 - [ ] **Step 1: Freeze exhaustive exact-vector reference cases first**
 
@@ -2480,6 +2483,25 @@ Task 1.
   fail only on old payload-hash/normalization/full-sort work; all output
   references remain green. Collection/import or correctness failure is invalid
   RED evidence.
+
+  **Measured amendment (2026-07-21):** a validated 30-sample
+  `semantic_high` smoke run from the clean Task-9 commit measured CLI-cold p95
+  423.53 ms with 1.40% population CV and semantic-stage p95 5.00 ms. Every
+  sample read 12,824,260 vector bytes, hashed 6,412,130 bytes, made two payload
+  passes, normalized and scored 4,000 rows, fully sorted 4,000 rows, and
+  materialized 4,000 active IDs/256,000 ID bytes. This directly authorizes the
+  reviewed ready binding, normalized v2 persistence, mmap load, and exact
+  partial top-k work in Steps 2--4.
+
+  The same run also confirmed that the frozen registry's
+  `mcp_resident_warm` state was still hard-coded `unsupported`, contrary to
+  Task 1 Step 5 and this task's mandatory 30-sample resident gate. Task 10 may
+  therefore complete only that previously specified harness behavior: one
+  persistent measurement subprocess, exactly three production-process
+  warmups, separate output-identical work-proof calls, incremental checkpoints,
+  and no product subprocess. Freeze it separately in
+  `tests/test_p6_measurement_worker.py`; no product API or benchmark schema
+  change is authorized.
 
 - [ ] **Step 2: Replace repeated payload hashing with the reviewed ready invariant**
 
@@ -2554,6 +2576,7 @@ Task 1.
 
   ```bash
   git add \
+    src/context_search_tool/indexer.py \
     src/context_search_tool/vector_store.py \
     src/context_search_tool/retrieval.py \
     src/context_search_tool/retrieval_core/candidates.py \
@@ -2565,7 +2588,9 @@ Task 1.
     tests/test_retrieval_pipeline.py \
     tests/test_retrieval_core_characterization.py \
     tests/test_p6_benchmark.py \
-    tests/test_retrieval_core_boundaries.py
+    tests/test_p6_measurement_worker.py \
+    tests/test_retrieval_core_boundaries.py \
+    docs/superpowers/plans/2026-07-18-p6-freshness-performance-large-repositories.md
   git diff --exit-code -- $(git diff --cached --name-only)
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py tdd-green \
     --pending .quality/p6-artifacts/tdd-task-10.pending.json \
@@ -2573,6 +2598,13 @@ Task 1.
     --output .quality/p6-artifacts/tdd-task-10.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py validate \
     --report .quality/p6-artifacts/tdd-task-10.json \
+    --staged-tree "$(git write-tree)"
+  PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py tdd-green \
+    --pending .quality/p6-artifacts/tdd-task-10-resident-v5.pending.json \
+    --staged-tree "$(git write-tree)" \
+    --output .quality/p6-artifacts/tdd-task-10-resident.json
+  PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py validate \
+    --report .quality/p6-artifacts/tdd-task-10-resident.json \
     --staged-tree "$(git write-tree)"
   git diff --cached --check
   git diff --cached --name-only
@@ -2595,17 +2627,24 @@ Task 1.
   test "$(git -C "$P6_TASK10_WORKTREE" rev-parse HEAD^{tree})" = "$P6_TASK10_TREE"
   PYTHONPATH="$P6_TASK10_WORKTREE/src" "$P6_RUNTIME" \
     "$P6_TASK10_WORKTREE/scripts/p6_benchmark.py" run \
-    --repo "$PWD/.quality/p6-large" \
+    --repo "$PWD/.quality/p6-task10-l2-smoke" \
     --manifest "$P6_TASK10_WORKTREE/tests/fixtures/p6_performance/workload_manifest.json" \
-    --operations query-cold,query-warm,explore-warm \
+    --operation query \
+    --case-id semantic_high \
+    --samples 30 \
+    --measurement-state mcp_resident_warm \
+    --mode final \
+    --checkpoint-dir "$PWD/.quality/p6-artifacts/task10-vector.checkpoints" \
     --output "$PWD/.quality/p6-artifacts/task10-vector.json"
   PYTHONPATH="$P6_TASK10_WORKTREE/src" "$P6_RUNTIME" \
     "$P6_TASK10_WORKTREE/scripts/p6_benchmark.py" validate \
     --report "$PWD/.quality/p6-artifacts/task10-vector.json"
   PYTHONPATH="$P6_TASK10_WORKTREE/src" "$P6_RUNTIME" \
     "$P6_TASK10_WORKTREE/scripts/p6_benchmark.py" decide \
-    --kind ann \
-    --report "$PWD/.quality/p6-artifacts/task10-vector.json" \
+    --kind exact_ann \
+    --input "$PWD/.quality/p6-artifacts/task10-vector.json" \
+    --reason semantic_within_budget \
+    --reason rss_within_budget \
     --output "$PWD/.quality/p6-artifacts/task10-ann.json"
   PYTHONPATH="$P6_TASK10_WORKTREE/src" "$P6_RUNTIME" \
     "$P6_TASK10_WORKTREE/scripts/p6_benchmark.py" validate \
