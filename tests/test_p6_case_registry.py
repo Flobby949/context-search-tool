@@ -187,21 +187,27 @@ def test_registry_rejects_open_or_unmapped_query_contracts() -> None:
         )
 
 
-def test_run_cli_has_no_single_sample_or_default_case_escape_hatch() -> None:
+def test_run_cli_supports_closed_batch_default_and_complete_one_case_contract() -> None:
     module = _load_harness()
     parser = module.build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            [
-                "run",
-                "--repo",
-                "repo",
-                "--manifest",
-                "manifest.json",
-                "--output",
-                "report.json",
-            ]
-        )
+    batch_args = parser.parse_args(
+        [
+            "run",
+            "--repo",
+            "repo",
+            "--manifest",
+            "manifest.json",
+            "--output",
+            "report.json",
+        ]
+    )
+    assert (
+        batch_args.operations,
+        batch_args.operation,
+        batch_args.case_id,
+        batch_args.samples,
+        batch_args.measurement_state,
+    ) == (None, None, None, None, None)
 
     args = parser.parse_args(
         [
