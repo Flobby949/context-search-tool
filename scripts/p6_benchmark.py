@@ -887,9 +887,14 @@ def _environment() -> dict[str, Any]:
             if "AC Power" in power_text or "AC attached" in power_text:
                 power_state = "external"
             process_cpu = subprocess.check_output(
-                ["ps", "-A", "-o", "%cpu="], text=True
+                ["ps", "-A", "-o", "pid=,%cpu="], text=True
             )
-            total_cpu = sum(float(value) for value in process_cpu.split())
+            current_pid = os.getpid()
+            total_cpu = 0.0
+            for line in process_cpu.splitlines():
+                pid_text, cpu_text = line.split()
+                if int(pid_text) != current_pid:
+                    total_cpu += float(cpu_text)
             background_cpu = min(100.0, total_cpu / max(1, os.cpu_count() or 1))
         except (OSError, ValueError, subprocess.CalledProcessError):
             pass

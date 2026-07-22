@@ -988,6 +988,36 @@ def test_benchmark_validation_rejects_invalid_host_evidence() -> None:
         module.validate_report_data(report, "benchmark-report-v1.json")
 
 
+def test_macos_background_cpu_excludes_benchmark_harness_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_harness()
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(module.os, "cpu_count", lambda: 10)
+    monkeypatch.setattr(module.os, "getpid", lambda: 123)
+
+    def fake_check_output(command: list[str], **_: object) -> str:
+        if command == ["/usr/sbin/sysctl", "-n", "hw.memsize"]:
+            return str(32 * 1024**3)
+        if command == ["/usr/sbin/sysctl", "-n", "vm.swapusage"]:
+            return "total = 0.00M  used = 0.00M  free = 0.00M"
+        if command == ["/usr/bin/pmset", "-g", "batt"]:
+            return "Now drawing from 'AC Power'"
+        if command == ["ps", "-A", "-o", "%cpu="]:
+            return "200.0\n100.0\n"
+        if command == ["ps", "-A", "-o", "pid=,%cpu="]:
+            return "123 200.0\n456 100.0\n"
+        if command == ["diskutil", "info", "/"]:
+            return "Solid State: Yes"
+        raise AssertionError(command)
+
+    monkeypatch.setattr(module.subprocess, "check_output", fake_check_output)
+
+    environment = module._environment()
+
+    assert environment["background_cpu_percent"] == 10.0
+
+
 def test_benchmark_validation_rejects_absolute_cv_above_fifteen_percent() -> None:
     module = _load_harness()
     report = _benchmark_report()

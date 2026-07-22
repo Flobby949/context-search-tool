@@ -2040,6 +2040,19 @@ Task 1.
   matching both failed candidates exactly. This passes the 300 s median,
   420 s maximum, and 2 GiB RSS gates; the optimized branch is therefore retained.
 
+  The first frozen-runtime final-large capture from clean commit `080476d`
+  completed all five full-build samples in 196,843.21--204,944.91 ms, with a
+  201,773.11 ms median, 0.0137 population CV, 2,014,937,088-byte maximum RSS,
+  and 2,221,376,368-byte ready snapshot. The measurements passed their resource
+  budgets but the case correctly failed evidence validation because its frozen
+  environment recorded 24.07% background CPU. Investigation reproduced that
+  macOS `ps` aggregation counted the benchmark harness itself immediately after
+  it fingerprinted the large repositories. A RED/GREEN harness test therefore
+  authorizes excluding only the current harness PID from the macOS background
+  CPU total; every external process remains included. The invalid checkpoints
+  are retained only as local diagnostic evidence and must not be resumed or
+  published. A clean-identity final capture is still required.
+
 - [ ] **Step 2: Write shared repository-path-index work proofs first**
 
   First run existing correctness projections green. Then add only the named work
