@@ -624,6 +624,37 @@ def test_verified_vector_identity_avoids_duplicate_sets_for_sorted_ready_ids(
     ) == module.VectorVerification.valid()
 
 
+def test_verified_health_passes_bound_ready_ids_to_vector_verifier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _health_module()
+    from context_search_tool.indexer import index_repository
+    from context_search_tool.vector_store import NumpyVectorStore
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    snapshot = module.read_committed_index_snapshot(repo)
+    original_verify = NumpyVectorStore.verify_published_snapshot
+
+    def require_bound_ids(index_dir: Path, **kwargs: object):
+        assert kwargs.get("expected_ids") is snapshot.active_embedding_ids
+        return original_verify(index_dir, **kwargs)
+
+    monkeypatch.setattr(
+        NumpyVectorStore,
+        "verify_published_snapshot",
+        staticmethod(require_bound_ids),
+    )
+
+    assert module.verify_committed_vector_snapshot(
+        repo,
+        snapshot,
+    ) == module.VectorVerification.valid()
+
+
 def test_status_envelope_and_requirement_contract_use_the_frozen_report() -> None:
     module = _health_module()
     assert hasattr(module, "status_success_envelope"), (

@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 import stat
 import tempfile
-from typing import Any, BinaryIO, Callable, Iterable, Literal
+from typing import Any, BinaryIO, Callable, Iterable, Literal, Sequence
 
 import numpy as np
 
@@ -74,6 +74,10 @@ class IncompatibleVectorDescriptorSchemaError(RuntimeError):
 
 class VectorDescriptorCorruptionError(ValueError):
     code = "vector_descriptor_corrupt"
+
+
+class VectorIdMismatchError(VectorDescriptorCorruptionError):
+    pass
 
 
 _DESCRIPTOR_FILENAME = "vector_snapshot.json"
@@ -357,7 +361,7 @@ class NumpyVectorStore:
         cls,
         index_dir: Path,
         *,
-        expected_ids: set[str] | None = None,
+        expected_ids: Iterable[str] | None = None,
         expected_embedding_identity: str | None = None,
     ) -> VerifiedVectorSnapshot:
         snapshot = cls.inspect_published_descriptor(index_dir)
@@ -371,12 +375,22 @@ class NumpyVectorStore:
             raise VectorDescriptorCorruptionError(
                 "vector embedding identity mismatch"
             )
+        ordered_expected = (
+            tuple(sorted(expected_ids))
+            if isinstance(expected_ids, (set, frozenset))
+            else tuple(expected_ids) if expected_ids is not None else None
+        )
         if descriptor.schema_version == 2:
-            ids = _verify_generation_v2_streaming(index_dir, descriptor)
+            ids = _verify_generation_v2_streaming(
+                index_dir,
+                descriptor,
+                expected_ids=ordered_expected,
+            )
         else:
             ids, _vectors = _load_generation(index_dir, descriptor)
-        if expected_ids is not None and set(ids) != expected_ids:
-            raise VectorDescriptorCorruptionError("exact vector IDs mismatch")
+        if ordered_expected is not None and tuple(ids) != ordered_expected:
+            if set(ids) != set(ordered_expected):
+                raise VectorIdMismatchError("exact vector IDs mismatch")
         return VerifiedVectorSnapshot(snapshot, tuple(ids))
 
     def upsert_many(self, items: list[tuple[str, np.ndarray]]) -> None:
@@ -1113,7 +1127,9 @@ class _DigestingReader:
 def _verify_generation_v2_streaming(
     index_dir: Path,
     descriptor: VectorGenerationDescriptor,
-) -> list[str]:
+    *,
+    expected_ids: tuple[str, ...] | None = None,
+) -> Sequence[str]:
     _validate_generation_paths(index_dir, descriptor)
     _verify_vector_payload_streaming(
         index_dir / descriptor.vectors_file,
@@ -1122,6 +1138,12 @@ def _verify_generation_v2_streaming(
     ids_path = index_dir / descriptor.ids_file
     if _sha256_file_safe(ids_path) != descriptor.ids_sha256:
         raise ValueError("vector generation hash mismatch")
+    if (
+        expected_ids is not None
+        and len(expected_ids) == descriptor.row_count
+        and _vector_ids_payload_sha256(expected_ids) == descriptor.ids_sha256
+    ):
+        return expected_ids
     try:
         ids = json.loads(ids_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -1133,6 +1155,23 @@ def _verify_generation_v2_streaming(
     if len(set(ids)) != len(ids):
         raise ValueError("vector generation IDs must be unique")
     return ids
+
+
+def _vector_ids_payload_sha256(ids: Sequence[str]) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"[")
+    for index, item in enumerate(ids):
+        if index:
+            digest.update(b",")
+        digest.update(
+            json.dumps(
+                item,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+    digest.update(b"]\n")
+    return digest.hexdigest()
 
 
 def _verify_vector_payload_streaming(

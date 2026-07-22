@@ -741,6 +741,55 @@ def test_descriptor_v2_verified_load_streams_vector_rows_without_materializing(
     assert max(observed_rows) <= 4_096
 
 
+def test_descriptor_v2_expected_ids_skip_duplicate_json_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = NumpyVectorStore.fresh(tmp_path, dimensions=2)
+    store.upsert_many(
+        [
+            ("a", np.asarray([1.0, 0.0], dtype=np.float32)),
+            ("b", np.asarray([0.0, 1.0], dtype=np.float32)),
+        ]
+    )
+    prepared = store.prepare_generation_v2(
+        generation="expected-ids",
+        embedding_identity="hash-v1:2",
+        normalization="l2",
+    )
+    store.publish_generation(prepared)
+
+    original_verify = vector_store_module._verify_generation_v2_streaming
+
+    def require_expected_ids(
+        index_dir: Path,
+        descriptor: object,
+        *,
+        expected_ids: object = None,
+    ):
+        assert expected_ids == ("a", "b"), (
+            "verified ready IDs were materialized instead of using the bound tuple"
+        )
+        return original_verify(
+            index_dir,
+            descriptor,
+            expected_ids=expected_ids,
+        )
+
+    monkeypatch.setattr(
+        vector_store_module,
+        "_verify_generation_v2_streaming",
+        require_expected_ids,
+    )
+
+    verified = NumpyVectorStore.verify_published_snapshot(
+        tmp_path,
+        expected_ids=("a", "b"),
+    )
+
+    assert verified.ids == ("a", "b")
+
+
 def test_descriptor_v2_rejects_future_schema_size_damage_and_symlink(
     tmp_path: Path,
 ) -> None:

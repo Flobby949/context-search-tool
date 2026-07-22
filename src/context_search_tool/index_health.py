@@ -50,6 +50,7 @@ from context_search_tool.vector_store import (
     NumpyVectorStore,
     PublishedVectorDescriptor,
     VectorDescriptorCorruptionError,
+    VectorIdMismatchError,
 )
 
 
@@ -1100,20 +1101,25 @@ def verify_committed_vector_snapshot(
     try:
         verified = NumpyVectorStore.verify_published_snapshot(
             repo.resolve(strict=True) / ".context-search",
+            expected_ids=snapshot.active_embedding_ids,
+        )
+    except VectorIdMismatchError:
+        try:
+            verified = NumpyVectorStore.verify_published_snapshot(
+                repo.resolve(strict=True) / ".context-search",
+            )
+        except ValueError:
+            return VectorVerification.invalid()
+        expected = set(snapshot.active_embedding_ids)
+        actual = set(verified.ids)
+        return VectorVerification.invalid(
+            missing_ids=tuple(sorted(expected - actual)),
+            orphan_ids=tuple(sorted(actual - expected)),
         )
     except ValueError:
         return VectorVerification.invalid()
     if verified.descriptor_snapshot.descriptor.generation != snapshot.vector_generation:
         return VectorVerification.interrupted()
-    if snapshot.active_embedding_ids == verified.ids:
-        return VectorVerification.valid()
-    expected = set(snapshot.active_embedding_ids)
-    actual = set(verified.ids)
-    if expected != actual:
-        return VectorVerification.invalid(
-            missing_ids=tuple(sorted(expected - actual)),
-            orphan_ids=tuple(sorted(actual - expected)),
-        )
     return VectorVerification.valid()
 
 
