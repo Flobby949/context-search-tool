@@ -2031,6 +2031,30 @@ def test_mcp_refresh_uses_exact_envelope_and_never_runs_implicitly(
     assert mcp_tools.context_search_explore_tool(str(repo), "ApplyAudit")["ok"] is True
 
 
+def test_mcp_noop_refresh_reuses_its_bound_health_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    assert context_search_index_tool(str(repo))["ok"] is True
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("no-op refresh repeated the completed health inspection")
+
+    monkeypatch.setattr(
+        mcp_tools.index_health,
+        "inspect_repository_health",
+        forbidden,
+    )
+
+    payload = mcp_tools.context_search_refresh_tool(str(repo))
+
+    assert payload["ok"] is True
+    assert payload["summary"]["files"]["direct_dirty"] == 0
+    assert payload["index_health"]["health"] == "healthy_metadata"
+
+
 @pytest.mark.parametrize(
     ("code", "outcome", "message"),
     [
@@ -2115,6 +2139,10 @@ def test_mcp_refresh_post_success_inspection_failure_has_no_partial_siblings(
     repo = tmp_path / "repo"
     _write_java_repo(repo)
     assert context_search_index_tool(str(repo))["ok"] is True
+    (repo / "ApplyAuditServiceImpl.java").write_text(
+        'class ApplyAuditServiceImpl { String changed() { return "changed"; } }\n',
+        encoding="utf-8",
+    )
 
     def fail(*_args, **_kwargs):
         raise RuntimeError("SECRET_INSPECTION_FAILURE")

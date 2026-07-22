@@ -41,10 +41,12 @@ from context_search_tool.graph_resolution import resolve_graph_relations
 from context_search_tool.index_lock import exclusive_index_lock
 from context_search_tool.index_health import (
     EmbeddingIdentity,
+    IndexHealthReport,
     configured_embedding_identity,
     indexed_embedding_identity,
     preflight_public_operation,
     probe_raw_index_capability,
+    quick_refresh_noop_health_report,
 )
 from context_search_tool.manifest import (
     SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION,
@@ -287,6 +289,7 @@ class RefreshSuccess:
     summary: RefreshSummaryV1
     indexed_before: EmbeddingIdentity
     configured: EmbeddingIdentity
+    report: IndexHealthReport | None = None
     freshness: str = "metadata_fresh"
     network_egress_performed: bool = False
     ok: bool = True
@@ -626,6 +629,7 @@ def _refresh_repository_locked(
         ):
             raise WorkspaceChangedError()
         _fault(fault_hook, "closing_inventory_complete")
+        observation_completed = time.time_ns() // 1_000_000
         pages_after, freelist_after = store.storage_page_metrics()
         summary = _quick_noop_summary(
             baseline=baseline,
@@ -639,10 +643,23 @@ def _refresh_repository_locked(
             freelist_before=freelist_before,
             freelist_after=freelist_after,
         )
+        report = quick_refresh_noop_health_report(
+            repo,
+            loaded_manifest=baseline.loaded_manifest,
+            operational=baseline.operational,
+            descriptor=baseline.descriptor,
+            opening_inventory=opening,
+            closing_inventory=closing,
+            configured_embedding=configured,
+            configured_index_hash=effective_index_hash,
+            started_at_epoch_ms=observation_started,
+            completed_at_epoch_ms=observation_completed,
+        )
         return RefreshSuccess(
             summary=summary,
             indexed_before=indexed_before,
             configured=configured,
+            report=report,
         )
 
     prior_sources = {

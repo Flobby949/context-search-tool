@@ -527,7 +527,7 @@ def context_search_refresh_tool(repo: str) -> dict[str, Any]:
     if not isinstance(result, RefreshSuccess):
         return index_health.refresh_error_envelope("refresh_failed", "possible")
     try:
-        report = index_health.inspect_repository_health(
+        report = result.report or index_health.inspect_repository_health(
             resolved_repo,
             mode="quick",
         )

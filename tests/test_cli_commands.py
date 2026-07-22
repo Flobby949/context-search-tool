@@ -1133,6 +1133,26 @@ def test_cli_refresh_json_human_help_and_closed_errors(tmp_path: Path) -> None:
     }
 
 
+def test_cli_noop_refresh_reuses_its_bound_health_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, runner = _indexed_repo(tmp_path)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("no-op refresh repeated the completed health inspection")
+
+    monkeypatch.setattr(cli.index_health, "inspect_repository_health", forbidden)
+
+    result = runner.invoke(app, ["refresh", str(repo), "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["summary"]["files"]["direct_dirty"] == 0
+    assert payload["index_health"]["health"] == "healthy_metadata"
+
+
 def test_cli_query_like_surfaces_never_invoke_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

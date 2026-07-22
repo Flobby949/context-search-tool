@@ -2165,6 +2165,18 @@ Task 1.
   loops through one 512-row constant. Hashing, exact-ID checks, normalization
   validation, corruption behavior, and acceptance thresholds remain unchanged.
 
+  The next clean `04caf6b` diagnostic passed verified status (5,235.66 ms
+  maximum, 189,333,504-byte extra RSS) and quick status (1,594.11 ms p95,
+  171,376,640-byte extra RSS). Refresh-noop still measured 3,211.24 ms p95,
+  above 2.5 s, despite zero source/vector hashing and zero ID materialization.
+  A stage profile showed that a quiet refresh had already completed its bound
+  baseline plus two stable inventories, but the CLI and MCP adapters then ran a
+  separate full quick inspection of the same unchanged generation. The
+  `tdd-task-8-refresh-noop-report.json` checkpoint therefore lets only the
+  no-write, lock-stable branch return that completed quick-health report. Any
+  mutating refresh still performs the existing post-success inspection and
+  retains its fail-closed behavior.
+
 - [ ] **Step 2: Write shared repository-path-index work proofs first**
 
   First run existing correctness projections green. Then add only the named work
@@ -3285,6 +3297,7 @@ their schema-defined inputs.
     --input .quality/p6-artifacts/tdd-task-8-quality-checkpoints.json \
     --input .quality/p6-artifacts/tdd-task-8-verified-worker-binding.json \
     --input .quality/p6-artifacts/tdd-task-8-verified-vector-batches.json \
+    --input .quality/p6-artifacts/tdd-task-8-refresh-noop-report.json \
     --input .quality/p6-artifacts/tdd-task-9.json \
     --input .quality/p6-artifacts/tdd-task-9-harness-v2.json \
     --input .quality/p6-artifacts/tdd-task-9-path-roles-v2.json \

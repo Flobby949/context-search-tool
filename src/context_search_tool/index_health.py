@@ -19,6 +19,7 @@ from context_search_tool.graph_lifecycle import (
 )
 from context_search_tool.manifest import (
     IncompatibleManifestSchemaError,
+    LoadedManifestSnapshot,
     Manifest,
     ManifestV2,
     READABLE_MANIFEST_VERSIONS,
@@ -972,6 +973,24 @@ def read_committed_index_snapshot(repo: Path) -> CommittedIndexSnapshot:
         descriptor_snapshot = NumpyVectorStore.inspect_published_descriptor(index_dir)
     except VectorDescriptorCorruptionError:
         descriptor_snapshot = None
+    return _committed_v2_snapshot(
+        resolved,
+        loaded_manifest,
+        operational,
+        descriptor_snapshot,
+    )
+
+
+def _committed_v2_snapshot(
+    resolved: Path,
+    loaded_manifest: LoadedManifestSnapshot,
+    operational: OperationalSnapshot,
+    descriptor_snapshot: PublishedVectorDescriptor | None,
+) -> CommittedIndexSnapshot:
+    manifest = loaded_manifest.manifest
+    if not isinstance(manifest, ManifestV2):
+        raise ValueError("committed v2 snapshot requires a v2 manifest")
+    index_dir = resolved / ".context-search"
     manifest_valid = _manifest_matches_operational(
         manifest,
         loaded_manifest.sha256,
@@ -1519,6 +1538,52 @@ def inspect_repository_health(repo: Path, *, mode: str) -> IndexHealthReport:
         snapshot_rechecker=recheck_committed_index_snapshot,
     )
     return inspect_index_health(repo, mode=mode, adapters=adapters)
+
+
+def quick_refresh_noop_health_report(
+    repo: Path,
+    *,
+    loaded_manifest: LoadedManifestSnapshot,
+    operational: OperationalSnapshot,
+    descriptor: PublishedVectorDescriptor,
+    opening_inventory: WorkspaceInventory,
+    closing_inventory: WorkspaceInventory,
+    configured_embedding: EmbeddingIdentity,
+    configured_index_hash: str,
+    started_at_epoch_ms: int,
+    completed_at_epoch_ms: int,
+) -> IndexHealthReport:
+    """Reuse a completed, no-write refresh observation as quick health evidence."""
+    resolved = repo.resolve(strict=True)
+    snapshot = _committed_v2_snapshot(
+        resolved,
+        loaded_manifest,
+        operational,
+        descriptor,
+    )
+    raw = RawIndexCapability(
+        status="compatible",
+        index_exists=True,
+        manifest_version=snapshot.manifest_version,
+        operational_version=snapshot.operational_version,
+        graph_version=snapshot.graph_version,
+        error_code=None,
+    )
+    return _observed_report(
+        mode="quick",
+        started=started_at_epoch_ms,
+        completed=completed_at_epoch_ms,
+        raw=raw,
+        opening_snapshot=snapshot,
+        closing_snapshot=snapshot,
+        opening_inventory=opening_inventory,
+        closing_inventory=closing_inventory,
+        content_results={},
+        vector_result=None,
+        configured_embedding=configured_embedding,
+        configured_index_hash=configured_index_hash,
+        writer=WriterProbe.idle(),
+    )
 
 
 def status_success_envelope(

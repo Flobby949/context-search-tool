@@ -479,7 +479,10 @@ def refresh(
             json_output=json_output,
         )
     try:
-        report = index_health.inspect_repository_health(resolved_repo, mode="quick")
+        report = result.report or index_health.inspect_repository_health(
+            resolved_repo,
+            mode="quick",
+        )
         envelope = index_health.refresh_success_envelope(
             str(resolved_repo),
             summary=result.summary,
