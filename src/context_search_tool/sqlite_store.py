@@ -58,6 +58,7 @@ logger = logging.getLogger(__name__)
 _DIRECT_TEXT_CJK_SEQUENCE_RE = re.compile(r"[㐀-鿿]{2,}")
 _SIGNAL_SQL_SAFE_TOKEN_RE = re.compile(r"[a-z0-9_./:$-]+")
 _DEFAULT_BUSY_TIMEOUT_MS = 5_000
+MAX_V5_FILE_WRITE_BATCH_SIZE = 64
 _RESOLVED_STATES = ("resolved_exact", "resolved_unique")
 PRODUCER_RESOLUTION_GENERATION_KEY = "graph_producer_resolution_generation"
 TEST_ASSOCIATION_SOURCE_GENERATION_KEY = (
@@ -1410,36 +1411,125 @@ class SQLiteStore:
     def finish_v5_file_write(self, file: SourceFile) -> None:
         with self._connect() as connection:
             _require_target_schema(connection)
-            current = _metadata_value(connection, FILE_WRITE_IN_PROGRESS_KEY)
-            if current != _path_key(file.path):
-                raise GraphIntegrityError("file write marker mismatch")
-            connection.execute(
-                """
-                INSERT INTO source_files (
-                    path, language, sha256, size, mtime_ns,
-                    is_generated, is_test, metadata
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(path) DO UPDATE SET
-                    language = excluded.language,
-                    sha256 = excluded.sha256,
-                    size = excluded.size,
-                    mtime_ns = excluded.mtime_ns,
-                    is_generated = excluded.is_generated,
-                    is_test = excluded.is_test,
-                    metadata = excluded.metadata
-                """,
-                (
-                    _path_key(file.path),
-                    file.language,
-                    file.sha256,
-                    file.size,
-                    file.mtime_ns,
-                    int(file.is_generated),
-                    int(file.is_test),
-                    _to_json(file.metadata),
-                ),
+            self._finish_v5_file_write_in_connection(
+                connection,
+                file,
+                clear_marker=True,
             )
+
+    def write_v5_file_batch(
+        self,
+        writes: list[
+            tuple[
+                SourceFile,
+                tuple[DocumentChunk, ...],
+                tuple[CodeSignal, ...],
+                tuple[CodeRelation, ...],
+            ]
+        ],
+        *,
+        after_stage: Callable[[str], None],
+        replace_existing_relations: bool = True,
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> None:
+        if not writes:
+            raise ValueError("v5 file-write batch must not be empty")
+        if len(writes) > MAX_V5_FILE_WRITE_BATCH_SIZE:
+            raise ValueError("v5 file-write batch exceeds the bounded limit")
+        self.set_metadata(
+            FILE_WRITE_IN_PROGRESS_KEY,
+            _path_key(writes[0][0].path),
+        )
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            _require_target_schema(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            for file, chunks, signals, relations in writes:
+                _set_metadata_row(
+                    connection,
+                    FILE_WRITE_IN_PROGRESS_KEY,
+                    _path_key(file.path),
+                    _now(),
+                )
+                after_stage("file_write_started")
+                self._replace_chunks_in_connection(
+                    connection,
+                    file.path,
+                    chunks,
+                )
+                after_stage("chunks_persisted")
+                self._replace_signals_in_connection(
+                    connection,
+                    file.path,
+                    signals,
+                )
+                after_stage("signals_persisted")
+                self._replace_relations_in_connection(
+                    connection,
+                    file.path,
+                    relations,
+                    replace_existing=replace_existing_relations,
+                )
+                after_stage("producer_relations_persisted")
+                self._finish_v5_file_write_in_connection(
+                    connection,
+                    file,
+                    clear_marker=False,
+                )
+                after_stage("source_hash_persisted")
+            _set_metadata_row(
+                connection,
+                FILE_WRITE_IN_PROGRESS_KEY,
+                "",
+                _now(),
+            )
+            connection.commit()
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
+
+    def _finish_v5_file_write_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        file: SourceFile,
+        *,
+        clear_marker: bool,
+    ) -> None:
+        current = _metadata_value(connection, FILE_WRITE_IN_PROGRESS_KEY)
+        if current != _path_key(file.path):
+            raise GraphIntegrityError("file write marker mismatch")
+        connection.execute(
+            """
+            INSERT INTO source_files (
+                path, language, sha256, size, mtime_ns,
+                is_generated, is_test, metadata
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                language = excluded.language,
+                sha256 = excluded.sha256,
+                size = excluded.size,
+                mtime_ns = excluded.mtime_ns,
+                is_generated = excluded.is_generated,
+                is_test = excluded.is_test,
+                metadata = excluded.metadata
+            """,
+            (
+                _path_key(file.path),
+                file.language,
+                file.sha256,
+                file.size,
+                file.mtime_ns,
+                int(file.is_generated),
+                int(file.is_test),
+                _to_json(file.metadata),
+            ),
+        )
+        if clear_marker:
             _set_metadata_row(
                 connection,
                 FILE_WRITE_IN_PROGRESS_KEY,
@@ -1553,159 +1643,184 @@ class SQLiteStore:
         return {Path(row["file_path"]) for row in rows}
 
     def replace_chunks(self, file_path: Path, chunks: list[DocumentChunk]) -> None:
+        with self._connect() as connection:
+            self._replace_chunks_in_connection(connection, file_path, chunks)
+
+    def _replace_chunks_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        file_path: Path,
+        chunks: list[DocumentChunk] | tuple[DocumentChunk, ...],
+    ) -> None:
         path = _path_key(file_path)
         deleted_at = _now()
-        with self._connect() as connection:
-            active_ids = self._active_chunk_ids_for_file(connection, path)
-            self._delete_search_payloads(connection, active_ids)
-            if active_ids:
-                connection.executemany(
-                    "UPDATE chunks SET deleted_at = ? WHERE chunk_id = ?",
-                    [(deleted_at, chunk_id) for chunk_id in active_ids],
-                )
+        active_ids = self._active_chunk_ids_for_file(connection, path)
+        self._delete_search_payloads(connection, active_ids)
+        if active_ids:
+            connection.executemany(
+                "UPDATE chunks SET deleted_at = ? WHERE chunk_id = ?",
+                [(deleted_at, chunk_id) for chunk_id in active_ids],
+            )
 
-            incoming_ids = [chunk.chunk_id for chunk in chunks]
-            active_id_set = set(active_ids)
-            unchecked_incoming_ids = [
+        incoming_ids = [chunk.chunk_id for chunk in chunks]
+        active_id_set = set(active_ids)
+        unchecked_incoming_ids = [
+            chunk_id for chunk_id in incoming_ids if chunk_id not in active_id_set
+        ]
+        existing_incoming_ids = self._existing_chunk_ids(
+            connection,
+            unchecked_incoming_ids,
+        )
+        self._delete_search_payloads(
+            connection,
+            [
                 chunk_id
-                for chunk_id in incoming_ids
-                if chunk_id not in active_id_set
-            ]
-            existing_incoming_ids = self._existing_chunk_ids(
-                connection,
-                unchecked_incoming_ids,
-            )
-            self._delete_search_payloads(
-                connection,
-                [
-                    chunk_id
-                    for chunk_id in unchecked_incoming_ids
-                    if chunk_id in existing_incoming_ids
-                ],
-            )
+                for chunk_id in unchecked_incoming_ids
+                if chunk_id in existing_incoming_ids
+            ],
+        )
 
-            for chunk in chunks:
-                self._insert_chunk(connection, chunk)
+        for chunk in chunks:
+            self._insert_chunk(connection, chunk)
 
     def replace_signals(self, file_path: Path, signals: list[CodeSignal]) -> None:
+        with self._connect() as connection:
+            self._replace_signals_in_connection(connection, file_path, signals)
+
+    def _replace_signals_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        file_path: Path,
+        signals: list[CodeSignal] | tuple[CodeSignal, ...],
+    ) -> None:
         path = _path_key(file_path)
         deleted_at = _now()
-        with self._connect() as connection:
-            if _has_column(connection, "code_signals", "qualified_name"):
-                _replace_signals_v5(
-                    connection,
-                    path,
-                    signals,
-                    deleted_at,
-                )
-                return
+        if _has_column(connection, "code_signals", "qualified_name"):
+            _replace_signals_v5(
+                connection,
+                path,
+                signals,
+                deleted_at,
+            )
+            return
+        connection.execute(
+            """
+            UPDATE code_signals
+            SET deleted_at = ?
+            WHERE file_path = ?
+              AND deleted_at IS NULL
+            """,
+            (deleted_at, path),
+        )
+        for signal in signals:
             connection.execute(
                 """
-                UPDATE code_signals
-                SET deleted_at = ?
-                WHERE file_path = ?
-                  AND deleted_at IS NULL
-                """,
-                (deleted_at, path),
-            )
-            for signal in signals:
-                connection.execute(
-                    """
-                    INSERT INTO code_signals (
-                        signal_id, chunk_id, file_path, kind, name,
-                        start_line, end_line, language, tokens, metadata, deleted_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-                    ON CONFLICT(signal_id) DO UPDATE SET
-                        chunk_id = excluded.chunk_id,
-                        file_path = excluded.file_path,
-                        kind = excluded.kind,
-                        name = excluded.name,
-                        start_line = excluded.start_line,
-                        end_line = excluded.end_line,
-                        language = excluded.language,
-                        tokens = excluded.tokens,
-                        metadata = excluded.metadata,
-                        deleted_at = excluded.deleted_at
-                    """,
-                    (
-                        signal.signal_id,
-                        signal.chunk_id,
-                        _path_key(signal.file_path),
-                        signal.kind,
-                        signal.name,
-                        signal.start_line,
-                        signal.end_line,
-                        signal.language,
-                        _to_json_list(signal.tokens),
-                        _to_json(signal.metadata),
-                    ),
+                INSERT INTO code_signals (
+                    signal_id, chunk_id, file_path, kind, name,
+                    start_line, end_line, language, tokens, metadata, deleted_at
                 )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(signal_id) DO UPDATE SET
+                    chunk_id = excluded.chunk_id,
+                    file_path = excluded.file_path,
+                    kind = excluded.kind,
+                    name = excluded.name,
+                    start_line = excluded.start_line,
+                    end_line = excluded.end_line,
+                    language = excluded.language,
+                    tokens = excluded.tokens,
+                    metadata = excluded.metadata,
+                    deleted_at = excluded.deleted_at
+                """,
+                (
+                    signal.signal_id,
+                    signal.chunk_id,
+                    _path_key(signal.file_path),
+                    signal.kind,
+                    signal.name,
+                    signal.start_line,
+                    signal.end_line,
+                    signal.language,
+                    _to_json_list(signal.tokens),
+                    _to_json(signal.metadata),
+                ),
+            )
 
     def replace_relations(
         self, file_path: Path, relations: list[CodeRelation]
     ) -> None:
+        with self._connect() as connection:
+            self._replace_relations_in_connection(connection, file_path, relations)
+
+    def _replace_relations_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        file_path: Path,
+        relations: list[CodeRelation] | tuple[CodeRelation, ...],
+        *,
+        replace_existing: bool = True,
+    ) -> None:
         path = _path_key(file_path)
         deleted_at = _now()
-        with self._connect() as connection:
-            if _has_column(connection, "code_relations", "resolution"):
-                _replace_relations_v5(
-                    connection,
-                    path,
-                    relations,
-                    deleted_at,
-                )
-                return
-            connection.execute(
+        if _has_column(connection, "code_relations", "resolution"):
+            _replace_relations_v5(
+                connection,
+                path,
+                relations,
+                deleted_at,
+                replace_existing=replace_existing,
+            )
+            return
+        connection.execute(
+            """
+            UPDATE code_relations
+            SET deleted_at = ?
+            WHERE source_file_path = ?
+              AND deleted_at IS NULL
+            """,
+            (deleted_at, path),
+        )
+        for relation in relations:
+            source = connection.execute(
                 """
-                UPDATE code_relations
-                SET deleted_at = ?
-                WHERE source_file_path = ?
+                SELECT chunk_id, file_path
+                FROM code_signals
+                WHERE signal_id = ?
                   AND deleted_at IS NULL
                 """,
-                (deleted_at, path),
-            )
-            for relation in relations:
-                source = connection.execute(
-                    """
-                    SELECT chunk_id, file_path
-                    FROM code_signals
-                    WHERE signal_id = ?
-                      AND deleted_at IS NULL
-                    """,
-                    (relation.source_signal_id,),
-                ).fetchone()
-                if source is None:
-                    continue
-                connection.execute(
-                    """
-                    INSERT INTO code_relations (
-                        relation_id, source_signal_id, source_chunk_id,
-                        source_file_path, target_name, kind, confidence,
-                        metadata, deleted_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
-                    ON CONFLICT(relation_id) DO UPDATE SET
-                        source_signal_id = excluded.source_signal_id,
-                        source_chunk_id = excluded.source_chunk_id,
-                        source_file_path = excluded.source_file_path,
-                        target_name = excluded.target_name,
-                        kind = excluded.kind,
-                        confidence = excluded.confidence,
-                        metadata = excluded.metadata,
-                        deleted_at = excluded.deleted_at
-                    """,
-                    (
-                        relation.relation_id,
-                        relation.source_signal_id,
-                        source["chunk_id"],
-                        source["file_path"],
-                        relation.target_name,
-                        relation.kind,
-                        relation.confidence,
-                        _to_json(relation.metadata),
-                    ),
+                (relation.source_signal_id,),
+            ).fetchone()
+            if source is None:
+                continue
+            connection.execute(
+                """
+                INSERT INTO code_relations (
+                    relation_id, source_signal_id, source_chunk_id,
+                    source_file_path, target_name, kind, confidence,
+                    metadata, deleted_at
                 )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(relation_id) DO UPDATE SET
+                    source_signal_id = excluded.source_signal_id,
+                    source_chunk_id = excluded.source_chunk_id,
+                    source_file_path = excluded.source_file_path,
+                    target_name = excluded.target_name,
+                    kind = excluded.kind,
+                    confidence = excluded.confidence,
+                    metadata = excluded.metadata,
+                    deleted_at = excluded.deleted_at
+                """,
+                (
+                    relation.relation_id,
+                    relation.source_signal_id,
+                    source["chunk_id"],
+                    source["file_path"],
+                    relation.target_name,
+                    relation.kind,
+                    relation.confidence,
+                    _to_json(relation.metadata),
+                ),
+            )
 
     def signals_for_chunk(self, chunk_id: str) -> list[CodeSignal]:
         with self._connect() as connection:
@@ -5144,18 +5259,21 @@ def _replace_signals_v5(
 def _replace_relations_v5(
     connection: sqlite3.Connection,
     path: str,
-    relations: list[CodeRelation],
+    relations: list[CodeRelation] | tuple[CodeRelation, ...],
     deleted_at: int,
+    *,
+    replace_existing: bool = True,
 ) -> None:
-    connection.execute(
-        """
-        UPDATE code_relations
-        SET deleted_at = ?
-        WHERE source_file_path = ?
-          AND deleted_at IS NULL
-        """,
-        (deleted_at, path),
-    )
+    if replace_existing:
+        connection.execute(
+            """
+            UPDATE code_relations
+            SET deleted_at = ?
+            WHERE source_file_path = ?
+              AND deleted_at IS NULL
+            """,
+            (deleted_at, path),
+        )
     for relation in relations:
         _upsert_relation_v5(connection, relation)
 

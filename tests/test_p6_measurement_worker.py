@@ -166,10 +166,10 @@ def test_internal_worker_reports_self_rss_and_no_product_children(
         attribution = result["attribution"]
         assert attribution["immutable_state_load_ms"] > 0
         assert attribution["work"]["inventory_entries"] == 1
-        assert attribution["work"]["source_bytes_read"] > 0
-        assert attribution["work"]["source_bytes_hashed"] == attribution["work"][
-            "source_bytes_read"
-        ]
+        assert attribution["work"]["source_bytes_hashed"] > 0
+        assert attribution["work"]["source_bytes_read"] == 2 * attribution[
+            "work"
+        ]["source_bytes_hashed"]
         assert attribution["work"]["peak_queued_files"] == 1
         assert attribution["work"]["peak_queued_chunks"] > 0
         assert attribution["work"]["embedding_batch_inputs"] == attribution["work"][
@@ -1101,6 +1101,21 @@ def test_interrupted_run_checkpoints_completed_samples_and_resumes_only_missing(
     capsys: Any,
 ) -> None:
     module = _load_harness()
+    monkeypatch.setattr(
+        module,
+        "_calibration",
+        lambda: {
+            "valid": True,
+            "sha256_bytes": 512 * 1024**2,
+            "sha256_mib_per_s": 1.0,
+            "numpy_rows": 80000,
+            "numpy_dimensions": 384,
+            "numpy_dot_ms": 1.0,
+            "sqlite_rows": 20000,
+            "sqlite_ms": 1.0,
+            "within_pair_percent": 0.0,
+        },
+    )
     repo, manifest = _tiny_workload(module, tmp_path)
     checkpoint_dir = tmp_path / "checkpoints"
     calls: list[Path] = []
@@ -1115,7 +1130,7 @@ def test_interrupted_run_checkpoints_completed_samples_and_resumes_only_missing(
         assert not index.exists()
         index.mkdir()
         return {
-            "duration_ms": float(len(calls)),
+            "duration_ms": 1.0,
             "attribution": None,
             "rss": {
                 "process_start_bytes": 10,
@@ -1157,7 +1172,7 @@ def test_interrupted_run_checkpoints_completed_samples_and_resumes_only_missing(
         assert not index.exists()
         index.mkdir()
         return {
-            "duration_ms": float(len(calls)),
+            "duration_ms": 1.0,
             "attribution": None,
             "rss": {
                 "process_start_bytes": 10,

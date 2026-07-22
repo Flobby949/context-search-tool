@@ -975,6 +975,44 @@ def test_final_batch_operation_sets_expand_to_complete_tier_registries() -> None
         module._benchmark_set_requests(contract, "large", "all-scale")
 
 
+def test_benchmark_validation_rejects_invalid_host_evidence() -> None:
+    module = _load_harness()
+    report = _benchmark_report()
+    report["validity"] = {
+        "valid": False,
+        "reasons": ["background_cpu"],
+        "child_processes": 0,
+    }
+
+    with pytest.raises(ValueError, match="benchmark evidence is invalid"):
+        module.validate_report_data(report, "benchmark-report-v1.json")
+
+
+def test_benchmark_validation_rejects_absolute_cv_above_fifteen_percent() -> None:
+    module = _load_harness()
+    report = _benchmark_report()
+    second = deepcopy(report["samples"][0])
+    report["samples"][0]["duration_ms"] = 1.0
+    report["samples"][0]["stage_timings_ms"]["end_to_end"] = 1.0
+    second["sample_id"] = "sample-02"
+    second["duration_ms"] = 100.0
+    second["stage_timings_ms"]["end_to_end"] = 100.0
+    report["samples"].append(second)
+    report["summary"].update(
+        {
+            "sample_count": 2,
+            "median_ms": 50.5,
+            "p50_ms": 50.5,
+            "p95_ms": 100.0,
+            "max_ms": 100.0,
+            "cv_population": 49.5 / 50.5,
+        }
+    )
+
+    with pytest.raises(ValueError, match="absolute CV exceeds"):
+        module.validate_report_data(report, "benchmark-report-v1.json")
+
+
 def test_task11_documented_commands_match_closed_cli_contract() -> None:
     plan = (
         ROOT

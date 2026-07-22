@@ -1993,6 +1993,53 @@ Task 1.
   2.7x budget. Maximum RSS was 899,776,512 bytes and 1,663,025,152 bytes,
   respectively, so the 2 GiB batching trigger was not reached.
 
+  **Measured amendment (2026-07-22):** the next isolated large-tier projection
+  from clean candidate `03547ca4a46decabb59835d2ff35c3f830779a05`
+  completed in 594,424.30 ms with 2,413,608,960-byte peak RSS. Attribution
+  isolated 465,630.26 ms in SQLite persistence, versus 97,018.69 ms in parsing,
+  and recorded 20,000 per-file flushes. This fails both the reviewed 420 s
+  maximum and 2 GiB RSS boundaries and satisfies the prior amendment's
+  condition for a measured transaction/batching change.
+
+  Authorize one bounded post-closing-fence persistence path only. It keeps the
+  existing stale commit and file-write marker, commits that marker before each
+  batch, writes at most 64 canonically ordered files in one `BEGIN IMMEDIATE`
+  transaction, preserves the existing per-file fault-stage order with the
+  source hash last, and clears the marker only in the successful batch commit.
+  A fault rolls back the complete current batch; previously committed batches
+  remain stale and the next authoritative entry rebuilds them under the
+  existing stale-entry rule. Freeze exact graph/FTS/source projections, reversed
+  order, marker visibility, and recovery. No source/graph state may commit
+  before the closing fence, and this amendment authorizes no schema change,
+  payload spill, alternate journal mode, or weaker final-ready binding.
+
+  The first bounded-batch candidate
+  `121b3b8c2aae279255468f8eddc4f1cab63c9f8d` reduced flushes from 20,000
+  to 313 and completed in 462,579.21 ms at 2,079,490,048-byte peak RSS. Memory
+  passed, but 337,416.71 ms of persistence still failed the time boundary.
+  Removing the 320,000 relation-source primary-key reads did not improve the
+  next clean projection: candidate
+  `dd3db85ae3890ec6d1281e286eef1d6a69a678e2` completed in 474,830.99 ms
+  with 347,471.84 ms in persistence, so that attempted optimization was
+  rejected and removed.
+
+  Statement tracing then isolated the actual superlinear query:
+  `_replace_relations_v5()` runs `UPDATE code_relations ... WHERE
+  source_file_path = ?` once per file, while v5 has no source-file relation
+  index. On the initial `stored_signal_version < 5` path, `initialize_v5()` has
+  just created an empty relation table, so every one of those 20,000 growing
+  full-table scans is provably a no-op. Authorize skipping only that tombstone
+  UPDATE for batches written immediately after fresh v5 initialization. Existing
+  v5 rebuilds, incremental writes, and public store calls must retain the UPDATE;
+  exact relation output, stale recovery, and all fault seams remain unchanged.
+
+  Clean candidate `6c13948b16f5bcfef4acc76cb1c445bc21f6213c`
+  then completed the isolated large full build in 169,742.97 ms with
+  2,133,721,088-byte peak RSS and 41,094.39 ms in persistence. Its output SHA-256
+  remained `37184a54f8a6c8db993a5530cf82eeb86ec945dd08e25522b65c1e9a5ba92681`,
+  matching both failed candidates exactly. This passes the 300 s median,
+  420 s maximum, and 2 GiB RSS gates; the optimized branch is therefore retained.
+
 - [ ] **Step 2: Write shared repository-path-index work proofs first**
 
   First run existing correctness projections green. Then add only the named work

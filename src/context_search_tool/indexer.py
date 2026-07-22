@@ -5,6 +5,7 @@ import logging
 import os
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -100,6 +101,7 @@ from context_search_tool.scanner import (
 )
 from context_search_tool.sqlite_store import (
     FILE_WRITE_IN_PROGRESS_KEY,
+    MAX_V5_FILE_WRITE_BATCH_SIZE,
     OperationalControlObservation,
     OperationalReadyBinding,
     OperationalScanSkip,
@@ -144,6 +146,9 @@ CURRENT_SIGNAL_SCHEMA_VERSION = 5
 SIGNAL_SCHEMA_VERSION_KEY = "signal_schema_version"
 _PATH_INVENTORY_RELATION_KINDS = ("imports", "routes_to")
 _QUICK_RETRY_LIMIT = 32
+_AUTHORITATIVE_EMBEDDING_BATCH_SIZE = 512
+_AUTHORITATIVE_EMBEDDING_BATCH_BYTES = 4 * 1024 * 1024
+_AUTHORITATIVE_PERSISTENCE_BATCH_SIZE = MAX_V5_FILE_WRITE_BATCH_SIZE
 _QUICK_ALLOWED_STALE_REASONS = frozenset(
     {"files_changed", "path_inventory_changed", "topology_changed", "stale_on_entry"}
 )
@@ -359,7 +364,7 @@ class PreparedIndexSnapshot:
     source_observation_fingerprint: str
     scanned_files: tuple[ScannedFile, ...]
     repository_path_index: RepositoryPathIndex
-    prepared_files: tuple[_PreparedFile, ...]
+    prepared_files: deque[_PreparedFile]
     deleted_paths: tuple[Path, ...]
     project_units: tuple[ProjectUnit, ...]
     topology_fingerprint: str
@@ -807,7 +812,7 @@ def _refresh_repository_locked(
         )
     scanned_files = _canonical_scanned_files(scanned_files)
     rebuild_paths = content_paths | dependent_paths
-    prepared_files = tuple(
+    prepared_files = deque(
         _prepare_v5_file(
             repo=repo,
             scanned_file=scanned,
@@ -1682,7 +1687,7 @@ def _prepare_authoritative_index(
     if not opening_inventory.complete:
         raise InventoryIncompleteError()
 
-    bodies: dict[Path, bytes] = {}
+    readable_paths: set[Path] = set()
     read_results: dict[Path, ObservedFileRead] = {}
     read_skips: list[CoverageSkipObservation] = []
     read_interrupted = False
@@ -1693,7 +1698,7 @@ def _prepare_authoritative_index(
             max_file_bytes=config.index.max_file_bytes,
             require_utf8=False,
         )
-        read_results[observation.path] = result
+        read_results[observation.path] = replace(result, content=None)
         _fault(preparation_fault_hook, "source_read_complete")
         if (
             result.status == "read"
@@ -1702,7 +1707,7 @@ def _prepare_authoritative_index(
             and result.size is not None
             and result.metadata is not None
         ):
-            bodies[observation.path] = result.content
+            readable_paths.add(observation.path)
         else:
             if result.reason == "changed_during_read":
                 read_interrupted = True
@@ -1733,7 +1738,7 @@ def _prepare_authoritative_index(
             ),
             is_test=observations_by_path[path].is_test,
         )
-        for path in bodies
+        for path in readable_paths
     )
     scanned_paths = {scanned.path for scanned in scanned_files}
     deleted_paths = persisted_paths - scanned_paths
@@ -1850,24 +1855,23 @@ def _prepare_authoritative_index(
         for scanned in scanned_files
     )
     repository_path_index = RepositoryPathIndex(active_paths, active_path_units)
-    prepared_files = tuple(
-        _prepare_v5_file(
-            repo=repo,
-            scanned_file=scanned,
-            project_unit=unit_by_path[scanned.path],
-            plugins=graph_plugins,
-            repository_path_index=repository_path_index,
-            file_reader=file_reader,
-            max_file_bytes=config.index.max_file_bytes,
-            content_bytes=(
-                bodies[scanned.path]
-                if file_reader is read_scanned_file_bytes
-                else None
-            ),
+    prepared_file_list: list[_PreparedFile] = []
+    for scanned in scanned_files:
+        if scanned.path not in rebuild_paths:
+            continue
+        prepared_file_list.append(
+            _prepare_v5_file(
+                repo=repo,
+                scanned_file=scanned,
+                project_unit=unit_by_path[scanned.path],
+                plugins=graph_plugins,
+                repository_path_index=repository_path_index,
+                file_reader=file_reader,
+                max_file_bytes=config.index.max_file_bytes,
+                content_bytes=None,
+            )
         )
-        for scanned in scanned_files
-        if scanned.path in rebuild_paths
-    )
+    prepared_files = deque(prepared_file_list)
     _fault(preparation_fault_hook, "preparation_complete")
 
     prepared_by_path = {
@@ -1923,22 +1927,59 @@ def _prepare_authoritative_index(
     if embedding_chunks:
         provider = embedding_provider or provider_from_config(config.embedding)
         _validate_embedding_provider(provider, config)
-        vectors = provider.embed_texts(
-            [_embedding_text_for_chunk(chunk) for chunk in embedding_chunks]
-        )
-        if len(vectors) != len(embedding_chunks):
-            raise ValueError("embedding response count mismatch")
-        vector_store.upsert_many(
-            [
-                (chunk.embedding_id or chunk.chunk_id, vector)
-                for chunk, vector in zip(embedding_chunks, vectors)
+
+        def embedded_batches() -> Iterable[list[tuple[str, Any]]]:
+            pending_chunks: list[DocumentChunk] = []
+            pending_texts: list[str] = []
+            pending_bytes = 0
+
+            def embed_pending() -> list[tuple[str, Any]]:
+                vectors = provider.embed_texts(pending_texts)
+                if len(vectors) != len(pending_chunks):
+                    raise ValueError("embedding response count mismatch")
+                return [
+                    (chunk.embedding_id or chunk.chunk_id, vector)
+                    for chunk, vector in zip(pending_chunks, vectors)
+                ]
+
+            for chunk in embedding_chunks:
+                text = _embedding_text_for_chunk(chunk)
+                text_bytes = len(text.encode("utf-8"))
+                if pending_chunks and (
+                    len(pending_chunks) >= _AUTHORITATIVE_EMBEDDING_BATCH_SIZE
+                    or pending_bytes + text_bytes
+                    > _AUTHORITATIVE_EMBEDDING_BATCH_BYTES
+                ):
+                    yield embed_pending()
+                    pending_chunks = []
+                    pending_texts = []
+                    pending_bytes = 0
+                pending_chunks.append(chunk)
+                pending_texts.append(text)
+                pending_bytes += text_bytes
+            if pending_chunks:
+                yield embed_pending()
+
+        if force_full_reindex:
+            vector_store.replace_all_batched(
+                embedded_batches(),
+                ordered_ids=sorted(
+                    chunk.embedding_id or chunk.chunk_id
+                    for chunk in embedding_chunks
+                ),
+                normalization="l2",
+            )
+        else:
+            embedded_items = [
+                item for batch in embedded_batches() for item in batch
             ]
-        )
+            vector_store.upsert_many(embedded_items)
     _fault(preparation_fault_hook, "embedding_complete")
     expected_vector_ids.update(
         chunk.embedding_id or chunk.chunk_id for chunk in embedding_chunks
     )
-    vector_store.sort_by_id()
+    if not force_full_reindex:
+        vector_store.sort_by_id()
     if vector_store.ids != tuple(sorted(expected_vector_ids)):
         raise GraphIntegrityError("prepared vector ID set mismatch")
 
@@ -2361,18 +2402,33 @@ def _persist_prepared_index(
     _fault(active_fault_hook, "operational_ddl_complete")
     store.set_metadata(FILE_WRITE_IN_PROGRESS_KEY, "")
 
-    for item in prepared.prepared_files:
-        file_path = item.source_file.path
-        store.begin_v5_file_write(file_path)
-        _fault(active_fault_hook, "file_write_started")
-        store.replace_chunks(file_path, list(item.chunks))
-        _fault(active_fault_hook, "chunks_persisted")
-        store.replace_signals(file_path, list(item.signals))
-        _fault(active_fault_hook, "signals_persisted")
-        store.replace_relations(file_path, list(item.relations))
-        _fault(active_fault_hook, "producer_relations_persisted")
-        store.finish_v5_file_write(item.source_file)
-        _fault(active_fault_hook, "source_hash_persisted")
+    def after_file_stage(stage: str) -> None:
+        _fault(active_fault_hook, stage)
+
+    while prepared.prepared_files:
+        writes = []
+        for _ in range(
+            min(
+                _AUTHORITATIVE_PERSISTENCE_BATCH_SIZE,
+                len(prepared.prepared_files),
+            )
+        ):
+            item = prepared.prepared_files.popleft()
+            writes.append(
+                (
+                    item.source_file,
+                    item.chunks,
+                    item.signals,
+                    item.relations,
+                )
+            )
+        store.write_v5_file_batch(
+            writes,
+            after_stage=after_file_stage,
+            replace_existing_relations=(
+                prepared.stored_signal_version >= TARGET_SIGNAL_SCHEMA_VERSION
+            ),
+        )
 
     for path in prepared.deleted_paths:
         store.mark_file_deleted(path)

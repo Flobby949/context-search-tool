@@ -1,5 +1,6 @@
 import json
 import inspect
+import io
 import math
 import sqlite3
 import warnings
@@ -127,6 +128,36 @@ def test_numpy_vector_store_persists_and_filters_deleted(tmp_path: Path) -> None
     )
 
     assert [item.chunk_id for item in results] == ["chunk-b"]
+
+
+def test_vector_store_bulk_batches_fill_one_normalized_matrix(tmp_path: Path) -> None:
+    store = NumpyVectorStore.fresh(tmp_path, dimensions=2)
+    batches = iter(
+        [
+            [
+                ("chunk-c", np.asarray([3.0, 4.0], dtype=np.float32)),
+                ("chunk-a", np.asarray([0.0, 0.0], dtype=np.float32)),
+            ],
+            [("chunk-b", np.asarray([np.nan, 2.0], dtype=np.float32))],
+        ]
+    )
+
+    store.replace_all_batched(
+        batches,
+        ordered_ids=["chunk-a", "chunk-b", "chunk-c"],
+        normalization="l2",
+    )
+    frozen = store.freeze_generation_v2(
+        generation="bulk",
+        embedding_identity="fixture",
+        normalization="l2",
+    )
+    vectors = np.load(io.BytesIO(frozen.vectors_payload), allow_pickle=False)
+
+    assert store.ids == ("chunk-a", "chunk-b", "chunk-c")
+    assert np.all(np.isfinite(vectors))
+    assert np.allclose(vectors[0], [0.0, 0.0])
+    assert np.allclose(np.linalg.norm(vectors[1:], axis=1), [1.0, 1.0])
 
 
 def test_vector_search_sanitizes_non_finite_values(tmp_path: Path) -> None:

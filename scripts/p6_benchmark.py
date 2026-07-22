@@ -492,6 +492,8 @@ def _validate_benchmark_case_semantics(
     *,
     mode: str,
 ) -> None:
+    if case["calibration"]["valid"] is not True or case["validity"]["valid"] is not True:
+        raise ValueError("benchmark evidence is invalid")
     samples = case["samples"]
     summary = case["summary"]
     if summary["sample_count"] != len(samples):
@@ -524,6 +526,8 @@ def _validate_benchmark_case_semantics(
             float(summary[key]), value, rel_tol=1e-9, abs_tol=1e-9
         ):
             raise ValueError(f"benchmark {key} does not match raw samples")
+    if samples and float(summary["cv_population"]) > 0.15:
+        raise ValueError("benchmark absolute CV exceeds fifteen percent")
 
 
 def _validate_query_work_contract(
@@ -1299,6 +1303,7 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     original_scan = indexer_module.scan_workspace_v5
     original_observe_workspace = indexer_module.observe_workspace
     original_read_observed_file = indexer_module.read_observed_file
+    original_read_scanned_file_bytes = indexer_module.read_scanned_file_bytes
     original_prepare = indexer_module._prepare_v5_file
     original_embed = HashEmbeddingProvider.embed_texts
     original_resolve = indexer_module.resolve_graph_relations
@@ -1317,6 +1322,7 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     original_build_repo_profile = retrieval_module.build_repo_profile
     persistence_names = (
         "begin_v5_file_write",
+        "write_v5_file_batch",
         "replace_chunks",
         "replace_signals",
         "replace_relations",
@@ -1568,6 +1574,11 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             attributed_work["source_bytes_hashed"] += len(result.content)
         return result
 
+    def measured_scanned_file_read(*args: Any, **kwargs: Any) -> bytes:
+        result = original_read_scanned_file_bytes(*args, **kwargs)
+        attributed_work["source_bytes_read"] += len(result)
+        return result
+
     def measured_health_observed_read(*args: Any, **kwargs: Any) -> Any:
         started = time.perf_counter()
         result = original_health_read_observed_file(*args, **kwargs)
@@ -1613,7 +1624,10 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
         ) * 1000
         attributed_work["embedding_batch_calls"] += 1
         attributed_work["embedding_batch_inputs"] += len(texts)
-        attributed_work["vector_rows_queued"] += len(texts)
+        attributed_work["vector_rows_queued"] = max(
+            attributed_work["vector_rows_queued"],
+            len(texts),
+        )
         return result
 
     def persistence_wrapper(name: str) -> Any:
@@ -1625,7 +1639,7 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             attributed_stage_timings["persistence"] += (
                 time.perf_counter() - started
             ) * 1000
-            if name == "finish_v5_file_write":
+            if name in {"finish_v5_file_write", "write_v5_file_batch"}:
                 attributed_work["flush_count"] += 1
             return result
 
@@ -1813,6 +1827,7 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             indexer_module.scan_workspace_v5 = measured_scan
             indexer_module.observe_workspace = measured_inventory
             indexer_module.read_observed_file = measured_observed_read
+            indexer_module.read_scanned_file_bytes = measured_scanned_file_read
             indexer_module._prepare_v5_file = measured_prepare
             indexer_module.assert_manifest_compatible = manifest_wrapper(
                 original_indexer_manifest_assert
@@ -1880,6 +1895,7 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             indexer_module.scan_workspace_v5 = original_scan
             indexer_module.observe_workspace = original_observe_workspace
             indexer_module.read_observed_file = original_read_observed_file
+            indexer_module.read_scanned_file_bytes = original_read_scanned_file_bytes
             indexer_module._prepare_v5_file = original_prepare
             HashEmbeddingProvider.embed_texts = original_embed
             indexer_module.resolve_graph_relations = original_resolve
@@ -3678,7 +3694,9 @@ def run_benchmark(
                     "full_build",
                     "authoritative_noop",
                 } and not unsupported:
-                    work["source_bytes_read"] = source_bytes
+                    work["source_bytes_read"] = max(
+                        int(work["source_bytes_read"]), source_bytes
+                    )
                     work["source_bytes_hashed"] = source_bytes
                 work.update(_storage_work_counters(sample_repo))
                 sample = {
@@ -3775,6 +3793,13 @@ def run_benchmark(
         validity_reasons.append("power_state")
     if environment_facts["governor_state"] == "unknown":
         validity_reasons.append("governor_state")
+    cv_population = (
+        statistics.pstdev(durations) / statistics.fmean(durations)
+        if len(durations) > 1 and statistics.fmean(durations) > 0
+        else 0.0
+    )
+    if cv_population > 0.15:
+        validity_reasons.append("budget_failed")
     report = {
         "schema_version": 1,
         "report_kind": "benchmark",
@@ -3815,11 +3840,7 @@ def run_benchmark(
             "p50_ms": statistics.median(durations) if durations else 0.0,
             "p95_ms": nearest,
             "max_ms": max(durations) if durations else 0.0,
-            "cv_population": (
-                statistics.pstdev(durations) / statistics.fmean(durations)
-                if len(durations) > 1 and statistics.fmean(durations) > 0
-                else 0.0
-            ),
+            "cv_population": cv_population,
             "units": {
                 "duration": "ms",
                 "bytes": "bytes",

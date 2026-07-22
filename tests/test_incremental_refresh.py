@@ -11,8 +11,10 @@ import numpy as np
 import pytest
 
 from context_search_tool import indexer as indexer_module
+from context_search_tool import sqlite_store as sqlite_store_module
 from context_search_tool.config import DEFAULT_CONFIG, EmbeddingConfig
 from context_search_tool.graph_lifecycle import (
+    FULL_REINDEX_REQUIRED_KEY,
     GRAPH_RESOLUTION_STATE_KEY,
     OPERATIONAL_SCHEMA_VERSION_KEY,
 )
@@ -26,7 +28,7 @@ from context_search_tool.scanner import (
     read_observed_file,
     scan_workspace_v5,
 )
-from context_search_tool.sqlite_store import SQLiteStore
+from context_search_tool.sqlite_store import FILE_WRITE_IN_PROGRESS_KEY, SQLiteStore
 from context_search_tool.vector_store import NumpyVectorStore
 
 
@@ -404,6 +406,204 @@ def test_authoritative_noop_hashes_every_source_without_parse_or_embedding(
     assert work["files.parsed"] == 0
     assert work["chunks.embedded"] == 0
     assert work["vector.descriptor_action"] == "reused"
+
+
+def test_authoritative_embedding_batches_are_bounded_before_the_closing_fence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for index in range(5):
+        (repo / f"Service{index}.java").write_text(
+            f"class Service{index} {{ int value{index}; }}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(
+        indexer_module,
+        "_AUTHORITATIVE_EMBEDDING_BATCH_SIZE",
+        2,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        indexer_module,
+        "_AUTHORITATIVE_EMBEDDING_BATCH_BYTES",
+        100,
+        raising=False,
+    )
+    stages: list[str] = []
+
+    class _CeilingProvider(_RecordingRemoteProvider):
+        def embed_texts(self, texts: list[str]) -> list[np.ndarray]:
+            assert len(texts) <= 2, "authoritative embedding batch exceeded ceiling"
+            assert len(texts) == 1 or sum(
+                len(text.encode("utf-8")) for text in texts
+            ) <= 100, "authoritative embedding text batch exceeded ceiling"
+            return super().embed_texts(texts)
+
+    provider = _CeilingProvider()
+    summary = build_v5_index_snapshot(
+        repo,
+        _remote_config(),
+        graph_plugins=[_RecordingPlugin([])],
+        scanner=scan_workspace_v5,
+        embedding_provider=provider,
+        fault_hook=stages.append,
+    )
+
+    assert sum(len(call) for call in provider.calls) == 5
+    assert all(len(call) <= 2 for call in provider.calls)
+    assert summary.files_indexed == 5
+    assert stages.index("embedding_complete") < stages.index(
+        "closing_inventory_complete"
+    )
+    assert stages.index("closing_inventory_complete") < stages.index(
+        "stale_committed"
+    )
+
+
+def test_authoritative_persistence_uses_bounded_file_batches_after_closing_fence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for index in range(5):
+        (repo / f"Service{index}.java").write_text(
+            f"class Service{index} {{ int value{index}; }}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(
+        indexer_module,
+        "_AUTHORITATIVE_PERSISTENCE_BATCH_SIZE",
+        2,
+        raising=False,
+    )
+    original = SQLiteStore.write_v5_file_batch
+    batches: list[tuple[Path, ...]] = []
+
+    def counted_batch(self: SQLiteStore, writes: list[Any], **kwargs: Any) -> None:
+        batches.append(tuple(write[0].path for write in writes))
+        original(self, writes, **kwargs)
+
+    monkeypatch.setattr(SQLiteStore, "write_v5_file_batch", counted_batch)
+    stages: list[str] = []
+    summary = _build(repo, events=[], fault_hook=stages.append)
+
+    assert summary.files_indexed == 5
+    assert batches == [
+        (Path("Service0.java"), Path("Service1.java")),
+        (Path("Service2.java"), Path("Service3.java")),
+        (Path("Service4.java"),),
+    ]
+    assert stages.index("closing_inventory_complete") < stages.index(
+        "file_write_started"
+    )
+
+
+def test_authoritative_persistence_batch_fault_rolls_back_and_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for index in range(3):
+        (repo / f"Service{index}.java").write_text(
+            f"class Service{index} {{ int value{index}; }}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(
+        indexer_module,
+        "_AUTHORITATIVE_PERSISTENCE_BATCH_SIZE",
+        2,
+        raising=False,
+    )
+    completed = 0
+
+    def fail_second_file(stage: str) -> None:
+        nonlocal completed
+        if stage == "source_hash_persisted":
+            completed += 1
+            if completed == 2:
+                raise RuntimeError("batch persistence fault")
+
+    with pytest.raises(RuntimeError, match="batch persistence fault"):
+        _build(repo, events=[], fault_hook=fail_second_file)
+
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    assert store.source_files_snapshot() == ()
+    assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "stale"
+    assert store.get_metadata(FULL_REINDEX_REQUIRED_KEY) == "1"
+    assert store.get_metadata(FILE_WRITE_IN_PROGRESS_KEY)
+
+    recovered = _build(repo, events=[])
+    assert recovered.files_indexed == 3
+    assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "ready"
+    assert store.get_metadata(FILE_WRITE_IN_PROGRESS_KEY) == ""
+
+
+def test_fresh_v5_persistence_skips_only_provably_empty_relation_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App {}\n", encoding="utf-8")
+    statements: list[str] = []
+    original_open = sqlite_store_module._open_connection
+
+    def traced_open(*args: Any, **kwargs: Any):
+        connection = original_open(*args, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(sqlite_store_module, "_open_connection", traced_open)
+    _build(repo, events=[])
+    relation_cleanup = "UPDATE code_relations SET deleted_at"
+
+    def is_source_file_cleanup(statement: str) -> bool:
+        normalized = " ".join(statement.split())
+        return (
+            relation_cleanup in normalized
+            and "WHERE source_file_path =" in normalized
+        )
+
+    assert not any(
+        is_source_file_cleanup(statement) for statement in statements
+    )
+
+    statements.clear()
+    source.write_text("class App { int changed; }\n", encoding="utf-8")
+    _build(repo, events=[])
+    assert any(
+        is_source_file_cleanup(statement) for statement in statements
+    )
+
+
+def test_authoritative_discards_observed_content_before_rebuild_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    (repo / "notes.md").write_text("notes\n", encoding="utf-8")
+    reads: list[Path] = []
+    original = indexer_module.read_scanned_file_bytes
+
+    def counted_reader(repo_path: Path, scanned_file: Any, **kwargs: Any) -> bytes:
+        reads.append(scanned_file.path)
+        return original(repo_path, scanned_file, **kwargs)
+
+    monkeypatch.setattr(indexer_module, "read_scanned_file_bytes", counted_reader)
+
+    _build(repo)
+    assert reads == [Path("App.java"), Path("notes.md")]
+
+    reads.clear()
+    _build(repo)
+    assert reads == []
 
 
 def test_authoritative_hash_detects_same_size_same_mtime_content_edit(

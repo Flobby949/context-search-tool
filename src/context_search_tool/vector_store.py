@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 import stat
 import tempfile
-from typing import Callable, Literal
+from typing import Callable, Iterable, Literal
 
 import numpy as np
 
@@ -409,6 +409,50 @@ class NumpyVectorStore:
             vectors_by_id[chunk_id] = incoming
 
         self._vectors = np.vstack([vectors_by_id[chunk_id] for chunk_id in self._ids])
+
+    def replace_all_batched(
+        self,
+        batches: Iterable[list[tuple[str, np.ndarray]]],
+        *,
+        ordered_ids: list[str],
+        normalization: Literal["none", "l2"],
+    ) -> None:
+        if normalization not in {"none", "l2"}:
+            raise ValueError("vector normalization must be none or l2")
+        if len(set(ordered_ids)) != len(ordered_ids):
+            raise ValueError("vector IDs must be unique")
+        row_count = len(ordered_ids)
+        positions = {
+            chunk_id: index for index, chunk_id in enumerate(ordered_ids)
+        }
+        dimensions = int(self._vectors.shape[1])
+        vectors = np.empty((row_count, dimensions), dtype=np.float32)
+        seen: set[str] = set()
+        for batch in batches:
+            if not batch:
+                continue
+            batch_ids = [chunk_id for chunk_id, _vector in batch]
+            if (
+                len(set(batch_ids)) != len(batch_ids)
+                or seen.intersection(batch_ids)
+                or any(chunk_id not in positions for chunk_id in batch_ids)
+            ):
+                raise ValueError("vector IDs must be unique")
+            incoming = np.asarray(
+                [vector for _chunk_id, vector in batch],
+                dtype=np.float32,
+            )
+            if incoming.shape != (len(batch), dimensions):
+                raise ValueError("all vectors must have the same dimensions")
+            if normalization == "l2":
+                incoming = _normalize_matrix(incoming)
+            vectors[[positions[chunk_id] for chunk_id in batch_ids]] = incoming
+            seen.update(batch_ids)
+        if len(seen) != row_count:
+            raise ValueError("vector batches do not match declared row count")
+        self._ids = list(ordered_ids)
+        self._vectors = vectors
+        self._normalization = normalization
 
     def remove_many(self, chunk_ids: list[str]) -> None:
         removed = set(chunk_ids)
