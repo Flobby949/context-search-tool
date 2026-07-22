@@ -3619,6 +3619,13 @@ def run_benchmark(
         environment_facts["background_cpu_percent"],
         current_environment["background_cpu_percent"],
     )
+    read_only_operation = operation in {
+        "stats",
+        "status_quick",
+        "status_verified",
+        "query",
+        "explore",
+    }
     with tempfile.TemporaryDirectory(
         prefix="p6-measurements-",
         dir=repo_path.parent,
@@ -3626,20 +3633,18 @@ def run_benchmark(
         sample_parent = Path(raw_sample_parent)
         ready_repo: Path | None = None
         if supported and len(samples) < sample_count and operation != "full_build":
-            ready_repo = _clone_operation_repo(
-                repo_path,
-                operation,
-                sample_parent,
+            ready_repo = (
+                repo_path
+                if read_only_operation
+                and (repo_path / ".context-search").is_dir()
+                else _clone_operation_repo(
+                    repo_path,
+                    operation,
+                    sample_parent,
+                )
             )
             if not (ready_repo / ".context-search").exists():
                 _run_measurement_worker("full_build", ready_repo, "default")
-        read_only_operation = operation in {
-            "stats",
-            "status_quick",
-            "status_verified",
-            "query",
-            "explore",
-        }
         resident_context = (
             _ResidentMeasurementSession(
                 operation,

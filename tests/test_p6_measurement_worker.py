@@ -1083,6 +1083,82 @@ def test_read_only_measurements_prepare_one_ready_clone_and_reuse_it(
     assert not (repo / ".context-search").exists()
 
 
+def test_read_only_measurements_reuse_existing_ready_repo_without_clone(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    module = _load_harness()
+    repo, manifest = _tiny_workload(module, tmp_path)
+    index = repo / ".context-search"
+    index.mkdir()
+    (index / "ready").write_text("ready", encoding="utf-8")
+    calls: list[Path] = []
+    environment = module._environment()
+    environment.update(
+        {
+            "cpu_count": max(8, environment["cpu_count"]),
+            "memory_bytes": max(16 * 1024**3, environment["memory_bytes"]),
+            "local_disk_class": "ssd",
+            "power_state": "external",
+            "governor_state": "not_applicable",
+            "swap_before_bytes": 0,
+            "swap_after_bytes": 0,
+            "background_cpu_percent": 0.0,
+        }
+    )
+
+    def fake_worker(operation: str, sample_repo: Path, case_id: str) -> dict[str, Any]:
+        assert operation == "query"
+        assert case_id == "benchword1"
+        assert sample_repo == repo.resolve()
+        assert (sample_repo / ".context-search" / "ready").is_file()
+        calls.append(sample_repo)
+        return {
+            "duration_ms": 1.0,
+            "attribution": None,
+            "rss": {
+                "process_start_bytes": 10,
+                "peak_bytes": 20,
+                "current_bytes": 15,
+                "empty_harness_peak_bytes": 10,
+                "extra_peak_bytes": 10,
+            },
+            "product_subprocesses": 0,
+        }
+
+    monkeypatch.setattr(module, "_environment", lambda: dict(environment))
+    monkeypatch.setattr(module, "_run_measurement_worker", fake_worker)
+    monkeypatch.setattr(
+        module,
+        "_calibration",
+        lambda: {
+            "valid": True,
+            "sha256_bytes": 512 * 1024**2,
+            "sha256_mib_per_s": 1.0,
+            "numpy_rows": 80000,
+            "numpy_dimensions": 384,
+            "numpy_dot_ms": 1.0,
+            "sqlite_rows": 20000,
+            "sqlite_ms": 1.0,
+            "within_pair_percent": 0.0,
+        },
+    )
+
+    report = module.run_benchmark(
+        repo,
+        manifest,
+        operation="query",
+        case_id="benchword1",
+        sample_count=2,
+        measurement_state="cli_process_cold",
+        mode="baseline",
+    )
+
+    assert calls == [repo.resolve()] * 4
+    assert report["operation"]["outcome"] == "supported"
+    assert (index / "ready").read_text(encoding="utf-8") == "ready"
+
+
 def test_unsupported_state_never_invokes_measurement_worker(
     tmp_path: Path,
     monkeypatch: Any,

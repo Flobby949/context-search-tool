@@ -2445,6 +2445,17 @@ Task 1.
   the resulting query measured 1.78 s end to end: signal recall was 0.14 s,
   ranking 0.09 s, and relation expansion 0.08 s.
 
+  A pre-final large diagnostic then exposed a harness-only observation bug:
+  `run_benchmark_set` built an observation-consistent `shared-ready` repository,
+  but each read-only case copied it again. On macOS the copy changes source
+  `ctime`, so quick/verified status can truthfully report stale even though the
+  timed operation is supposed to start from ready state. The
+  `tdd-task-9-ready-reuse.json` checkpoint therefore authorizes reusing an
+  existing indexed repository only for the closed read-only operation set
+  (`stats`, both status modes, query, and explore). Pristine inputs retain the
+  existing isolated clone-and-build path; mutating operations retain per-sample
+  clones. This changes no product behavior or acceptance threshold.
+
 - [ ] **Step 2: Skip unused repository profiles with a protective test**
 
   Run current candidate/output projections green, add only the new work tests,
@@ -3278,6 +3289,7 @@ their schema-defined inputs.
     --input .quality/p6-artifacts/tdd-task-9-harness-v2.json \
     --input .quality/p6-artifacts/tdd-task-9-path-roles-v2.json \
     --input .quality/p6-artifacts/tdd-task-9-sqlite-query.json \
+    --input .quality/p6-artifacts/tdd-task-9-ready-reuse.json \
     --input .quality/p6-artifacts/tdd-task-10.json \
     --input .quality/p6-artifacts/tdd-task-10-resident.json \
     --output .quality/p6-artifacts/final-quality.json
