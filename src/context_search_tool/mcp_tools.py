@@ -83,7 +83,7 @@ def context_search_index_tool(repo: str) -> dict[str, Any]:
         IncompatibleSignalSchemaError,
     ) as exc:
         return _error(exc.code, str(exc))
-    except requests.HTTPError:
+    except requests.RequestException:
         return _error("index_failed", "remote embedding request failed")
     except (
         RepositoryNotFoundError,

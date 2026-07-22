@@ -1729,9 +1729,18 @@ def test_mcp_index_maps_busy_to_existing_index_failed_envelope(
     }
 
 
-def test_mcp_index_sanitizes_remote_provider_http_error(
+@pytest.mark.parametrize(
+    "error_type",
+    [
+        mcp_tools.requests.HTTPError,
+        mcp_tools.requests.ConnectionError,
+        mcp_tools.requests.Timeout,
+    ],
+)
+def test_mcp_index_sanitizes_remote_provider_request_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1740,17 +1749,26 @@ def test_mcp_index_sanitizes_remote_provider_http_error(
         mcp_tools,
         "index_repository",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            mcp_tools.requests.HTTPError(secret)
+            error_type(secret)
         ),
     )
 
-    assert context_search_index_tool(str(repo)) == {
+    try:
+        payload = context_search_index_tool(str(repo))
+    except Exception as exc:
+        payload = None
+        rendered = str(exc)
+    else:
+        rendered = json.dumps(payload)
+
+    assert payload == {
         "ok": False,
         "error": {
             "code": "index_failed",
             "message": "remote embedding request failed",
         },
     }
+    assert secret not in rendered
 
 
 def test_mcp_stats_logs_stale_without_changing_payload(

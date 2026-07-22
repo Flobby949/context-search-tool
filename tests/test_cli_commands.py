@@ -868,9 +868,18 @@ def test_cli_index_maps_busy_without_traceback(
     assert "Traceback" not in result.output
 
 
-def test_cli_index_sanitizes_remote_provider_http_error(
+@pytest.mark.parametrize(
+    "error_type",
+    [
+        cli.requests.HTTPError,
+        cli.requests.ConnectionError,
+        cli.requests.Timeout,
+    ],
+)
+def test_cli_index_sanitizes_remote_provider_request_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -879,7 +888,7 @@ def test_cli_index_sanitizes_remote_provider_http_error(
         cli,
         "index_repository",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            cli.requests.HTTPError(secret)
+            error_type(secret)
         ),
     )
 

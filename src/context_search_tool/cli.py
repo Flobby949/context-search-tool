@@ -83,7 +83,7 @@ def index(repo: Optional[Path] = typer.Argument(None)) -> None:
             resolved_repo,
             config_loader=load_config,
         )
-    except requests.HTTPError:
+    except requests.RequestException:
         _exit_with_error(ValueError("remote embedding request failed"))
     except (
         IncompatibleIndexError,
