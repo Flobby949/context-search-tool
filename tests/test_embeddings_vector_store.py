@@ -130,6 +130,43 @@ def test_numpy_vector_store_persists_and_filters_deleted(tmp_path: Path) -> None
     assert [item.chunk_id for item in results] == ["chunk-b"]
 
 
+def test_sort_by_id_reuses_an_already_sorted_matrix(tmp_path: Path) -> None:
+    store = NumpyVectorStore.fresh(tmp_path, dimensions=2)
+    store._ids = ["a", "b"]
+    store._vectors = np.asarray(
+        [[1.0, 0.0], [0.0, 1.0]],
+        dtype=np.float32,
+    )
+    original = store._vectors
+
+    store.sort_by_id()
+
+    assert store.ids == ("a", "b")
+    assert store._vectors is original
+
+
+def test_l2_validation_uses_bounded_row_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vectors = np.tile(
+        np.asarray([[1.0, 0.0]], dtype=np.float32),
+        (8_193, 1),
+    )
+    observed_rows: list[int] = []
+    original_norm = np.linalg.norm
+
+    def tracked_norm(values: np.ndarray, *args: object, **kwargs: object):
+        observed_rows.append(values.shape[0])
+        return original_norm(values, *args, **kwargs)
+
+    monkeypatch.setattr(vector_store_module.np.linalg, "norm", tracked_norm)
+
+    vector_store_module._validate_l2_normalization(vectors)
+
+    assert len(observed_rows) == 3
+    assert max(observed_rows) <= 4_096
+
+
 def test_vector_store_bulk_batches_fill_one_normalized_matrix(tmp_path: Path) -> None:
     store = NumpyVectorStore.fresh(tmp_path, dimensions=2)
     batches = iter(

@@ -368,12 +368,18 @@ def test_quick_refresh_post_response_fault_is_performed_and_non_mutating(
 
 def test_authoritative_noop_hashes_every_source_without_parse_or_embedding(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
     (repo / "notes.md").write_text("notes\n", encoding="utf-8")
     _build(repo)
+    source_metadata = (repo / "App.java").stat()
+    os.utime(
+        repo / "App.java",
+        ns=(source_metadata.st_atime_ns, source_metadata.st_mtime_ns + 1_000_000),
+    )
     reads: list[Path] = []
     events: list[str] = []
 
@@ -387,6 +393,51 @@ def test_authoritative_noop_hashes_every_source_without_parse_or_embedding(
 
         def embed_texts(self, texts: list[str]):
             raise AssertionError("no-op sent unchanged source for embedding")
+
+    def forbidden_graph_work(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("no-op repeated unchanged graph work")
+
+    graph_integrity_calls = 0
+    original_graph_integrity = sqlite_store_module._graph_integrity
+
+    def tracked_graph_integrity(*args: Any, **kwargs: Any):
+        nonlocal graph_integrity_calls
+        graph_integrity_calls += 1
+        return original_graph_integrity(*args, **kwargs)
+
+    vector_verify_calls = 0
+    original_vector_verify = NumpyVectorStore.verify_published_snapshot.__func__
+
+    def tracked_vector_verify(cls: type[Any], *args: Any, **kwargs: Any):
+        nonlocal vector_verify_calls
+        vector_verify_calls += 1
+        return original_vector_verify(cls, *args, **kwargs)
+
+    monkeypatch.setattr(
+        indexer_module,
+        "resolve_graph_relations",
+        forbidden_graph_work,
+    )
+    monkeypatch.setattr(
+        indexer_module,
+        "regenerate_test_associations",
+        forbidden_graph_work,
+    )
+    monkeypatch.setattr(
+        SQLiteStore,
+        "active_embedding_ids",
+        forbidden_graph_work,
+    )
+    monkeypatch.setattr(
+        sqlite_store_module,
+        "_graph_integrity",
+        tracked_graph_integrity,
+    )
+    monkeypatch.setattr(
+        NumpyVectorStore,
+        "verify_published_snapshot",
+        classmethod(tracked_vector_verify),
+    )
 
     summary = _build(
         repo,
@@ -406,6 +457,8 @@ def test_authoritative_noop_hashes_every_source_without_parse_or_embedding(
     assert work["files.parsed"] == 0
     assert work["chunks.embedded"] == 0
     assert work["vector.descriptor_action"] == "reused"
+    assert graph_integrity_calls == 0
+    assert vector_verify_calls == 1
 
 
 def test_authoritative_embedding_batches_are_bounded_before_the_closing_fence(

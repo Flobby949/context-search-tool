@@ -234,6 +234,7 @@ V5_RELATION_COLUMNS = {
     "deleted_at",
 }
 V5_INDEXES = {
+    "idx_chunks_embedding_active",
     "idx_code_signals_chunk_active",
     "idx_code_signals_file_active",
     "idx_code_signals_selector_active",

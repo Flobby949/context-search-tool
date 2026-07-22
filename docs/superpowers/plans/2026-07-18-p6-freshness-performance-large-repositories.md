@@ -2053,6 +2053,40 @@ Task 1.
   are retained only as local diagnostic evidence and must not be resumed or
   published. A clean-identity final capture is still required.
 
+  A clean retry from `7b9762d` then passed the full-build case with a
+  202,984.55 ms median, 214,305.29 ms maximum, 0.0272 population CV,
+  2,029,240,320-byte maximum RSS, and 2,221,376,368-byte ready snapshot. The
+  next measured case exposed a separate authoritative no-op failure: five
+  samples had a 29,744.32 ms median, 38,177.41 ms maximum, and
+  1,229,160,448-byte maximum extra RSS. Attribution showed that unchanged
+  input still re-resolved 320,000 relations, regenerated associations, loaded
+  the active embedding IDs twice, performed six vector payload passes, and
+  unconditionally copied an already sorted vector matrix. The same capture's
+  quick-status case had a 2,583.71 ms p95 and one 4,299.89 ms outlier, producing
+  an invalid 0.2225 population CV.
+
+  **Measured no-op/status amendment (2026-07-22):** authorize one exact partial
+  SQLite index on active non-null `chunks.embedding_id`. A CoW copy of the
+  large database measured a 4,857,856-byte index, 0.13 s creation time, and a
+  covering lookup reduction from 0.130 s to 0.014 s; it removes the shared
+  full-row scan used by authoritative no-op and both quick-status snapshots.
+  When a snapshot is already `ready`, its operational/manifest/vector
+  descriptor bindings are exact, its active embedding IDs and counts validate,
+  every eligible source has just been hashed equal, topology and project-scope
+  metadata match, and no rebuild/deletion is prepared, the prior atomic ready
+  commit is the authoritative graph-integrity proof. That exact branch may skip
+  relation re-resolution, association regeneration, and duplicate graph scans;
+  it must still use the stale-to-ready crash protocol and perform the final
+  vector content verification. L2 verification must use bounded 4,096-row
+  batches, and already sorted vector matrices must not be copied.
+
+  The retained dirty candidate then measured authoritative no-op at
+  13,668.71 ms with 486,621,184-byte extra RSS, all 512 MiB hashed, and zero
+  parse/embed/relation work. Five quick-status diagnostics measured
+  1,683.54--1,927.35 ms with at most 220,282,880-byte extra RSS. These are
+  diagnostic projections only; clean-identity final samples and the complete
+  regression suite remain required.
+
 - [ ] **Step 2: Write shared repository-path-index work proofs first**
 
   First run existing correctness projections green. Then add only the named work

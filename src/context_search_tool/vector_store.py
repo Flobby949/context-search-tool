@@ -475,6 +475,8 @@ class NumpyVectorStore:
         if len(self._ids) < 2:
             return
         order = sorted(range(len(self._ids)), key=self._ids.__getitem__)
+        if all(index == value for index, value in enumerate(order)):
+            return
         self._ids = [self._ids[index] for index in order]
         self._vectors = self._vectors[order]
 
@@ -1244,14 +1246,19 @@ def _regular_file_size(path: Path, label: str) -> int:
 def _validate_l2_normalization(vectors: np.ndarray) -> None:
     if vectors.ndim != 2:
         raise VectorDescriptorCorruptionError("invalid vector normalization shape")
-    if not np.isfinite(vectors).all():
-        raise VectorDescriptorCorruptionError("invalid vector normalization values")
     if vectors.shape[0] == 0:
         return
-    norms = np.linalg.norm(vectors, axis=1)
-    valid = np.logical_or(norms == 0.0, np.isclose(norms, 1.0, rtol=1e-5, atol=1e-6))
-    if not bool(np.all(valid)):
-        raise VectorDescriptorCorruptionError("vector normalization mismatch")
+    for start in range(0, vectors.shape[0], 4_096):
+        batch = vectors[start : start + 4_096]
+        if not np.isfinite(batch).all():
+            raise VectorDescriptorCorruptionError("invalid vector normalization values")
+        norms = np.linalg.norm(batch, axis=1)
+        valid = np.logical_or(
+            norms == 0.0,
+            np.isclose(norms, 1.0, rtol=1e-5, atol=1e-6),
+        )
+        if not bool(np.all(valid)):
+            raise VectorDescriptorCorruptionError("vector normalization mismatch")
 
 
 def _atomic_file_write(

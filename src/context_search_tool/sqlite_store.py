@@ -59,6 +59,11 @@ _DIRECT_TEXT_CJK_SEQUENCE_RE = re.compile(r"[㐀-鿿]{2,}")
 _SIGNAL_SQL_SAFE_TOKEN_RE = re.compile(r"[a-z0-9_./:$-]+")
 _DEFAULT_BUSY_TIMEOUT_MS = 5_000
 MAX_V5_FILE_WRITE_BATCH_SIZE = 64
+_ACTIVE_EMBEDDING_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_chunks_embedding_active
+ON chunks(embedding_id)
+WHERE deleted_at IS NULL AND embedding_id IS NOT NULL
+"""
 _RESOLVED_STATES = ("resolved_exact", "resolved_unique")
 PRODUCER_RESOLUTION_GENERATION_KEY = "graph_producer_resolution_generation"
 TEST_ASSOCIATION_SOURCE_GENERATION_KEY = (
@@ -612,6 +617,7 @@ class SQLiteStore:
         expected_source_count: int,
         expected_chunk_count: int,
         external_validator: Callable[[], None],
+        graph_snapshot_unchanged: bool = False,
         tombstone_purge_limit: int = 0,
         before_commit: Callable[[], None] | None = None,
         busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
@@ -627,6 +633,8 @@ class SQLiteStore:
             raise ValueError("expected source count must be non-negative")
         if type(expected_chunk_count) is not int or expected_chunk_count < 0:
             raise ValueError("expected chunk count must be non-negative")
+        if type(graph_snapshot_unchanged) is not bool:
+            raise ValueError("graph snapshot state must be boolean")
         connection = _open_connection(self.db_path, busy_timeout_ms)
         try:
             read_operational_capability(_ConnectionMetadataReader(connection))
@@ -636,16 +644,18 @@ class SQLiteStore:
             read_operational_capability(_ConnectionMetadataReader(connection))
             _require_target_schema(connection)
             _require_operational_schema_v1(connection)
-            integrity = _graph_integrity(connection)
-            if not integrity.ok:
-                raise GraphIntegrityError("graph integrity check failed")
-            _validate_v5_snapshot(
-                connection,
-                expected_embedding_ids=expected_embedding_ids,
-                expected_source_count=expected_source_count,
-                expected_chunk_count=expected_chunk_count,
-                expected_producer_resolution_generation=None,
-            )
+            integrity = GraphIntegrityResult()
+            if not graph_snapshot_unchanged:
+                integrity = _graph_integrity(connection)
+                if not integrity.ok:
+                    raise GraphIntegrityError("graph integrity check failed")
+                _validate_v5_snapshot(
+                    connection,
+                    expected_embedding_ids=expected_embedding_ids,
+                    expected_source_count=expected_source_count,
+                    expected_chunk_count=expected_chunk_count,
+                    expected_producer_resolution_generation=None,
+                )
             sources, skips, controls = _read_operational_observations(connection)
             _validate_bound_operational_observations(
                 binding,
@@ -4281,6 +4291,7 @@ def operational_observation_fingerprint(
 
 def _operational_schema_v1_statements() -> tuple[str, ...]:
     return (
+        _ACTIVE_EMBEDDING_INDEX_SQL,
         """
         CREATE TABLE IF NOT EXISTS scan_skips (
             path TEXT PRIMARY KEY,
@@ -5002,6 +5013,7 @@ def _common_schema_statements() -> tuple[str, ...]:
         CREATE INDEX IF NOT EXISTS idx_chunks_file_active
         ON chunks(file_path, deleted_at)
         """,
+        _ACTIVE_EMBEDDING_INDEX_SQL,
         """
         CREATE TABLE IF NOT EXISTS symbols (
             symbol_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5185,6 +5197,7 @@ def _v5_schema_statements() -> tuple[str, ...]:
         ON code_relations(target_name, deleted_at)
         WHERE resolution = 'legacy'
         """,
+        _ACTIVE_EMBEDDING_INDEX_SQL,
     )
 
 

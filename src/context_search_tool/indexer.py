@@ -378,6 +378,7 @@ class PreparedIndexSnapshot:
     stale_reason: str
     force_full_reindex: bool
     stored_signal_version: int
+    graph_inputs_unchanged: bool
     suppress_fault_hooks: bool
     summary: IndexSummary
 
@@ -1081,6 +1082,7 @@ def _refresh_repository_locked(
         stale_reason=stale_reason,
         force_full_reindex=False,
         stored_signal_version=TARGET_SIGNAL_SCHEMA_VERSION,
+        graph_inputs_unchanged=False,
         suppress_fault_hooks=False,
         summary=IndexSummary(
             files_seen=len(scanned_files),
@@ -1638,7 +1640,11 @@ def _prepare_authoritative_index(
     embedding_identity = embedding_config_hash(config.embedding)
     effective_index_hash = index_config_hash(config)
     existing_ids = (
-        store.active_embedding_ids()
+        (
+            set(operational_snapshot.active_embedding_ids)
+            if operational_snapshot is not None
+            else store.active_embedding_ids()
+        )
         if stored_version == TARGET_SIGNAL_SCHEMA_VERSION
         else set()
     )
@@ -1675,6 +1681,16 @@ def _prepare_authoritative_index(
         operational_snapshot,
         current_descriptor,
         entry_state=entry_state,
+    )
+    bound_ready_snapshot = bool(
+        entry_state == "ready"
+        and operational_snapshot is not None
+        and current_descriptor is not None
+        and isinstance(
+            loaded_manifest.manifest if loaded_manifest is not None else None,
+            ManifestV2,
+        )
+        and not binding_integrity_failed
     )
     opening_inventory = inventory_observer(repo, config)
     quiet_candidate = _opening_matches_operational_snapshot(
@@ -1792,6 +1808,7 @@ def _prepare_authoritative_index(
         and no_file_changes
         and not topology_changed
         and project_scope_metadata_current
+        and not bound_ready_snapshot
     ):
         try:
             stats = store.stats()
@@ -2166,6 +2183,15 @@ def _prepare_authoritative_index(
         stale_reason=stale_reason,
         force_full_reindex=force_full_reindex,
         stored_signal_version=stored_version,
+        graph_inputs_unchanged=bool(
+            stored_version == TARGET_SIGNAL_SCHEMA_VERSION
+            and entry_state == "ready"
+            and not force_full_reindex
+            and not rebuild_paths
+            and not deleted_paths
+            and not topology_changed
+            and bound_ready_snapshot
+        ),
         suppress_fault_hooks=suppress_fault_hooks,
         summary=summary,
     )
@@ -2379,6 +2405,13 @@ def _persist_prepared_index(
     )
     vector_generation = prepared.prepared_vector_generation
     quick_refresh = prepared.prepared_manifest.manifest.operation_mode == "quick_refresh"
+    verified_authoritative_noop = bool(
+        not quick_refresh
+        and prepared.graph_inputs_unchanged
+        and not prepared.prepared_files
+        and not prepared.deleted_paths
+        and not prepared.force_full_reindex
+    )
     if quick_refresh:
         if prepared.frozen_vector_generation is not None:
             vector_generation = publisher.materialize_frozen_generation(
@@ -2434,16 +2467,21 @@ def _persist_prepared_index(
         store.mark_file_deleted(path)
         _fault(active_fault_hook, "deletion_persisted")
 
-    producer_resolved = resolve_graph_relations(store, association_only=False)
-    producer_generation = store.advance_producer_resolution_generation()
-    _fault(active_fault_hook, "producer_resolver_complete")
-    associations = regenerate_test_associations(
-        store,
-        producer_resolution_generation=producer_generation,
-    )
-    _fault(active_fault_hook, "associations_complete")
-    association_resolved = resolve_graph_relations(store, association_only=True)
-    _fault(active_fault_hook, "association_resolver_complete")
+    if verified_authoritative_noop:
+        producer_resolved = 0
+        associations = ()
+        association_resolved = 0
+    else:
+        producer_resolved = resolve_graph_relations(store, association_only=False)
+        producer_generation = store.advance_producer_resolution_generation()
+        _fault(active_fault_hook, "producer_resolver_complete")
+        associations = regenerate_test_associations(
+            store,
+            producer_resolution_generation=producer_generation,
+        )
+        _fault(active_fault_hook, "associations_complete")
+        association_resolved = resolve_graph_relations(store, association_only=True)
+        _fault(active_fault_hook, "association_resolver_complete")
 
     store.replace_operational_observations(
         observation_generation=prepared.observation_generation,
@@ -2494,7 +2532,8 @@ def _persist_prepared_index(
         repo=repo,
         prepared=prepared,
     )
-    validator()
+    if not verified_authoritative_noop:
+        validator()
     _fault(active_fault_hook, "external_artifacts_validated")
     store.set_metadata(
         PROJECT_SCOPE_METADATA_VERSION_KEY,
@@ -2532,6 +2571,7 @@ def _persist_prepared_index(
         expected_source_count=manifest.total_files,
         expected_chunk_count=manifest.total_chunks,
         external_validator=validator,
+        graph_snapshot_unchanged=verified_authoritative_noop,
         tombstone_purge_limit=tombstone_purge_limit,
         before_commit=lambda: _fault(
             active_fault_hook,
