@@ -12,6 +12,7 @@ import time
 import numpy as np
 import pytest
 
+from context_search_tool import indexer as indexer_module
 from context_search_tool.config import DEFAULT_CONFIG, EmbeddingConfig, render_config
 from context_search_tool.graph_lifecycle import (
     FULL_REINDEX_REQUIRED_KEY,
@@ -21,7 +22,7 @@ from context_search_tool.graph_lifecycle import (
     read_graph_capability,
 )
 from context_search_tool.index_lock import INDEX_LOCK_FILENAME, exclusive_index_lock
-from context_search_tool.indexer import build_v5_index_snapshot, refresh_repository
+from context_search_tool.indexer import build_v5_index_snapshot
 from context_search_tool.java_graph import JavaGraphProducer
 from context_search_tool.scanner import observe_workspace, scan_workspace_v5
 from context_search_tool.sqlite_store import SQLiteStore
@@ -50,6 +51,12 @@ def _v5_store(tmp_path: Path) -> SQLiteStore:
     store.set_metadata("signal_schema_version", "4")
     store.migrate_signal_schema_v5()
     return store
+
+
+def _task6_refresh_entry():
+    refresh = getattr(indexer_module, "refresh_repository", None)
+    assert callable(refresh), "P6 internal quick-refresh entry is absent"
+    return refresh
 
 
 @pytest.mark.parametrize(
@@ -698,6 +705,7 @@ def test_refresh_ready_commit_is_the_vector_cleanup_reader_barrier(
     from context_search_tool.retrieval import query_repository
     from context_search_tool.retrieval_core import selection
 
+    refresh = _task6_refresh_entry()
     repo = tmp_path / "repo"
     repo.mkdir()
     source = repo / "SnapshotService.java"
@@ -749,7 +757,7 @@ def test_refresh_ready_commit_is_the_vector_cleanup_reader_barrier(
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         writer = executor.submit(
-            refresh_repository,
+            refresh,
             repo,
             DEFAULT_CONFIG,
             graph_plugins=[JavaGraphProducer()],
@@ -897,6 +905,7 @@ def test_ready_query_rejects_persisted_config_damage_without_mutation(
 def test_quick_refresh_post_provider_drift_reports_performed_and_preserves_ready(
     tmp_path: Path,
 ) -> None:
+    refresh = _task6_refresh_entry()
     config = replace(
         DEFAULT_CONFIG,
         embedding=EmbeddingConfig(
@@ -951,7 +960,7 @@ def test_quick_refresh_post_provider_drift_reports_performed_and_preserves_ready
             source.write_text("class App { int drifted; }\n", encoding="utf-8")
         return observe_workspace(repo_path, effective_config)
 
-    result = refresh_repository(
+    result = refresh(
         repo,
         config,
         graph_plugins=[JavaGraphProducer()],
@@ -972,6 +981,7 @@ def test_quick_refresh_post_provider_drift_reports_performed_and_preserves_ready
 def test_quick_refresh_retrieval_only_config_edit_is_a_true_noop(
     tmp_path: Path,
 ) -> None:
+    refresh = _task6_refresh_entry()
     from context_search_tool.indexer import index_repository
     from context_search_tool.manifest import ManifestV2, load_manifest
 
@@ -998,7 +1008,7 @@ def test_quick_refresh_retrieval_only_config_edit_is_a_true_noop(
         for name in ("manifest.json", "vector_snapshot.json", "index.sqlite")
     )
 
-    result = refresh_repository(repo, graph_plugins=[JavaGraphProducer()])
+    result = refresh(repo, graph_plugins=[JavaGraphProducer()])
 
     assert result.ok is True
     assert result.summary.observation_generation == manifest.manifest_generation
@@ -1012,6 +1022,7 @@ def test_quick_refresh_retrieval_only_config_edit_is_a_true_noop(
 def test_quick_refresh_retry_recovers_fault_immediately_after_stale(
     tmp_path: Path,
 ) -> None:
+    refresh = _task6_refresh_entry()
     from context_search_tool.indexer import index_repository
 
     repo = tmp_path / "repo"
@@ -1025,7 +1036,7 @@ def test_quick_refresh_retry_recovers_fault_immediately_after_stale(
         if stage == "stale_committed":
             raise RuntimeError("injected")
 
-    failed = refresh_repository(
+    failed = refresh(
         repo,
         DEFAULT_CONFIG,
         graph_plugins=[JavaGraphProducer()],
@@ -1037,7 +1048,7 @@ def test_quick_refresh_retry_recovers_fault_immediately_after_stale(
     assert failed.network_egress_outcome == "not_attempted"
     assert read_graph_capability(store).status == "stale"
 
-    recovered = refresh_repository(
+    recovered = refresh(
         repo,
         DEFAULT_CONFIG,
         graph_plugins=[JavaGraphProducer()],
@@ -1052,6 +1063,7 @@ def test_quick_refresh_retry_recovers_fault_immediately_after_stale(
 def test_quick_refresh_retries_at_most_32_oldest_retryable_skips(
     tmp_path: Path,
 ) -> None:
+    refresh = _task6_refresh_entry()
     from context_search_tool.scanner import ObservedFileRead, read_observed_file
 
     repo = tmp_path / "repo"
@@ -1087,7 +1099,7 @@ def test_quick_refresh_retries_at_most_32_oldest_retryable_skips(
         reads.append(observation.path)
         return read_observed_file(repo_path, observation, **kwargs)
 
-    first = refresh_repository(
+    first = refresh(
         repo,
         DEFAULT_CONFIG,
         graph_plugins=[JavaGraphProducer()],
@@ -1101,7 +1113,7 @@ def test_quick_refresh_retries_at_most_32_oldest_retryable_skips(
     assert reads == [Path(f"File{index:02d}.java") for index in range(32)]
 
     reads.clear()
-    second = refresh_repository(
+    second = refresh(
         repo,
         DEFAULT_CONFIG,
         graph_plugins=[JavaGraphProducer()],
@@ -1112,3 +1124,117 @@ def test_quick_refresh_retries_at_most_32_oldest_retryable_skips(
     assert second.summary.work.inventory.retryable_skip_attempts == 1
     assert second.summary.files.coverage_skips == 0
     assert reads == [Path("File32.java")]
+
+
+def test_quick_refresh_source_rename_replaces_path_bound_state_atomically(
+    tmp_path: Path,
+) -> None:
+    from context_search_tool.indexer import index_repository
+    from context_search_tool.scanner import read_observed_file
+
+    refresh = _task6_refresh_entry()
+    repo = tmp_path / "repo"
+    source_dir = repo / "src"
+    source_dir.mkdir(parents=True)
+    old_relative = Path("src/OldService.java")
+    new_relative = Path("src/RenamedService.java")
+    payload = b"package demo; class StableService { int stableToken; }\n"
+    old_path = repo / old_relative
+    old_path.write_bytes(payload)
+
+    index_repository(repo, DEFAULT_CONFIG)
+    index_dir = repo / ".context-search"
+    store = SQLiteStore(index_dir / "index.sqlite")
+    old_source = store.source_file_for_path(old_relative)
+    assert old_source is not None
+    old_chunk_ids = store.active_chunk_ids()
+    old_embedding_ids = store.active_embedding_ids()
+    old_descriptor = NumpyVectorStore.published_descriptor(index_dir)
+    assert old_descriptor is not None
+
+    old_path.rename(repo / new_relative)
+    reads: list[Path] = []
+
+    def recording_reader(repo_path: Path, observation, **kwargs):
+        reads.append(observation.path)
+        return read_observed_file(repo_path, observation, **kwargs)
+
+    result = refresh(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+        observed_reader=recording_reader,
+    )
+
+    assert result.ok is True
+    assert result.network_egress_performed is False
+    assert reads == [new_relative]
+    summary = result.summary.to_dict()
+    assert summary["files"] == {
+        "direct_dirty": 1,
+        "content_changed": 1,
+        "metadata_only": 0,
+        "dependent_rebuild": 0,
+        "dependent_rebuilds": [],
+        "deleted": 1,
+        "coverage_skips": 0,
+        "parsed": 1,
+    }
+    assert summary["work"]["source"] == {
+        "bytes_read": len(payload),
+        "bytes_hashed": len(payload),
+    }
+    assert summary["work"]["path_index"] == {
+        "builds": 1,
+        "paths_canonicalized": 1,
+    }
+    assert summary["work"]["vector"] == {
+        **summary["work"]["vector"],
+        "descriptor_action": "published",
+        "prior_payload_passes": 1,
+        "prepared_payload_passes": 1,
+        "payload_passes": 2,
+        "generations_before": 1,
+        "generations_after": 1,
+    }
+
+    new_source = store.source_file_for_path(new_relative)
+    assert store.source_file_for_path(old_relative) is None
+    assert new_source is not None
+    assert new_source.sha256 == old_source.sha256
+    assert store.source_file_paths() == {new_relative}
+    new_chunk_ids = store.active_chunk_ids()
+    new_embedding_ids = store.active_embedding_ids()
+    assert new_chunk_ids
+    assert old_chunk_ids.isdisjoint(new_chunk_ids)
+    assert old_chunk_ids <= store.deleted_chunk_ids()
+    assert old_embedding_ids.isdisjoint(new_embedding_ids)
+    new_descriptor = NumpyVectorStore.published_descriptor(index_dir)
+    assert new_descriptor is not None
+    assert new_descriptor.generation != old_descriptor.generation
+    assert NumpyVectorStore.generation_pair_count(index_dir) == 1
+    NumpyVectorStore.verify_published_snapshot(
+        index_dir,
+        expected_ids=new_embedding_ids,
+    )
+    assert read_graph_capability(store).status == "ready"
+    assert store.graph_integrity().ok
+    with sqlite3.connect(store.db_path) as connection:
+        old_signals = connection.execute(
+            "SELECT COUNT(*) FROM code_signals "
+            "WHERE file_path = ? AND deleted_at IS NULL",
+            (old_relative.as_posix(),),
+        ).fetchone()[0]
+        new_signals = connection.execute(
+            "SELECT COUNT(*) FROM code_signals "
+            "WHERE file_path = ? AND deleted_at IS NULL",
+            (new_relative.as_posix(),),
+        ).fetchone()[0]
+        old_relations = connection.execute(
+            "SELECT COUNT(*) FROM code_relations "
+            "WHERE source_file_path = ? AND deleted_at IS NULL",
+            (old_relative.as_posix(),),
+        ).fetchone()[0]
+    assert old_signals == 0
+    assert new_signals > 0
+    assert old_relations == 0
