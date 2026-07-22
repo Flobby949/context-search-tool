@@ -2146,6 +2146,15 @@ Task 1.
   containing producer, record, test, pre-change, and final-tree identities plus
   RED/GREEN counts. It never fabricates one combined pre-change identity.
 
+  The first frozen-runtime full-suite run after `68bbfc3` then exposed an exact
+  harness compatibility regression: production passed the new bound
+  `expected_ids` keyword into the streaming verifier, while the measurement
+  wrapper still exposed the old two-argument signature. Real full-build workers
+  therefore exited during final vector verification. The isolated
+  `tdd-task-8-verified-worker-binding.json` RED/GREEN checkpoint authorizes only
+  forwarding that keyword through the existing accounting wrapper; it changes
+  no product behavior, work counter, or acceptance threshold.
+
 - [ ] **Step 2: Write shared repository-path-index work proofs first**
 
   First run existing correctness projections green. Then add only the named work
@@ -3253,6 +3262,7 @@ their schema-defined inputs.
     --input .quality/p6-artifacts/tdd-task-8-status-id-memory.json \
     --input .quality/p6-artifacts/tdd-task-8-verified-id-hash.json \
     --input .quality/p6-artifacts/tdd-task-8-quality-checkpoints.json \
+    --input .quality/p6-artifacts/tdd-task-8-verified-worker-binding.json \
     --input .quality/p6-artifacts/tdd-task-9.json \
     --input .quality/p6-artifacts/tdd-task-9-harness-v2.json \
     --input .quality/p6-artifacts/tdd-task-9-path-roles-v2.json \

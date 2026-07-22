@@ -1772,6 +1772,8 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     def measured_verify_generation_v2_streaming(
         index_dir: Path,
         descriptor: Any,
+        *,
+        expected_ids: tuple[str, ...] | None = None,
     ) -> Any:
         nonlocal immutable_state_load_ms
         vectors_path = index_dir / descriptor.vectors_file
@@ -1782,7 +1784,11 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
         attributed_work["vector_bytes_hashed"] += vectors_path.stat().st_size
         attributed_work["vector_payload_passes"] += 1
         started = time.perf_counter()
-        result = original_verify_generation_v2_streaming(index_dir, descriptor)
+        result = original_verify_generation_v2_streaming(
+            index_dir,
+            descriptor,
+            expected_ids=expected_ids,
+        )
         immutable_state_load_ms += (time.perf_counter() - started) * 1000
         return result
 

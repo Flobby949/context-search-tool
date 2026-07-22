@@ -146,7 +146,12 @@ def test_internal_worker_reports_self_rss_and_no_product_children(
         b"package generated; class Generated000000 {}\n"
     )
 
-    first = module._run_measurement_worker("full_build", repo, "default")
+    try:
+        first = module._run_measurement_worker("full_build", repo, "default")
+    except ValueError as error:
+        raise AssertionError(
+            "measurement wrapper must preserve the streaming verifier call contract"
+        ) from error
     second_repo = tmp_path / "worker-repo-2"
     module.shutil.copytree(repo, second_repo)
     module.shutil.rmtree(second_repo / ".context-search")
