@@ -38,6 +38,7 @@ from context_search_tool.scanner import (
     read_observed_file,
 )
 from context_search_tool.sqlite_store import (
+    OperationalReadyIdentity,
     OperationalScanSkip,
     OperationalSnapshot,
     OperationalSourceObservation,
@@ -895,6 +896,15 @@ class IndexedFileObservation:
 
 
 @dataclass(frozen=True)
+class CommittedSnapshotStabilityToken:
+    manifest: ManifestV2
+    manifest_sha256: str
+    operational: OperationalReadyIdentity
+    vector_descriptor: PublishedVectorDescriptor
+    vector_generation_count: int
+
+
+@dataclass(frozen=True)
 class CommittedIndexSnapshot:
     ready_generation: str
     manifest_version: int
@@ -917,6 +927,7 @@ class CommittedIndexSnapshot:
     active_embedding_ids: tuple[str, ...] = ()
     index_config_hash: str | None = None
     vector_generation_count: int = 1
+    stability_token: CommittedSnapshotStabilityToken | None = None
 
 
 @dataclass(frozen=True)
@@ -973,6 +984,29 @@ def read_committed_index_snapshot(repo: Path) -> CommittedIndexSnapshot:
     descriptor = (
         descriptor_snapshot.descriptor if descriptor_snapshot is not None else None
     )
+    vector_generation_count = (
+        1
+        + NumpyVectorStore.unreferenced_generation_count(
+            index_dir,
+            keep_generation=(
+                descriptor.generation
+                if descriptor is not None
+                else manifest.vector_generation
+            ),
+        )
+    )
+    stability_token = (
+        CommittedSnapshotStabilityToken(
+            manifest=manifest,
+            manifest_sha256=loaded_manifest.sha256,
+            operational=operational.ready_identity,
+            vector_descriptor=descriptor_snapshot,
+            vector_generation_count=vector_generation_count,
+        )
+        if descriptor_snapshot is not None
+        and operational.sqlite_change_counter_bound
+        else None
+    )
     return CommittedIndexSnapshot(
         ready_generation=operational.binding.manifest_generation,
         manifest_version=manifest.schema_version,
@@ -1009,18 +1043,52 @@ def read_committed_index_snapshot(repo: Path) -> CommittedIndexSnapshot:
         indexed_embedding=_indexed_embedding(manifest),
         active_embedding_ids=operational.active_embedding_ids,
         index_config_hash=operational.binding.index_config_hash,
-        vector_generation_count=(
+        vector_generation_count=vector_generation_count,
+        stability_token=stability_token,
+    )
+
+
+def recheck_committed_index_snapshot(
+    repo: Path,
+    opening: CommittedIndexSnapshot,
+) -> CommittedIndexSnapshot:
+    """Use a short second SQLite snapshot when the bound v2 identity is stable."""
+    expected = opening.stability_token
+    if expected is None:
+        return read_committed_index_snapshot(repo)
+    try:
+        resolved = repo.resolve(strict=True)
+        index_dir = resolved / ".context-search"
+        loaded_manifest = load_manifest_snapshot(resolved)
+        if not isinstance(loaded_manifest.manifest, ManifestV2):
+            return read_committed_index_snapshot(repo)
+        descriptor = NumpyVectorStore.inspect_published_descriptor(index_dir)
+        if descriptor is None:
+            return read_committed_index_snapshot(repo)
+        vector_generation_count = (
             1
             + NumpyVectorStore.unreferenced_generation_count(
                 index_dir,
-                keep_generation=(
-                    descriptor.generation
-                    if descriptor is not None
-                    else manifest.vector_generation
-                ),
+                keep_generation=descriptor.descriptor.generation,
             )
-        ),
-    )
+        )
+        operational = SQLiteStore(
+            index_dir / "index.sqlite"
+        ).read_operational_ready_identity()
+        if operational is None:
+            return read_committed_index_snapshot(repo)
+        current = CommittedSnapshotStabilityToken(
+            manifest=loaded_manifest.manifest,
+            manifest_sha256=loaded_manifest.sha256,
+            operational=operational,
+            vector_descriptor=descriptor,
+            vector_generation_count=vector_generation_count,
+        )
+    except (OSError, RuntimeError, ValueError):
+        return read_committed_index_snapshot(repo)
+    if current == expected:
+        return opening
+    return read_committed_index_snapshot(repo)
 
 
 def verify_committed_vector_snapshot(
@@ -1350,6 +1418,9 @@ class InspectionAdapters:
     clock_ms: Callable[[], int]
     max_file_bytes: int = 16 * 1024 * 1024
     configured_index_hash_reader: Callable[[Path], str | None] | None = None
+    snapshot_rechecker: (
+        Callable[[Path, CommittedIndexSnapshot], CommittedIndexSnapshot] | None
+    ) = None
 
 
 def inspect_index_health(
@@ -1385,7 +1456,11 @@ def inspect_index_health(
             )
         vector_result = adapters.vector_verifier(repo, opening_snapshot)
     closing_inventory = adapters.inventory_reader(repo, None)
-    closing_snapshot = adapters.snapshot_reader(repo)
+    closing_snapshot = (
+        adapters.snapshot_rechecker(repo, opening_snapshot)
+        if adapters.snapshot_rechecker is not None
+        else adapters.snapshot_reader(repo)
+    )
     writer = adapters.writer_probe(repo)
     completed = adapters.clock_ms()
     return _observed_report(
@@ -1421,13 +1496,19 @@ def inspect_repository_health(repo: Path, *, mode: str) -> IndexHealthReport:
             inspected_repo,
             config,
         ),
-        file_reader=read_observed_file,
+        file_reader=lambda inspected_repo, observation, **kwargs: read_observed_file(
+            inspected_repo,
+            observation,
+            retain_content=False,
+            **kwargs,
+        ),
         vector_verifier=verify_committed_vector_snapshot,
         configured_embedding_reader=lambda _repo: configured_embedding,
         writer_probe=probe_writer_state,
         clock_ms=lambda: time.time_ns() // 1_000_000,
         max_file_bytes=config.index.max_file_bytes,
         configured_index_hash_reader=lambda _repo: index_config_hash(config),
+        snapshot_rechecker=recheck_committed_index_snapshot,
     )
     return inspect_index_health(repo, mode=mode, adapters=adapters)
 

@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 import stat
 import tempfile
-from typing import Callable, Iterable, Literal
+from typing import Any, BinaryIO, Callable, Iterable, Literal
 
 import numpy as np
 
@@ -371,7 +371,10 @@ class NumpyVectorStore:
             raise VectorDescriptorCorruptionError(
                 "vector embedding identity mismatch"
             )
-        ids, _vectors = _load_generation(index_dir, descriptor)
+        if descriptor.schema_version == 2:
+            ids = _verify_generation_v2_streaming(index_dir, descriptor)
+        else:
+            ids, _vectors = _load_generation(index_dir, descriptor)
         if expected_ids is not None and set(ids) != expected_ids:
             raise VectorDescriptorCorruptionError("exact vector IDs mismatch")
         return VerifiedVectorSnapshot(snapshot, tuple(ids))
@@ -1094,6 +1097,183 @@ def _load_generation(
         mmap_mode=None,
         validate_normalization=True,
     )
+
+
+class _DigestingReader:
+    def __init__(self, source: BinaryIO, digest: Any) -> None:
+        self._source = source
+        self._digest = digest
+
+    def read(self, size: int = -1) -> bytes:
+        payload = self._source.read(size)
+        self._digest.update(payload)
+        return payload
+
+
+def _verify_generation_v2_streaming(
+    index_dir: Path,
+    descriptor: VectorGenerationDescriptor,
+) -> list[str]:
+    _validate_generation_paths(index_dir, descriptor)
+    _verify_vector_payload_streaming(
+        index_dir / descriptor.vectors_file,
+        descriptor,
+    )
+    ids_path = index_dir / descriptor.ids_file
+    if _sha256_file_safe(ids_path) != descriptor.ids_sha256:
+        raise ValueError("vector generation hash mismatch")
+    try:
+        ids = json.loads(ids_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("invalid vector generation") from error
+    if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+        raise ValueError("invalid vector generation shape")
+    if len(ids) != descriptor.row_count:
+        raise ValueError("vector generation row count mismatch")
+    if len(set(ids)) != len(ids):
+        raise ValueError("vector generation IDs must be unique")
+    return ids
+
+
+def _verify_vector_payload_streaming(
+    path: Path,
+    descriptor: VectorGenerationDescriptor,
+) -> None:
+    _regular_file_size(path, "vector payload")
+    file_descriptor: int | None = None
+    validation_error: Exception | None = None
+    try:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        file_descriptor = os.open(path, flags)
+        before = os.fstat(file_descriptor)
+        digest = hashlib.sha256()
+        with os.fdopen(file_descriptor, "rb", closefd=False) as source:
+            reader = _DigestingReader(source, digest)
+            try:
+                _stream_vector_rows(reader, descriptor)
+            except (OverflowError, TypeError, ValueError) as error:
+                validation_error = error
+            for _block in iter(lambda: reader.read(64 * 1024), b""):
+                pass
+        after = os.fstat(file_descriptor)
+        final = os.lstat(path)
+    except OSError as error:
+        raise ValueError("vector generation file is missing") from error
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+    identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+    if identity != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    ) or identity != (
+        final.st_dev,
+        final.st_ino,
+        final.st_size,
+        final.st_mtime_ns,
+    ):
+        raise VectorDescriptorCorruptionError(
+            "vector generation file changed during verification"
+        )
+    if digest.hexdigest() != descriptor.vectors_sha256:
+        raise ValueError("vector generation hash mismatch")
+    if validation_error is not None:
+        if isinstance(validation_error, VectorDescriptorCorruptionError):
+            raise validation_error
+        raise ValueError("invalid vector generation") from validation_error
+
+
+def _stream_vector_rows(
+    source: _DigestingReader,
+    descriptor: VectorGenerationDescriptor,
+) -> None:
+    version = np.lib.format.read_magic(source)
+    if version == (1, 0):
+        shape, fortran_order, dtype = np.lib.format.read_array_header_1_0(source)
+    elif version == (2, 0):
+        shape, fortran_order, dtype = np.lib.format.read_array_header_2_0(source)
+    else:
+        raise ValueError("unsupported vector array format")
+    if len(shape) == 1:
+        logical_shape = (1, shape[0])
+        fortran_order = False
+    elif len(shape) == 2:
+        logical_shape = shape
+    else:
+        raise ValueError("invalid vector generation shape")
+    if logical_shape != (descriptor.row_count, descriptor.dimensions):
+        raise ValueError("vector generation shape mismatch")
+    if (
+        dtype.hasobject
+        or dtype.fields is not None
+        or dtype.subdtype is not None
+        or dtype.itemsize < 1
+    ):
+        raise ValueError("invalid vector generation dtype")
+    if fortran_order:
+        _stream_fortran_vector_rows(source, descriptor, dtype)
+        return
+    for start in range(0, descriptor.row_count, 4_096):
+        batch_rows = min(4_096, descriptor.row_count - start)
+        value_count = batch_rows * descriptor.dimensions
+        payload = _read_exact_payload(source, value_count * dtype.itemsize)
+        values = np.frombuffer(payload, dtype=dtype, count=value_count).reshape(
+            batch_rows,
+            descriptor.dimensions,
+        )
+        converted = values.astype(np.float32, copy=False)
+        if descriptor.normalization == "l2":
+            _validate_l2_normalization(converted)
+
+
+def _stream_fortran_vector_rows(
+    source: _DigestingReader,
+    descriptor: VectorGenerationDescriptor,
+    dtype: np.dtype[Any],
+) -> None:
+    squared_norms = (
+        np.zeros(descriptor.row_count, dtype=np.float64)
+        if descriptor.normalization == "l2"
+        else None
+    )
+    for _column in range(descriptor.dimensions):
+        payload = _read_exact_payload(
+            source,
+            descriptor.row_count * dtype.itemsize,
+        )
+        values = np.frombuffer(
+            payload,
+            dtype=dtype,
+            count=descriptor.row_count,
+        ).astype(np.float32, copy=False)
+        if squared_norms is not None:
+            if not np.isfinite(values).all():
+                raise VectorDescriptorCorruptionError(
+                    "invalid vector normalization values"
+                )
+            squared_norms += values.astype(np.float64) ** 2
+    if squared_norms is None:
+        return
+    norms = np.sqrt(squared_norms)
+    valid = np.logical_or(
+        norms == 0.0,
+        np.isclose(norms, 1.0, rtol=1e-5, atol=1e-6),
+    )
+    if not bool(np.all(valid)):
+        raise VectorDescriptorCorruptionError("vector normalization mismatch")
+
+
+def _read_exact_payload(source: _DigestingReader, size: int) -> bytes:
+    payload = source.read(size)
+    if len(payload) != size:
+        raise ValueError("truncated vector generation")
+    return payload
 
 
 def _load_bound_generation(

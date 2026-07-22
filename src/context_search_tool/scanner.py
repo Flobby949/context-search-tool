@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import hashlib
 import os
 import stat
@@ -520,6 +521,7 @@ def read_observed_file(
     max_file_bytes: int,
     chunk_size: int = 64 * 1024,
     require_utf8: bool = True,
+    retain_content: bool = True,
     metadata_observer: Callable[[int], StableFileMetadata] | None = None,
 ) -> ObservedFileRead:
     if max_file_bytes < 0:
@@ -562,17 +564,36 @@ def read_observed_file(
             return _skipped_read(observation, "too_large", metadata=before)
 
         digest = hashlib.sha256()
-        body = bytearray()
-        while len(body) <= max_file_bytes:
+        body = bytearray() if retain_content else None
+        prefix = b""
+        total_bytes = 0
+        decoder = (
+            codecs.getincrementaldecoder("utf-8")()
+            if require_utf8 and not retain_content
+            else None
+        )
+        invalid_encoding = False
+        while total_bytes <= max_file_bytes:
             block = os.read(
                 descriptor,
-                min(chunk_size, max_file_bytes + 1 - len(body)),
+                min(chunk_size, max_file_bytes + 1 - total_bytes),
             )
             if not block:
                 break
-            body.extend(block)
+            total_bytes += len(block)
+            if body is not None:
+                body.extend(block)
+            else:
+                if len(prefix) < 4_096:
+                    prefix += block[: 4_096 - len(prefix)]
+                if decoder is not None:
+                    try:
+                        decoder.decode(block, final=False)
+                    except UnicodeDecodeError:
+                        invalid_encoding = True
+                        decoder = None
             digest.update(block)
-        if len(body) > max_file_bytes:
+        if total_bytes > max_file_bytes:
             return _skipped_read(observation, "too_large", metadata=before)
         after = observe_metadata(descriptor)
     except OSError:
@@ -592,20 +613,28 @@ def read_observed_file(
         before != after
         or after != path_metadata
         or not _metadata_matches_observation(after, observation.metadata)
-        or len(body) != after.size
+        or total_bytes != after.size
     ):
         return _skipped_read(
             observation,
             "changed_during_read",
             metadata=after,
         )
-    content = bytes(body)
-    if b"\0" in content[:4096]:
+    content = bytes(body) if body is not None else None
+    if b"\0" in (content[:4096] if content is not None else prefix):
         return _skipped_read(observation, "binary", metadata=after)
     if require_utf8:
-        try:
-            content.decode("utf-8")
-        except UnicodeDecodeError:
+        if content is not None:
+            try:
+                content.decode("utf-8")
+            except UnicodeDecodeError:
+                invalid_encoding = True
+        elif decoder is not None:
+            try:
+                decoder.decode(b"", final=True)
+            except UnicodeDecodeError:
+                invalid_encoding = True
+        if invalid_encoding:
             return _skipped_read(
                 observation,
                 "unsupported_encoding",
@@ -616,7 +645,7 @@ def read_observed_file(
         path=relative,
         content=content,
         sha256=digest.hexdigest(),
-        size=len(content),
+        size=total_bytes,
         reason=None,
         retryable=False,
         metadata=after,

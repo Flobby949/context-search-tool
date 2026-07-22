@@ -849,6 +849,8 @@ def test_quick_refresh_noop_has_exact_zero_work_and_never_rewrites_ready(
     def forbidden(*_args: Any, **_kwargs: Any):
         raise AssertionError("zero-work refresh crossed a mutation/body seam")
 
+    monkeypatch.setattr(sqlite_store_module, "_maintenance_counts", forbidden)
+
     for name in (
         "mark_graph_stale",
         "replace_chunks",

@@ -691,6 +691,56 @@ def test_descriptor_v2_verified_load_checks_exact_ids_and_normalization(
         NumpyVectorStore.verify_published_snapshot(tmp_path, expected_ids={"a", "b"})
 
 
+def test_descriptor_v2_verified_load_streams_vector_rows_without_materializing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row_count = 8_193
+    store = NumpyVectorStore.fresh(tmp_path, dimensions=2)
+    store._ids = [f"chunk-{index:05d}" for index in range(row_count)]
+    store._vectors = np.tile(
+        np.asarray([[1.0, 0.0]], dtype=np.float32),
+        (row_count, 1),
+    )
+    prepared = store.prepare_generation_v2(
+        generation="streamed",
+        embedding_identity="hash-v1:2",
+        normalization="l2",
+    )
+    store.publish_generation(prepared)
+
+    def forbidden_materialization(*_args: object, **_kwargs: object):
+        raise AssertionError("verified inspection materialized the vector matrix")
+
+    observed_rows: list[int] = []
+    original_validate = vector_store_module._validate_l2_normalization
+
+    def tracked_validate(vectors: np.ndarray) -> None:
+        observed_rows.append(vectors.shape[0])
+        original_validate(vectors)
+
+    monkeypatch.setattr(
+        vector_store_module,
+        "_read_generation_payload",
+        forbidden_materialization,
+    )
+    monkeypatch.setattr(
+        vector_store_module,
+        "_validate_l2_normalization",
+        tracked_validate,
+    )
+
+    verified = NumpyVectorStore.verify_published_snapshot(
+        tmp_path,
+        expected_ids=set(store._ids),
+        expected_embedding_identity="hash-v1:2",
+    )
+
+    assert verified.ids == tuple(store._ids)
+    assert len(observed_rows) == 3
+    assert max(observed_rows) <= 4_096
+
+
 def test_descriptor_v2_rejects_future_schema_size_damage_and_symlink(
     tmp_path: Path,
 ) -> None:

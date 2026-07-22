@@ -197,6 +197,17 @@ class ReadyVectorBinding:
 
 
 @dataclass(frozen=True)
+class OperationalReadyIdentity:
+    operational_version: int
+    graph_version: int
+    graph_status: str
+    graph_stale_reason: str
+    binding: OperationalReadyBinding
+    sqlite_change_counter: int
+    sqlite_change_counter_bound: bool
+
+
+@dataclass(frozen=True)
 class OperationalSnapshot:
     operational_version: int
     graph_version: int
@@ -210,7 +221,20 @@ class OperationalSnapshot:
     source_count: int
     chunk_count: int
     tombstone_count: int
+    sqlite_change_counter: int
     sqlite_change_counter_bound: bool
+
+    @property
+    def ready_identity(self) -> OperationalReadyIdentity:
+        return OperationalReadyIdentity(
+            operational_version=self.operational_version,
+            graph_version=self.graph_version,
+            graph_status=self.graph_status,
+            graph_stale_reason=self.graph_stale_reason,
+            binding=self.binding,
+            sqlite_change_counter=self.sqlite_change_counter,
+            sqlite_change_counter_bound=self.sqlite_change_counter_bound,
+        )
 
 
 def inspect_raw_sqlite_schema_versions(
@@ -591,18 +615,10 @@ class SQLiteStore:
                 chunk_count=chunk_count,
                 embedding_ids=embedding_ids,
             )
-            change_counter_raw = _metadata_value(
+            change_counter, change_counter_bound = _sqlite_change_counter_state(
                 connection,
-                _OPERATIONAL_SQLITE_CHANGE_COUNTER_KEY,
+                self.db_path,
             )
-            change_counter_bound = change_counter_raw is not None
-            if change_counter_raw is not None:
-                change_counter = _metadata_int_value(change_counter_raw)
-                if change_counter > 0xFFFFFFFF:
-                    raise OperationalIntegrityError("invalid SQLite change counter")
-                change_counter_bound = change_counter == _sqlite_change_counter(
-                    self.db_path
-                )
             return OperationalSnapshot(
                 operational_version=capability.schema_version,
                 graph_version=graph.schema_version,
@@ -616,6 +632,40 @@ class SQLiteStore:
                 source_count=source_count,
                 chunk_count=chunk_count,
                 tombstone_count=tombstone_count,
+                sqlite_change_counter=change_counter,
+                sqlite_change_counter_bound=change_counter_bound,
+            )
+        finally:
+            if connection.in_transaction:
+                connection.rollback()
+            connection.close()
+
+    def read_operational_ready_identity(self) -> OperationalReadyIdentity | None:
+        """Read only the bound identity needed by a closing status fence."""
+        if not self.db_path.exists():
+            return None
+        connection = _open_connection(self.db_path, _DEFAULT_BUSY_TIMEOUT_MS)
+        try:
+            connection.execute("BEGIN")
+            capability = read_operational_capability(
+                _ConnectionMetadataReader(connection)
+            )
+            if capability.status == "legacy":
+                return None
+            _require_operational_schema_v1(connection)
+            binding = _read_operational_binding(connection)
+            graph = read_graph_capability(_ConnectionMetadataReader(connection))
+            change_counter, change_counter_bound = _sqlite_change_counter_state(
+                connection,
+                self.db_path,
+            )
+            return OperationalReadyIdentity(
+                operational_version=capability.schema_version,
+                graph_version=graph.schema_version,
+                graph_status=graph.status,
+                graph_stale_reason=graph.stale_reason,
+                binding=binding,
+                sqlite_change_counter=change_counter,
                 sqlite_change_counter_bound=change_counter_bound,
             )
         finally:
@@ -2690,16 +2740,24 @@ class SQLiteStore:
         if not self.db_path.exists():
             return 0
         with self._connect() as connection:
-            counts = _maintenance_counts(connection)
-        return sum(
-            counts[key]
-            for key in (
-                "deleted_chunks",
-                "deleted_signals",
-                "deleted_relations",
-                "orphan_symbols",
+            return int(
+                connection.execute(
+                    """
+                    SELECT
+                        (SELECT COUNT(*) FROM chunks
+                         WHERE deleted_at IS NOT NULL)
+                      + (SELECT COUNT(*) FROM code_signals
+                         WHERE deleted_at IS NOT NULL)
+                      + (SELECT COUNT(*) FROM code_relations
+                         WHERE deleted_at IS NOT NULL)
+                      + (SELECT COUNT(*)
+                         FROM symbols
+                         LEFT JOIN chunk_symbols
+                           ON chunk_symbols.symbol_id = symbols.symbol_id
+                         WHERE chunk_symbols.symbol_id IS NULL)
+                    """
+                ).fetchone()[0]
             )
-        )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -4974,6 +5032,20 @@ def _metadata_int_value(raw: str) -> int:
 
 def _embedding_ids_digest(ids: tuple[str, ...]) -> str:
     return _sha256_canonical(list(ids))
+
+
+def _sqlite_change_counter_state(
+    connection: sqlite3.Connection,
+    db_path: Path,
+) -> tuple[int, bool]:
+    current = _sqlite_change_counter(db_path)
+    raw = _metadata_value(connection, _OPERATIONAL_SQLITE_CHANGE_COUNTER_KEY)
+    if raw is None:
+        return current, False
+    bound = _metadata_int_value(raw)
+    if bound > 0xFFFFFFFF:
+        raise OperationalIntegrityError("invalid SQLite change counter")
+    return current, bound == current
 
 
 def _sqlite_change_counter(db_path: Path) -> int:

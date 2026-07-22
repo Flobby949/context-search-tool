@@ -573,6 +573,33 @@ def test_production_snapshot_adapter_binds_manifest_sqlite_and_vector_tuple(
     assert corrupted.sqlite_valid is True
 
 
+def test_production_snapshot_recheck_uses_short_bound_identity_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _health_module()
+    from context_search_tool.indexer import index_repository
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    opening = module.read_committed_index_snapshot(repo)
+
+    def forbidden_full_snapshot(_repo: Path):
+        raise AssertionError("stable closing fence rebuilt the full snapshot")
+
+    monkeypatch.setattr(
+        module,
+        "read_committed_index_snapshot",
+        forbidden_full_snapshot,
+    )
+
+    closing = module.recheck_committed_index_snapshot(repo, opening)
+
+    assert closing is opening
+
+
 def test_status_envelope_and_requirement_contract_use_the_frozen_report() -> None:
     module = _health_module()
     assert hasattr(module, "status_success_envelope"), (

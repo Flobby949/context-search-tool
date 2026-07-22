@@ -634,3 +634,59 @@ def test_p6_observed_reader_normalizes_binary_encoding_unreadable_and_race(
         max_file_bytes=DEFAULT_CONFIG.index.max_file_bytes,
     )
     assert recovered.status == "read"
+
+
+def test_p6_observed_reader_can_hash_without_retaining_source_bodies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observe_workspace, read_observed_file = _inventory_api()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    payload = ("café\n" * 4_096).encode("utf-8")
+    (repo / "streamed.py").write_bytes(payload)
+    (repo / "binary.py").write_bytes(b"value = \x00\n")
+    (repo / "encoding.py").write_bytes(b"value = '\xff'\n")
+    inventory = observe_workspace(repo, DEFAULT_CONFIG)
+    observations = {item.path.as_posix(): item for item in inventory.eligible}
+
+    def forbidden_buffer(*_args: object, **_kwargs: object) -> bytearray:
+        raise AssertionError("hash-only observation retained a source body")
+
+    monkeypatch.setattr(scanner, "bytearray", forbidden_buffer, raising=False)
+
+    streamed = read_observed_file(
+        repo,
+        observations["streamed.py"],
+        max_file_bytes=DEFAULT_CONFIG.index.max_file_bytes,
+        chunk_size=257,
+        retain_content=False,
+    )
+    assert streamed.status == "read"
+    assert streamed.content is None
+    assert streamed.size == len(payload)
+    assert streamed.sha256 == hashlib.sha256(payload).hexdigest()
+
+    binary = read_observed_file(
+        repo,
+        observations["binary.py"],
+        max_file_bytes=DEFAULT_CONFIG.index.max_file_bytes,
+        retain_content=False,
+    )
+    assert (binary.status, binary.reason, binary.content) == (
+        "skipped",
+        "binary",
+        None,
+    )
+
+    encoding = read_observed_file(
+        repo,
+        observations["encoding.py"],
+        max_file_bytes=DEFAULT_CONFIG.index.max_file_bytes,
+        retain_content=False,
+    )
+    assert (encoding.status, encoding.reason, encoding.content) == (
+        "skipped",
+        "unsupported_encoding",
+        None,
+    )
