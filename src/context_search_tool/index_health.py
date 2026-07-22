@@ -1105,6 +1105,8 @@ def verify_committed_vector_snapshot(
         return VectorVerification.invalid()
     if verified.descriptor_snapshot.descriptor.generation != snapshot.vector_generation:
         return VectorVerification.interrupted()
+    if snapshot.active_embedding_ids == verified.ids:
+        return VectorVerification.valid()
     expected = set(snapshot.active_embedding_ids)
     actual = set(verified.ids)
     if expected != actual:

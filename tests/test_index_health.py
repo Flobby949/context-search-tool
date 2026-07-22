@@ -600,6 +600,30 @@ def test_production_snapshot_recheck_uses_short_bound_identity_snapshot(
     assert closing is opening
 
 
+def test_verified_vector_identity_avoids_duplicate_sets_for_sorted_ready_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _health_module()
+    from context_search_tool.indexer import index_repository
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    snapshot = module.read_committed_index_snapshot(repo)
+
+    def forbidden_set(*_args: object, **_kwargs: object):
+        raise AssertionError("sorted ready IDs allocated duplicate comparison sets")
+
+    monkeypatch.setattr(module, "set", forbidden_set, raising=False)
+
+    assert module.verify_committed_vector_snapshot(
+        repo,
+        snapshot,
+    ) == module.VectorVerification.valid()
+
+
 def test_status_envelope_and_requirement_contract_use_the_frozen_report() -> None:
     module = _health_module()
     assert hasattr(module, "status_success_envelope"), (
