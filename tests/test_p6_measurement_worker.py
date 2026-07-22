@@ -935,6 +935,35 @@ def test_cli_cold_warmup_and_full_build_samples_use_isolated_clones(
     module = _load_harness()
     repo, manifest = _tiny_workload(module, tmp_path)
     calls: list[Path] = []
+    environment = module._environment()
+    environment.update(
+        {
+            "cpu_count": max(8, environment["cpu_count"]),
+            "memory_bytes": max(16 * 1024**3, environment["memory_bytes"]),
+            "local_disk_class": "ssd",
+            "power_state": "external",
+            "governor_state": "not_applicable",
+            "swap_before_bytes": 0,
+            "swap_after_bytes": 0,
+            "background_cpu_percent": 0.0,
+        }
+    )
+    monkeypatch.setattr(module, "_environment", lambda: dict(environment))
+    monkeypatch.setattr(
+        module,
+        "_calibration",
+        lambda: {
+            "valid": True,
+            "sha256_bytes": 512 * 1024**2,
+            "sha256_mib_per_s": 1.0,
+            "numpy_rows": 80000,
+            "numpy_dimensions": 384,
+            "numpy_dot_ms": 1.0,
+            "sqlite_rows": 20000,
+            "sqlite_ms": 1.0,
+            "within_pair_percent": 0.0,
+        },
+    )
 
     def fake_worker(operation: str, sample_repo: Path, case_id: str) -> dict[str, Any]:
         assert operation == "full_build"
