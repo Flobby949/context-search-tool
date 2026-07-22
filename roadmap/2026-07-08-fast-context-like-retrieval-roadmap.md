@@ -3,7 +3,7 @@
 Date: 2026-07-08
 Status: Long-term roadmap
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
-Next-stage review: Phase 6 freshness, performance, and large repositories
+Current milestone: Phase 6 basic implementation; full acceptance pending
 
 ## Summary
 
@@ -349,9 +349,18 @@ Acceptance evidence:
   four model-selected fast-context paths before grep expansion; the comparison
   remains qualitative and non-gating.
 
-Phase 1 remains independently pending at 6/7. Phase 6 is next.
+Phase 1 remains independently pending at 6/7. Phase 6 status follows.
 
 ### Phase 6: Freshness, Performance, And Large Repositories
+
+Status: Basic implementation complete (2026-07-22); release-grade acceptance
+pending. Read-only health/status, metadata and verified freshness, explicit
+incremental refresh, bound lifecycle state, exact-search hot-path improvements,
+and the deterministic benchmark harness are implemented. The local full suite
+and focused large-repository status/refresh diagnostics passed. Complete
+large/scale/stress/churn and paired performance evidence, the 12-cell runtime
+matrix, final decision records, and privacy-audited publication were deferred.
+Phase 6 is therefore not marked fully accepted, and Phase 7 has not started.
 
 Goal: make CST dependable on larger repositories and repeated agent use.
 

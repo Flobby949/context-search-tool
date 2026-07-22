@@ -3,6 +3,18 @@
 This directory defines the closed, versioned acceptance contracts for P6
 freshness, performance, and large-repository evidence.
 
+## Current Status
+
+P6 is basically implemented through
+`fe4b5c650d81429b54923b7388a670b27a8a8b21`: freshness/status, explicit
+incremental refresh, lifecycle binding and cleanup, exact-search optimizations,
+and the benchmark harness are present. Full release-grade acceptance was
+deferred. In particular, the complete tier/churn/paired reports, 12-cell runtime
+matrix, final decisions, and privacy-audited `baseline/`, `final/`, and
+`decisions/` publications are not present. The schemas in this directory define
+those future artifacts; their presence alone is not evidence that P6 is fully
+accepted.
+
 The JSON Schemas in `schemas/` reject unknown fields. Committed reports must
 contain both the implementation commit and the exact
 `src/context_search_tool` tree identity; a commit string alone is not

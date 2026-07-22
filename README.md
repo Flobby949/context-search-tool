@@ -682,6 +682,7 @@ src/context_search_tool/
 
 当前版本已经可以作为本地代码检索底座使用，尤其适合从 Java/Spring endpoint、service/interface/mapper/XML/DTO/test 链路，或 Vue/React route/view/service/type 链路出发找相关上下文。
 
-下一阶段是 P6：索引 freshness、增量刷新、大仓性能和可观测性。更强 embedding/provider 与额外语言插件仍可继续评估，但不会替代本地精确召回。
+P6 已完成基本实现：索引 freshness/health、显式增量刷新、生命周期绑定与维护、精确检索热点优化和可恢复 benchmark harness 已落地，本地全量回归与专项大仓诊断通过。完整 large/scale/stress/churn、跨平台矩阵和发布级 acceptance 证据仍待完成，因此 P6 尚未标记为完全验收，Phase 7 也未开始。更强 embedding/provider 与额外语言插件仍可继续评估，但不会替代本地精确召回。
+
 - cross-encoder 或 LLM rerank
 - remote MCP deployment or hosted multi-user service
