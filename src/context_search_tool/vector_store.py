@@ -87,6 +87,7 @@ READABLE_VECTOR_DESCRIPTOR_VERSIONS = frozenset({1, 2})
 WRITE_VECTOR_DESCRIPTOR_VERSION = 2
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
 _CLEANUP_JOURNAL_MODES = frozenset({"DELETE", "TRUNCATE", "PERSIST"})
+_VECTOR_VERIFICATION_BATCH_ROWS = 512
 _FaultHook = Callable[[str], None]
 
 
@@ -1258,8 +1259,11 @@ def _stream_vector_rows(
     if fortran_order:
         _stream_fortran_vector_rows(source, descriptor, dtype)
         return
-    for start in range(0, descriptor.row_count, 4_096):
-        batch_rows = min(4_096, descriptor.row_count - start)
+    for start in range(0, descriptor.row_count, _VECTOR_VERIFICATION_BATCH_ROWS):
+        batch_rows = min(
+            _VECTOR_VERIFICATION_BATCH_ROWS,
+            descriptor.row_count - start,
+        )
         value_count = batch_rows * descriptor.dimensions
         payload = _read_exact_payload(source, value_count * dtype.itemsize)
         values = np.frombuffer(payload, dtype=dtype, count=value_count).reshape(
@@ -1467,8 +1471,8 @@ def _validate_l2_normalization(vectors: np.ndarray) -> None:
         raise VectorDescriptorCorruptionError("invalid vector normalization shape")
     if vectors.shape[0] == 0:
         return
-    for start in range(0, vectors.shape[0], 4_096):
-        batch = vectors[start : start + 4_096]
+    for start in range(0, vectors.shape[0], _VECTOR_VERIFICATION_BATCH_ROWS):
+        batch = vectors[start : start + _VECTOR_VERIFICATION_BATCH_ROWS]
         if not np.isfinite(batch).all():
             raise VectorDescriptorCorruptionError("invalid vector normalization values")
         norms = np.linalg.norm(batch, axis=1)

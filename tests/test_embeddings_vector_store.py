@@ -163,8 +163,8 @@ def test_l2_validation_uses_bounded_row_batches(
 
     vector_store_module._validate_l2_normalization(vectors)
 
-    assert len(observed_rows) == 3
-    assert max(observed_rows) <= 4_096
+    assert len(observed_rows) == math.ceil(len(vectors) / 512)
+    assert max(observed_rows) <= 512
 
 
 def test_vector_store_bulk_batches_fill_one_normalized_matrix(tmp_path: Path) -> None:
@@ -737,8 +737,8 @@ def test_descriptor_v2_verified_load_streams_vector_rows_without_materializing(
     )
 
     assert verified.ids == tuple(store._ids)
-    assert len(observed_rows) == 3
-    assert max(observed_rows) <= 4_096
+    assert len(observed_rows) == math.ceil(row_count / 512)
+    assert max(observed_rows) <= 512
 
 
 def test_descriptor_v2_expected_ids_skip_duplicate_json_materialization(

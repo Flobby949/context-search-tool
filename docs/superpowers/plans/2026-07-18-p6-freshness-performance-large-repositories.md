@@ -2155,6 +2155,16 @@ Task 1.
   forwarding that keyword through the existing accounting wrapper; it changes
   no product behavior, work counter, or acceptance threshold.
 
+  A clean-identity five-sample verified diagnostic at `fe8920a` then passed the
+  12 s time gate (8,175.97 ms median, 9,778.52 ms maximum) but reached
+  314,277,888-byte extra RSS, above the 256 MiB gate. An isolated profile of the
+  117 MiB vector payload attributed the remaining peak to the 4,096-row read and
+  normalization batches: the verifier process peaked at 166,903,808 bytes,
+  while the same checks at 512 rows peaked at 56,213,504 bytes. The
+  `tdd-task-8-verified-vector-batches.json` checkpoint therefore tightens both
+  loops through one 512-row constant. Hashing, exact-ID checks, normalization
+  validation, corruption behavior, and acceptance thresholds remain unchanged.
+
 - [ ] **Step 2: Write shared repository-path-index work proofs first**
 
   First run existing correctness projections green. Then add only the named work
@@ -3263,6 +3273,7 @@ their schema-defined inputs.
     --input .quality/p6-artifacts/tdd-task-8-verified-id-hash.json \
     --input .quality/p6-artifacts/tdd-task-8-quality-checkpoints.json \
     --input .quality/p6-artifacts/tdd-task-8-verified-worker-binding.json \
+    --input .quality/p6-artifacts/tdd-task-8-verified-vector-batches.json \
     --input .quality/p6-artifacts/tdd-task-9.json \
     --input .quality/p6-artifacts/tdd-task-9-harness-v2.json \
     --input .quality/p6-artifacts/tdd-task-9-path-roles-v2.json \
