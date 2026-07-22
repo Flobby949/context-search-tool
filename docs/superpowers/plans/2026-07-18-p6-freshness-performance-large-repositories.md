@@ -2074,11 +2074,18 @@ Task 1.
   descriptor bindings are exact, its active embedding IDs and counts validate,
   every eligible source has just been hashed equal, topology and project-scope
   metadata match, and no rebuild/deletion is prepared, the prior atomic ready
-  commit is the authoritative graph-integrity proof. That exact branch may skip
-  relation re-resolution, association regeneration, and duplicate graph scans;
-  it must still use the stale-to-ready crash protocol and perform the final
-  vector content verification. L2 verification must use bounded 4,096-row
-  batches, and already sorted vector matrices must not be copied.
+  commit is the authoritative graph-integrity proof only while its bound SQLite
+  file-change counter still matches the database header. Any intervening SQLite
+  write cancels this fast path and restores the existing full graph validation;
+  an unchanged source tree therefore repairs a graph changed after ready rather
+  than blessing it again. That exact sealed branch may skip relation
+  re-resolution, association regeneration, and duplicate graph scans; it must
+  still use the stale-to-ready crash protocol and perform the final vector
+  content verification. L2 verification must use bounded 4,096-row batches, and
+  already sorted vector matrices must not be copied. Existing current-v5
+  snapshots without the additive index or change-counter seal remain readable;
+  the next authoritative or non-quiet persistence installs them, while status
+  remains strictly read-only and never self-migrates.
 
   The retained dirty candidate then measured authoritative no-op at
   13,668.71 ms with 486,621,184-byte extra RSS, all 512 MiB hashed, and zero

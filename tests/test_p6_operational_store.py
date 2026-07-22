@@ -117,6 +117,27 @@ def test_additive_operational_ddl_is_not_authoritative_until_final_bind(
     assert "scan_skips" in tables
 
 
+def test_additive_operational_ddl_restores_active_embedding_index(
+    tmp_path: Path,
+) -> None:
+    store = _v5_store(tmp_path)
+    store.initialize_operational_schema_v1()
+    store.upsert_source_file(_source())
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute("DROP INDEX IF EXISTS idx_chunks_embedding_active")
+
+    store.initialize_operational_schema_v1()
+
+    with sqlite3.connect(store.db_path) as connection:
+        index = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+            ("idx_chunks_embedding_active",),
+        ).fetchone()
+    assert index is not None
+    assert "WHERE deleted_at IS NULL AND embedding_id IS NOT NULL" in index[0]
+    assert store.source_file_for_path(Path("src/app.py")) == _source()
+
+
 def test_operational_replacement_and_retry_selection_are_deterministic(
     tmp_path: Path,
 ) -> None:
@@ -205,6 +226,7 @@ def test_final_ready_binds_one_typed_snapshot_without_purging_below_threshold(
     assert snapshot.source_count == 1
     assert snapshot.chunk_count == 0
     assert snapshot.tombstone_count == 2
+    assert getattr(snapshot, "sqlite_change_counter_bound", False) is True
     assert validator_calls == ["validated"]
     assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "ready"
 

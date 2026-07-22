@@ -1685,6 +1685,7 @@ def _prepare_authoritative_index(
     bound_ready_snapshot = bool(
         entry_state == "ready"
         and operational_snapshot is not None
+        and operational_snapshot.sqlite_change_counter_bound
         and current_descriptor is not None
         and isinstance(
             loaded_manifest.manifest if loaded_manifest is not None else None,

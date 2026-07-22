@@ -461,6 +461,27 @@ def test_authoritative_noop_hashes_every_source_without_parse_or_embedding(
     assert vector_verify_calls == 1
 
 
+def test_authoritative_noop_recovers_graph_changed_after_ready(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    _build(repo)
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "DELETE FROM code_signals WHERE kind = 'module' AND deleted_at IS NULL"
+        )
+    assert store.graph_integrity().ok is False
+
+    summary = _build(repo)
+
+    assert summary.files_indexed == 1
+    assert store.graph_integrity().ok is True
+    assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "ready"
+
+
 def test_authoritative_embedding_batches_are_bounded_before_the_closing_fence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

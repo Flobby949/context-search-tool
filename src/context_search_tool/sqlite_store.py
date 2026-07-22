@@ -88,6 +88,7 @@ _OPERATIONAL_WORK_METRICS_KEY = "operational_work_metrics"
 _OPERATIONAL_SOURCE_COUNT_KEY = "operational_source_count"
 _OPERATIONAL_CHUNK_COUNT_KEY = "operational_chunk_count"
 _OPERATIONAL_EMBEDDING_IDS_SHA256_KEY = "operational_embedding_ids_sha256"
+_OPERATIONAL_SQLITE_CHANGE_COUNTER_KEY = "operational_sqlite_change_counter"
 _OPERATION_MODES = frozenset({"index", "authoritative_index", "quick_refresh"})
 _WORK_STRING_METRICS = {
     "vector.descriptor_action": frozenset({"reused", "published"}),
@@ -209,6 +210,7 @@ class OperationalSnapshot:
     source_count: int
     chunk_count: int
     tombstone_count: int
+    sqlite_change_counter_bound: bool
 
 
 def inspect_raw_sqlite_schema_versions(
@@ -589,6 +591,18 @@ class SQLiteStore:
                 chunk_count=chunk_count,
                 embedding_ids=embedding_ids,
             )
+            change_counter_raw = _metadata_value(
+                connection,
+                _OPERATIONAL_SQLITE_CHANGE_COUNTER_KEY,
+            )
+            change_counter_bound = change_counter_raw is not None
+            if change_counter_raw is not None:
+                change_counter = _metadata_int_value(change_counter_raw)
+                if change_counter > 0xFFFFFFFF:
+                    raise OperationalIntegrityError("invalid SQLite change counter")
+                change_counter_bound = change_counter == _sqlite_change_counter(
+                    self.db_path
+                )
             return OperationalSnapshot(
                 operational_version=capability.schema_version,
                 graph_version=graph.schema_version,
@@ -602,6 +616,7 @@ class SQLiteStore:
                 source_count=source_count,
                 chunk_count=chunk_count,
                 tombstone_count=tombstone_count,
+                sqlite_change_counter_bound=change_counter_bound,
             )
         finally:
             if connection.in_transaction:
@@ -667,12 +682,16 @@ class SQLiteStore:
             if tombstone_purge_limit:
                 self._purge_tombstones(connection, tombstone_purge_limit)
             now = _now()
+            next_change_counter = (
+                _sqlite_change_counter(self.db_path) + 1
+            ) & 0xFFFFFFFF
             _write_operational_binding(
                 connection,
                 binding,
                 source_count=expected_source_count,
                 chunk_count=expected_chunk_count,
                 embedding_ids=tuple(sorted(expected_embedding_ids)),
+                sqlite_change_counter=next_change_counter,
                 now=now,
             )
             _set_metadata_row(
@@ -4832,6 +4851,7 @@ def _write_operational_binding(
     source_count: int,
     chunk_count: int,
     embedding_ids: tuple[str, ...],
+    sqlite_change_counter: int,
     now: int,
 ) -> None:
     values = {
@@ -4859,6 +4879,7 @@ def _write_operational_binding(
         _OPERATIONAL_SOURCE_COUNT_KEY: str(source_count),
         _OPERATIONAL_CHUNK_COUNT_KEY: str(chunk_count),
         _OPERATIONAL_EMBEDDING_IDS_SHA256_KEY: _embedding_ids_digest(embedding_ids),
+        _OPERATIONAL_SQLITE_CHANGE_COUNTER_KEY: str(sqlite_change_counter),
     }
     for key, value in values.items():
         _set_metadata_row(connection, key, value, now)
@@ -4953,6 +4974,14 @@ def _metadata_int_value(raw: str) -> int:
 
 def _embedding_ids_digest(ids: tuple[str, ...]) -> str:
     return _sha256_canonical(list(ids))
+
+
+def _sqlite_change_counter(db_path: Path) -> int:
+    with db_path.open("rb") as source:
+        header = source.read(28)
+    if len(header) != 28 or header[:16] != b"SQLite format 3\x00":
+        raise OperationalIntegrityError("invalid SQLite header")
+    return int.from_bytes(header[24:28], byteorder="big")
 
 
 def _operational_path(path: Path) -> str:
