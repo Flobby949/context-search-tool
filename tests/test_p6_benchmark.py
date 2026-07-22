@@ -975,6 +975,89 @@ def test_final_batch_operation_sets_expand_to_complete_tier_registries() -> None
         module._benchmark_set_requests(contract, "large", "all-scale")
 
 
+def test_task11_documented_commands_match_closed_cli_contract() -> None:
+    plan = (
+        ROOT
+        / "docs"
+        / "superpowers"
+        / "plans"
+        / "2026-07-18-p6-freshness-performance-large-repositories.md"
+    ).read_text(encoding="utf-8")
+    task11 = plan.split(
+        "### Task 11: Run Final Acceptance And Record P6 Completion",
+        1,
+    )[1].split("## Design-To-Task Acceptance Map", 1)[0]
+    logical_lines = re.sub(r"\\\n\s*", " ", task11).splitlines()
+    commands = [
+        " ".join(line.split())
+        for line in logical_lines
+        if "scripts/p6_benchmark.py " in line
+    ]
+
+    batch_runs = [
+        command
+        for command in commands
+        if "scripts/p6_benchmark.py run " in command
+    ]
+    assert len(batch_runs) == 5
+    assert all("--mode final" in command for command in batch_runs)
+    assert not any("--operations churn-100" in command for command in commands)
+    assert sum(
+        "scripts/p6_benchmark.py churn " in command for command in commands
+    ) == 1
+
+    performance = next(
+        command
+        for command in commands
+        if "scripts/p6_benchmark.py assemble --kind performance " in command
+    )
+    assert "--mode final" in performance
+    assert re.findall(r"--input (\S+)", performance) == [
+        ".quality/p6-artifacts/final-smoke.json",
+        ".quality/p6-artifacts/final-large.json",
+        ".quality/p6-artifacts/final-scale-5k.json",
+        ".quality/p6-artifacts/final-scale-10k.json",
+        ".quality/p6-artifacts/final-churn.json",
+    ]
+
+    compare = next(
+        command
+        for command in commands
+        if "scripts/p6_benchmark.py compare " in command
+    )
+    assert "--output .quality/p6-artifacts/final-acceptance.json" in compare
+    assert any(
+        "scripts/p6_benchmark.py validate " in command
+        and "--report .quality/p6-artifacts/final-acceptance.json" in command
+        for command in commands
+    )
+
+    environment = next(
+        command
+        for command in commands
+        if "scripts/p6_benchmark.py assemble --kind environment " in command
+    )
+    assert "--mode final" in environment
+    assert re.findall(r"--input (\S+)", environment) == [
+        ".quality/p6-artifacts/entry-record.json",
+        ".quality/p6-artifacts/final-performance.json",
+    ]
+
+    service_watch = next(
+        command
+        for command in commands
+        if "scripts/p6_benchmark.py decide --kind service-watch " in command
+    )
+    assert "--paired .quality/p6-artifacts/final-small-paired.json" in service_watch
+    assert "--acceptance .quality/p6-artifacts/final-acceptance.json" in service_watch
+    assert any(
+        "scripts/p6_benchmark.py publish " in command
+        and "--input .quality/p6-artifacts/final-acceptance.json" in command
+        and "--output docs/benchmarks/p6/final/final-acceptance.json" in command
+        for command in commands
+    )
+
+
 def test_final_environment_uses_final_benchmark_identity_and_raw_lock_hash(
     tmp_path: Path,
 ) -> None:

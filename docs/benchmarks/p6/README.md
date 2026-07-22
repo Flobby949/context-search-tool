@@ -41,14 +41,19 @@ tier. A combined performance report must contain all four publication tiers:
 `smoke`, `large`, `scale-5k`, and `scale-10k`. Repository fingerprints are
 checked against the manifest before calibration or measurement begins.
 
-Each `run` invocation measures exactly one registered
-operation/case/state tuple and therefore requires `--operation`, `--case-id`,
-`--samples`, and `--measurement-state`. Baseline capture enumerates those
-tuples from `benchmark_registry.cases`, assembles one complete performance
-report per tier, then assembles the four tier reports. The environment summary
-uses stable host facts shared by all case reports, the maximum observed
-background CPU and swap growth, median calibration values, and maximum paired
-calibration drift. Mixed stable host facts fail closed.
+Each `run` invocation either measures one exact registered
+operation/case/state tuple, using `--operation`, `--case-id`, `--samples`, and
+`--measurement-state`, or measures a closed tier batch selected with
+`--operations`. The allowed batches are `all-smoke` for `smoke`, `all-large`
+for `large`, `all-scale` for `scale-5k` and `scale-10k`, and
+`capacity-informational` for `stress`. Baseline is the default mode; final
+capture must explicitly select `--mode final`. The frozen 100-step churn uses
+the separate `churn` subcommand. Baseline capture enumerates the tuples from
+`benchmark_registry.cases`, assembles one complete performance report per tier,
+then assembles the four publication tiers. The environment summary uses stable
+host facts shared by all case reports, the maximum observed background CPU and
+swap growth, median calibration values, and maximum paired calibration drift.
+Mixed stable host facts fail closed.
 
 `run` writes immutable per-sample checkpoints beside its requested output by
 default, using the `<output>.checkpoints/` directory. A completed sample is

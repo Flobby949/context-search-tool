@@ -2668,6 +2668,13 @@ Task 1.
 
 ### Task 11: Run Final Acceptance And Record P6 Completion
 
+**Reviewed amendment (2026-07-22):** The commands below are aligned with the
+closed final harness contract established by Tasks 1-10: final tier runs select
+`--mode final`, churn uses its dedicated subcommand, the combined performance
+report contains the four publication tiers plus churn, acceptance is emitted as
+a validated report, and the environment and service/watch records consume only
+their schema-defined inputs.
+
 **Files:**
 
 - Create: `docs/benchmarks/p6/final/final-environment.json`
@@ -2678,6 +2685,7 @@ Task 1.
 - Create: `docs/benchmarks/p6/final/final-scale-10k.json`
 - Create: `docs/benchmarks/p6/final/final-stress.json`
 - Create: `docs/benchmarks/p6/final/final-performance.json`
+- Create: `docs/benchmarks/p6/final/final-acceptance.json`
 - Create: `docs/benchmarks/p6/final/churn.json`
 - Create: `docs/benchmarks/p6/final/quality.json`
 - Create: `docs/benchmarks/p6/decisions/ann.json`
@@ -2804,31 +2812,35 @@ Task 1.
     --repo .quality/p6-final-smoke \
     --manifest tests/fixtures/p6_performance/workload_manifest.json \
     --operations all-smoke \
+    --mode final \
     --output .quality/p6-artifacts/final-smoke.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py run \
     --repo .quality/p6-final-large \
     --manifest tests/fixtures/p6_performance/workload_manifest.json \
     --operations all-large \
+    --mode final \
     --output .quality/p6-artifacts/final-large.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py run \
     --repo .quality/p6-final-scale-5k \
     --manifest tests/fixtures/p6_performance/workload_manifest.json \
     --operations all-scale \
+    --mode final \
     --output .quality/p6-artifacts/final-scale-5k.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py run \
     --repo .quality/p6-final-scale-10k \
     --manifest tests/fixtures/p6_performance/workload_manifest.json \
     --operations all-scale \
+    --mode final \
     --output .quality/p6-artifacts/final-scale-10k.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py run \
     --repo .quality/p6-final-stress \
     --manifest tests/fixtures/p6_performance/workload_manifest.json \
     --operations capacity-informational \
+    --mode final \
     --output .quality/p6-artifacts/final-stress.json
-  PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py run \
+  PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py churn \
     --repo .quality/p6-final-smoke \
     --manifest tests/fixtures/p6_performance/workload_manifest.json \
-    --operations churn-100 \
     --output .quality/p6-artifacts/final-churn.json
   ```
 
@@ -2892,8 +2904,6 @@ Task 1.
     --input .quality/p6-artifacts/final-large.json \
     --input .quality/p6-artifacts/final-scale-5k.json \
     --input .quality/p6-artifacts/final-scale-10k.json \
-    --input .quality/p6-artifacts/final-stress.json \
-    --input .quality/p6-artifacts/final-small-paired.json \
     --input .quality/p6-artifacts/final-churn.json \
     --output .quality/p6-artifacts/final-performance.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py validate \
@@ -3041,13 +3051,14 @@ Task 1.
     --paired .quality/p6-artifacts/final-small-paired.json \
     --churn .quality/p6-artifacts/final-churn.json \
     --require-churn \
-    --require-scale-5k-10k
+    --require-scale-5k-10k \
+    --output .quality/p6-artifacts/final-acceptance.json
+  PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py validate \
+    --report .quality/p6-artifacts/final-acceptance.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py assemble \
     --kind environment \
-    --input .quality/p6-artifacts/final-runtime.json \
-    --input .quality/p6-artifacts/final-dependencies.txt \
-    --input .quality/p6-artifacts/final-lineage.txt \
-    --input .quality/p6-artifacts/final-matrix.json \
+    --mode final \
+    --input .quality/p6-artifacts/entry-record.json \
     --input .quality/p6-artifacts/final-performance.json \
     --output .quality/p6-artifacts/final-environment.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py assemble \
@@ -3073,6 +3084,8 @@ Task 1.
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py decide \
     --kind service-watch \
     --report .quality/p6-artifacts/final-performance.json \
+    --paired .quality/p6-artifacts/final-small-paired.json \
+    --acceptance .quality/p6-artifacts/final-acceptance.json \
     --output .quality/p6-artifacts/final-service-watch.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py validate \
     --report .quality/p6-artifacts/final-environment.json
@@ -3126,6 +3139,9 @@ Task 1.
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py publish \
     --input .quality/p6-artifacts/final-performance.json \
     --output docs/benchmarks/p6/final/final-performance.json
+  PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py publish \
+    --input .quality/p6-artifacts/final-acceptance.json \
+    --output docs/benchmarks/p6/final/final-acceptance.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py publish \
     --input .quality/p6-artifacts/final-churn.json \
     --output docs/benchmarks/p6/final/churn.json
@@ -3182,6 +3198,7 @@ Task 1.
     docs/benchmarks/p6/final/final-scale-10k.json \
     docs/benchmarks/p6/final/final-stress.json \
     docs/benchmarks/p6/final/final-performance.json \
+    docs/benchmarks/p6/final/final-acceptance.json \
     docs/benchmarks/p6/final/churn.json \
     docs/benchmarks/p6/final/quality.json \
     docs/benchmarks/p6/decisions/ann.json \
