@@ -21,7 +21,6 @@
     "tdd": {
       "type": "array",
       "minItems": 10,
-      "maxItems": 10,
       "items": {"$ref": "#/$defs/tdd"}
     }
   },
@@ -97,6 +96,9 @@
       "additionalProperties": false,
       "required": [
         "task",
+        "checkpoint",
+        "producer_version",
+        "record_sha256",
         "pre_change_commit",
         "pre_change_production_tree",
         "final_staged_tree",
@@ -106,6 +108,9 @@
       ],
       "properties": {
         "task": {"type": "integer", "minimum": 1, "maximum": 10},
+        "checkpoint": {"type": "integer", "minimum": 1},
+        "producer_version": {"const": "p6-benchmark-v1"},
+        "record_sha256": {"$ref": "#/$defs/sha"},
         "pre_change_commit": {"$ref": "#/$defs/git"},
         "pre_change_production_tree": {"$ref": "#/$defs/git"},
         "final_staged_tree": {"$ref": "#/$defs/git"},

@@ -692,8 +692,17 @@ def validate_report_data(report: Any, schema_name: str | None = None) -> None:
             FROZEN_ENTRY_SKIP_NODE_IDS
         ):
             raise ValueError("quality skip identities differ from the frozen audit")
-        if [record["task"] for record in report["tdd"]] != list(range(1, 11)):
+        tasks = [record["task"] for record in report["tdd"]]
+        if tasks != sorted(tasks) or sorted(set(tasks)) != list(range(1, 11)):
             raise ValueError("quality TDD summaries are not the exact ordered task set")
+        for task in range(1, 11):
+            checkpoints = [
+                record["checkpoint"]
+                for record in report["tdd"]
+                if record["task"] == task
+            ]
+            if checkpoints != list(range(1, len(checkpoints) + 1)):
+                raise ValueError("quality TDD checkpoints are not contiguous")
     elif schema_name == "decision-record-v1.json":
         if report["decision_kind"] == "exact_ann":
             expected = (
@@ -4430,7 +4439,7 @@ def validate_performance_registry_coverage(
 def assemble_quality_report(inputs: Sequence[str | Path]) -> dict[str, Any]:
     paths = [Path(path) for path in inputs]
     by_name = {path.name: path for path in paths}
-    expected_names = {
+    required_names = {
         "final-p5.json",
         "final-p4.json",
         "final-p2.json",
@@ -4440,9 +4449,16 @@ def assemble_quality_report(inputs: Sequence[str | Path]) -> dict[str, Any]:
         "final-full.xml",
         *(f"tdd-task-{task}.json" for task in range(1, 11)),
     }
-    if len(by_name) != len(paths) or set(by_name) != expected_names:
-        missing = sorted(expected_names - set(by_name))
-        extra = sorted(set(by_name) - expected_names)
+    tdd_input = re.compile(
+        r"^tdd-task-(?P<task>[1-9]|10)(?:-[a-z0-9]+(?:-[a-z0-9]+)*)?\.json$"
+    )
+    missing = sorted(required_names - set(by_name))
+    extra = sorted(
+        name
+        for name in set(by_name) - required_names
+        if tdd_input.fullmatch(name) is None
+    )
+    if len(by_name) != len(paths) or missing or extra:
         raise ValueError(
             f"quality evidence input set mismatch: missing={missing}, extra={extra}"
         )
@@ -4489,25 +4505,55 @@ def assemble_quality_report(inputs: Sequence[str | Path]) -> dict[str, Any]:
     ):
         raise ValueError("final JUnit does not satisfy the frozen quality contract")
 
-    tdd_summaries = []
-    for task in range(1, 11):
-        record = _load_json(by_name[f"tdd-task-{task}.json"])
+    tdd_records: dict[int, list[tuple[Path, dict[str, Any]]]] = {
+        task: [] for task in range(1, 11)
+    }
+    for name, path in by_name.items():
+        if name == "final-full.xml" or name.startswith("final-"):
+            continue
+        match = tdd_input.fullmatch(name)
+        if match is None:
+            raise ValueError(f"unrecognized TDD evidence input: {name}")
+        task = int(match.group("task"))
+        record = _load_json(path)
         validate_tdd_record_data(record)
         if record["task"] != task:
             raise ValueError("TDD record task differs from its input identity")
-        tdd_summaries.append(
-            {
-                "task": task,
-                "pre_change_commit": record["pre_change_commit"],
-                "pre_change_production_tree": record[
-                    "pre_change_production_tree"
-                ],
-                "final_staged_tree": record["final_staged_tree"],
-                "test_identity_sha256": record["red"]["test_identity_sha256"],
-                "red_failed": len(record["red"]["failed_node_ids"]),
-                "green_passed": record["green"]["passed"],
-            }
+        tdd_records[task].append((path, record))
+
+    tdd_summaries = []
+    for task in range(1, 11):
+        records = sorted(
+            tdd_records[task],
+            key=lambda item: (
+                item[0].name != f"tdd-task-{task}.json",
+                item[1]["red"].get("started_at_epoch_ms", 0),
+                item[0].name,
+            ),
         )
+        record_hashes = [_sha256_path(path) for path, _record in records]
+        for checkpoint, ((_path, record), record_sha256) in enumerate(
+            zip(records, record_hashes, strict=True),
+            start=1,
+        ):
+            tdd_summaries.append(
+                {
+                    "task": task,
+                    "checkpoint": checkpoint,
+                    "producer_version": record["producer_version"],
+                    "record_sha256": record_sha256,
+                    "pre_change_commit": record["pre_change_commit"],
+                    "pre_change_production_tree": record[
+                        "pre_change_production_tree"
+                    ],
+                    "final_staged_tree": record["final_staged_tree"],
+                    "test_identity_sha256": record["red"][
+                        "test_identity_sha256"
+                    ],
+                    "red_failed": len(record["red"]["failed_node_ids"]),
+                    "green_passed": record["green"]["passed"],
+                }
+            )
 
     implementation_commit, production_tree, dirty = _git_identity()
     if dirty:

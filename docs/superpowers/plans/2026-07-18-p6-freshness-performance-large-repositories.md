@@ -368,7 +368,13 @@ uses `tdd-bootstrap`) with `--staged-tree "$(git write-tree)"`, then validates
 the record against the same tree. Thus the recorded GREEN production/test
 hashes and candidate tree are the final staged state. A task cannot commit
 without this schema-valid RED-to-GREEN proof. TDD records remain ignored local
-evidence; Task 11 publishes only their privacy-safe aggregate.
+evidence; Task 11 publishes only their privacy-safe aggregate. A later measured
+amendment to the same task writes a uniquely suffixed `tdd-task-N-*.json`
+checkpoint instead of replacing or combining earlier RED/GREEN history. Final
+quality assembly receives the canonical record and every suffixed checkpoint,
+orders them by task with the canonical record first, and emits one privacy-safe
+summary per checkpoint. It must not collapse distinct pre-change commits into a
+synthetic task record.
 
 ### Task 0: Establish The Clean P6 Entry Baseline
 
@@ -1918,20 +1924,29 @@ Task 1.
 
 - Modify: `src/context_search_tool/graph_plugins.py`
 - Modify: `src/context_search_tool/frontend_graph.py`
+- Modify: `src/context_search_tool/index_health.py`
 - Modify: `src/context_search_tool/indexer.py`
 - Modify: `src/context_search_tool/java_plugin.py`
+- Modify: `src/context_search_tool/scanner.py`
 - Modify: `src/context_search_tool/sqlite_store.py`
 - Modify: `src/context_search_tool/test_association.py`
 - Modify: `src/context_search_tool/vector_store.py`
 - Modify: `scripts/p6_benchmark.py`
+- Modify: `docs/benchmarks/p6/README.md`
+- Modify: `docs/benchmarks/p6/schemas/quality-report-v1.json`
+- Modify: this plan
 - Modify: `tests/test_incremental_refresh.py`
 - Modify: `tests/test_indexer_manifest.py`
 - Modify: `tests/test_java_ast.py`
 - Modify: `tests/test_frontend_graph.py`
 - Modify: `tests/test_test_association.py`
 - Modify: `tests/test_embeddings_vector_store.py`
+- Modify: `tests/test_index_health.py`
 - Modify: `tests/test_p6_benchmark.py`
+- Modify: `tests/test_p6_measurement_worker.py`
+- Modify: `tests/test_p6_operational_store.py`
 - Modify: `tests/test_retrieval_core_boundaries.py`
+- Modify: `tests/test_tokenizer_scanner.py`
 
 - [ ] **Step 1: Capture post-correctness indexing profiles before optimization**
 
@@ -2094,6 +2109,43 @@ Task 1.
   diagnostic projections only; clean-identity final samples and the complete
   regression suite remain required.
 
+  The subsequent clean `e174ae1ca3746ad00615fbe06b7295d8a48e9517`
+  diagnostic capture made the remaining failures explicit. Twenty quick-status
+  samples had 2,394.30 ms p95 and 2,432.19 ms maximum, over the 2 s boundary.
+  Five verified-status samples stayed below the 12 s time maximum at
+  11,364.01 ms but reached 954,564,608-byte extra RSS, far above 256 MiB.
+  Twenty refresh-noop samples had 3,611.49 ms p95 and 3,738.24 ms maximum,
+  over the 2.5 s boundary. The complete batch also failed evidence validation;
+  all of its checkpoint directories and log therefore remain diagnostic-only
+  and may neither be resumed after an implementation/harness change nor mixed
+  with a new final capture.
+
+  Stage attribution authorized four bounded follow-ups. `fcef893` retained the
+  required two inventories and two SQLite read snapshots while making the
+  closing snapshot an identity-only fence, hashing verified sources without
+  retaining their bodies, streaming vector rows, and projecting exact
+  tombstones without materializing deleted IDs. `52b1653` corrected harness
+  accounting for that streamed verification. `0b45240` removed duplicate
+  healthy-path vector-ID sets. `68bbfc3` hashes the canonical persisted ID file
+  against the already-bound ready IDs and reuses that tuple on equality; the
+  mismatch path still performs the full missing/orphan diagnosis. Their
+  separate RED/GREEN records are
+  `tdd-task-8-status-refresh-memory.json`,
+  `tdd-task-8-status-accounting.json`,
+  `tdd-task-8-status-id-memory.json`, and
+  `tdd-task-8-verified-id-hash.json`. The related focused regression set passed
+  142 tests. In-process stage profiles showed the vector-verification increment
+  fall by roughly 6--7 MiB, but this is not an acceptance measurement: the
+  clean final identity still requires five verified, twenty quick, and twenty
+  refresh-noop samples after the harness/plan checkpoint contract is frozen.
+
+  Task 8 and later tasks produced multiple truthful RED/GREEN checkpoints with
+  different pre-change commits. The quality assembler therefore accepts the
+  canonical `tdd-task-N.json` plus uniquely suffixed checkpoint files, validates
+  each record independently, and emits contiguous per-task checkpoint summaries
+  containing producer, record, test, pre-change, and final-tree identities plus
+  RED/GREEN counts. It never fabricates one combined pre-change identity.
+
 - [ ] **Step 2: Write shared repository-path-index work proofs first**
 
   First run existing correctness projections green. Then add only the named work
@@ -2193,18 +2245,28 @@ Task 1.
   git add \
     src/context_search_tool/graph_plugins.py \
     src/context_search_tool/frontend_graph.py \
+    src/context_search_tool/index_health.py \
     src/context_search_tool/indexer.py \
+    src/context_search_tool/java_plugin.py \
+    src/context_search_tool/scanner.py \
     src/context_search_tool/sqlite_store.py \
     src/context_search_tool/test_association.py \
     src/context_search_tool/vector_store.py \
     scripts/p6_benchmark.py \
+    docs/benchmarks/p6/README.md \
+    docs/benchmarks/p6/schemas/quality-report-v1.json \
+    docs/superpowers/plans/2026-07-18-p6-freshness-performance-large-repositories.md \
     tests/test_incremental_refresh.py \
     tests/test_indexer_manifest.py \
     tests/test_frontend_graph.py \
     tests/test_test_association.py \
     tests/test_embeddings_vector_store.py \
+    tests/test_index_health.py \
     tests/test_p6_benchmark.py \
-    tests/test_retrieval_core_boundaries.py
+    tests/test_p6_measurement_worker.py \
+    tests/test_p6_operational_store.py \
+    tests/test_retrieval_core_boundaries.py \
+    tests/test_tokenizer_scanner.py
   git diff --exit-code -- $(git diff --cached --name-only)
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py tdd-green \
     --pending .quality/p6-artifacts/tdd-task-8.pending.json \
@@ -3176,11 +3238,27 @@ their schema-defined inputs.
     --input .quality/p6-artifacts/tdd-task-3.json \
     --input .quality/p6-artifacts/tdd-task-4.json \
     --input .quality/p6-artifacts/tdd-task-5.json \
+    --input .quality/p6-artifacts/tdd-task-5-request-exceptions.json \
     --input .quality/p6-artifacts/tdd-task-6.json \
+    --input .quality/p6-artifacts/tdd-task-6-supplementary.json \
     --input .quality/p6-artifacts/tdd-task-7.json \
+    --input .quality/p6-artifacts/tdd-task-7-supplementary.json \
     --input .quality/p6-artifacts/tdd-task-8.json \
+    --input .quality/p6-artifacts/tdd-task-8-java.json \
+    --input .quality/p6-artifacts/tdd-task-8-sqlite-v2.json \
+    --input .quality/p6-artifacts/tdd-task-8-noop-status.json \
+    --input .quality/p6-artifacts/tdd-task-8-noop-seal.json \
+    --input .quality/p6-artifacts/tdd-task-8-status-refresh-memory.json \
+    --input .quality/p6-artifacts/tdd-task-8-status-accounting.json \
+    --input .quality/p6-artifacts/tdd-task-8-status-id-memory.json \
+    --input .quality/p6-artifacts/tdd-task-8-verified-id-hash.json \
+    --input .quality/p6-artifacts/tdd-task-8-quality-checkpoints.json \
     --input .quality/p6-artifacts/tdd-task-9.json \
+    --input .quality/p6-artifacts/tdd-task-9-harness-v2.json \
+    --input .quality/p6-artifacts/tdd-task-9-path-roles-v2.json \
+    --input .quality/p6-artifacts/tdd-task-9-sqlite-query.json \
     --input .quality/p6-artifacts/tdd-task-10.json \
+    --input .quality/p6-artifacts/tdd-task-10-resident.json \
     --output .quality/p6-artifacts/final-quality.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py decide \
     --kind service-watch \

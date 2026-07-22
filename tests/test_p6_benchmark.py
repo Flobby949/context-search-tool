@@ -1168,7 +1168,7 @@ def test_final_environment_uses_final_benchmark_identity_and_raw_lock_hash(
         )
 
 
-def test_quality_assembler_emits_only_closed_aggregate_and_tdd_evidence(
+def test_quality_assembler_emits_every_ordered_tdd_checkpoint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1199,11 +1199,19 @@ def test_quality_assembler_emits_only_closed_aggregate_and_tdd_evidence(
     full = tmp_path / "final-full.xml"
     full.write_text("<testsuite/>", encoding="utf-8")
     inputs.append(full)
-    for task in range(1, 11):
-        path = tmp_path / f"tdd-task-{task}.json"
+    tdd_paths: list[Path] = []
+    checkpoint_names = [
+        *(f"tdd-task-{task}.json" for task in range(1, 11)),
+        "tdd-task-8-noop-status.json",
+        "tdd-task-10-resident.json",
+    ]
+    for name in checkpoint_names:
+        task = int(name.removeprefix("tdd-task-").split("-", 1)[0].split(".", 1)[0])
+        path = tmp_path / name
         path.write_text(
             json.dumps(
                 {
+                    "producer_version": "p6-benchmark-v1",
                     "task": task,
                     "pre_change_commit": GIT,
                     "pre_change_production_tree": GIT,
@@ -1218,6 +1226,7 @@ def test_quality_assembler_emits_only_closed_aggregate_and_tdd_evidence(
             encoding="utf-8",
         )
         inputs.append(path)
+        tdd_paths.append(path)
 
     monkeypatch.setattr(module, "_validate_entry_quality", lambda *_args: None)
     monkeypatch.setattr(module, "_validate_pinned_real", lambda *_args: None)
@@ -1250,7 +1259,20 @@ def test_quality_assembler_emits_only_closed_aggregate_and_tdd_evidence(
         "selected": 12,
         "trace_coverage": 1,
     }
-    assert [record["task"] for record in report["tdd"]] == list(range(1, 11))
+    assert [(record["task"], record["checkpoint"]) for record in report["tdd"]] == [
+        *( (task, 1) for task in range(1, 8) ),
+        (8, 1),
+        (8, 2),
+        (9, 1),
+        (10, 1),
+        (10, 2),
+    ]
+    expected_hashes = {hashlib.sha256(path.read_bytes()).hexdigest() for path in tdd_paths}
+    assert {record["record_sha256"] for record in report["tdd"]} == expected_hashes
+    assert all(
+        record["producer_version"] == "p6-benchmark-v1"
+        for record in report["tdd"]
+    )
     assert "failed_node_ids" not in json.dumps(report)
 
 

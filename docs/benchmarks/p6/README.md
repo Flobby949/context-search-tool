@@ -66,6 +66,12 @@ are never published. Worker heartbeats and sample-phase progress are emitted to
 stderr so a long full-build measurement is distinguishable from a stalled
 process.
 
+TDD evidence uses one canonical `tdd-task-N.json` record per task plus a
+uniquely suffixed record for every later measured amendment. Quality assembly
+validates every supplied checkpoint independently and publishes ordered,
+privacy-safe checkpoint summaries; it never merges distinct pre-change commits
+into one synthetic TDD identity.
+
 ANN and service/watch records are decisions only. They cannot encode
 implementation authorization: ANN is either retained or requires a separately
 reviewed prototype amendment, and service/watch is deferred or eligible for a
