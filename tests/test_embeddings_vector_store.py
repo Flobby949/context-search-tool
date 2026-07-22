@@ -1,6 +1,7 @@
 import json
 import inspect
 import math
+import sqlite3
 import warnings
 from pathlib import Path
 from unittest.mock import Mock
@@ -301,15 +302,45 @@ def test_ready_query_uses_bound_small_identity(
     with store.graph_read_session() as session:
         assert session.capability.status == "ready"
         snapshot = read_v5_vector_snapshot(repo, DEFAULT_CONFIG, session)
+        assert snapshot is not None
+        assert snapshot.ids == tuple(sorted(expected_ids))
+        mapping = getattr(snapshot._vectors, "_mmap", None)
+        assert mapping is not None
+        assert mapping.closed is False
 
-    assert snapshot is not None
-    assert snapshot.ids == tuple(sorted(expected_ids))
+    assert snapshot.ids == ()
+    assert mapping.closed is True
     descriptor = NumpyVectorStore.inspect_published_descriptor(
         repo / ".context-search"
     )
     assert descriptor is not None
     assert descriptor.descriptor.normalization == "l2"
     assert mmap_modes == ["r"]
+
+
+def test_graph_read_session_runs_every_close_callback_before_reraising(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "service.py").write_text("def service(): pass\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    closed: list[str] = []
+
+    def failing_close() -> None:
+        closed.append("failing")
+        raise RuntimeError("injected close failure")
+
+    with pytest.raises(RuntimeError, match="injected close failure"):
+        with store.graph_read_session() as session:
+            register_close = getattr(session, "register_close_callback", None)
+            assert callable(register_close), "graph session close ownership is absent"
+            register_close(lambda: closed.append("first"))
+            register_close(failing_close)
+            register_close(lambda: closed.append("last"))
+
+    assert closed == ["last", "failing", "first"]
 
 
 def test_numpy_vector_store_rejects_mismatched_persisted_ids(tmp_path: Path) -> None:
@@ -750,6 +781,67 @@ def test_vector_generation_cleanup_accepts_only_closed_rollback_journal_set(
 
     assert removed == 1
     assert NumpyVectorStore.generation_pair_count(tmp_path) == 1
+
+
+@pytest.mark.parametrize(
+    ("requested_mode", "cleanup_allowed"),
+    [("DELETE", True), ("TRUNCATE", True), ("PERSIST", True), ("WAL", False)],
+)
+def test_vector_generation_cleanup_uses_live_sqlite_journal_mode(
+    tmp_path: Path,
+    requested_mode: str,
+    cleanup_allowed: bool,
+) -> None:
+    database = tmp_path / "barrier.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE barrier (value INTEGER)")
+        connection.commit()
+        actual_mode = str(
+            connection.execute(f"PRAGMA journal_mode={requested_mode}").fetchone()[0]
+        ).upper()
+        assert actual_mode == requested_mode
+        live_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0]).upper()
+
+        index_dir = tmp_path / "vectors"
+        store = NumpyVectorStore.fresh(index_dir)
+        store.upsert_many([("a", np.asarray([1.0, 0.0], dtype=np.float32))])
+        first = store.prepare_generation_v2(
+            generation="g1",
+            embedding_identity="hash-v1:2",
+            normalization="none",
+        )
+        store.publish_generation(first)
+        second = store.prepare_generation_v2(
+            generation="g2",
+            embedding_identity="hash-v1:2",
+            normalization="none",
+        )
+        store.publish_generation(second)
+        before = {
+            path.name: path.read_bytes()
+            for path in index_dir.iterdir()
+            if path.name != "vector_snapshot.json"
+        }
+
+        if cleanup_allowed:
+            assert NumpyVectorStore.cleanup_unreferenced_generations(
+                index_dir,
+                keep_generation="g2",
+                journal_mode=live_mode,
+            ) == 1
+            assert NumpyVectorStore.generation_pair_count(index_dir) == 1
+        else:
+            with pytest.raises(ValueError, match="rollback-journal"):
+                NumpyVectorStore.cleanup_unreferenced_generations(
+                    index_dir,
+                    keep_generation="g2",
+                    journal_mode=live_mode,
+                )
+            assert {
+                path.name: path.read_bytes()
+                for path in index_dir.iterdir()
+                if path.name != "vector_snapshot.json"
+            } == before
 
 
 def test_vector_generation_cleanup_leaves_unsafe_mode_and_unknown_names(

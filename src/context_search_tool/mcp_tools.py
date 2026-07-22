@@ -518,7 +518,7 @@ def context_search_refresh_tool(repo: str) -> dict[str, Any]:
             config_loader=load_config,
         )
     except Exception:
-        return index_health.refresh_error_envelope("refresh_failed")
+        return index_health.refresh_error_envelope("refresh_failed", "possible")
     if isinstance(result, RefreshFailure):
         return index_health.refresh_error_envelope(
             result.code,

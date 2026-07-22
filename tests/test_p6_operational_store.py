@@ -151,7 +151,7 @@ def test_operational_replacement_and_retry_selection_are_deterministic(
     assert store.read_operational_snapshot() is None
 
 
-def test_final_ready_binds_one_typed_snapshot_and_purges_a_bounded_batch(
+def test_final_ready_binds_one_typed_snapshot_without_purging_below_threshold(
     tmp_path: Path,
 ) -> None:
     module = sqlite_module
@@ -204,7 +204,7 @@ def test_final_ready_binds_one_typed_snapshot_and_purges_a_bounded_batch(
     assert snapshot.active_embedding_ids == ()
     assert snapshot.source_count == 1
     assert snapshot.chunk_count == 0
-    assert snapshot.tombstone_count == 1
+    assert snapshot.tombstone_count == 2
     assert validator_calls == ["validated"]
     assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "ready"
 

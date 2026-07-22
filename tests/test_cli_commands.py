@@ -1147,3 +1147,28 @@ def test_cli_query_like_surfaces_never_invoke_refresh(
     for command in ("query", "trace", "context", "explore"):
         result = runner.invoke(app, [command, str(repo), "AppController", "--json"])
         assert result.exit_code == 0, (command, result.stdout, result.stderr)
+
+
+def test_cli_refresh_unexpected_service_failure_is_fail_closed_possible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, runner = _indexed_repo(tmp_path)
+
+    def unexpected(*_args, **_kwargs):
+        raise RuntimeError("SECRET provider state")
+
+    monkeypatch.setattr(cli, "refresh_repository", unexpected)
+    result = runner.invoke(app, ["refresh", str(repo), "--json"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout) == {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": "refresh_failed",
+            "message": "refresh failed",
+            "network_egress_outcome": "possible",
+        },
+    }
+    assert "SECRET" not in result.stdout

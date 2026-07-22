@@ -219,6 +219,40 @@ class NumpyVectorStore:
         return sum(roles == {"vectors", "ids"} for roles in generations.values())
 
     @classmethod
+    def safe_generation_pair_names(cls, index_dir: Path) -> frozenset[str]:
+        try:
+            directory_stat = os.lstat(index_dir)
+        except FileNotFoundError:
+            return frozenset()
+        except OSError as error:
+            raise ValueError("vector index directory is unsafe") from error
+        if (
+            stat.S_ISLNK(directory_stat.st_mode)
+            or not stat.S_ISDIR(directory_stat.st_mode)
+            or (hasattr(os, "getuid") and directory_stat.st_uid != os.getuid())
+            or stat.S_IMODE(directory_stat.st_mode) & 0o022
+        ):
+            raise ValueError("vector index directory is unsafe")
+        generations: dict[str, set[str]] = {}
+        for path in index_dir.iterdir():
+            parsed = _generation_artifact(path)
+            if parsed is None:
+                continue
+            try:
+                path_stat = os.lstat(path)
+            except OSError:
+                continue
+            if stat.S_IMODE(path_stat.st_mode) & 0o022:
+                continue
+            generation, role = parsed
+            generations.setdefault(generation, set()).add(role)
+        return frozenset(
+            generation
+            for generation, roles in generations.items()
+            if roles == {"vectors", "ids"}
+        )
+
+    @classmethod
     def unreferenced_generation_count(
         cls,
         index_dir: Path,

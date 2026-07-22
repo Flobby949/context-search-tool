@@ -462,7 +462,7 @@ def refresh(
         )
     except Exception:
         _exit_refresh_error(
-            index_health.refresh_error_envelope("refresh_failed"),
+            index_health.refresh_error_envelope("refresh_failed", "possible"),
             json_output=json_output,
         )
     if isinstance(result, RefreshFailure):

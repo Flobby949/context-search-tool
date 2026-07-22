@@ -2892,6 +2892,45 @@ def _run_churn_refresh_action(
     return refresh_repository(repo, **kwargs)
 
 
+def _run_churn_refresh_with_cleanup_fault(
+    repo: Path,
+    action: Mapping[str, Any],
+    *,
+    config: Any,
+    deleted_payloads: dict[int, bytes],
+    vector_store_type: type[Any],
+) -> Any:
+    original_cleanup = vector_store_type.__dict__["cleanup_unreferenced_generations"]
+    cleanup_calls = 0
+
+    def fail_cleanup(cls: type[Any], *_args: Any, **_kwargs: Any) -> int:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        raise OSError("injected churn cleanup failure")
+
+    setattr(
+        vector_store_type,
+        "cleanup_unreferenced_generations",
+        classmethod(fail_cleanup),
+    )
+    try:
+        result = _run_churn_refresh_action(
+            repo,
+            action,
+            config=config,
+            deleted_payloads=deleted_payloads,
+        )
+    finally:
+        setattr(
+            vector_store_type,
+            "cleanup_unreferenced_generations",
+            original_cleanup,
+        )
+    if cleanup_calls != 1:
+        raise ValueError("churn cleanup fault was not exercised exactly once")
+    return result
+
+
 def run_churn(
     repo: str | Path,
     manifest: str | Path,
@@ -2931,17 +2970,38 @@ def run_churn(
 
     deleted_payloads: dict[int, bytes] = {}
     generation_count_after_failure = 0
+    cleanup_failure_recovered = False
     sampled_steps = 0
     for action in schedule["actions"]:
         step = int(action["step"])
         operation = str(action["operation"])
         _benchmark_progress(f"churn step {step}/100 {operation} started")
-        result = _run_churn_refresh_action(
-            repo_path,
-            action,
-            config=config,
-            deleted_payloads=deleted_payloads,
-        )
+        if step == 1:
+            result = _run_churn_refresh_with_cleanup_fault(
+                repo_path,
+                action,
+                config=config,
+                deleted_payloads=deleted_payloads,
+                vector_store_type=NumpyVectorStore,
+            )
+            cleanup_failure_generations = NumpyVectorStore.generation_pair_count(
+                repo_path / ".context-search"
+            )
+            if cleanup_failure_generations != 2:
+                raise ValueError(
+                    "churn cleanup fault did not retain exactly two generations"
+                )
+            generation_count_after_failure = max(
+                generation_count_after_failure,
+                cleanup_failure_generations,
+            )
+        else:
+            result = _run_churn_refresh_action(
+                repo_path,
+                action,
+                config=config,
+                deleted_payloads=deleted_payloads,
+            )
         injected_failure = action["expected_outcome"] == "injected_failure"
         if injected_failure:
             if getattr(result, "ok", True) or getattr(result, "code", "") != (
@@ -2956,6 +3016,15 @@ def run_churn(
             )
         elif not getattr(result, "ok", False):
             raise ValueError(f"churn step failed: {operation}")
+
+        if step == 2:
+            if NumpyVectorStore.generation_pair_count(
+                repo_path / ".context-search"
+            ) != 1:
+                raise ValueError(
+                    "churn cleanup fault was not recovered by the next writer"
+                )
+            cleanup_failure_recovered = True
 
         if action["sample_after"]:
             sampled_steps += 1
@@ -2976,6 +3045,8 @@ def run_churn(
 
     if sampled_steps != 10:
         raise ValueError("churn did not sample every frozen cycle")
+    if not cleanup_failure_recovered:
+        raise ValueError("churn cleanup recovery was not exercised")
     final_durations = _churn_query_durations(
         repo_path,
         config,

@@ -2132,3 +2132,30 @@ def test_mcp_refresh_post_success_inspection_failure_has_no_partial_siblings(
         },
     }
     assert set(payload) == {"schema_version", "ok", "error"}
+
+
+def test_mcp_refresh_unexpected_service_failure_is_fail_closed_possible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refresh_tool = getattr(mcp_tools, "context_search_refresh_tool", None)
+    assert callable(refresh_tool), "P6 MCP refresh tool is absent"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def unexpected(*_args, **_kwargs):
+        raise RuntimeError("SECRET provider state")
+
+    monkeypatch.setattr(mcp_tools, "refresh_repository", unexpected)
+    payload = refresh_tool(str(repo))
+
+    assert payload == {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": "refresh_failed",
+            "message": "refresh failed",
+            "network_egress_outcome": "possible",
+        },
+    }
+    assert "SECRET" not in json.dumps(payload)

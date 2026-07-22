@@ -705,11 +705,46 @@ class SQLiteStore:
     ) -> int:
         if limit <= 0:
             return 0
-        counts = _maintenance_counts(connection)
         changes_before = connection.total_changes
+        relation_budget = limit
 
-        relation_limit = _bounded_purge_count(
-            counts["deleted_relations"], limit
+        counts = _maintenance_counts(connection)
+        association_limit = _maintenance_purge_count(
+            active_rows=counts["active_associations"],
+            deleted_rows=counts["orphan_associations"],
+            limit=relation_budget,
+        )
+        if association_limit:
+            association_rows = connection.execute(
+                """
+                SELECT relation_id
+                FROM code_relations
+                WHERE producer = 'test_association'
+                  AND deleted_at IS NOT NULL
+                ORDER BY deleted_at, relation_id
+                LIMIT ?
+                """,
+                (association_limit,),
+            ).fetchall()
+            association_ids = [
+                str(row["relation_id"]) for row in association_rows
+            ]
+            if association_ids:
+                connection.execute(
+                    _in_query(
+                        "DELETE FROM code_relations "
+                        "WHERE relation_id IN ({placeholders})",
+                        association_ids,
+                    ),
+                    association_ids,
+                )
+                relation_budget -= len(association_ids)
+
+        counts = _maintenance_counts(connection)
+        relation_limit = _maintenance_purge_count(
+            active_rows=counts["active_relations"],
+            deleted_rows=counts["deleted_relations"],
+            limit=relation_budget,
         )
         if relation_limit:
             relation_rows = connection.execute(
@@ -733,7 +768,12 @@ class SQLiteStore:
                     relation_ids,
                 )
 
-        signal_limit = _bounded_purge_count(counts["deleted_signals"], limit)
+        counts = _maintenance_counts(connection)
+        signal_limit = _maintenance_purge_count(
+            active_rows=counts["active_signals"],
+            deleted_rows=counts["deleted_signals"],
+            limit=limit,
+        )
         if signal_limit:
             signal_rows = connection.execute(
                 """
@@ -768,7 +808,12 @@ class SQLiteStore:
                     signal_ids,
                 )
 
-        chunk_limit = _bounded_purge_count(counts["deleted_chunks"], limit)
+        counts = _maintenance_counts(connection)
+        chunk_limit = _maintenance_purge_count(
+            active_rows=counts["active_chunks"],
+            deleted_rows=counts["deleted_chunks"],
+            limit=limit,
+        )
         if chunk_limit:
             rows = connection.execute(
                 """
@@ -830,7 +875,12 @@ class SQLiteStore:
                     chunk_ids,
                 )
 
-        symbol_limit = _bounded_purge_count(counts["orphan_symbols"], limit)
+        counts = _maintenance_counts(connection)
+        symbol_limit = _maintenance_purge_count(
+            active_rows=counts["active_symbols"],
+            deleted_rows=counts["orphan_symbols"],
+            limit=limit,
+        )
         if symbol_limit:
             symbol_rows = connection.execute(
                 """
@@ -2496,16 +2546,16 @@ class SQLiteStore:
         if not self.db_path.exists():
             return 0
         with self._connect() as connection:
-            counts = [
-                int(
-                    connection.execute(
-                        f"SELECT COUNT(*) FROM {table} WHERE deleted_at IS NOT NULL"
-                    ).fetchone()[0]
-                )
-                for table in ("chunks", "code_signals", "code_relations")
-                if _table_exists(connection, table)
-            ]
-        return sum(counts)
+            counts = _maintenance_counts(connection)
+        return sum(
+            counts[key]
+            for key in (
+                "deleted_chunks",
+                "deleted_signals",
+                "deleted_relations",
+                "orphan_symbols",
+            )
+        )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -2794,6 +2844,7 @@ class GraphReadSession:
         self.db_path = db_path
         self.busy_timeout_ms = busy_timeout_ms
         self._connection: sqlite3.Connection | None = None
+        self._close_callbacks: list[Callable[[], None]] = []
         self.capability: GraphCapability
         self.graph_fault: str | None = None
         self.graph_truncated = False
@@ -2803,6 +2854,7 @@ class GraphReadSession:
         try:
             connection.execute("BEGIN")
             self._connection = connection
+            self._close_callbacks.clear()
             self.capability = read_graph_capability(self)
             return self
         except BaseException:
@@ -2814,11 +2866,26 @@ class GraphReadSession:
 
     def __exit__(self, *_exc_info: object) -> None:
         connection = self._connection
-        self._connection = None
-        if connection is not None:
-            if connection.in_transaction:
-                connection.rollback()
-            connection.close()
+        close_error: BaseException | None = None
+        try:
+            while self._close_callbacks:
+                try:
+                    self._close_callbacks.pop()()
+                except BaseException as error:
+                    if close_error is None:
+                        close_error = error
+        finally:
+            self._connection = None
+            if connection is not None:
+                if connection.in_transaction:
+                    connection.rollback()
+                connection.close()
+        if close_error is not None:
+            raise close_error
+
+    def register_close_callback(self, callback: Callable[[], None]) -> None:
+        self._require_connection()
+        self._close_callbacks.append(callback)
 
     def get_metadata(self, key: str) -> str | None:
         connection = self._require_connection()
@@ -5828,6 +5895,17 @@ def _maintenance_threshold(active_rows: int) -> int:
 
 def _bounded_purge_count(deleted_rows: int, limit: int) -> int:
     return min(limit, deleted_rows)
+
+
+def _maintenance_purge_count(
+    *,
+    active_rows: int,
+    deleted_rows: int,
+    limit: int,
+) -> int:
+    if deleted_rows <= _maintenance_threshold(active_rows):
+        return 0
+    return _bounded_purge_count(deleted_rows, limit)
 
 
 def _maintenance_counts(connection: sqlite3.Connection) -> dict[str, int]:

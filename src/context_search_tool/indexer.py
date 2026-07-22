@@ -2504,19 +2504,28 @@ def _retry_existing_vector_generation_cleanup(
     repo: Path,
     store: SQLiteStore,
 ) -> None:
+    index_dir = repo / ".context-search"
+    generations = NumpyVectorStore.safe_generation_pair_names(index_dir)
+    if len(generations) <= 1:
+        return
     try:
-        descriptor = NumpyVectorStore.inspect_published_descriptor(
-            repo / ".context-search"
-        )
-    except (OSError, RuntimeError, ValueError):
-        return
+        descriptor = NumpyVectorStore.inspect_published_descriptor(index_dir)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise ValueError(
+            "vector generation cleanup requires a readable descriptor"
+        ) from error
     if descriptor is None:
-        return
+        raise ValueError(
+            "vector generation cleanup requires a readable descriptor"
+        )
     _cleanup_unreferenced_vector_generations(
-        repo / ".context-search",
+        index_dir,
         store,
         keep_generation=descriptor.descriptor.generation,
     )
+    remaining = NumpyVectorStore.safe_generation_pair_names(index_dir)
+    if remaining - {descriptor.descriptor.generation}:
+        raise ValueError("vector generation cleanup did not complete")
 
 
 def _cleanup_unreferenced_vector_generations(
@@ -2596,7 +2605,7 @@ def read_v5_vector_snapshot(
     try:
         if graph_session.capability.status == "ready":
             binding = graph_session.ready_vector_binding()
-            return NumpyVectorStore.load_bound_ready_snapshot(
+            snapshot = NumpyVectorStore.load_bound_ready_snapshot(
                 repo.resolve() / ".context-search",
                 expected_descriptor_sha256=binding.descriptor_sha256,
                 expected_generation=binding.generation,
@@ -2606,16 +2615,20 @@ def read_v5_vector_snapshot(
                 expected_dimensions=config.embedding.dimensions,
                 expected_embedding_identity=embedding_identity,
             )
-        source_count, chunk_count = graph_session.source_chunk_counts()
-        expected_ids = graph_session.active_embedding_ids()
-        return _load_validated_v5_vector_tuple(
-            repo=repo.resolve(),
-            config=config,
-            expected_embedding_identity=embedding_identity,
-            expected_ids=expected_ids,
-            expected_source_count=source_count,
-            expected_chunk_count=chunk_count,
-        )
+        else:
+            source_count, chunk_count = graph_session.source_chunk_counts()
+            expected_ids = graph_session.active_embedding_ids()
+            snapshot = _load_validated_v5_vector_tuple(
+                repo=repo.resolve(),
+                config=config,
+                expected_embedding_identity=embedding_identity,
+                expected_ids=expected_ids,
+                expected_source_count=source_count,
+                expected_chunk_count=chunk_count,
+            )
+        if snapshot is not None:
+            graph_session.register_close_callback(snapshot.close)
+        return snapshot
     except (GraphIntegrityError, OSError, RuntimeError, ValueError) as error:
         if graph_session.capability.status == "ready":
             raise GraphIntegrityError("vector_snapshot_mismatch") from error

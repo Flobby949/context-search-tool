@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
+import numpy as np
 import pytest
 
 from context_search_tool import indexer as indexer_module
@@ -49,6 +50,37 @@ class _RecordingPlugin:
     ) -> MaterializedGraph:
         self.events.append(f"materialize:{context.file_path.as_posix()}")
         return MaterializedGraph()
+
+
+class _RecordingRemoteProvider:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ...]] = []
+        self.failure: Exception | None = None
+
+    def fingerprint(self) -> dict[str, object]:
+        return {
+            "provider": "openai-compatible",
+            "model": "fixture-embedding",
+            "dimensions": 3,
+        }
+
+    def embed_texts(self, texts: list[str]) -> list[np.ndarray]:
+        self.calls.append(tuple(texts))
+        if self.failure is not None:
+            raise self.failure
+        return [np.asarray([1.0, 0.0, 0.0], dtype=np.float32) for _ in texts]
+
+
+def _remote_config():
+    return replace(
+        DEFAULT_CONFIG,
+        embedding=EmbeddingConfig(
+            provider="openai-compatible",
+            model="fixture-embedding",
+            dimensions=3,
+            base_url="https://example.test/v1",
+        ),
+    )
 
 
 def _build(
@@ -221,6 +253,114 @@ def test_closing_inventory_drift_preserves_prior_ready_snapshot(
 
     store = SQLiteStore(repo / ".context-search" / "index.sqlite")
     assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "ready"
+    assert _snapshot_bytes(repo) == before
+
+
+def test_quick_refresh_remote_payload_contains_only_changed_and_added_chunks(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    stable = repo / "Stable.java"
+    changed = repo / "Changed.java"
+    stable.write_text("class Stable { int stableOnlyToken; }\n", encoding="utf-8")
+    changed.write_text("class Changed { int oldOnlyToken; }\n", encoding="utf-8")
+    config = _remote_config()
+    provider = _RecordingRemoteProvider()
+    build_v5_index_snapshot(
+        repo,
+        config,
+        graph_plugins=[_RecordingPlugin([])],
+        scanner=scan_workspace_v5,
+        embedding_provider=provider,
+    )
+    provider.calls.clear()
+    changed.write_text("class Changed { int changedOnlyToken; }\n", encoding="utf-8")
+    (repo / "Added.java").write_text(
+        "class Added { int addedOnlyToken; }\n",
+        encoding="utf-8",
+    )
+
+    result = _refresh(repo, config, embedding_provider=provider)
+
+    assert result.ok is True
+    assert result.network_egress_performed is True
+    assert len(provider.calls) == 1
+    assert len(provider.calls[0]) == result.summary.chunks.embedded == 2
+    payload = "\n".join(provider.calls[0])
+    assert "changedOnlyToken" in payload
+    assert "addedOnlyToken" in payload
+    assert "stableOnlyToken" not in payload
+    assert "oldOnlyToken" not in payload
+
+
+def test_quick_refresh_remote_transport_failure_is_possible_and_non_mutating(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int before; }\n", encoding="utf-8")
+    config = _remote_config()
+    provider = _RecordingRemoteProvider()
+    build_v5_index_snapshot(
+        repo,
+        config,
+        graph_plugins=[_RecordingPlugin([])],
+        scanner=scan_workspace_v5,
+        embedding_provider=provider,
+    )
+    provider.calls.clear()
+    provider.failure = RuntimeError("SECRET provider transport detail")
+    source.write_text("class App { int after; }\n", encoding="utf-8")
+    before = _snapshot_bytes(repo)
+
+    result = _refresh(repo, config, embedding_provider=provider)
+
+    assert result.ok is False
+    assert result.code == "refresh_failed"
+    assert result.network_egress_outcome == "possible"
+    assert "SECRET" not in result.message
+    assert len(provider.calls) == 1
+    assert _snapshot_bytes(repo) == before
+
+
+def test_quick_refresh_post_response_fault_is_performed_and_non_mutating(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int before; }\n", encoding="utf-8")
+    config = _remote_config()
+    provider = _RecordingRemoteProvider()
+    build_v5_index_snapshot(
+        repo,
+        config,
+        graph_plugins=[_RecordingPlugin([])],
+        scanner=scan_workspace_v5,
+        embedding_provider=provider,
+    )
+    provider.calls.clear()
+    source.write_text("class App { int after; }\n", encoding="utf-8")
+    before = _snapshot_bytes(repo)
+
+    def fail_after_response(stage: str) -> None:
+        if stage == "embedding_complete":
+            raise RuntimeError("SECRET post-response detail")
+
+    result = _refresh(
+        repo,
+        config,
+        embedding_provider=provider,
+        fault_hook=fail_after_response,
+    )
+
+    assert result.ok is False
+    assert result.code == "refresh_failed"
+    assert result.network_egress_outcome == "performed"
+    assert "SECRET" not in result.message
+    assert len(provider.calls) == 1
     assert _snapshot_bytes(repo) == before
 
 
@@ -808,6 +948,167 @@ def test_authoritative_v1_migration_cleans_safe_historical_generations(
     )
 
 
+@pytest.mark.parametrize("error_type", [OSError, ValueError])
+def test_authoritative_descriptor_inspection_failure_blocks_third_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    index_dir = repo / ".context-search"
+    manifest = load_manifest(repo)
+    assert isinstance(manifest, ManifestV2)
+    _descriptor, vector_store = NumpyVectorStore.load_published_snapshot(
+        index_dir,
+        expected_embedding_identity=manifest.embedding_config_hash,
+    )
+    vector_store.prepare_generation_v2(
+        generation="orphan-before-authoritative-retry",
+        embedding_identity=manifest.embedding_config_hash,
+        normalization="none",
+    )
+    assert NumpyVectorStore.generation_pair_count(index_dir) == 2
+
+    def unreadable_descriptor(cls, *_args: Any, **_kwargs: Any):
+        raise error_type("sensitive descriptor detail")
+
+    def forbidden_prepare(*_args: Any, **_kwargs: Any):
+        raise AssertionError("authoritative preparation started before cleanup")
+
+    monkeypatch.setattr(
+        NumpyVectorStore,
+        "inspect_published_descriptor",
+        classmethod(unreadable_descriptor),
+    )
+    monkeypatch.setattr(
+        indexer_module,
+        "_prepare_authoritative_index",
+        forbidden_prepare,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="vector generation cleanup requires a readable descriptor",
+    ) as caught:
+        index_repository(repo, DEFAULT_CONFIG)
+
+    assert "sensitive descriptor detail" not in str(caught.value)
+    assert NumpyVectorStore.generation_pair_count(index_dir) == 2
+
+
+def test_authoritative_cleanup_skips_descriptor_inspection_with_one_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    index_dir = repo / ".context-search"
+    calls = 0
+
+    def transient_failure(cls, *_args: Any, **_kwargs: Any):
+        nonlocal calls
+        calls += 1
+        raise OSError("transient descriptor failure")
+
+    monkeypatch.setattr(
+        NumpyVectorStore,
+        "inspect_published_descriptor",
+        classmethod(transient_failure),
+    )
+
+    indexer_module._retry_existing_vector_generation_cleanup(
+        repo,
+        SQLiteStore(index_dir / "index.sqlite"),
+    )
+
+    assert calls == 0
+    assert NumpyVectorStore.generation_pair_count(index_dir) == 1
+
+
+def test_authoritative_writer_ignores_an_unsafe_incomplete_generation_decoy(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    index_dir = repo / ".context-search"
+    outside = tmp_path / "outside.npy"
+    outside.write_bytes(b"outside")
+    decoy = index_dir / "vectors.decoy.npy"
+    decoy.symlink_to(outside)
+
+    summary = index_repository(repo, DEFAULT_CONFIG)
+
+    assert summary.files_seen == 1
+    assert decoy.is_symlink()
+    assert outside.read_bytes() == b"outside"
+    assert NumpyVectorStore.generation_pair_count(index_dir) == 1
+
+
+def test_quick_refresh_orphan_retry_fails_closed_under_persistent_wal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int generationOne; }\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    index_dir = repo / ".context-search"
+    db_path = index_dir / "index.sqlite"
+
+    def cleanup_failure(cls, *_args: Any, **_kwargs: Any) -> int:
+        raise OSError("injected cleanup failure")
+
+    source.write_text("class App { int generationTwo; }\n", encoding="utf-8")
+    with monkeypatch.context() as cleanup_patch:
+        cleanup_patch.setattr(
+            NumpyVectorStore,
+            "cleanup_unreferenced_generations",
+            classmethod(cleanup_failure),
+        )
+        first = _refresh(repo)
+    assert first.ok is True
+    assert NumpyVectorStore.generation_pair_count(index_dir) == 2
+
+    with sqlite3.connect(db_path) as connection:
+        actual_mode = connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+        assert str(actual_mode).upper() == "WAL"
+    store = SQLiteStore(db_path)
+    assert store.journal_mode() == "WAL"
+    source.write_text("class App { int generationThree; }\n", encoding="utf-8")
+    reader_called = False
+
+    def forbidden_reader(*_args: Any, **_kwargs: Any):
+        nonlocal reader_called
+        reader_called = True
+        raise AssertionError("WAL cleanup failure reached source preparation")
+
+    blocked = _refresh(repo, observed_reader=forbidden_reader)
+
+    assert blocked.ok is False
+    assert blocked.code == "refresh_failed"
+    assert reader_called is False
+    assert NumpyVectorStore.generation_pair_count(index_dir) == 2
+
+    with sqlite3.connect(db_path) as connection:
+        assert str(
+            connection.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+        ).upper() == "DELETE"
+    assert store.journal_mode() == "DELETE"
+
+    recovered = _refresh(repo)
+
+    assert recovered.ok is True
+    assert NumpyVectorStore.generation_pair_count(index_dir) == 1
+
+
 def test_quick_refresh_maintenance_purges_each_table_and_orphan_symbols(
     tmp_path: Path,
 ) -> None:
@@ -930,6 +1231,226 @@ def test_quick_refresh_maintenance_purges_each_table_and_orphan_symbols(
         repo / ".context-search",
         expected_ids=SQLiteStore(db_path).active_embedding_ids(),
     )
+
+
+def test_quick_refresh_reports_orphan_symbol_maintenance_work(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int before; }\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    db_path = repo / ".context-search" / "index.sqlite"
+    store = SQLiteStore(db_path)
+
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO symbols (
+                name, kind, start_line, end_line, language, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (f"orphan-only-{index}", "field", 1, 1, "java", "{}")
+                for index in range(5_001)
+            ),
+        )
+        connection.commit()
+
+    assert store.tombstone_count() == 5_001
+    source.write_text("class App { int after; }\n", encoding="utf-8")
+    result = _refresh(repo)
+
+    assert result.ok is True
+    assert result.summary.work.maintenance.tombstones_purged == 5_000
+    assert store.maintenance_counts()["orphan_symbols"] <= 5_000
+
+
+def test_relation_maintenance_uses_one_shared_physical_table_batch(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int before; }\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    db_path = repo / ".context-search" / "index.sqlite"
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO code_relations (
+                relation_id, source_signal_id, source_chunk_id,
+                source_file_path, target_name, kind, confidence, target_kind,
+                target_qualified_name, target_signature, target_arity,
+                target_project_unit_key, target_signal_id, resolution,
+                producer, producer_confidence, resolution_confidence,
+                metadata, deleted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    f"bounded-association-{index}",
+                    f"missing-signal-{index}",
+                    f"missing-chunk-{index}",
+                    "deleted-test.java",
+                    "Deleted.target",
+                    "tests",
+                    1.0,
+                    "method",
+                    "Deleted.target",
+                    "target()",
+                    0,
+                    ".",
+                    "",
+                    "unresolved",
+                    "test_association",
+                    1.0,
+                    None,
+                    "{}",
+                    1,
+                )
+                for index in range(10_001)
+            ),
+        )
+        connection.commit()
+
+    source.write_text("class App { int after; }\n", encoding="utf-8")
+    result = _refresh(repo)
+
+    assert result.ok is True
+    with sqlite3.connect(db_path) as connection:
+        remaining = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM code_relations
+            WHERE producer = 'test_association' AND deleted_at IS NOT NULL
+            """
+        ).fetchone()[0]
+    assert remaining == 5_001
+    assert result.summary.work.maintenance.tombstones_purged == 5_000
+
+
+def test_maintenance_leaves_below_threshold_chunk_tombstones_when_signals_trigger(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int first; }\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    db_path = repo / ".context-search" / "index.sqlite"
+    store = SQLiteStore(db_path)
+
+    source.write_text("class App { int second; }\n", encoding="utf-8")
+    assert _refresh(repo).ok is True
+    preserved_chunk_ids = store.deleted_chunk_ids()
+    assert preserved_chunk_ids
+    with sqlite3.connect(db_path) as connection:
+        placeholders = ", ".join("?" for _ in preserved_chunk_ids)
+        assert connection.execute(
+            f"SELECT COUNT(*) FROM chunks_fts WHERE chunk_id IN ({placeholders})",
+            tuple(sorted(preserved_chunk_ids)),
+        ).fetchone()[0] == 0
+        connection.executemany(
+            """
+            INSERT INTO code_signals (
+                signal_id, chunk_id, file_path, kind, name, qualified_name,
+                signature, arity, project_unit_key, producer, start_line,
+                end_line, start_column, end_column, language, recallable,
+                tokens, metadata, deleted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    f"maintenance-signal-{index}",
+                    f"missing-chunk-{index}",
+                    "deleted.java",
+                    "method",
+                    "deleted",
+                    "Deleted.deleted",
+                    "deleted()",
+                    0,
+                    ".",
+                    "fixture",
+                    1,
+                    1,
+                    0,
+                    1,
+                    "java",
+                    0,
+                    "[]",
+                    "{}",
+                    1,
+                )
+                for index in range(5_001)
+            ),
+        )
+        connection.commit()
+
+    source.write_text("class App { int third; }\n", encoding="utf-8")
+    result = _refresh(repo)
+
+    assert result.ok is True
+    assert preserved_chunk_ids <= store.deleted_chunk_ids()
+    assert store.maintenance_counts()["deleted_signals"] <= 5_000
+    with sqlite3.connect(db_path) as connection:
+        placeholders = ", ".join("?" for _ in preserved_chunk_ids)
+        assert connection.execute(
+            f"SELECT COUNT(*) FROM chunks_fts WHERE chunk_id IN ({placeholders})",
+            tuple(sorted(preserved_chunk_ids)),
+        ).fetchone()[0] == 0
+
+
+def test_maintenance_purge_rolls_back_with_the_final_ready_transaction(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int before; }\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    db_path = repo / ".context-search" / "index.sqlite"
+    store = SQLiteStore(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO symbols (
+                name, kind, start_line, end_line, language, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (f"rollback-orphan-{index}", "field", 1, 1, "java", "{}")
+                for index in range(5_001)
+            ),
+        )
+        connection.commit()
+
+    source.write_text("class App { int after; }\n", encoding="utf-8")
+    committed_before_purge: dict[str, int] = {}
+
+    def fail_before_ready_commit(stage: str) -> None:
+        if stage == "before_ready_commit":
+            committed_before_purge.update(store.maintenance_counts())
+            raise RuntimeError("injected maintenance rollback")
+
+    failed = _refresh(repo, fault_hook=fail_before_ready_commit)
+
+    assert failed.ok is False
+    assert failed.code == "refresh_failed"
+    assert committed_before_purge["orphan_symbols"] > 5_000
+    assert store.maintenance_counts() == committed_before_purge
+
+    retry = _refresh(repo)
+    assert retry.ok is False
+    assert retry.code == "authoritative_index_required"
+    index_repository(repo, DEFAULT_CONFIG)
+    source.write_text("class App { int final; }\n", encoding="utf-8")
+    recovered = _refresh(repo)
+
+    assert recovered.ok is True
+    assert recovered.summary.work.maintenance.tombstones_purged == 5_000
+    assert store.maintenance_counts()["orphan_symbols"] <= 5_000
 
 
 def test_quick_refresh_100_step_scaled_churn_preserves_exact_ready_state(

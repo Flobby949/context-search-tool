@@ -1952,6 +1952,56 @@ def test_required_benchmark_subcommands_are_registered() -> None:
     assert all(name in result.stdout for name in required)
 
 
+def test_churn_cleanup_fault_seam_restores_the_classmethod_and_requires_use(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_harness()
+    runner = getattr(module, "_run_churn_refresh_with_cleanup_fault", None)
+    assert callable(runner), "churn cleanup-fault seam is absent"
+    normal_calls = 0
+
+    class _VectorStore:
+        @classmethod
+        def cleanup_unreferenced_generations(cls, *_args: Any, **_kwargs: Any) -> int:
+            nonlocal normal_calls
+            normal_calls += 1
+            return 7
+
+    fault_messages: list[str] = []
+
+    def refresh_action(*_args: Any, **_kwargs: Any) -> str:
+        try:
+            _VectorStore.cleanup_unreferenced_generations(Path("index"))
+        except OSError as error:
+            fault_messages.append(str(error))
+        return "ready"
+
+    monkeypatch.setattr(module, "_run_churn_refresh_action", refresh_action)
+    result = runner(
+        tmp_path,
+        {"step": 1, "operation": "modify", "target": "Type.java"},
+        config=object(),
+        deleted_payloads={},
+        vector_store_type=_VectorStore,
+    )
+
+    assert result == "ready"
+    assert fault_messages == ["injected churn cleanup failure"]
+    assert _VectorStore.cleanup_unreferenced_generations(Path("index")) == 7
+    assert normal_calls == 1
+
+    monkeypatch.setattr(module, "_run_churn_refresh_action", lambda *_args, **_kwargs: "ready")
+    with pytest.raises(ValueError, match="not exercised exactly once"):
+        runner(
+            tmp_path,
+            {"step": 1, "operation": "modify", "target": "Type.java"},
+            config=object(),
+            deleted_payloads={},
+            vector_store_type=_VectorStore,
+        )
+
+
 def test_harness_validation_is_closed_finite_and_private() -> None:
     module = _load_harness()
     report = _benchmark_report()
