@@ -1,5 +1,7 @@
+import sqlite3
 from pathlib import Path
 
+from context_search_tool import sqlite_store as sqlite_store_module
 from context_search_tool.models import (
     CodeRelation,
     CodeSignal,
@@ -587,6 +589,54 @@ def test_store_direct_text_search_scores_literal_chunk_matches(tmp_path: Path) -
     assert matches[0].score_parts["direct_text_hits"] == 3.0
 
 
+def test_exact_candidate_sources_meet_work_contracts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    chunk = _chunk(
+        "matching",
+        "src/Match.py",
+        ["needle", *(f"noise-{index}" for index in range(5000))],
+    )
+    store.replace_chunks(chunk.file_path, [chunk])
+    decoded_token_rows = 0
+    real_open_connection = sqlite_store_module._open_connection
+
+    def traced_open_connection(*args, **kwargs):
+        connection = real_open_connection(*args, **kwargs)
+        state = {"statement": ""}
+
+        def trace_statement(statement: str) -> None:
+            state["statement"] = " ".join(statement.lower().split())
+
+        def count_row(cursor, values):
+            nonlocal decoded_token_rows
+            row = sqlite3.Row(cursor, values)
+            if "from chunk_tokens" in state["statement"]:
+                decoded_token_rows += 1
+            return row
+
+        connection.set_trace_callback(trace_statement)
+        connection.row_factory = count_row
+        return connection
+
+    monkeypatch.setattr(
+        sqlite_store_module,
+        "_open_connection",
+        traced_open_connection,
+    )
+
+    lexical = store.lexical_search(["needle"], limit=10)
+    path_symbol = store.path_symbol_search(["NEEDLE"], limit=10)
+
+    assert [candidate.chunk_id for candidate in lexical] == ["matching"]
+    assert [candidate.chunk_id for candidate in path_symbol] == ["matching"]
+    assert path_symbol[0].score == 0.25
+    assert decoded_token_rows == 1
+
+
 from context_search_tool.sqlite_store import _dedupe_search_probes, _direct_text_score
 
 
@@ -610,9 +660,10 @@ def test_direct_text_probe_deduplication_and_limit() -> None:
     assert "当前审批人查询接口" in limited
 
 
-def test_direct_text_search_performance_benchmark(tmp_path: Path) -> None:
-    """Verify direct text search stays under the 100ms CI guardrail."""
-    import time
+def test_direct_text_search_reads_each_active_chunk_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     store = SQLiteStore(tmp_path / "index.sqlite")
     store.initialize()
 
@@ -638,12 +689,36 @@ def test_direct_text_search_performance_benchmark(tmp_path: Path) -> None:
             ],
         )
 
-    # Test with 20 probes
     probes = ["审批流程", "审批", "流程"] + [f"process_{i}" for i in range(17)]
+    decoded_rows = 0
+    real_open_connection = sqlite_store_module._open_connection
 
-    start = time.perf_counter()
+    def traced_open_connection(*args, **kwargs):
+        connection = real_open_connection(*args, **kwargs)
+        state = {"statement": ""}
+
+        def trace_statement(statement: str) -> None:
+            state["statement"] = " ".join(statement.lower().split())
+
+        def count_row(cursor, values):
+            nonlocal decoded_rows
+            row = sqlite3.Row(cursor, values)
+            if "select chunk_id, file_path, content from chunks" in state["statement"]:
+                decoded_rows += 1
+            return row
+
+        connection.set_trace_callback(trace_statement)
+        connection.row_factory = count_row
+        return connection
+
+    monkeypatch.setattr(
+        sqlite_store_module,
+        "_open_connection",
+        traced_open_connection,
+    )
+
     results = store.direct_text_search(probes, limit=10)
-    elapsed_ms = (time.perf_counter() - start) * 1000
 
-    assert len(results) > 0
-    assert elapsed_ms < 100, f"Search took {elapsed_ms:.1f}ms, expected <100ms"
+    assert len(results) == 10
+    assert all(result.source == "direct_text" for result in results)
+    assert decoded_rows == 1000

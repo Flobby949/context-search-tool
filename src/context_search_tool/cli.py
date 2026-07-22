@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 import shutil
 from pathlib import Path
 from typing import Optional, Sequence
@@ -8,6 +9,7 @@ from typing import Optional, Sequence
 import requests
 import typer
 
+from context_search_tool import index_health
 from context_search_tool.config import ToolConfig, load_config
 from context_search_tool.context_pack import (
     ContextPackError,
@@ -29,14 +31,18 @@ from context_search_tool.formatters import (
 )
 from context_search_tool.indexer import (
     IncompatibleIndexError,
+    RefreshFailure,
+    RefreshSuccess,
     index_repository,
+    refresh_repository,
 )
 from context_search_tool.graph_lifecycle import (
+    IncompatibleOperationalSchemaError,
     IncompatibleSignalSchemaError,
     IndexBusyError,
     read_graph_capability,
 )
-from context_search_tool.manifest import load_manifest
+from context_search_tool.manifest import IncompatibleManifestSchemaError
 from context_search_tool.models import SymbolRef
 from context_search_tool.paths import (
     RepositoryNotFoundError,
@@ -71,16 +77,22 @@ def main() -> None:
 @app.command()
 def index(repo: Optional[Path] = typer.Argument(None)) -> None:
     resolved_repo = _resolve_repo(repo)
-    _reject_future_signal_schema(resolved_repo)
-    config = load_config(resolved_repo)
     try:
-        summary = index_repository(resolved_repo, config)
+        index_health.preflight_public_operation(resolved_repo, "index")
+        summary = index_repository(
+            resolved_repo,
+            config_loader=load_config,
+        )
+    except requests.RequestException:
+        _exit_with_error(ValueError("remote embedding request failed"))
     except (
         IncompatibleIndexError,
+        IncompatibleManifestSchemaError,
+        IncompatibleOperationalSchemaError,
         IncompatibleSignalSchemaError,
         IndexBusyError,
+        index_health.IndexCorruptionError,
         ValueError,
-        requests.HTTPError,
     ) as exc:
         _exit_with_error(exc)
 
@@ -118,6 +130,7 @@ def query(
     repo, query_text, config = _prepare_query_command(
         repo_or_question,
         question,
+        operation="query",
         planner=planner,
         no_planner=no_planner,
     )
@@ -164,6 +177,7 @@ def trace(
     repo, query_text, config = _prepare_query_command(
         repo_or_question,
         question,
+        operation="trace",
         planner=planner,
         no_planner=no_planner,
     )
@@ -227,6 +241,7 @@ def context(
     repo, query_text, config = _prepare_query_command(
         repo_or_question,
         question,
+        operation="context",
         planner=planner,
         no_planner=no_planner,
     )
@@ -310,6 +325,7 @@ def explore(
     repo, query_text, config = _prepare_query_command(
         repo_or_question,
         question,
+        operation="explore",
         planner=planner,
         no_planner=no_planner,
     )
@@ -368,58 +384,217 @@ def explore(
 
 
 @app.command()
-def status(repo: Optional[Path] = typer.Argument(None)) -> None:
-    resolved_repo = _resolve_repo(repo)
-    index_dir = index_dir_for(resolved_repo)
-    paths = [
-        ("index.sqlite", index_dir / "index.sqlite"),
-        ("manifest.json", index_dir / "manifest.json"),
-        ("vectors.npy", index_dir / "vectors.npy"),
-        ("vector_ids.json", index_dir / "vector_ids.json"),
-    ]
+def status(
+    repo: Optional[Path] = typer.Argument(None),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+    verify: bool = typer.Option(
+        False,
+        "--verify",
+        help="Verify source content and vector identities.",
+    ),
+    requirement: Optional[str] = typer.Option(
+        None,
+        "--require",
+        help="Require verified, metadata, or queryable health.",
+    ),
+) -> None:
+    if requirement not in {None, "verified", "metadata", "queryable"}:
+        typer.echo(
+            "Error: --require must be verified, metadata, or queryable",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    try:
+        resolved_repo = find_repo_root(repo)
+    except RepositoryNotFoundError:
+        envelope = index_health.status_error_envelope("repo_not_found")
+        if json_output:
+            typer.echo(_json(envelope))
+        else:
+            typer.echo("Error: repository root was not found", err=True)
+        raise typer.Exit(code=1)
+    try:
+        report = index_health.inspect_repository_health(
+            resolved_repo,
+            mode="verified" if verify else "quick",
+        )
+    except Exception:
+        envelope = index_health.status_error_envelope("status_failed")
+        if json_output:
+            typer.echo(_json(envelope))
+        else:
+            typer.echo("Error: status inspection failed", err=True)
+        raise typer.Exit(code=1)
 
-    typer.echo(f"Repository: {resolved_repo}")
-    for name, path in paths:
-        state = "present" if path.exists() else "missing"
-        typer.echo(f"{name}: {state}")
+    envelope = index_health.status_success_envelope(str(resolved_repo), report)
+    if json_output:
+        typer.echo(_json(envelope))
+    else:
+        typer.echo(index_health.format_index_health_human(resolved_repo, report))
+    if requirement is not None and not index_health.status_requirement_satisfied(
+        report,
+        requirement,
+    ):
+        typer.echo(
+            f"Error: status requirement '{requirement}' was not met",
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
 
 @app.command()
-def stats(repo: Optional[Path] = typer.Argument(None)) -> None:
-    resolved_repo = _resolve_repo(repo)
-    index_dir = _require_index(resolved_repo)
-    _warn_if_signal_schema_stale(resolved_repo)
-    config = load_config(resolved_repo)
-    store = SQLiteStore(index_dir / "index.sqlite")
-    counts = store.stats()
-    manifest = (
-        load_manifest(resolved_repo)
-        if (index_dir / "manifest.json").exists()
-        else None
-    )
-
-    provider = (
-        manifest.embedding_provider
-        if manifest is not None
-        else config.embedding.provider
-    )
-    model = manifest.embedding_model if manifest is not None else config.embedding.model
-    dimensions = (
-        manifest.embedding_dimensions
-        if manifest is not None
-        else config.embedding.dimensions
-    )
-
-    typer.echo(f"Repository: {resolved_repo}")
-    typer.echo(f"Total files: {counts['source_files']}")
-    typer.echo(f"Total chunks: {counts['active_chunks']}")
-    typer.echo(f"Deleted chunks: {counts['deleted_chunks']}")
-    typer.echo(f"Symbols: {counts['symbols']}")
-    typer.echo(f"Lexical tokens: {counts['tokens']}")
+def refresh(
+    repo: Optional[Path] = typer.Argument(None),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+) -> None:
+    """Mutates an index; new/content-changed text may be sent to a remote provider."""
+    try:
+        resolved_repo = find_repo_root(repo)
+    except RepositoryNotFoundError:
+        _exit_refresh_error(
+            index_health.refresh_error_envelope("repo_not_found"),
+            json_output=json_output,
+        )
+    try:
+        result = refresh_repository(
+            resolved_repo,
+            config_loader=load_config,
+        )
+    except Exception:
+        _exit_refresh_error(
+            index_health.refresh_error_envelope("refresh_failed", "possible"),
+            json_output=json_output,
+        )
+    if isinstance(result, RefreshFailure):
+        _exit_refresh_error(
+            index_health.refresh_error_envelope(
+                result.code,
+                result.network_egress_outcome,
+            ),
+            json_output=json_output,
+        )
+    if not isinstance(result, RefreshSuccess):
+        _exit_refresh_error(
+            index_health.refresh_error_envelope("refresh_failed", "possible"),
+            json_output=json_output,
+        )
+    try:
+        report = result.report or index_health.inspect_repository_health(
+            resolved_repo,
+            mode="quick",
+        )
+        envelope = index_health.refresh_success_envelope(
+            str(resolved_repo),
+            summary=result.summary,
+            indexed_before=result.indexed_before,
+            configured=result.configured,
+            network_egress_performed=result.network_egress_performed,
+            report=report,
+        )
+    except Exception:
+        _exit_refresh_error(
+            index_health.refresh_error_envelope(
+                "refresh_failed",
+                (
+                    "performed"
+                    if result.network_egress_performed
+                    else "not_attempted"
+                ),
+            ),
+            json_output=json_output,
+        )
     typer.echo(
-        f"Embedding: provider={provider} model={model} dimensions={dimensions}"
+        _json(envelope)
+        if json_output
+        else index_health.format_refresh_human(envelope)
     )
-    typer.echo(f"Disk usage: {_disk_usage(index_dir)} bytes")
+
+
+@app.command()
+def stats(
+    repo: Optional[Path] = typer.Argument(None),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+    verify: bool = typer.Option(
+        False,
+        "--verify",
+        help="Verify source content and vector identities.",
+    ),
+) -> None:
+    try:
+        resolved_repo = find_repo_root(repo)
+    except RepositoryNotFoundError as exc:
+        _exit_stats_error("repo_not_found", str(exc), json_output=json_output)
+    try:
+        index_health.preflight_public_operation(resolved_repo, "stats")
+        report = index_health.inspect_repository_health(
+            resolved_repo,
+            mode="verified" if verify else "quick",
+        )
+        payload = index_health.build_index_stats_payload(resolved_repo, report)
+    except index_health.MissingIndexError:
+        _exit_stats_error(
+            "missing_index",
+            f"missing index for {resolved_repo}. Run 'cst index {resolved_repo}' first.",
+            json_output=json_output,
+        )
+    except (
+        IncompatibleManifestSchemaError,
+        IncompatibleOperationalSchemaError,
+        IncompatibleSignalSchemaError,
+    ) as exc:
+        _exit_stats_error(exc.code, str(exc), json_output=json_output)
+    except index_health.IndexCorruptionError as exc:
+        _exit_stats_error(exc.code, str(exc), json_output=json_output)
+    except Exception:
+        _exit_stats_error(
+            "stats_failed",
+            "statistics inspection failed",
+            json_output=json_output,
+        )
+
+    if report.integrity.graph == "stale":
+        typer.echo(
+            "Warning: P5 graph index is stale; "
+            "signal and relation evidence was skipped.",
+            err=True,
+        )
+    if json_output:
+        typer.echo(_json(payload))
+        return
+    stats_payload = payload["stats"]
+    embedding = payload["embedding"]
+    typer.echo(f"Repository: {resolved_repo}")
+    typer.echo(f"Total files: {stats_payload['total_files']}")
+    typer.echo(f"Total chunks: {stats_payload['total_chunks']}")
+    typer.echo(f"Deleted chunks: {stats_payload['deleted_chunks']}")
+    typer.echo(f"Symbols: {stats_payload['symbols']}")
+    typer.echo(f"Lexical tokens: {stats_payload['lexical_tokens']}")
+    typer.echo(
+        "Embedding: "
+        f"provider={embedding['provider']} model={embedding['model']} "
+        f"dimensions={embedding['dimensions']}"
+    )
+    typer.echo(f"Disk usage: {stats_payload['disk_usage_bytes']} bytes")
+    typer.echo(f"Indexed files: {_format_stat(stats_payload['indexed_files'])}")
+    typer.echo(f"Coverage skips: {_format_stat(stats_payload['coverage_skips'])}")
+    typer.echo(
+        "Vector coverage: "
+        f"{_format_stat(stats_payload['vector_rows'])}/"
+        f"{_format_stat(stats_payload['vector_eligible_chunks'])} "
+        f"({stats_payload['vector_coverage_evidence']})"
+    )
+    typer.echo(
+        "Schemas: "
+        f"manifest={_format_stat(stats_payload['manifest_schema_version'])} "
+        f"operational={_format_stat(stats_payload['operational_schema_version'])} "
+        f"graph={_format_stat(stats_payload['graph_schema_version'])}"
+    )
+    typer.echo(f"Last work: {stats_payload['last_work'] or '(none)'}")
+    typer.echo(f"Health: {report.health}")
+    typer.echo(
+        f"Freshness: {report.freshness.status} "
+        f"({report.freshness.inspection_mode})"
+    )
 
 
 @app.command()
@@ -433,8 +608,9 @@ def explain(
     else:
         resolved_repo = _resolve_repo(Path(repo_or_location))
         location_text = location
+    _preflight_cli_consumer(resolved_repo, "explain")
     file_path, line = _parse_location(location_text, resolved_repo)
-    index_dir = _require_index(resolved_repo)
+    index_dir = index_dir_for(resolved_repo)
     _warn_if_signal_schema_stale(resolved_repo)
     store = SQLiteStore(index_dir / "index.sqlite")
 
@@ -505,6 +681,7 @@ def _prepare_query_command(
     repo_or_question: str,
     question: str | None,
     *,
+    operation: str,
     planner: bool,
     no_planner: bool,
 ) -> tuple[Path, str, ToolConfig]:
@@ -514,7 +691,7 @@ def _prepare_query_command(
     else:
         repo = _resolve_repo(Path(repo_or_question))
         query_text = question
-    _require_index(repo)
+    _preflight_cli_consumer(repo, operation)
     if planner and no_planner:
         typer.echo(
             "Error: --planner and --no-planner cannot be used together",
@@ -550,6 +727,20 @@ def _require_index(repo: Path) -> Path:
     return index_dir
 
 
+def _preflight_cli_consumer(repo: Path, operation: str) -> None:
+    try:
+        index_health.preflight_public_operation(repo, operation)
+    except index_health.MissingIndexError:
+        _require_index(repo)
+    except (
+        IncompatibleManifestSchemaError,
+        IncompatibleOperationalSchemaError,
+        IncompatibleSignalSchemaError,
+        index_health.IndexCorruptionError,
+    ) as exc:
+        _exit_with_error(exc)
+
+
 def _warn_if_signal_schema_stale(repo: Path) -> None:
     capability = _graph_capability(repo)
     if capability.status != "stale":
@@ -558,12 +749,6 @@ def _warn_if_signal_schema_stale(repo: Path) -> None:
         "Warning: P5 graph index is stale; signal and relation evidence was skipped.",
         err=True,
     )
-
-
-def _reject_future_signal_schema(repo: Path) -> None:
-    db_path = index_dir_for(repo) / "index.sqlite"
-    if db_path.exists():
-        _graph_capability(repo)
 
 
 def _graph_capability(repo: Path):
@@ -579,9 +764,36 @@ def _exit_with_error(exc: Exception) -> None:
     raise typer.Exit(code=1) from exc
 
 
+def _exit_stats_error(
+    code: str,
+    message: str,
+    *,
+    json_output: bool,
+) -> None:
+    if json_output:
+        typer.echo(_json({"ok": False, "error": {"code": code, "message": message}}))
+    else:
+        typer.echo(f"Error: {message}", err=True)
+    raise typer.Exit(code=1)
+
+
 def _exit_context_error(code: str, message: str) -> None:
     typer.echo(f"Error: {code}: {message}", err=True)
     raise typer.Exit(code=1) from None
+
+
+def _exit_refresh_error(
+    envelope: dict[str, object],
+    *,
+    json_output: bool,
+) -> None:
+    if json_output:
+        typer.echo(_json(envelope))
+    else:
+        error = envelope["error"]
+        assert isinstance(error, dict)
+        typer.echo(f"Error: {error['message']}", err=True)
+    raise typer.Exit(code=1)
 
 
 def _exit_explore_error() -> None:
@@ -609,10 +821,17 @@ def _parse_location(location: str, repo: Path) -> tuple[Path, int]:
     return path, line
 
 
-def _disk_usage(path: Path) -> int:
-    if not path.exists():
-        return 0
-    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+def _json(payload: dict[str, object]) -> str:
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    )
+
+
+def _format_stat(value: object) -> str:
+    return "unknown" if value is None else str(value)
 
 
 def _format_symbols(symbols: Sequence[SymbolRef]) -> str:

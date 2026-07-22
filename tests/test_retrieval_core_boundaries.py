@@ -179,6 +179,30 @@ LIGHTWEIGHT_GRAPH_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/retrieval_core/expansion.py",
 }
 
+P6_TASK2_PRODUCTION_CHANGES = {
+    "src/context_search_tool/index_health.py",
+}
+
+P6_TASK3_PRODUCTION_CHANGES = {
+    "src/context_search_tool/graph_lifecycle.py",
+    "src/context_search_tool/index_health.py",
+    "src/context_search_tool/manifest.py",
+    "src/context_search_tool/sqlite_store.py",
+    "src/context_search_tool/vector_store.py",
+}
+
+P6_TASK4_PRODUCTION_CHANGES = {
+    "src/context_search_tool/cli.py",
+    "src/context_search_tool/index_health.py",
+    "src/context_search_tool/indexer.py",
+    "src/context_search_tool/mcp_server.py",
+    "src/context_search_tool/mcp_tools.py",
+}
+
+P6_TASK9_PRODUCTION_CHANGES = {
+    "src/context_search_tool/path_roles.py",
+}
+
 P4_IMPLEMENTATION_BASELINE = "b827707325d0ee4e9c6b2bcb3dee39955c263822"
 THIS_TEST_PATH = "tests/test_retrieval_core_boundaries.py"
 
@@ -251,6 +275,15 @@ INDEX_LOCK_ALLOWED_INTERNAL_IMPORTS = {
     "context_search_tool.graph_lifecycle",
 }
 
+INDEX_HEALTH_ALLOWED_INTERNAL_IMPORTS = {
+    "context_search_tool.config",
+    "context_search_tool.graph_lifecycle",
+    "context_search_tool.manifest",
+    "context_search_tool.scanner",
+    "context_search_tool.sqlite_store",
+    "context_search_tool.vector_store",
+}
+
 
 def _is_p4_public_facade_reference(reference: dict[str, object]) -> bool:
     path = reference["file"]
@@ -259,9 +292,11 @@ def _is_p4_public_facade_reference(reference: dict[str, object]) -> bool:
         or path == "tests/test_quality_p4.py"
         or path == "tests/test_p5_privacy.py"
         or path == "tests/test_graph_lifecycle.py"
+        or path == "tests/test_incremental_refresh.py"
         or path == "tests/generate_p4_exploration_manifest.py"
         or path == "tests/test_p5_protected_direct.py"
         or path == "tests/test_quality_p5.py"
+        or path == "scripts/p6_benchmark.py"
     )
 
 
@@ -269,10 +304,13 @@ def _normalize_current_test_reference(
     reference: dict[str, object],
     frozen: list[dict[str, object]],
 ) -> dict[str, object]:
-    if reference["file"] != THIS_TEST_PATH:
+    if reference["file"] not in {
+        THIS_TEST_PATH,
+        "tests/test_retrieval_pipeline.py",
+    }:
         return reference
     frozen_reference = next(
-        item for item in frozen if item["file"] == THIS_TEST_PATH
+        item for item in frozen if item["file"] == reference["file"]
     )
     assert reference["count"] == frozen_reference["count"]
     assert reference["syntax_kinds"] == frozen_reference["syntax_kinds"]
@@ -656,12 +694,19 @@ def test_graph_lifecycle_primitives_are_leaf_bounded_and_activated() -> None:
     assert _internal_imports(package / "index_lock.py") <= (
         INDEX_LOCK_ALLOWED_INTERNAL_IMPORTS
     )
+    index_health = package / "index_health.py"
+    assert index_health.is_file(), "P6 index-health core is absent"
+    assert _internal_imports(index_health) <= INDEX_HEALTH_ALLOWED_INTERNAL_IMPORTS
+    assert _import_roots(index_health).isdisjoint(
+        {"http", "requests", "socket", "subprocess", "urllib"}
+    )
 
     indexer_path = package / "indexer.py"
     indexer_imports = _internal_imports(indexer_path)
     assert "context_search_tool.graph_lifecycle" in indexer_imports
     assert "context_search_tool.graph_resolution" in indexer_imports
     assert "context_search_tool.index_lock" in indexer_imports
+    assert "context_search_tool.index_health" in indexer_imports
     assert "context_search_tool.scanner" in indexer_imports
 
     indexer_tree = ast.parse(indexer_path.read_text(encoding="utf-8"))
@@ -700,6 +745,31 @@ def test_graph_lifecycle_primitives_are_leaf_bounded_and_activated() -> None:
         for node in ast.walk(public_indexer)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     } >= {"build_v5_index_snapshot", "default_plugins"}
+    public_calls = {
+        node.func.id: node.lineno
+        for node in ast.walk(public_indexer)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert public_calls["preflight_public_operation"] < public_calls["load_config"]
+    assert public_calls["preflight_public_operation"] < public_calls["default_plugins"]
+
+    for path, function_name in (
+        (package / "cli.py", "index"),
+        (package / "mcp_tools.py", "context_search_index_tool"),
+    ):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        public_command = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == function_name
+        )
+        assert not [
+            node
+            for node in ast.walk(public_command)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "load_config"
+        ]
 
     retrieval_tree = _retrieval_tree()
     public_query = next(
@@ -719,6 +789,11 @@ def test_graph_lifecycle_primitives_are_leaf_bounded_and_activated() -> None:
     assert "_plan_probes_v5" in exploration_runner
 
     assert "build_v5_index_snapshot" in indexer_path.read_text(encoding="utf-8")
+    indexer_source = indexer_path.read_text(encoding="utf-8")
+    assert "prepare_generation_v2" not in indexer_source
+    assert "freeze_generation_v2" in indexer_source
+    assert "publish_manifest_v2" in indexer_source
+    assert "commit_operational_ready_v1" in indexer_source
 
     for name in ("graph_lifecycle.py", "graph_resolution.py", "index_lock.py"):
         assert _import_roots(package / name).isdisjoint(
@@ -770,6 +845,13 @@ def test_migration_ledger_matches_complete_ast_and_dynamic_inventory() -> None:
             actual_row["production_call_sites"],
             frozen_row["production_call_sites"],
         )
+        actual_row["monkeypatch_references"] = [
+            _normalize_current_test_reference(
+                item,
+                frozen_row["monkeypatch_references"],
+            )
+            for item in actual_row["monkeypatch_references"]
+        ]
         if frozen_row["disposition"] != "supported_facade":
             continue
 
@@ -846,6 +928,10 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         EXPECTED_P4_PRODUCTION_DIFF
         | P5_REVIEWED_PRODUCTION_CHANGES
         | LIGHTWEIGHT_GRAPH_REVIEWED_PRODUCTION_CHANGES
+        | P6_TASK2_PRODUCTION_CHANGES
+        | P6_TASK3_PRODUCTION_CHANGES
+        | P6_TASK4_PRODUCTION_CHANGES
+        | P6_TASK9_PRODUCTION_CHANGES
     )
 
     source_status = subprocess.run(
@@ -866,6 +952,10 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
     assert dirty_source_paths <= (
         P5_REVIEWED_PRODUCTION_CHANGES
         | LIGHTWEIGHT_GRAPH_REVIEWED_PRODUCTION_CHANGES
+        | P6_TASK2_PRODUCTION_CHANGES
+        | P6_TASK3_PRODUCTION_CHANGES
+        | P6_TASK4_PRODUCTION_CHANGES
+        | P6_TASK9_PRODUCTION_CHANGES
     )
 
     subprocess.run(

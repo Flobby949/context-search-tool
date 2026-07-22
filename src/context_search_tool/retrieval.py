@@ -196,17 +196,21 @@ def _query_repository_v5(
                         indexed_config,
                         graph_session,
                     )
-        bundle = _query_repository_impl(
-            resolved_repo,
-            query,
-            config,
-            context_lines=context_lines,
-            full_file=full_file,
-            planner=planner,
-            trace_collector=trace_collector,
-            graph_session=graph_session,
-            vector_snapshot=vector_snapshot,
-        )
+        try:
+            bundle = _query_repository_impl(
+                resolved_repo,
+                query,
+                config,
+                context_lines=context_lines,
+                full_file=full_file,
+                planner=planner,
+                trace_collector=trace_collector,
+                graph_session=graph_session,
+                vector_snapshot=vector_snapshot,
+            )
+        finally:
+            if isinstance(vector_snapshot, candidates.NumpyVectorStore):
+                vector_snapshot.close()
         graph_fault = graph_session.graph_fault
 
     if graph_fault is not None:
@@ -302,7 +306,11 @@ def _query_repository_impl(
     planner_instance = planner or query_planner.planner_from_config(
         config.query_planner
     )
-    repo_profile = build_repo_profile(store)
+    repo_profile = (
+        build_repo_profile(store)
+        if planner is not None or config.query_planner.enabled
+        else None
+    )
     plan = planner_instance.plan(query, repo_profile=repo_profile)
     query_variants, discarded_variants = query_planner.build_query_variants(
         query,

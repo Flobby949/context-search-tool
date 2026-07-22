@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
+import io
 import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import stat
 import tempfile
-from typing import Callable
+from typing import Any, BinaryIO, Callable, Iterable, Literal, Sequence
 
 import numpy as np
 
@@ -29,6 +32,9 @@ class VectorGenerationDescriptor:
     dimensions: int
     embedding_identity: str
     schema_version: int = 1
+    vectors_bytes: int | None = None
+    ids_bytes: int | None = None
+    normalization: Literal["none", "l2"] | None = None
 
 
 @dataclass(frozen=True)
@@ -37,8 +43,51 @@ class PreparedVectorGeneration:
     descriptor: VectorGenerationDescriptor
 
 
+@dataclass(frozen=True)
+class FrozenVectorGeneration:
+    index_dir: Path
+    descriptor: VectorGenerationDescriptor
+    vectors_payload: bytes
+    ids_payload: bytes
+
+
+@dataclass(frozen=True)
+class PublishedVectorDescriptor:
+    descriptor: VectorGenerationDescriptor
+    sha256: str
+    byte_size: int
+
+
+@dataclass(frozen=True)
+class VerifiedVectorSnapshot:
+    descriptor_snapshot: PublishedVectorDescriptor
+    ids: tuple[str, ...]
+
+
+class IncompatibleVectorDescriptorSchemaError(RuntimeError):
+    code = "incompatible_vector_descriptor_schema"
+
+    def __init__(self, stored_version: object) -> None:
+        self.stored_version = stored_version
+        super().__init__(f"incompatible vector descriptor schema {stored_version}")
+
+
+class VectorDescriptorCorruptionError(ValueError):
+    code = "vector_descriptor_corrupt"
+
+
+class VectorIdMismatchError(VectorDescriptorCorruptionError):
+    pass
+
+
 _DESCRIPTOR_FILENAME = "vector_snapshot.json"
 _GENERATION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+READABLE_VECTOR_DESCRIPTOR_VERSIONS = frozenset({1, 2})
+WRITE_VECTOR_DESCRIPTOR_VERSION = 2
+_MAX_DESCRIPTOR_BYTES = 64 * 1024
+_CLEANUP_JOURNAL_MODES = frozenset({"DELETE", "TRUNCATE", "PERSIST"})
+_VECTOR_VERIFICATION_BATCH_ROWS = 512
 _FaultHook = Callable[[str], None]
 
 
@@ -47,6 +96,7 @@ class NumpyVectorStore:
         self.index_dir = index_dir
         self._ids: list[str] = []
         self._vectors = np.empty((0, 0), dtype=np.float32)
+        self._normalization: Literal["none", "l2"] = "none"
         self._load()
 
     @classmethod
@@ -62,6 +112,7 @@ class NumpyVectorStore:
         store.index_dir = index_dir
         store._ids = []
         store._vectors = np.empty((0, dimensions), dtype=np.float32)
+        store._normalization = "none"
         return store
 
     @classmethod
@@ -97,7 +148,43 @@ class NumpyVectorStore:
         store = cls.fresh(index_dir)
         store._ids = ids
         store._vectors = vectors
+        store._normalization = descriptor.normalization or "none"
         return descriptor, store
+
+    @classmethod
+    def load_bound_ready_snapshot(
+        cls,
+        index_dir: Path,
+        *,
+        expected_descriptor_sha256: str,
+        expected_generation: str,
+        expected_vectors_bytes: int,
+        expected_ids_bytes: int,
+        expected_row_count: int,
+        expected_dimensions: int,
+        expected_embedding_identity: str,
+    ) -> NumpyVectorStore:
+        snapshot = cls.inspect_published_descriptor(index_dir)
+        if snapshot is None:
+            raise VectorDescriptorCorruptionError("vector descriptor is missing")
+        descriptor = snapshot.descriptor
+        if (
+            descriptor.schema_version != WRITE_VECTOR_DESCRIPTOR_VERSION
+            or snapshot.sha256 != expected_descriptor_sha256
+            or descriptor.generation != expected_generation
+            or descriptor.vectors_bytes != expected_vectors_bytes
+            or descriptor.ids_bytes != expected_ids_bytes
+            or descriptor.row_count != expected_row_count
+            or descriptor.dimensions != expected_dimensions
+            or descriptor.embedding_identity != expected_embedding_identity
+        ):
+            raise VectorDescriptorCorruptionError("bound vector descriptor mismatch")
+        ids, vectors = _load_bound_generation(index_dir, descriptor)
+        store = cls.fresh(index_dir)
+        store._ids = ids
+        store._vectors = vectors
+        store._normalization = descriptor.normalization or "none"
+        return store
 
     @classmethod
     def published_descriptor(
@@ -111,6 +198,202 @@ class NumpyVectorStore:
         _load_generation(index_dir, descriptor)
         return descriptor
 
+    @classmethod
+    def inspect_published_descriptor(
+        cls,
+        index_dir: Path,
+    ) -> PublishedVectorDescriptor | None:
+        descriptor_path = index_dir / _DESCRIPTOR_FILENAME
+        if not os.path.lexists(descriptor_path):
+            return None
+        snapshot = _read_descriptor_snapshot(descriptor_path)
+        _validate_generation_paths(index_dir, snapshot.descriptor)
+        return snapshot
+
+    @classmethod
+    def generation_pair_count(cls, index_dir: Path) -> int:
+        generations: dict[str, set[str]] = {}
+        if not index_dir.is_dir() or index_dir.is_symlink():
+            return 0
+        for path in index_dir.iterdir():
+            parsed = _generation_artifact(path)
+            if parsed is None:
+                continue
+            generation, role = parsed
+            generations.setdefault(generation, set()).add(role)
+        return sum(roles == {"vectors", "ids"} for roles in generations.values())
+
+    @classmethod
+    def safe_generation_pair_names(cls, index_dir: Path) -> frozenset[str]:
+        try:
+            directory_stat = os.lstat(index_dir)
+        except FileNotFoundError:
+            return frozenset()
+        except OSError as error:
+            raise ValueError("vector index directory is unsafe") from error
+        if (
+            stat.S_ISLNK(directory_stat.st_mode)
+            or not stat.S_ISDIR(directory_stat.st_mode)
+            or (hasattr(os, "getuid") and directory_stat.st_uid != os.getuid())
+            or stat.S_IMODE(directory_stat.st_mode) & 0o022
+        ):
+            raise ValueError("vector index directory is unsafe")
+        generations: dict[str, set[str]] = {}
+        for path in index_dir.iterdir():
+            parsed = _generation_artifact(path)
+            if parsed is None:
+                continue
+            try:
+                path_stat = os.lstat(path)
+            except OSError:
+                continue
+            if stat.S_IMODE(path_stat.st_mode) & 0o022:
+                continue
+            generation, role = parsed
+            generations.setdefault(generation, set()).add(role)
+        return frozenset(
+            generation
+            for generation, roles in generations.items()
+            if roles == {"vectors", "ids"}
+        )
+
+    @classmethod
+    def unreferenced_generation_count(
+        cls,
+        index_dir: Path,
+        *,
+        keep_generation: str,
+    ) -> int:
+        if not _GENERATION_RE.fullmatch(keep_generation):
+            raise ValueError("invalid retained vector generation")
+        if not index_dir.is_dir() or index_dir.is_symlink():
+            return 0
+        generations = {
+            parsed[0]
+            for path in index_dir.iterdir()
+            if (parsed := _generation_artifact_name(path.name)) is not None
+            and parsed[0] != keep_generation
+        }
+        return len(generations)
+
+    @classmethod
+    def cleanup_unreferenced_generations(
+        cls,
+        index_dir: Path,
+        *,
+        keep_generation: str,
+        journal_mode: str,
+    ) -> int:
+        if not _GENERATION_RE.fullmatch(keep_generation):
+            raise ValueError("invalid retained vector generation")
+        if not index_dir.is_dir() or index_dir.is_symlink():
+            raise ValueError("vector index directory is unsafe")
+        candidates = cls._safe_unreferenced_generation_artifacts(
+            index_dir,
+            keep_generation=keep_generation,
+        )
+        if not candidates:
+            return 0
+        normalized_journal_mode = str(journal_mode).upper()
+        if normalized_journal_mode not in _CLEANUP_JOURNAL_MODES:
+            raise ValueError("vector cleanup requires a supported rollback-journal mode")
+        removed_generations: set[str] = set()
+        for path, generation in candidates:
+            os.unlink(path)
+            removed_generations.add(generation)
+        return len(removed_generations)
+
+    @classmethod
+    def has_safe_unreferenced_generation_artifacts(
+        cls,
+        index_dir: Path,
+        *,
+        keep_generation: str,
+    ) -> bool:
+        if not _GENERATION_RE.fullmatch(keep_generation):
+            raise ValueError("invalid retained vector generation")
+        if not index_dir.is_dir() or index_dir.is_symlink():
+            raise ValueError("vector index directory is unsafe")
+        return bool(
+            cls._safe_unreferenced_generation_artifacts(
+                index_dir,
+                keep_generation=keep_generation,
+            )
+        )
+
+    @staticmethod
+    def _safe_unreferenced_generation_artifacts(
+        index_dir: Path,
+        *,
+        keep_generation: str,
+    ) -> tuple[tuple[Path, str], ...]:
+        try:
+            directory_stat = os.lstat(index_dir)
+        except OSError as error:
+            raise ValueError("vector index directory is unsafe") from error
+        if (
+            stat.S_ISLNK(directory_stat.st_mode)
+            or not stat.S_ISDIR(directory_stat.st_mode)
+            or (
+                hasattr(os, "getuid")
+                and directory_stat.st_uid != os.getuid()
+            )
+            or stat.S_IMODE(directory_stat.st_mode) & 0o022
+        ):
+            raise ValueError("vector index directory is unsafe")
+
+        candidates: list[tuple[Path, str]] = []
+        for path in sorted(index_dir.iterdir(), key=lambda item: item.name):
+            parsed = _generation_artifact(path)
+            if parsed is None or parsed[0] == keep_generation:
+                continue
+            generation, _role = parsed
+            try:
+                path_stat = os.lstat(path)
+            except OSError:
+                continue
+            if stat.S_IMODE(path_stat.st_mode) & 0o022:
+                continue
+            candidates.append((path, generation))
+        return tuple(candidates)
+
+    @classmethod
+    def verify_published_snapshot(
+        cls,
+        index_dir: Path,
+        *,
+        expected_ids: Iterable[str] | None = None,
+        expected_embedding_identity: str | None = None,
+    ) -> VerifiedVectorSnapshot:
+        snapshot = cls.inspect_published_descriptor(index_dir)
+        if snapshot is None:
+            raise VectorDescriptorCorruptionError("vector descriptor is missing")
+        descriptor = snapshot.descriptor
+        if (
+            expected_embedding_identity is not None
+            and descriptor.embedding_identity != expected_embedding_identity
+        ):
+            raise VectorDescriptorCorruptionError(
+                "vector embedding identity mismatch"
+            )
+        ordered_expected = (
+            tuple(sorted(expected_ids))
+            if isinstance(expected_ids, (set, frozenset))
+            else tuple(expected_ids) if expected_ids is not None else None
+        )
+        if descriptor.schema_version == 2:
+            ids = _verify_generation_v2_streaming(
+                index_dir,
+                descriptor,
+                expected_ids=ordered_expected,
+            )
+        else:
+            ids, _vectors = _load_generation(index_dir, descriptor)
+        if ordered_expected is not None and tuple(ids) != ordered_expected:
+            if set(ids) != set(ordered_expected):
+                raise VectorIdMismatchError("exact vector IDs mismatch")
+        return VerifiedVectorSnapshot(snapshot, tuple(ids))
+
     def upsert_many(self, items: list[tuple[str, np.ndarray]]) -> None:
         if not items:
             return
@@ -119,6 +402,7 @@ class NumpyVectorStore:
             chunk_id: vector for chunk_id, vector in zip(self._ids, self._vectors)
         }
         dimensions = self._vectors.shape[1] if self._vectors.size else None
+        incoming_items: list[tuple[str, np.ndarray]] = []
 
         for chunk_id, vector in items:
             incoming = np.asarray(vector, dtype=np.float32).reshape(-1)
@@ -126,11 +410,67 @@ class NumpyVectorStore:
                 dimensions = incoming.shape[0]
             if incoming.shape[0] != dimensions:
                 raise ValueError("all vectors must have the same dimensions")
+            incoming_items.append((chunk_id, incoming))
+
+        if self._normalization == "l2":
+            normalized = _normalize_matrix(
+                np.vstack([vector for _chunk_id, vector in incoming_items])
+            )
+            incoming_items = [
+                (chunk_id, vector)
+                for (chunk_id, _incoming), vector in zip(incoming_items, normalized)
+            ]
+
+        for chunk_id, incoming in incoming_items:
             if chunk_id not in vectors_by_id:
                 self._ids.append(chunk_id)
             vectors_by_id[chunk_id] = incoming
 
         self._vectors = np.vstack([vectors_by_id[chunk_id] for chunk_id in self._ids])
+
+    def replace_all_batched(
+        self,
+        batches: Iterable[list[tuple[str, np.ndarray]]],
+        *,
+        ordered_ids: list[str],
+        normalization: Literal["none", "l2"],
+    ) -> None:
+        if normalization not in {"none", "l2"}:
+            raise ValueError("vector normalization must be none or l2")
+        if len(set(ordered_ids)) != len(ordered_ids):
+            raise ValueError("vector IDs must be unique")
+        row_count = len(ordered_ids)
+        positions = {
+            chunk_id: index for index, chunk_id in enumerate(ordered_ids)
+        }
+        dimensions = int(self._vectors.shape[1])
+        vectors = np.empty((row_count, dimensions), dtype=np.float32)
+        seen: set[str] = set()
+        for batch in batches:
+            if not batch:
+                continue
+            batch_ids = [chunk_id for chunk_id, _vector in batch]
+            if (
+                len(set(batch_ids)) != len(batch_ids)
+                or seen.intersection(batch_ids)
+                or any(chunk_id not in positions for chunk_id in batch_ids)
+            ):
+                raise ValueError("vector IDs must be unique")
+            incoming = np.asarray(
+                [vector for _chunk_id, vector in batch],
+                dtype=np.float32,
+            )
+            if incoming.shape != (len(batch), dimensions):
+                raise ValueError("all vectors must have the same dimensions")
+            if normalization == "l2":
+                incoming = _normalize_matrix(incoming)
+            vectors[[positions[chunk_id] for chunk_id in batch_ids]] = incoming
+            seen.update(batch_ids)
+        if len(seen) != row_count:
+            raise ValueError("vector batches do not match declared row count")
+        self._ids = list(ordered_ids)
+        self._vectors = vectors
+        self._normalization = normalization
 
     def remove_many(self, chunk_ids: list[str]) -> None:
         removed = set(chunk_ids)
@@ -153,6 +493,8 @@ class NumpyVectorStore:
         if len(self._ids) < 2:
             return
         order = sorted(range(len(self._ids)), key=self._ids.__getitem__)
+        if all(index == value for index, value in enumerate(order)):
+            return
         self._ids = [self._ids[index] for index in order]
         self._vectors = self._vectors[order]
 
@@ -163,14 +505,183 @@ class NumpyVectorStore:
         embedding_identity: str,
         fault_hook: _FaultHook | None = None,
     ) -> PreparedVectorGeneration:
-        if not _GENERATION_RE.fullmatch(generation):
-            raise ValueError("invalid vector generation")
-        if not embedding_identity:
-            raise ValueError("embedding identity must not be empty")
-        if len(self._ids) != self._vectors.shape[0]:
-            raise ValueError("vector id count does not match vector row count")
-        if len(set(self._ids)) != len(self._ids):
-            raise ValueError("vector IDs must be unique")
+        return self._prepare_generation(
+            generation=generation,
+            embedding_identity=embedding_identity,
+            schema_version=1,
+            normalization=None,
+            fault_hook=fault_hook,
+        )
+
+    def prepare_generation_v2(
+        self,
+        *,
+        generation: str,
+        embedding_identity: str,
+        normalization: Literal["none", "l2"],
+        fault_hook: _FaultHook | None = None,
+    ) -> PreparedVectorGeneration:
+        if normalization not in {"none", "l2"}:
+            raise ValueError("vector normalization must be none or l2")
+        return self._prepare_generation(
+            generation=generation,
+            embedding_identity=embedding_identity,
+            schema_version=WRITE_VECTOR_DESCRIPTOR_VERSION,
+            normalization=normalization,
+            fault_hook=fault_hook,
+        )
+
+    def freeze_generation_v2(
+        self,
+        *,
+        generation: str,
+        embedding_identity: str,
+        normalization: Literal["none", "l2"] = "none",
+    ) -> FrozenVectorGeneration:
+        """Serialize an immutable v2 generation without touching the index directory."""
+        _validate_generation_inputs(
+            generation,
+            embedding_identity,
+            self._ids,
+            self._vectors,
+        )
+        if normalization not in {"none", "l2"}:
+            raise ValueError("vector normalization must be none or l2")
+        serialized_vectors = _vectors_for_persistence(
+            self._vectors,
+            normalization,
+            already_normalized=self._normalization == "l2",
+        )
+        buffer = io.BytesIO()
+        np.save(buffer, serialized_vectors, allow_pickle=False)
+        vectors_payload = buffer.getvalue()
+        ids_payload = (
+            json.dumps(self._ids, ensure_ascii=False, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        descriptor = VectorGenerationDescriptor(
+            generation=generation,
+            vectors_file=f"vectors.{generation}.npy",
+            ids_file=f"vector_ids.{generation}.json",
+            vectors_sha256=hashlib.sha256(vectors_payload).hexdigest(),
+            ids_sha256=hashlib.sha256(ids_payload).hexdigest(),
+            row_count=len(self._ids),
+            dimensions=(
+                int(serialized_vectors.shape[1])
+                if serialized_vectors.ndim == 2
+                else 0
+            ),
+            embedding_identity=embedding_identity,
+            schema_version=WRITE_VECTOR_DESCRIPTOR_VERSION,
+            vectors_bytes=len(vectors_payload),
+            ids_bytes=len(ids_payload),
+            normalization=normalization,
+        )
+        return FrozenVectorGeneration(
+            index_dir=self.index_dir,
+            descriptor=descriptor,
+            vectors_payload=vectors_payload,
+            ids_payload=ids_payload,
+        )
+
+    def materialize_frozen_generation(
+        self,
+        frozen: FrozenVectorGeneration,
+        *,
+        fault_hook: _FaultHook | None = None,
+    ) -> PreparedVectorGeneration:
+        if frozen.index_dir.resolve() != self.index_dir.resolve():
+            raise ValueError("frozen vector generation belongs to another index")
+        checked = _validate_frozen_generation(frozen)
+        self.index_dir.mkdir(parents=True, exist_ok=True)
+        vectors_path = self.index_dir / checked.descriptor.vectors_file
+        ids_path = self.index_dir / checked.descriptor.ids_file
+        _atomic_file_write(
+            vectors_path,
+            lambda file: file.write(checked.vectors_payload),
+            prefix="vectors",
+            fault_hook=fault_hook,
+            replace=False,
+        )
+        _atomic_file_write(
+            ids_path,
+            lambda file: file.write(checked.ids_payload),
+            prefix="ids",
+            fault_hook=fault_hook,
+            replace=False,
+        )
+        prepared = PreparedVectorGeneration(self.index_dir, checked.descriptor)
+        _load_generation(self.index_dir, prepared.descriptor)
+        return prepared
+
+    @classmethod
+    def prepare_existing_generation_v2(
+        cls,
+        index_dir: Path,
+        *,
+        expected_embedding_identity: str,
+        expected_ids: set[str],
+    ) -> PreparedVectorGeneration:
+        snapshot = cls.inspect_published_descriptor(index_dir)
+        if snapshot is None:
+            raise VectorDescriptorCorruptionError("vector descriptor is missing")
+        descriptor = snapshot.descriptor
+        if descriptor.embedding_identity != expected_embedding_identity:
+            raise VectorDescriptorCorruptionError("vector embedding identity mismatch")
+        ids, _vectors = _load_generation(index_dir, descriptor)
+        if tuple(ids) != tuple(sorted(expected_ids)):
+            raise VectorDescriptorCorruptionError("exact vector IDs mismatch")
+        if descriptor.schema_version == WRITE_VECTOR_DESCRIPTOR_VERSION:
+            return PreparedVectorGeneration(index_dir, descriptor)
+        upgraded = VectorGenerationDescriptor(
+            generation=descriptor.generation,
+            vectors_file=descriptor.vectors_file,
+            ids_file=descriptor.ids_file,
+            vectors_sha256=descriptor.vectors_sha256,
+            ids_sha256=descriptor.ids_sha256,
+            row_count=descriptor.row_count,
+            dimensions=descriptor.dimensions,
+            embedding_identity=descriptor.embedding_identity,
+            schema_version=WRITE_VECTOR_DESCRIPTOR_VERSION,
+            vectors_bytes=_regular_file_size(
+                index_dir / descriptor.vectors_file,
+                "vector payload",
+            ),
+            ids_bytes=_regular_file_size(
+                index_dir / descriptor.ids_file,
+                "vector IDs",
+            ),
+            normalization="none",
+        )
+        _load_generation(index_dir, upgraded)
+        return PreparedVectorGeneration(index_dir, upgraded)
+
+    @classmethod
+    def prepared_descriptor_snapshot(
+        cls,
+        prepared: PreparedVectorGeneration,
+    ) -> PublishedVectorDescriptor:
+        payload = _descriptor_payload(prepared.descriptor)
+        return PublishedVectorDescriptor(
+            descriptor=prepared.descriptor,
+            sha256=hashlib.sha256(payload).hexdigest(),
+            byte_size=len(payload),
+        )
+
+    def _prepare_generation(
+        self,
+        *,
+        generation: str,
+        embedding_identity: str,
+        schema_version: int,
+        normalization: Literal["none", "l2"] | None,
+        fault_hook: _FaultHook | None,
+    ) -> PreparedVectorGeneration:
+        _validate_generation_inputs(
+            generation,
+            embedding_identity,
+            self._ids,
+            self._vectors,
+        )
 
         self.index_dir.mkdir(parents=True, exist_ok=True)
         vectors_name = f"vectors.{generation}.npy"
@@ -180,8 +691,14 @@ class NumpyVectorStore:
         if vectors_path.exists() or ids_path.exists():
             raise ValueError("vector generation already exists")
 
+        serialized_vectors = _vectors_for_persistence(
+            self._vectors,
+            normalization,
+            already_normalized=self._normalization == "l2",
+        )
+
         def write_vectors(file) -> None:
-            np.save(file, self._vectors, allow_pickle=False)
+            np.save(file, serialized_vectors, allow_pickle=False)
 
         ids_payload = (
             json.dumps(self._ids, ensure_ascii=False, separators=(",", ":"))
@@ -205,13 +722,29 @@ class NumpyVectorStore:
             generation=generation,
             vectors_file=vectors_name,
             ids_file=ids_name,
-            vectors_sha256=_sha256_file(vectors_path),
-            ids_sha256=_sha256_file(ids_path),
+            vectors_sha256=(
+                _sha256_file_safe(vectors_path)
+                if schema_version == 2
+                else _sha256_file(vectors_path)
+            ),
+            ids_sha256=(
+                _sha256_file_safe(ids_path)
+                if schema_version == 2
+                else _sha256_file(ids_path)
+            ),
             row_count=len(self._ids),
             dimensions=(
-                int(self._vectors.shape[1]) if self._vectors.ndim == 2 else 0
+                int(serialized_vectors.shape[1])
+                if serialized_vectors.ndim == 2
+                else 0
             ),
             embedding_identity=embedding_identity,
+            schema_version=schema_version,
+            vectors_bytes=(
+                vectors_path.stat().st_size if schema_version == 2 else None
+            ),
+            ids_bytes=ids_path.stat().st_size if schema_version == 2 else None,
+            normalization=normalization,
         )
         _load_generation(self.index_dir, descriptor)
         return PreparedVectorGeneration(self.index_dir, descriptor)
@@ -225,15 +758,7 @@ class NumpyVectorStore:
         if prepared.index_dir.resolve() != self.index_dir.resolve():
             raise ValueError("prepared vector generation belongs to another index")
         _load_generation(self.index_dir, prepared.descriptor)
-        payload = (
-            json.dumps(
-                _descriptor_dict(prepared.descriptor),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            + "\n"
-        ).encode("utf-8")
+        payload = _descriptor_payload(prepared.descriptor)
         _atomic_file_write(
             self.index_dir / _DESCRIPTOR_FILENAME,
             lambda file: file.write(payload),
@@ -263,16 +788,66 @@ class NumpyVectorStore:
             return []
 
         query = _normalize_vector(np.asarray(query_vector, dtype=np.float32).reshape(-1))
-        vectors = _normalize_matrix(self._vectors)
+        vectors = (
+            self._vectors
+            if self._normalization == "l2"
+            else _normalize_matrix(self._vectors)
+        )
         scores = np.einsum("ij,j->i", vectors, query, optimize=True)
         scores = np.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
+        eligible_indexes = np.asarray(
+            [
+                index
+                for index, chunk_id in enumerate(self._ids)
+                if chunk_id not in deleted_ids
+            ],
+            dtype=np.int64,
+        )
+        if eligible_indexes.size == 0:
+            return []
+
+        result_count = min(top_k, int(eligible_indexes.size))
+        if result_count == int(eligible_indexes.size):
+            selected_indexes = eligible_indexes.tolist()
+        else:
+            eligible_scores = scores[eligible_indexes]
+            threshold = np.partition(eligible_scores, -result_count)[-result_count]
+            selected_indexes = eligible_indexes[eligible_scores > threshold].tolist()
+            boundary_indexes = eligible_indexes[eligible_scores == threshold].tolist()
+            selected_indexes.extend(
+                heapq.nsmallest(
+                    result_count - len(selected_indexes),
+                    boundary_indexes,
+                    key=self._ids.__getitem__,
+                )
+            )
         results = [
-            VectorSearchResult(chunk_id=chunk_id, score=float(score))
-            for chunk_id, score in zip(self._ids, scores)
-            if chunk_id not in deleted_ids
+            VectorSearchResult(
+                chunk_id=self._ids[index],
+                score=float(scores[index]),
+            )
+            for index in selected_indexes
         ]
         results.sort(key=lambda item: (-item.score, item.chunk_id))
-        return results[:top_k]
+        return results
+
+    @property
+    def normalization(self) -> Literal["none", "l2"]:
+        return self._normalization
+
+    def close(self) -> None:
+        vectors: object | None = self._vectors
+        seen: set[int] = set()
+        while vectors is not None and id(vectors) not in seen:
+            seen.add(id(vectors))
+            if isinstance(vectors, np.memmap):
+                mapping = getattr(vectors, "_mmap", None)
+                if mapping is not None:
+                    mapping.close()
+                break
+            vectors = getattr(vectors, "base", None)
+        self._ids = []
+        self._vectors = np.empty((0, 0), dtype=np.float32)
 
     def _load(self) -> None:
         if not self._vectors_path.exists() or not self._ids_path.exists():
@@ -299,10 +874,91 @@ class NumpyVectorStore:
         return self.index_dir / "vector_ids.json"
 
 
+def _generation_artifact(path: Path) -> tuple[str, str] | None:
+    parsed = _generation_artifact_name(path.name)
+    if parsed is None:
+        return None
+    generation, role = parsed
+    try:
+        path_stat = os.lstat(path)
+    except OSError:
+        return None
+    if stat.S_ISLNK(path_stat.st_mode) or not stat.S_ISREG(path_stat.st_mode):
+        return None
+    if hasattr(os, "getuid") and path_stat.st_uid != os.getuid():
+        return None
+    return generation, role
+
+
+def _generation_artifact_name(name: str) -> tuple[str, str] | None:
+    match = re.fullmatch(r"vectors\.([A-Za-z0-9][A-Za-z0-9_-]*)\.npy", name)
+    role = "vectors"
+    if match is None:
+        match = re.fullmatch(
+            r"vector_ids\.([A-Za-z0-9][A-Za-z0-9_-]*)\.json",
+            name,
+        )
+        role = "ids"
+    if match is None:
+        return None
+    return match.group(1), role
+
+
+def _validate_generation_inputs(
+    generation: str,
+    embedding_identity: str,
+    ids: list[str],
+    vectors: np.ndarray,
+) -> None:
+    if not _GENERATION_RE.fullmatch(generation):
+        raise ValueError("invalid vector generation")
+    if not embedding_identity:
+        raise ValueError("embedding identity must not be empty")
+    if vectors.ndim != 2 or len(ids) != vectors.shape[0]:
+        raise ValueError("vector id count does not match vector row count")
+    if len(set(ids)) != len(ids):
+        raise ValueError("vector IDs must be unique")
+
+
+def _validate_frozen_generation(
+    frozen: FrozenVectorGeneration,
+) -> FrozenVectorGeneration:
+    if not isinstance(frozen, FrozenVectorGeneration):
+        raise ValueError("invalid frozen vector generation")
+    descriptor = frozen.descriptor
+    if descriptor.schema_version != WRITE_VECTOR_DESCRIPTOR_VERSION:
+        raise ValueError("frozen vector generation must use descriptor v2")
+    if descriptor.vectors_file != f"vectors.{descriptor.generation}.npy" or (
+        descriptor.ids_file != f"vector_ids.{descriptor.generation}.json"
+    ):
+        raise ValueError("invalid frozen vector generation path")
+    if (
+        descriptor.vectors_sha256
+        != hashlib.sha256(frozen.vectors_payload).hexdigest()
+        or descriptor.ids_sha256 != hashlib.sha256(frozen.ids_payload).hexdigest()
+        or descriptor.vectors_bytes != len(frozen.vectors_payload)
+        or descriptor.ids_bytes != len(frozen.ids_payload)
+    ):
+        raise ValueError("frozen vector generation identity mismatch")
+    return frozen
+
+
+def _descriptor_payload(descriptor: VectorGenerationDescriptor) -> bytes:
+    return (
+        json.dumps(
+            _descriptor_dict(descriptor),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
 def _descriptor_dict(
     descriptor: VectorGenerationDescriptor,
 ) -> dict[str, object]:
-    return {
+    rendered: dict[str, object] = {
         "schema_version": descriptor.schema_version,
         "generation": descriptor.generation,
         "vectors_file": descriptor.vectors_file,
@@ -313,22 +969,69 @@ def _descriptor_dict(
         "dimensions": descriptor.dimensions,
         "embedding_identity": descriptor.embedding_identity,
     }
+    if descriptor.schema_version == 2:
+        rendered.update(
+            {
+                "vectors_bytes": descriptor.vectors_bytes,
+                "ids_bytes": descriptor.ids_bytes,
+                "normalization": descriptor.normalization,
+            }
+        )
+    return rendered
 
 
 def _read_descriptor(path: Path) -> VectorGenerationDescriptor:
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        descriptor = VectorGenerationDescriptor(
-            schema_version=int(raw["schema_version"]),
-            generation=str(raw["generation"]),
-            vectors_file=str(raw["vectors_file"]),
-            ids_file=str(raw["ids_file"]),
-            vectors_sha256=str(raw["vectors_sha256"]),
-            ids_sha256=str(raw["ids_sha256"]),
-            row_count=int(raw["row_count"]),
-            dimensions=int(raw["dimensions"]),
-            embedding_identity=str(raw["embedding_identity"]),
+        payload = path.read_text(encoding="utf-8").encode("utf-8")
+    except (OSError, UnicodeError) as error:
+        raise VectorDescriptorCorruptionError("invalid vector descriptor") from error
+    return _decode_descriptor_payload(payload).descriptor
+
+
+def _read_descriptor_snapshot(path: Path) -> PublishedVectorDescriptor:
+    payload = _read_small_regular_file(path, "vector descriptor")
+    return _decode_descriptor_payload(payload)
+
+
+def _decode_descriptor_payload(payload: bytes) -> PublishedVectorDescriptor:
+    try:
+        raw = json.loads(
+            payload.decode("utf-8"),
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
         )
+        if not isinstance(raw, dict):
+            raise TypeError("descriptor root must be an object")
+        raw_version = raw.get("schema_version")
+        if type(raw_version) is not int or raw_version < 0:
+            raise TypeError("descriptor schema must be an integer")
+        if raw_version not in READABLE_VECTOR_DESCRIPTOR_VERSIONS:
+            raise IncompatibleVectorDescriptorSchemaError(raw_version)
+        descriptor = VectorGenerationDescriptor(
+            schema_version=raw_version,
+            generation=_descriptor_str(raw, "generation"),
+            vectors_file=_descriptor_str(raw, "vectors_file"),
+            ids_file=_descriptor_str(raw, "ids_file"),
+            vectors_sha256=_descriptor_str(raw, "vectors_sha256"),
+            ids_sha256=_descriptor_str(raw, "ids_sha256"),
+            row_count=_descriptor_int(raw, "row_count"),
+            dimensions=_descriptor_int(raw, "dimensions"),
+            embedding_identity=_descriptor_str(raw, "embedding_identity"),
+            vectors_bytes=(
+                _descriptor_int(raw, "vectors_bytes") if raw_version == 2 else None
+            ),
+            ids_bytes=(
+                _descriptor_int(raw, "ids_bytes") if raw_version == 2 else None
+            ),
+            normalization=(
+                _descriptor_str(raw, "normalization")
+                if raw_version == 2
+                else None
+            ),
+        )
+    except IncompatibleVectorDescriptorSchemaError:
+        raise
+    except VectorDescriptorCorruptionError:
+        raise
     except (
         KeyError,
         OSError,
@@ -336,18 +1039,55 @@ def _read_descriptor(path: Path) -> VectorGenerationDescriptor:
         ValueError,
         json.JSONDecodeError,
     ) as error:
-        raise ValueError("invalid vector descriptor") from error
-    if descriptor.schema_version != 1:
-        raise ValueError("invalid vector descriptor schema")
+        raise VectorDescriptorCorruptionError("invalid vector descriptor") from error
+    expected_keys = {
+        "schema_version",
+        "generation",
+        "vectors_file",
+        "ids_file",
+        "vectors_sha256",
+        "ids_sha256",
+        "row_count",
+        "dimensions",
+        "embedding_identity",
+    }
+    if descriptor.schema_version == 2:
+        expected_keys.update({"vectors_bytes", "ids_bytes", "normalization"})
+    if (
+        descriptor.schema_version == 1
+        and not expected_keys <= set(raw)
+    ) or (
+        descriptor.schema_version == 2
+        and set(raw) != expected_keys
+    ):
+        raise VectorDescriptorCorruptionError("invalid vector descriptor fields")
     if not _GENERATION_RE.fullmatch(descriptor.generation):
-        raise ValueError("invalid vector descriptor generation")
+        raise VectorDescriptorCorruptionError("invalid vector descriptor generation")
     if descriptor.vectors_file != f"vectors.{descriptor.generation}.npy":
-        raise ValueError("invalid vector descriptor path")
+        raise VectorDescriptorCorruptionError("invalid vector descriptor path")
     if descriptor.ids_file != f"vector_ids.{descriptor.generation}.json":
-        raise ValueError("invalid vector descriptor path")
-    if descriptor.row_count < 0 or descriptor.dimensions < 0:
-        raise ValueError("invalid vector descriptor dimensions")
-    return descriptor
+        raise VectorDescriptorCorruptionError("invalid vector descriptor path")
+    if (
+        descriptor.row_count < 0
+        or descriptor.dimensions < 0
+        or not descriptor.embedding_identity
+        or not _SHA256_RE.fullmatch(descriptor.vectors_sha256)
+        or not _SHA256_RE.fullmatch(descriptor.ids_sha256)
+    ):
+        raise VectorDescriptorCorruptionError("invalid vector descriptor values")
+    if descriptor.schema_version == 2 and (
+        descriptor.vectors_bytes is None
+        or descriptor.vectors_bytes < 0
+        or descriptor.ids_bytes is None
+        or descriptor.ids_bytes < 0
+        or descriptor.normalization not in {"none", "l2"}
+    ):
+        raise VectorDescriptorCorruptionError("invalid vector descriptor v2")
+    return PublishedVectorDescriptor(
+        descriptor=descriptor,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        byte_size=len(payload),
+    )
 
 
 def _load_generation(
@@ -356,13 +1096,257 @@ def _load_generation(
 ) -> tuple[list[str], np.ndarray]:
     vectors_path = index_dir / descriptor.vectors_file
     ids_path = index_dir / descriptor.ids_file
+    hash_file = _sha256_file
+    if descriptor.schema_version == 2:
+        _validate_generation_paths(index_dir, descriptor)
+        hash_file = _sha256_file_safe
     if (
-        _sha256_file(vectors_path) != descriptor.vectors_sha256
-        or _sha256_file(ids_path) != descriptor.ids_sha256
+        hash_file(vectors_path) != descriptor.vectors_sha256
+        or hash_file(ids_path) != descriptor.ids_sha256
     ):
         raise ValueError("vector generation hash mismatch")
+    return _read_generation_payload(
+        vectors_path,
+        ids_path,
+        descriptor,
+        mmap_mode=None,
+        validate_normalization=True,
+    )
+
+
+class _DigestingReader:
+    def __init__(self, source: BinaryIO, digest: Any) -> None:
+        self._source = source
+        self._digest = digest
+
+    def read(self, size: int = -1) -> bytes:
+        payload = self._source.read(size)
+        self._digest.update(payload)
+        return payload
+
+
+def _verify_generation_v2_streaming(
+    index_dir: Path,
+    descriptor: VectorGenerationDescriptor,
+    *,
+    expected_ids: tuple[str, ...] | None = None,
+) -> Sequence[str]:
+    _validate_generation_paths(index_dir, descriptor)
+    _verify_vector_payload_streaming(
+        index_dir / descriptor.vectors_file,
+        descriptor,
+    )
+    ids_path = index_dir / descriptor.ids_file
+    if _sha256_file_safe(ids_path) != descriptor.ids_sha256:
+        raise ValueError("vector generation hash mismatch")
+    if (
+        expected_ids is not None
+        and len(expected_ids) == descriptor.row_count
+        and _vector_ids_payload_sha256(expected_ids) == descriptor.ids_sha256
+    ):
+        return expected_ids
     try:
-        vectors = np.load(vectors_path, allow_pickle=False).astype(
+        ids = json.loads(ids_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("invalid vector generation") from error
+    if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+        raise ValueError("invalid vector generation shape")
+    if len(ids) != descriptor.row_count:
+        raise ValueError("vector generation row count mismatch")
+    if len(set(ids)) != len(ids):
+        raise ValueError("vector generation IDs must be unique")
+    return ids
+
+
+def _vector_ids_payload_sha256(ids: Sequence[str]) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"[")
+    for index, item in enumerate(ids):
+        if index:
+            digest.update(b",")
+        digest.update(
+            json.dumps(
+                item,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+    digest.update(b"]\n")
+    return digest.hexdigest()
+
+
+def _verify_vector_payload_streaming(
+    path: Path,
+    descriptor: VectorGenerationDescriptor,
+) -> None:
+    _regular_file_size(path, "vector payload")
+    file_descriptor: int | None = None
+    validation_error: Exception | None = None
+    try:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        file_descriptor = os.open(path, flags)
+        before = os.fstat(file_descriptor)
+        digest = hashlib.sha256()
+        with os.fdopen(file_descriptor, "rb", closefd=False) as source:
+            reader = _DigestingReader(source, digest)
+            try:
+                _stream_vector_rows(reader, descriptor)
+            except (OverflowError, TypeError, ValueError) as error:
+                validation_error = error
+            for _block in iter(lambda: reader.read(64 * 1024), b""):
+                pass
+        after = os.fstat(file_descriptor)
+        final = os.lstat(path)
+    except OSError as error:
+        raise ValueError("vector generation file is missing") from error
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+    identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+    if identity != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    ) or identity != (
+        final.st_dev,
+        final.st_ino,
+        final.st_size,
+        final.st_mtime_ns,
+    ):
+        raise VectorDescriptorCorruptionError(
+            "vector generation file changed during verification"
+        )
+    if digest.hexdigest() != descriptor.vectors_sha256:
+        raise ValueError("vector generation hash mismatch")
+    if validation_error is not None:
+        if isinstance(validation_error, VectorDescriptorCorruptionError):
+            raise validation_error
+        raise ValueError("invalid vector generation") from validation_error
+
+
+def _stream_vector_rows(
+    source: _DigestingReader,
+    descriptor: VectorGenerationDescriptor,
+) -> None:
+    version = np.lib.format.read_magic(source)
+    if version == (1, 0):
+        shape, fortran_order, dtype = np.lib.format.read_array_header_1_0(source)
+    elif version == (2, 0):
+        shape, fortran_order, dtype = np.lib.format.read_array_header_2_0(source)
+    else:
+        raise ValueError("unsupported vector array format")
+    if len(shape) == 1:
+        logical_shape = (1, shape[0])
+        fortran_order = False
+    elif len(shape) == 2:
+        logical_shape = shape
+    else:
+        raise ValueError("invalid vector generation shape")
+    if logical_shape != (descriptor.row_count, descriptor.dimensions):
+        raise ValueError("vector generation shape mismatch")
+    if (
+        dtype.hasobject
+        or dtype.fields is not None
+        or dtype.subdtype is not None
+        or dtype.itemsize < 1
+    ):
+        raise ValueError("invalid vector generation dtype")
+    if fortran_order:
+        _stream_fortran_vector_rows(source, descriptor, dtype)
+        return
+    for start in range(0, descriptor.row_count, _VECTOR_VERIFICATION_BATCH_ROWS):
+        batch_rows = min(
+            _VECTOR_VERIFICATION_BATCH_ROWS,
+            descriptor.row_count - start,
+        )
+        value_count = batch_rows * descriptor.dimensions
+        payload = _read_exact_payload(source, value_count * dtype.itemsize)
+        values = np.frombuffer(payload, dtype=dtype, count=value_count).reshape(
+            batch_rows,
+            descriptor.dimensions,
+        )
+        converted = values.astype(np.float32, copy=False)
+        if descriptor.normalization == "l2":
+            _validate_l2_normalization(converted)
+
+
+def _stream_fortran_vector_rows(
+    source: _DigestingReader,
+    descriptor: VectorGenerationDescriptor,
+    dtype: np.dtype[Any],
+) -> None:
+    squared_norms = (
+        np.zeros(descriptor.row_count, dtype=np.float64)
+        if descriptor.normalization == "l2"
+        else None
+    )
+    for _column in range(descriptor.dimensions):
+        payload = _read_exact_payload(
+            source,
+            descriptor.row_count * dtype.itemsize,
+        )
+        values = np.frombuffer(
+            payload,
+            dtype=dtype,
+            count=descriptor.row_count,
+        ).astype(np.float32, copy=False)
+        if squared_norms is not None:
+            if not np.isfinite(values).all():
+                raise VectorDescriptorCorruptionError(
+                    "invalid vector normalization values"
+                )
+            squared_norms += values.astype(np.float64) ** 2
+    if squared_norms is None:
+        return
+    norms = np.sqrt(squared_norms)
+    valid = np.logical_or(
+        norms == 0.0,
+        np.isclose(norms, 1.0, rtol=1e-5, atol=1e-6),
+    )
+    if not bool(np.all(valid)):
+        raise VectorDescriptorCorruptionError("vector normalization mismatch")
+
+
+def _read_exact_payload(source: _DigestingReader, size: int) -> bytes:
+    payload = source.read(size)
+    if len(payload) != size:
+        raise ValueError("truncated vector generation")
+    return payload
+
+
+def _load_bound_generation(
+    index_dir: Path,
+    descriptor: VectorGenerationDescriptor,
+) -> tuple[list[str], np.ndarray]:
+    _validate_generation_paths(index_dir, descriptor)
+    return _read_generation_payload(
+        index_dir / descriptor.vectors_file,
+        index_dir / descriptor.ids_file,
+        descriptor,
+        mmap_mode="r",
+        validate_normalization=False,
+    )
+
+
+def _read_generation_payload(
+    vectors_path: Path,
+    ids_path: Path,
+    descriptor: VectorGenerationDescriptor,
+    *,
+    mmap_mode: Literal["r"] | None,
+    validate_normalization: bool,
+) -> tuple[list[str], np.ndarray]:
+    try:
+        vectors = np.load(
+            vectors_path,
+            allow_pickle=False,
+            mmap_mode=mmap_mode,
+        ).astype(
             np.float32,
             copy=False,
         )
@@ -381,7 +1365,123 @@ def _load_generation(
         raise ValueError("vector generation dimensions mismatch")
     if len(set(ids)) != len(ids):
         raise ValueError("vector generation IDs must be unique")
+    if validate_normalization and descriptor.normalization == "l2":
+        _validate_l2_normalization(vectors)
     return ids, vectors
+
+
+def _validate_generation_paths(
+    index_dir: Path,
+    descriptor: VectorGenerationDescriptor,
+) -> None:
+    vectors_size = _regular_file_size(
+        index_dir / descriptor.vectors_file,
+        "vector payload",
+    )
+    ids_size = _regular_file_size(
+        index_dir / descriptor.ids_file,
+        "vector IDs",
+    )
+    if descriptor.schema_version == 2 and (
+        vectors_size != descriptor.vectors_bytes
+        or ids_size != descriptor.ids_bytes
+    ):
+        raise VectorDescriptorCorruptionError("vector generation size mismatch")
+
+
+def _descriptor_str(raw: dict[str, object], key: str) -> str:
+    value = raw[key]
+    if not isinstance(value, str):
+        raise VectorDescriptorCorruptionError(f"invalid descriptor field: {key}")
+    return value
+
+
+def _descriptor_int(raw: dict[str, object], key: str) -> int:
+    value = raw[key]
+    if type(value) is not int:
+        raise VectorDescriptorCorruptionError(f"invalid descriptor field: {key}")
+    return value
+
+
+def _read_small_regular_file(path: Path, label: str) -> bytes:
+    size = _regular_file_size(path, label)
+    if size > _MAX_DESCRIPTOR_BYTES:
+        raise VectorDescriptorCorruptionError(f"{label} is too large")
+    descriptor: int | None = None
+    try:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
+        before = os.fstat(descriptor)
+        payload = bytearray()
+        while len(payload) <= _MAX_DESCRIPTOR_BYTES:
+            block = os.read(
+                descriptor,
+                min(16 * 1024, _MAX_DESCRIPTOR_BYTES + 1 - len(payload)),
+            )
+            if not block:
+                break
+            payload.extend(block)
+        after = os.fstat(descriptor)
+        final = os.lstat(path)
+    except OSError as error:
+        raise VectorDescriptorCorruptionError(f"unreadable {label}") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    identity = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+    if (
+        len(payload) > _MAX_DESCRIPTOR_BYTES
+        or len(payload) != size
+        or identity
+        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        or identity
+        != (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns)
+    ):
+        raise VectorDescriptorCorruptionError(f"{label} changed during read")
+    return bytes(payload)
+
+
+def _regular_file_size(path: Path, label: str) -> int:
+    try:
+        value = os.lstat(path)
+    except OSError as error:
+        raise VectorDescriptorCorruptionError(f"{label} is missing") from error
+    if stat.S_ISLNK(value.st_mode) or not stat.S_ISREG(value.st_mode):
+        raise VectorDescriptorCorruptionError(
+            f"{label} must be a regular non-symlink file"
+        )
+    if hasattr(os, "getuid") and value.st_uid != os.getuid():
+        raise VectorDescriptorCorruptionError(f"{label} owner mismatch")
+    if stat.S_IMODE(value.st_mode) & 0o022:
+        raise VectorDescriptorCorruptionError(f"unsafe {label} permissions")
+    return int(value.st_size)
+
+
+def _validate_l2_normalization(vectors: np.ndarray) -> None:
+    if vectors.ndim != 2:
+        raise VectorDescriptorCorruptionError("invalid vector normalization shape")
+    if vectors.shape[0] == 0:
+        return
+    for start in range(0, vectors.shape[0], _VECTOR_VERIFICATION_BATCH_ROWS):
+        batch = vectors[start : start + _VECTOR_VERIFICATION_BATCH_ROWS]
+        if not np.isfinite(batch).all():
+            raise VectorDescriptorCorruptionError("invalid vector normalization values")
+        norms = np.linalg.norm(batch, axis=1)
+        valid = np.logical_or(
+            norms == 0.0,
+            np.isclose(norms, 1.0, rtol=1e-5, atol=1e-6),
+        )
+        if not bool(np.all(valid)):
+            raise VectorDescriptorCorruptionError("vector normalization mismatch")
 
 
 def _atomic_file_write(
@@ -452,6 +1552,40 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256_file_safe(path: Path) -> str:
+    digest = hashlib.sha256()
+    descriptor: int | None = None
+    try:
+        _regular_file_size(path, "vector generation file")
+        flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
+        before = os.fstat(descriptor)
+        with os.fdopen(descriptor, "rb", closefd=False) as file:
+            for block in iter(lambda: file.read(64 * 1024), b""):
+                digest.update(block)
+        after = os.fstat(descriptor)
+        final = os.lstat(path)
+    except OSError as error:
+        raise ValueError("vector generation file is missing") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if (
+        (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        or (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        != (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns)
+    ):
+        raise VectorDescriptorCorruptionError(
+            "vector generation file changed during hashing"
+        )
+    return digest.hexdigest()
+
+
 def _normalize_vector(vector: np.ndarray) -> np.ndarray:
     vector = np.nan_to_num(vector, nan=0.0, posinf=0.0, neginf=0.0).astype(
         np.float32,
@@ -475,3 +1609,14 @@ def _normalize_matrix(vectors: np.ndarray) -> np.ndarray:
         out=np.zeros_like(vectors, dtype=np.float32),
         where=norms != 0,
     )
+
+
+def _vectors_for_persistence(
+    vectors: np.ndarray,
+    normalization: Literal["none", "l2"] | None,
+    *,
+    already_normalized: bool = False,
+) -> np.ndarray:
+    if normalization == "l2" and not already_normalized:
+        return _normalize_matrix(vectors)
+    return vectors

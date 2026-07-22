@@ -1,12 +1,22 @@
 # P6 Freshness, Performance, And Large Repositories Implementation Plan
 
 Date: 2026-07-18
-Status: Reviewed — ready for user approval; implementation not authorized
+Status: Basic implementation complete; full acceptance and publication deferred
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
 Design: `docs/superpowers/specs/2026-07-18-p6-freshness-performance-large-repositories-design.md`
 Current source HEAD at plan time: `bf39182f44238819df4aab7c8e42181bcef28b6b`
 Required P6 entry commit: pending isolated P5 path-inventory fix
-Authorization: planning and agent review only; P6 implementation is not yet authorized
+Implementation checkpoint: `fe4b5c650d81429b54923b7388a670b27a8a8b21`
+Authorization: basic implementation integration authorized; full benchmark and matrix acceptance deferred
+
+> **Status update (2026-07-22):** The freshness, health, incremental-refresh,
+> lifecycle, exact-search optimization, and benchmark-harness implementation is
+> complete through the checkpoint above. The local full suite and focused
+> large-repository status/refresh diagnostics passed. The closed final
+> large/scale/stress/churn, paired comparison, 12-cell runtime matrix, published
+> acceptance artifacts, and service/ANN decisions were not completed. This plan's
+> acceptance steps and Definition of Done therefore remain open; this status must
+> not be read as full P6 acceptance or authorization to start Phase 7.
 
 > **For agentic workers:** Execute one task at a time and keep every task green.
 > Begin behavior changes with a failing or protective test, run the task's exact
@@ -368,7 +378,13 @@ uses `tdd-bootstrap`) with `--staged-tree "$(git write-tree)"`, then validates
 the record against the same tree. Thus the recorded GREEN production/test
 hashes and candidate tree are the final staged state. A task cannot commit
 without this schema-valid RED-to-GREEN proof. TDD records remain ignored local
-evidence; Task 11 publishes only their privacy-safe aggregate.
+evidence; Task 11 publishes only their privacy-safe aggregate. A later measured
+amendment to the same task writes a uniquely suffixed `tdd-task-N-*.json`
+checkpoint instead of replacing or combining earlier RED/GREEN history. Final
+quality assembly receives the canonical record and every suffixed checkpoint,
+orders them by task with the canonical record first, and emits one privacy-safe
+summary per checkpoint. It must not collapse distinct pre-change commits into a
+synthetic task record.
 
 ### Task 0: Establish The Clean P6 Entry Baseline
 
@@ -1918,18 +1934,29 @@ Task 1.
 
 - Modify: `src/context_search_tool/graph_plugins.py`
 - Modify: `src/context_search_tool/frontend_graph.py`
+- Modify: `src/context_search_tool/index_health.py`
 - Modify: `src/context_search_tool/indexer.py`
+- Modify: `src/context_search_tool/java_plugin.py`
+- Modify: `src/context_search_tool/scanner.py`
 - Modify: `src/context_search_tool/sqlite_store.py`
 - Modify: `src/context_search_tool/test_association.py`
 - Modify: `src/context_search_tool/vector_store.py`
 - Modify: `scripts/p6_benchmark.py`
+- Modify: `docs/benchmarks/p6/README.md`
+- Modify: `docs/benchmarks/p6/schemas/quality-report-v1.json`
+- Modify: this plan
 - Modify: `tests/test_incremental_refresh.py`
 - Modify: `tests/test_indexer_manifest.py`
+- Modify: `tests/test_java_ast.py`
 - Modify: `tests/test_frontend_graph.py`
 - Modify: `tests/test_test_association.py`
 - Modify: `tests/test_embeddings_vector_store.py`
+- Modify: `tests/test_index_health.py`
 - Modify: `tests/test_p6_benchmark.py`
+- Modify: `tests/test_p6_measurement_worker.py`
+- Modify: `tests/test_p6_operational_store.py`
 - Modify: `tests/test_retrieval_core_boundaries.py`
+- Modify: `tests/test_tokenizer_scanner.py`
 
 - [ ] **Step 1: Capture post-correctness indexing profiles before optimization**
 
@@ -1963,6 +1990,202 @@ Task 1.
   Only a report with valid calibration, sample counts, applicable CV, cold/warm
   state, RSS/work units, clean implementation identity, and privacy may drive
   Step 4/5. One complete rerun is allowed; a second invalid result stops.
+
+  **Measured amendment (2026-07-21):** after removing the mandatory path-index
+  amplification, an isolated scale-5k full build remained CPU-bound for
+  608.99 s before interruption while peak RSS stayed at 243,924,992 bytes. A
+  stack sample and seven-run single-file projection isolated the retained P5
+  Java extraction pass: 555.37 ms for one 24,576-byte/320-line generated file,
+  versus 0.84 ms for AST graph parsing and 0.59 ms for chunking. The excess is
+  `_METHOD_RE`/`_FIELD_RE` backtracking on generated whitespace-only padding.
+  This measured budget failure authorizes one exact `java_plugin.py` fast path:
+  skip scrubbed lines containing no non-whitespace characters before declaration
+  regexes. Freeze equal extraction/graph/index projections with and without the
+  padding; no other Java parsing behavior or file is authorized by this amendment.
+
+  The corrected scale-5k build then completed in 256.38 s with 891,879,424-byte
+  peak RSS. Its remaining sampled hotspot was an FTS5 full scan caused by
+  `replace_chunks()` deleting incoming chunk IDs that were absent from the
+  `chunks` primary-key table; a pristine one-chunk trace reproduced one such
+  invalid `DELETE FROM chunks_fts`. This measured amplification authorizes one
+  `sqlite_store.py` existence filter before incoming search-payload deletion.
+  Existing active IDs must still be cleaned exactly once, changed-file FTS/token/
+  symbol projections must remain exact, and no transaction/batching redesign is
+  authorized unless this filter fails the next scale projection.
+
+  With both measured fixes applied, clean isolated builds completed in 96.11 s
+  for scale-5k and 242.52 s for scale-10k, a 2.523x projection ratio within the
+  2.7x budget. Maximum RSS was 899,776,512 bytes and 1,663,025,152 bytes,
+  respectively, so the 2 GiB batching trigger was not reached.
+
+  **Measured amendment (2026-07-22):** the next isolated large-tier projection
+  from clean candidate `03547ca4a46decabb59835d2ff35c3f830779a05`
+  completed in 594,424.30 ms with 2,413,608,960-byte peak RSS. Attribution
+  isolated 465,630.26 ms in SQLite persistence, versus 97,018.69 ms in parsing,
+  and recorded 20,000 per-file flushes. This fails both the reviewed 420 s
+  maximum and 2 GiB RSS boundaries and satisfies the prior amendment's
+  condition for a measured transaction/batching change.
+
+  Authorize one bounded post-closing-fence persistence path only. It keeps the
+  existing stale commit and file-write marker, commits that marker before each
+  batch, writes at most 64 canonically ordered files in one `BEGIN IMMEDIATE`
+  transaction, preserves the existing per-file fault-stage order with the
+  source hash last, and clears the marker only in the successful batch commit.
+  A fault rolls back the complete current batch; previously committed batches
+  remain stale and the next authoritative entry rebuilds them under the
+  existing stale-entry rule. Freeze exact graph/FTS/source projections, reversed
+  order, marker visibility, and recovery. No source/graph state may commit
+  before the closing fence, and this amendment authorizes no schema change,
+  payload spill, alternate journal mode, or weaker final-ready binding.
+
+  The first bounded-batch candidate
+  `121b3b8c2aae279255468f8eddc4f1cab63c9f8d` reduced flushes from 20,000
+  to 313 and completed in 462,579.21 ms at 2,079,490,048-byte peak RSS. Memory
+  passed, but 337,416.71 ms of persistence still failed the time boundary.
+  Removing the 320,000 relation-source primary-key reads did not improve the
+  next clean projection: candidate
+  `dd3db85ae3890ec6d1281e286eef1d6a69a678e2` completed in 474,830.99 ms
+  with 347,471.84 ms in persistence, so that attempted optimization was
+  rejected and removed.
+
+  Statement tracing then isolated the actual superlinear query:
+  `_replace_relations_v5()` runs `UPDATE code_relations ... WHERE
+  source_file_path = ?` once per file, while v5 has no source-file relation
+  index. On the initial `stored_signal_version < 5` path, `initialize_v5()` has
+  just created an empty relation table, so every one of those 20,000 growing
+  full-table scans is provably a no-op. Authorize skipping only that tombstone
+  UPDATE for batches written immediately after fresh v5 initialization. Existing
+  v5 rebuilds, incremental writes, and public store calls must retain the UPDATE;
+  exact relation output, stale recovery, and all fault seams remain unchanged.
+
+  Clean candidate `6c13948b16f5bcfef4acc76cb1c445bc21f6213c`
+  then completed the isolated large full build in 169,742.97 ms with
+  2,133,721,088-byte peak RSS and 41,094.39 ms in persistence. Its output SHA-256
+  remained `37184a54f8a6c8db993a5530cf82eeb86ec945dd08e25522b65c1e9a5ba92681`,
+  matching both failed candidates exactly. This passes the 300 s median,
+  420 s maximum, and 2 GiB RSS gates; the optimized branch is therefore retained.
+
+  The first frozen-runtime final-large capture from clean commit `080476d`
+  completed all five full-build samples in 196,843.21--204,944.91 ms, with a
+  201,773.11 ms median, 0.0137 population CV, 2,014,937,088-byte maximum RSS,
+  and 2,221,376,368-byte ready snapshot. The measurements passed their resource
+  budgets but the case correctly failed evidence validation because its frozen
+  environment recorded 24.07% background CPU. Investigation reproduced that
+  macOS `ps` aggregation counted the benchmark harness itself immediately after
+  it fingerprinted the large repositories. A RED/GREEN harness test therefore
+  authorizes excluding only the current harness PID from the macOS background
+  CPU total; every external process remains included. The invalid checkpoints
+  are retained only as local diagnostic evidence and must not be resumed or
+  published. A clean-identity final capture is still required.
+
+  A clean retry from `7b9762d` then passed the full-build case with a
+  202,984.55 ms median, 214,305.29 ms maximum, 0.0272 population CV,
+  2,029,240,320-byte maximum RSS, and 2,221,376,368-byte ready snapshot. The
+  next measured case exposed a separate authoritative no-op failure: five
+  samples had a 29,744.32 ms median, 38,177.41 ms maximum, and
+  1,229,160,448-byte maximum extra RSS. Attribution showed that unchanged
+  input still re-resolved 320,000 relations, regenerated associations, loaded
+  the active embedding IDs twice, performed six vector payload passes, and
+  unconditionally copied an already sorted vector matrix. The same capture's
+  quick-status case had a 2,583.71 ms p95 and one 4,299.89 ms outlier, producing
+  an invalid 0.2225 population CV.
+
+  **Measured no-op/status amendment (2026-07-22):** authorize one exact partial
+  SQLite index on active non-null `chunks.embedding_id`. A CoW copy of the
+  large database measured a 4,857,856-byte index, 0.13 s creation time, and a
+  covering lookup reduction from 0.130 s to 0.014 s; it removes the shared
+  full-row scan used by authoritative no-op and both quick-status snapshots.
+  When a snapshot is already `ready`, its operational/manifest/vector
+  descriptor bindings are exact, its active embedding IDs and counts validate,
+  every eligible source has just been hashed equal, topology and project-scope
+  metadata match, and no rebuild/deletion is prepared, the prior atomic ready
+  commit is the authoritative graph-integrity proof only while its bound SQLite
+  file-change counter still matches the database header. Any intervening SQLite
+  write cancels this fast path and restores the existing full graph validation;
+  an unchanged source tree therefore repairs a graph changed after ready rather
+  than blessing it again. That exact sealed branch may skip relation
+  re-resolution, association regeneration, and duplicate graph scans; it must
+  still use the stale-to-ready crash protocol and perform the final vector
+  content verification. L2 verification must use bounded 4,096-row batches, and
+  already sorted vector matrices must not be copied. Existing current-v5
+  snapshots without the additive index or change-counter seal remain readable;
+  the next authoritative or non-quiet persistence installs them, while status
+  remains strictly read-only and never self-migrates.
+
+  The retained dirty candidate then measured authoritative no-op at
+  13,668.71 ms with 486,621,184-byte extra RSS, all 512 MiB hashed, and zero
+  parse/embed/relation work. Five quick-status diagnostics measured
+  1,683.54--1,927.35 ms with at most 220,282,880-byte extra RSS. These are
+  diagnostic projections only; clean-identity final samples and the complete
+  regression suite remain required.
+
+  The subsequent clean `e174ae1ca3746ad00615fbe06b7295d8a48e9517`
+  diagnostic capture made the remaining failures explicit. Twenty quick-status
+  samples had 2,394.30 ms p95 and 2,432.19 ms maximum, over the 2 s boundary.
+  Five verified-status samples stayed below the 12 s time maximum at
+  11,364.01 ms but reached 954,564,608-byte extra RSS, far above 256 MiB.
+  Twenty refresh-noop samples had 3,611.49 ms p95 and 3,738.24 ms maximum,
+  over the 2.5 s boundary. The complete batch also failed evidence validation;
+  all of its checkpoint directories and log therefore remain diagnostic-only
+  and may neither be resumed after an implementation/harness change nor mixed
+  with a new final capture.
+
+  Stage attribution authorized four bounded follow-ups. `fcef893` retained the
+  required two inventories and two SQLite read snapshots while making the
+  closing snapshot an identity-only fence, hashing verified sources without
+  retaining their bodies, streaming vector rows, and projecting exact
+  tombstones without materializing deleted IDs. `52b1653` corrected harness
+  accounting for that streamed verification. `0b45240` removed duplicate
+  healthy-path vector-ID sets. `68bbfc3` hashes the canonical persisted ID file
+  against the already-bound ready IDs and reuses that tuple on equality; the
+  mismatch path still performs the full missing/orphan diagnosis. Their
+  separate RED/GREEN records are
+  `tdd-task-8-status-refresh-memory.json`,
+  `tdd-task-8-status-accounting.json`,
+  `tdd-task-8-status-id-memory.json`, and
+  `tdd-task-8-verified-id-hash.json`. The related focused regression set passed
+  142 tests. In-process stage profiles showed the vector-verification increment
+  fall by roughly 6--7 MiB, but this is not an acceptance measurement: the
+  clean final identity still requires five verified, twenty quick, and twenty
+  refresh-noop samples after the harness/plan checkpoint contract is frozen.
+
+  Task 8 and later tasks produced multiple truthful RED/GREEN checkpoints with
+  different pre-change commits. The quality assembler therefore accepts the
+  canonical `tdd-task-N.json` plus uniquely suffixed checkpoint files, validates
+  each record independently, and emits contiguous per-task checkpoint summaries
+  containing producer, record, test, pre-change, and final-tree identities plus
+  RED/GREEN counts. It never fabricates one combined pre-change identity.
+
+  The first frozen-runtime full-suite run after `68bbfc3` then exposed an exact
+  harness compatibility regression: production passed the new bound
+  `expected_ids` keyword into the streaming verifier, while the measurement
+  wrapper still exposed the old two-argument signature. Real full-build workers
+  therefore exited during final vector verification. The isolated
+  `tdd-task-8-verified-worker-binding.json` RED/GREEN checkpoint authorizes only
+  forwarding that keyword through the existing accounting wrapper; it changes
+  no product behavior, work counter, or acceptance threshold.
+
+  A clean-identity five-sample verified diagnostic at `fe8920a` then passed the
+  12 s time gate (8,175.97 ms median, 9,778.52 ms maximum) but reached
+  314,277,888-byte extra RSS, above the 256 MiB gate. An isolated profile of the
+  117 MiB vector payload attributed the remaining peak to the 4,096-row read and
+  normalization batches: the verifier process peaked at 166,903,808 bytes,
+  while the same checks at 512 rows peaked at 56,213,504 bytes. The
+  `tdd-task-8-verified-vector-batches.json` checkpoint therefore tightens both
+  loops through one 512-row constant. Hashing, exact-ID checks, normalization
+  validation, corruption behavior, and acceptance thresholds remain unchanged.
+
+  The next clean `04caf6b` diagnostic passed verified status (5,235.66 ms
+  maximum, 189,333,504-byte extra RSS) and quick status (1,594.11 ms p95,
+  171,376,640-byte extra RSS). Refresh-noop still measured 3,211.24 ms p95,
+  above 2.5 s, despite zero source/vector hashing and zero ID materialization.
+  A stage profile showed that a quiet refresh had already completed its bound
+  baseline plus two stable inventories, but the CLI and MCP adapters then ran a
+  separate full quick inspection of the same unchanged generation. The
+  `tdd-task-8-refresh-noop-report.json` checkpoint therefore lets only the
+  no-write, lock-stable branch return that completed quick-health report. Any
+  mutating refresh still performs the existing post-success inspection and
+  retains its fail-closed behavior.
 
 - [ ] **Step 2: Write shared repository-path-index work proofs first**
 
@@ -2063,18 +2286,28 @@ Task 1.
   git add \
     src/context_search_tool/graph_plugins.py \
     src/context_search_tool/frontend_graph.py \
+    src/context_search_tool/index_health.py \
     src/context_search_tool/indexer.py \
+    src/context_search_tool/java_plugin.py \
+    src/context_search_tool/scanner.py \
     src/context_search_tool/sqlite_store.py \
     src/context_search_tool/test_association.py \
     src/context_search_tool/vector_store.py \
     scripts/p6_benchmark.py \
+    docs/benchmarks/p6/README.md \
+    docs/benchmarks/p6/schemas/quality-report-v1.json \
+    docs/superpowers/plans/2026-07-18-p6-freshness-performance-large-repositories.md \
     tests/test_incremental_refresh.py \
     tests/test_indexer_manifest.py \
     tests/test_frontend_graph.py \
     tests/test_test_association.py \
     tests/test_embeddings_vector_store.py \
+    tests/test_index_health.py \
     tests/test_p6_benchmark.py \
-    tests/test_retrieval_core_boundaries.py
+    tests/test_p6_measurement_worker.py \
+    tests/test_p6_operational_store.py \
+    tests/test_retrieval_core_boundaries.py \
+    tests/test_tokenizer_scanner.py
   git diff --exit-code -- $(git diff --cached --name-only)
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py tdd-green \
     --pending .quality/p6-artifacts/tdd-task-8.pending.json \
@@ -2148,6 +2381,7 @@ Task 1.
 - Modify: `src/context_search_tool/retrieval.py`
 - Modify: `src/context_search_tool/repo_profile.py`
 - Modify: `src/context_search_tool/retrieval_core/candidates.py`
+- Modify: `src/context_search_tool/path_roles.py`
 - Modify: `src/context_search_tool/sqlite_store.py`
 - Modify: `scripts/p6_benchmark.py`
 - Modify: `tests/test_repo_profile.py`
@@ -2156,7 +2390,11 @@ Task 1.
 - Modify: `tests/test_retrieval_pipeline.py`
 - Modify: `tests/test_retrieval_core_characterization.py`
 - Modify: `tests/test_p6_benchmark.py`
+- Modify: `tests/test_p6_measurement_worker.py`
+- Modify: `tests/test_path_roles.py`
 - Modify: `tests/test_retrieval_core_boundaries.py`
+- Modify: `tests/test_exploration_boundaries.py`
+- Create: `tests/test_sqlite_store_query_work.py`
 
 - [ ] **Step 1: Profile every exact candidate source independently**
 
@@ -2185,6 +2423,60 @@ Task 1.
   Only valid calibration/sample/CV/state/RSS/work/privacy evidence may identify
   a source for optimization. One complete rerun is allowed; a second invalid
   profile stops instead of authorizing a rewrite.
+
+  **Measured amendment (2026-07-21):** isolated smoke-tier attribution on the
+  clean Task-8 commit measured ordinary query wall times of 1.94--2.20 s. A
+  representative query spent 129 ms in query understanding while the disabled
+  planner's unused repository profile performed 1,349,996 SQLite VM steps and
+  decoded 321 rows. Path/symbol recall decoded 92,000 rows (about 80,000 from an
+  unconditional `chunk_tokens` scan), direct text made one 4,000-row/
+  25,537,824-byte active-content pass, and signal recall decoded 11,000 legal
+  recallable rows. This authorizes only the mandatory disabled-profile skip and
+  an indexed equality seek for the exact-token component of path/symbol recall;
+  the already-bounded direct-text and recallable-signal scans remain unchanged.
+
+  Three cases also exposed a measurement-only identity bug: the product logger's
+  host-dependent `direct_text_search slow: <elapsed>ms` line was included in the
+  timing/attribution output digest. Two ordinary runs produced different hashes
+  while attribution was stable. Task 9 therefore also authorizes canonicalizing
+  only that diagnostic duration in `_measurement_output_bytes`; probe/chunk
+  counts and all product output remain hashed. Freeze this repair separately in
+  `tests/test_p6_measurement_worker.py` before changing the harness.
+
+  Post-change stage profiling then isolated the retained dominant query cost:
+  92 Java path-role classifications spent about 0.9 s in normal execution (and
+  6.7 s under call profiling) performing roughly 33 million `isspace()` calls
+  across generated whitespace padding. `_JAVA_DECLARATION_BOUNDARY_RE` treated
+  every whitespace-only line as a declaration candidate, so each candidate
+  rescanned the remaining padding. This authorizes one lookahead requiring an
+  annotation/identifier start at a boundary. Freeze identical compact/padded
+  role projections and linear skipped-character work; no role precedence or
+  declaration grammar change is authorized.
+
+  A subsequent 10k-file ready-snapshot query measured 10.64 s end to end:
+  signal recall took 1.95 s, ranking 2.15 s, and relation expansion 2.13 s.
+  Inspection showed that every decoded result chunk independently queried the
+  unindexed `chunk_tokens.chunk_id` column, repeatedly scanning the full token
+  table, while signal recall decoded every legal row before matching. Java role
+  classification also masked the full body even when no record, enum, or data
+  annotation marker existed. This authorizes one non-persistent batched payload
+  read per chunk set, a conservative ASCII SQL prefilter with an exact fallback
+  for unsafe tokens/rows, and a marker-absence fast path before Java masking.
+  Ordered chunks, tokens, symbols, signal scores/ties, Unicode behavior, and all
+  protected output projections remain byte-identical. On the same 10k snapshot,
+  the resulting query measured 1.78 s end to end: signal recall was 0.14 s,
+  ranking 0.09 s, and relation expansion 0.08 s.
+
+  A pre-final large diagnostic then exposed a harness-only observation bug:
+  `run_benchmark_set` built an observation-consistent `shared-ready` repository,
+  but each read-only case copied it again. On macOS the copy changes source
+  `ctime`, so quick/verified status can truthfully report stale even though the
+  timed operation is supposed to start from ready state. The
+  `tdd-task-9-ready-reuse.json` checkpoint therefore authorizes reusing an
+  existing indexed repository only for the closed read-only operation set
+  (`stats`, both status modes, query, and explore). Pristine inputs retain the
+  existing isolated clone-and-build path; mutating operations retain per-sample
+  clones. This changes no product behavior or acceptance threshold.
 
 - [ ] **Step 2: Skip unused repository profiles with a protective test**
 
@@ -2351,6 +2643,7 @@ Task 1.
 
 **Files:**
 
+- Modify: `src/context_search_tool/indexer.py`
 - Modify: `src/context_search_tool/vector_store.py`
 - Modify: `src/context_search_tool/retrieval.py`
 - Modify: `src/context_search_tool/retrieval_core/candidates.py`
@@ -2362,7 +2655,9 @@ Task 1.
 - Modify: `tests/test_retrieval_pipeline.py`
 - Modify: `tests/test_retrieval_core_characterization.py`
 - Modify: `tests/test_p6_benchmark.py`
+- Modify: `tests/test_p6_measurement_worker.py`
 - Modify: `tests/test_retrieval_core_boundaries.py`
+- Modify: this plan
 
 - [ ] **Step 1: Freeze exhaustive exact-vector reference cases first**
 
@@ -2403,6 +2698,25 @@ Task 1.
   fail only on old payload-hash/normalization/full-sort work; all output
   references remain green. Collection/import or correctness failure is invalid
   RED evidence.
+
+  **Measured amendment (2026-07-21):** a validated 30-sample
+  `semantic_high` smoke run from the clean Task-9 commit measured CLI-cold p95
+  423.53 ms with 1.40% population CV and semantic-stage p95 5.00 ms. Every
+  sample read 12,824,260 vector bytes, hashed 6,412,130 bytes, made two payload
+  passes, normalized and scored 4,000 rows, fully sorted 4,000 rows, and
+  materialized 4,000 active IDs/256,000 ID bytes. This directly authorizes the
+  reviewed ready binding, normalized v2 persistence, mmap load, and exact
+  partial top-k work in Steps 2--4.
+
+  The same run also confirmed that the frozen registry's
+  `mcp_resident_warm` state was still hard-coded `unsupported`, contrary to
+  Task 1 Step 5 and this task's mandatory 30-sample resident gate. Task 10 may
+  therefore complete only that previously specified harness behavior: one
+  persistent measurement subprocess, exactly three production-process
+  warmups, separate output-identical work-proof calls, incremental checkpoints,
+  and no product subprocess. Freeze it separately in
+  `tests/test_p6_measurement_worker.py`; no product API or benchmark schema
+  change is authorized.
 
 - [ ] **Step 2: Replace repeated payload hashing with the reviewed ready invariant**
 
@@ -2477,6 +2791,7 @@ Task 1.
 
   ```bash
   git add \
+    src/context_search_tool/indexer.py \
     src/context_search_tool/vector_store.py \
     src/context_search_tool/retrieval.py \
     src/context_search_tool/retrieval_core/candidates.py \
@@ -2488,7 +2803,9 @@ Task 1.
     tests/test_retrieval_pipeline.py \
     tests/test_retrieval_core_characterization.py \
     tests/test_p6_benchmark.py \
-    tests/test_retrieval_core_boundaries.py
+    tests/test_p6_measurement_worker.py \
+    tests/test_retrieval_core_boundaries.py \
+    docs/superpowers/plans/2026-07-18-p6-freshness-performance-large-repositories.md
   git diff --exit-code -- $(git diff --cached --name-only)
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py tdd-green \
     --pending .quality/p6-artifacts/tdd-task-10.pending.json \
@@ -2496,6 +2813,13 @@ Task 1.
     --output .quality/p6-artifacts/tdd-task-10.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py validate \
     --report .quality/p6-artifacts/tdd-task-10.json \
+    --staged-tree "$(git write-tree)"
+  PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py tdd-green \
+    --pending .quality/p6-artifacts/tdd-task-10-resident-v5.pending.json \
+    --staged-tree "$(git write-tree)" \
+    --output .quality/p6-artifacts/tdd-task-10-resident.json
+  PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py validate \
+    --report .quality/p6-artifacts/tdd-task-10-resident.json \
     --staged-tree "$(git write-tree)"
   git diff --cached --check
   git diff --cached --name-only
@@ -2518,17 +2842,24 @@ Task 1.
   test "$(git -C "$P6_TASK10_WORKTREE" rev-parse HEAD^{tree})" = "$P6_TASK10_TREE"
   PYTHONPATH="$P6_TASK10_WORKTREE/src" "$P6_RUNTIME" \
     "$P6_TASK10_WORKTREE/scripts/p6_benchmark.py" run \
-    --repo "$PWD/.quality/p6-large" \
+    --repo "$PWD/.quality/p6-task10-l2-smoke" \
     --manifest "$P6_TASK10_WORKTREE/tests/fixtures/p6_performance/workload_manifest.json" \
-    --operations query-cold,query-warm,explore-warm \
+    --operation query \
+    --case-id semantic_high \
+    --samples 30 \
+    --measurement-state mcp_resident_warm \
+    --mode final \
+    --checkpoint-dir "$PWD/.quality/p6-artifacts/task10-vector.checkpoints" \
     --output "$PWD/.quality/p6-artifacts/task10-vector.json"
   PYTHONPATH="$P6_TASK10_WORKTREE/src" "$P6_RUNTIME" \
     "$P6_TASK10_WORKTREE/scripts/p6_benchmark.py" validate \
     --report "$PWD/.quality/p6-artifacts/task10-vector.json"
   PYTHONPATH="$P6_TASK10_WORKTREE/src" "$P6_RUNTIME" \
     "$P6_TASK10_WORKTREE/scripts/p6_benchmark.py" decide \
-    --kind ann \
-    --report "$PWD/.quality/p6-artifacts/task10-vector.json" \
+    --kind exact_ann \
+    --input "$PWD/.quality/p6-artifacts/task10-vector.json" \
+    --reason semantic_within_budget \
+    --reason rss_within_budget \
     --output "$PWD/.quality/p6-artifacts/task10-ann.json"
   PYTHONPATH="$P6_TASK10_WORKTREE/src" "$P6_RUNTIME" \
     "$P6_TASK10_WORKTREE/scripts/p6_benchmark.py" validate \
@@ -2552,6 +2883,13 @@ Task 1.
 
 ### Task 11: Run Final Acceptance And Record P6 Completion
 
+**Reviewed amendment (2026-07-22):** The commands below are aligned with the
+closed final harness contract established by Tasks 1-10: final tier runs select
+`--mode final`, churn uses its dedicated subcommand, the combined performance
+report contains the four publication tiers plus churn, acceptance is emitted as
+a validated report, and the environment and service/watch records consume only
+their schema-defined inputs.
+
 **Files:**
 
 - Create: `docs/benchmarks/p6/final/final-environment.json`
@@ -2562,6 +2900,7 @@ Task 1.
 - Create: `docs/benchmarks/p6/final/final-scale-10k.json`
 - Create: `docs/benchmarks/p6/final/final-stress.json`
 - Create: `docs/benchmarks/p6/final/final-performance.json`
+- Create: `docs/benchmarks/p6/final/final-acceptance.json`
 - Create: `docs/benchmarks/p6/final/churn.json`
 - Create: `docs/benchmarks/p6/final/quality.json`
 - Create: `docs/benchmarks/p6/decisions/ann.json`
@@ -2688,31 +3027,35 @@ Task 1.
     --repo .quality/p6-final-smoke \
     --manifest tests/fixtures/p6_performance/workload_manifest.json \
     --operations all-smoke \
+    --mode final \
     --output .quality/p6-artifacts/final-smoke.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py run \
     --repo .quality/p6-final-large \
     --manifest tests/fixtures/p6_performance/workload_manifest.json \
     --operations all-large \
+    --mode final \
     --output .quality/p6-artifacts/final-large.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py run \
     --repo .quality/p6-final-scale-5k \
     --manifest tests/fixtures/p6_performance/workload_manifest.json \
     --operations all-scale \
+    --mode final \
     --output .quality/p6-artifacts/final-scale-5k.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py run \
     --repo .quality/p6-final-scale-10k \
     --manifest tests/fixtures/p6_performance/workload_manifest.json \
     --operations all-scale \
+    --mode final \
     --output .quality/p6-artifacts/final-scale-10k.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py run \
     --repo .quality/p6-final-stress \
     --manifest tests/fixtures/p6_performance/workload_manifest.json \
     --operations capacity-informational \
+    --mode final \
     --output .quality/p6-artifacts/final-stress.json
-  PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py run \
+  PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py churn \
     --repo .quality/p6-final-smoke \
     --manifest tests/fixtures/p6_performance/workload_manifest.json \
-    --operations churn-100 \
     --output .quality/p6-artifacts/final-churn.json
   ```
 
@@ -2776,8 +3119,6 @@ Task 1.
     --input .quality/p6-artifacts/final-large.json \
     --input .quality/p6-artifacts/final-scale-5k.json \
     --input .quality/p6-artifacts/final-scale-10k.json \
-    --input .quality/p6-artifacts/final-stress.json \
-    --input .quality/p6-artifacts/final-small-paired.json \
     --input .quality/p6-artifacts/final-churn.json \
     --output .quality/p6-artifacts/final-performance.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py validate \
@@ -2925,13 +3266,14 @@ Task 1.
     --paired .quality/p6-artifacts/final-small-paired.json \
     --churn .quality/p6-artifacts/final-churn.json \
     --require-churn \
-    --require-scale-5k-10k
+    --require-scale-5k-10k \
+    --output .quality/p6-artifacts/final-acceptance.json
+  PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py validate \
+    --report .quality/p6-artifacts/final-acceptance.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py assemble \
     --kind environment \
-    --input .quality/p6-artifacts/final-runtime.json \
-    --input .quality/p6-artifacts/final-dependencies.txt \
-    --input .quality/p6-artifacts/final-lineage.txt \
-    --input .quality/p6-artifacts/final-matrix.json \
+    --mode final \
+    --input .quality/p6-artifacts/entry-record.json \
     --input .quality/p6-artifacts/final-performance.json \
     --output .quality/p6-artifacts/final-environment.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py assemble \
@@ -2948,15 +3290,37 @@ Task 1.
     --input .quality/p6-artifacts/tdd-task-3.json \
     --input .quality/p6-artifacts/tdd-task-4.json \
     --input .quality/p6-artifacts/tdd-task-5.json \
+    --input .quality/p6-artifacts/tdd-task-5-request-exceptions.json \
     --input .quality/p6-artifacts/tdd-task-6.json \
+    --input .quality/p6-artifacts/tdd-task-6-supplementary.json \
     --input .quality/p6-artifacts/tdd-task-7.json \
+    --input .quality/p6-artifacts/tdd-task-7-supplementary.json \
     --input .quality/p6-artifacts/tdd-task-8.json \
+    --input .quality/p6-artifacts/tdd-task-8-java.json \
+    --input .quality/p6-artifacts/tdd-task-8-sqlite-v2.json \
+    --input .quality/p6-artifacts/tdd-task-8-noop-status.json \
+    --input .quality/p6-artifacts/tdd-task-8-noop-seal.json \
+    --input .quality/p6-artifacts/tdd-task-8-status-refresh-memory.json \
+    --input .quality/p6-artifacts/tdd-task-8-status-accounting.json \
+    --input .quality/p6-artifacts/tdd-task-8-status-id-memory.json \
+    --input .quality/p6-artifacts/tdd-task-8-verified-id-hash.json \
+    --input .quality/p6-artifacts/tdd-task-8-quality-checkpoints.json \
+    --input .quality/p6-artifacts/tdd-task-8-verified-worker-binding.json \
+    --input .quality/p6-artifacts/tdd-task-8-verified-vector-batches.json \
+    --input .quality/p6-artifacts/tdd-task-8-refresh-noop-report.json \
     --input .quality/p6-artifacts/tdd-task-9.json \
+    --input .quality/p6-artifacts/tdd-task-9-harness-v2.json \
+    --input .quality/p6-artifacts/tdd-task-9-path-roles-v2.json \
+    --input .quality/p6-artifacts/tdd-task-9-sqlite-query.json \
+    --input .quality/p6-artifacts/tdd-task-9-ready-reuse.json \
     --input .quality/p6-artifacts/tdd-task-10.json \
+    --input .quality/p6-artifacts/tdd-task-10-resident.json \
     --output .quality/p6-artifacts/final-quality.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py decide \
     --kind service-watch \
     --report .quality/p6-artifacts/final-performance.json \
+    --paired .quality/p6-artifacts/final-small-paired.json \
+    --acceptance .quality/p6-artifacts/final-acceptance.json \
     --output .quality/p6-artifacts/final-service-watch.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py validate \
     --report .quality/p6-artifacts/final-environment.json
@@ -3010,6 +3374,9 @@ Task 1.
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py publish \
     --input .quality/p6-artifacts/final-performance.json \
     --output docs/benchmarks/p6/final/final-performance.json
+  PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py publish \
+    --input .quality/p6-artifacts/final-acceptance.json \
+    --output docs/benchmarks/p6/final/final-acceptance.json
   PYTHONPATH="$PWD/src" "$P6_RUNTIME" scripts/p6_benchmark.py publish \
     --input .quality/p6-artifacts/final-churn.json \
     --output docs/benchmarks/p6/final/churn.json
@@ -3066,6 +3433,7 @@ Task 1.
     docs/benchmarks/p6/final/final-scale-10k.json \
     docs/benchmarks/p6/final/final-stress.json \
     docs/benchmarks/p6/final/final-performance.json \
+    docs/benchmarks/p6/final/final-acceptance.json \
     docs/benchmarks/p6/final/churn.json \
     docs/benchmarks/p6/final/quality.json \
     docs/benchmarks/p6/decisions/ann.json \

@@ -1596,9 +1596,10 @@ def _frontend_relation(
     target_name: str,
     extra_metadata: dict[str, object],
 ) -> CodeRelation:
-    active = {path.as_posix() for path in context.active_paths}
     active_candidates = tuple(
-        candidate for candidate in selector.candidates if candidate in active
+        candidate
+        for candidate in selector.candidates
+        if context.contains_path(candidate)
     )
     target_project_unit_key = context.project_unit_key
     if selector.state == "exact" and selector.candidates:

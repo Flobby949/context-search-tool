@@ -5,6 +5,8 @@ import sqlite3
 
 import pytest
 
+from context_search_tool import indexer as indexer_module
+from context_search_tool import sqlite_store as sqlite_store_module
 from context_search_tool.config import (
     DEFAULT_CONFIG,
     EmbeddingConfig,
@@ -33,7 +35,7 @@ from context_search_tool.graph_plugins import (
 from context_search_tool.frontend_graph import FrontendGraphProducer
 from context_search_tool.java_graph import JavaGraphProducer
 from context_search_tool.index_lock import exclusive_index_lock
-from context_search_tool.manifest import load_manifest
+from context_search_tool.manifest import ManifestV2, load_manifest
 from context_search_tool.models import CodeRelation, CodeSignal
 from context_search_tool.mybatis_xml import MyBatisGraphProducer
 from context_search_tool.scanner import read_scanned_file_bytes, scan_workspace_v5
@@ -86,6 +88,53 @@ class _RecordingGraphPlugin:
         return MaterializedGraph()
 
 
+def test_fresh_v5_build_skips_absent_fts_payload_deletes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int alpha; }\n", encoding="utf-8")
+    statements: list[str] = []
+    real_open_connection = sqlite_store_module._open_connection
+
+    def traced_connection(*args, **kwargs):
+        connection = real_open_connection(*args, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(
+        sqlite_store_module,
+        "_open_connection",
+        traced_connection,
+    )
+
+    index_repository(repo, DEFAULT_CONFIG)
+
+    fresh_deletes = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith("DELETE FROM CHUNKS_FTS")
+    ]
+    assert fresh_deletes == []
+
+    statements.clear()
+    source.write_text("class App { int beta; }\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    changed_deletes = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith("DELETE FROM CHUNKS_FTS")
+    ]
+    assert len(changed_deletes) == 1
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    results = store.lexical_search(["beta"], 10)
+    assert results
+    chunks = store.chunks_for_ids([result.chunk_id for result in results])
+    assert all("alpha" not in chunks[result.chunk_id].content for result in results)
+
+
 def _frontend_import_state(
     database: Path,
 ) -> tuple[str, str, tuple[str, ...]]:
@@ -121,7 +170,16 @@ def test_index_repository_creates_expected_index_files(tmp_path: Path) -> None:
     assert (repo / ".context-search" / "manifest.json").exists()
     assert (repo / ".context-search" / "index.sqlite").exists()
     assert (repo / ".context-search" / "vector_snapshot.json").exists()
-    assert load_manifest(repo).total_chunks >= 1
+    manifest = load_manifest(repo)
+    assert isinstance(manifest, ManifestV2)
+    assert manifest.total_chunks >= 1
+    assert manifest.operation_mode == "authoritative_index"
+    assert manifest.vector_descriptor_schema_version == 2
+    operational = SQLiteStore(
+        repo / ".context-search" / "index.sqlite"
+    ).read_operational_snapshot()
+    assert operational is not None
+    assert operational.binding.manifest_generation == manifest.manifest_generation
 
 
 def test_index_repository_indexes_go_source_with_generic_chunks(tmp_path: Path) -> None:
@@ -1036,3 +1094,81 @@ def test_internal_v5_vector_reader_fails_ready_and_skips_stale_mismatch(
     assert [record.message for record in caplog.records] == [
         "vector_snapshot_mismatch"
     ]
+
+
+def test_quick_refresh_path_addition_rematerializes_persisted_import_sources(
+    tmp_path: Path,
+) -> None:
+    refresh = getattr(indexer_module, "refresh_repository", None)
+    assert callable(refresh), "P6 internal quick-refresh entry is absent"
+    repo = tmp_path / "repo"
+    source_dir = repo / "src"
+    source_dir.mkdir(parents=True)
+    (source_dir / "Importer.ts").write_text(
+        "import value from './Target';\nexport { value };\n",
+        encoding="utf-8",
+    )
+    index_repository(repo, DEFAULT_CONFIG)
+    database = repo / ".context-search" / "index.sqlite"
+    assert _frontend_import_state(database) == ("unresolved", "", ())
+
+    (source_dir / "Target.ts").write_text(
+        "export default 1;\n",
+        encoding="utf-8",
+    )
+    result = refresh(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[FrontendGraphProducer()],
+    )
+
+    assert result.ok is True
+    assert result.summary.files.direct_dirty == 1
+    assert result.summary.files.content_changed == 1
+    assert result.summary.files.dependent_rebuild == 1
+    assert [item.to_dict() for item in result.summary.files.dependent_rebuilds] == [
+        {"reason": "path_inventory_changed", "files": 1}
+    ]
+    resolution, target, candidates = _frontend_import_state(database)
+    assert (resolution, bool(target), candidates) == (
+        "resolved_unique",
+        True,
+        ("src/Target.ts",),
+    )
+    assert SQLiteStore(database).graph_integrity().ok
+
+
+def test_quick_refresh_stale_entry_reason_matrix_never_uses_noop(
+    tmp_path: Path,
+) -> None:
+    refresh = getattr(indexer_module, "refresh_repository", None)
+    assert callable(refresh), "P6 internal quick-refresh entry is absent"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+
+    store.mark_graph_stale("files_changed")
+    recovered = refresh(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+    )
+    assert recovered.ok is True
+    assert recovered.summary.files.dependent_rebuild == 1
+    assert recovered.summary.files.parsed == 1
+    assert recovered.summary.work.vector.descriptor_action == "reused"
+    assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "ready"
+
+    store.mark_graph_stale("integrity_check_failed")
+    before = (repo / ".context-search" / "index.sqlite").read_bytes()
+    rejected = refresh(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[JavaGraphProducer()],
+    )
+    assert rejected.ok is False
+    assert rejected.code == "authoritative_index_required"
+    assert rejected.network_egress_outcome == "not_attempted"
+    assert (repo / ".context-search" / "index.sqlite").read_bytes() == before

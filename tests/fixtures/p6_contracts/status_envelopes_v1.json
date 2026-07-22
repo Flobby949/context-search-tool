@@ -1,0 +1,134 @@
+{
+  "fixture_schema_version": 1,
+  "success": {
+    "schema_version": 1,
+    "ok": true,
+    "repo": "fixture-repo",
+    "index_health": {
+      "schema_version": 1,
+      "health": "healthy_metadata",
+      "queryable": true,
+      "queryability_evidence": "committed_snapshot_quick",
+      "availability": "present",
+      "observation": {
+        "started_at_epoch_ms": 1000,
+        "completed_at_epoch_ms": 1010,
+        "inventory_status": "complete",
+        "unscannable_subtree_count": 0,
+        "control_file_error_count": 0,
+        "change_token_kind": "mtime_ns+ctime_ns",
+        "limitations": [
+          "metadata_not_content_proof",
+          "vector_payload_content_not_verified"
+        ]
+      },
+      "freshness": {
+        "status": "metadata_fresh",
+        "inspection_mode": "quick",
+        "indexed_at_epoch_s": 1,
+        "age_seconds": 0,
+        "added": 0,
+        "changed": 0,
+        "deleted": 0,
+        "metadata_unchanged": 10,
+        "content_verified": 0,
+        "samples": [],
+        "sample_limit": 20,
+        "sampled_total": 0,
+        "evidence_generation": "obs-0001"
+      },
+      "coverage": {
+        "status": "complete",
+        "evidence": "ready_snapshot",
+        "indexed_files": 10,
+        "coverage_skips": 0,
+        "pending_inspection": 0,
+        "pending_retry": 0,
+        "skip_counts": {
+          "too_large": 0,
+          "binary": 0,
+          "unreadable": 0,
+          "unsafe_path": 0,
+          "changed_during_read": 0,
+          "unsupported_encoding": 0
+        },
+        "skip_samples": [],
+        "excluded_counts": {
+          "ignored": 0,
+          "internal": 0,
+          "default_directory": 0,
+          "config_excluded": 0,
+          "unsupported_language": 0,
+          "pruned_directory": 0
+        }
+      },
+      "integrity": {
+        "status": "valid_quick",
+        "manifest": "valid",
+        "sqlite": "valid_quick",
+        "graph": "ready",
+        "graph_stale_reason": "",
+        "vector": "valid_identity_and_size"
+      },
+      "vectors": {
+        "generation": "vectors-0001",
+        "eligible_chunks": 20,
+        "rows": 20,
+        "coverage_ratio": 1,
+        "coverage_evidence": "count_only",
+        "missing_ids": null,
+        "orphan_ids": null,
+        "dimensions": 384
+      },
+      "indexed_embedding": {
+        "status": "valid",
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384,
+        "config_hash": "sha256:indexed",
+        "network_egress_capable": false,
+        "network_egress_evidence": "built_in_hash"
+      },
+      "configured_embedding": {
+        "status": "valid",
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384,
+        "config_hash": "sha256:indexed",
+        "network_egress_capable": false,
+        "network_egress_evidence": "built_in_hash"
+      },
+      "embedding_config_match": true,
+      "refresh": {
+        "required": false,
+        "kind": "none",
+        "reasons": [],
+        "recommended_action": "query"
+      },
+      "writer": {
+        "active": false,
+        "state": "idle",
+        "evidence": "lock_probe"
+      },
+      "diagnostics": []
+    }
+  },
+  "errors": [
+    {
+      "schema_version": 1,
+      "ok": false,
+      "error": {
+        "code": "repo_not_found",
+        "message": "repository root was not found"
+      }
+    },
+    {
+      "schema_version": 1,
+      "ok": false,
+      "error": {
+        "code": "status_failed",
+        "message": "status inspection failed"
+      }
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://context-search-tool.invalid/schemas/p6/acceptance-report-v1.json",
+  "title": "P6 Acceptance Gate Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_kind",
+    "implementation_commit",
+    "production_tree",
+    "inputs",
+    "gates",
+    "conclusion"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "report_kind": {"const": "acceptance"},
+    "implementation_commit": {"$ref": "#/$defs/git"},
+    "production_tree": {"$ref": "#/$defs/git"},
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseline", "final", "paired", "churn"],
+      "properties": {
+        "baseline": {"$ref": "#/$defs/sha"},
+        "final": {"$ref": "#/$defs/sha"},
+        "paired": {"$ref": "#/$defs/sha"},
+        "churn": {"$ref": "#/$defs/sha"}
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registry_coverage",
+        "absolute_large_budgets",
+        "scale_budgets",
+        "churn",
+        "protected_regression"
+      ],
+      "properties": {
+        "registry_coverage": {"const": true},
+        "absolute_large_budgets": {"const": true},
+        "scale_budgets": {"const": true},
+        "churn": {"const": true},
+        "protected_regression": {"const": true}
+      }
+    },
+    "conclusion": {"const": "success"}
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+  }
+}

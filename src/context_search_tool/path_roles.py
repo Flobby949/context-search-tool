@@ -50,7 +50,7 @@ _SPRING_CONFIG_NAME_RE = re.compile(
 )
 _SPRING_LOGGING_CONFIG_RE = re.compile(r"(?:logback|log4j).*\.xml")
 _JAVA_DECLARATION_BOUNDARY_RE = re.compile(
-    r"(?:^[ \t]*|(?<=[;{}:])[ \t]*)",
+    r"(?:^[ \t]*(?=[@A-Za-z_$])|(?<=[;{}:])[ \t]*(?=[@A-Za-z_$]))",
     re.MULTILINE,
 )
 _JAVA_ANNOTATION_RE = re.compile(
@@ -288,6 +288,14 @@ def _has_java_interface_declaration(content: str) -> bool:
 
 
 def _has_java_data_type_declaration(content: str) -> bool:
+    if (
+        "record" not in content
+        and "enum" not in content
+        and not any(
+            annotation in content for annotation in _JAVA_DATA_TYPE_ANNOTATIONS
+        )
+    ):
+        return False
     masked = _mask_java_comments_and_literals(content)
     return any(
         kind in {"record", "enum"} or has_data_type_annotation

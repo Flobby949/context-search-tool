@@ -1,0 +1,310 @@
+{
+  "fixture_schema_version": 1,
+  "success": {
+    "schema_version": 1,
+    "ok": true,
+    "repo": "fixture-repo",
+    "summary": {
+      "operation": "quick_refresh",
+      "outcome": "ready",
+      "verification": "metadata",
+      "observation_generation": "obs-0002",
+      "files": {
+        "direct_dirty": 0,
+        "content_changed": 0,
+        "metadata_only": 0,
+        "dependent_rebuild": 0,
+        "dependent_rebuilds": [],
+        "deleted": 0,
+        "coverage_skips": 0,
+        "parsed": 0
+      },
+      "chunks": {
+        "embedded": 0
+      },
+      "work": {
+        "inventory": {
+          "passes": 2,
+          "entries": 10,
+          "errors": 0,
+          "retryable_skip_attempts": 0
+        },
+        "source": {
+          "bytes_read": 0,
+          "bytes_hashed": 0
+        },
+        "path_index": {
+          "builds": 0,
+          "paths_canonicalized": 0
+        },
+        "graph": {
+          "relations_scanned": 0,
+          "relations_resolved": 0,
+          "association_inputs": 0,
+          "association_writes": 0
+        },
+        "vector": {
+          "bytes_read": 0,
+          "bytes_copied": 0,
+          "bytes_written": 0,
+          "bytes_hashed": 0,
+          "payload_passes": 0,
+          "prior_payload_passes": 0,
+          "prepared_payload_passes": 0,
+          "generations_before": 1,
+          "generations_after": 1,
+          "descriptor_action": "reused"
+        },
+        "maintenance": {
+          "tombstones_before": 0,
+          "tombstones_purged": 0,
+          "tombstones_after": 0,
+          "sqlite_pages_before": 10,
+          "sqlite_pages_after": 10,
+          "sqlite_freelist_before": 0,
+          "sqlite_freelist_after": 0
+        }
+      }
+    },
+    "embedding": {
+      "indexed_before": {
+        "status": "valid",
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384,
+        "config_hash": "sha256:indexed",
+        "network_egress_capable": false,
+        "network_egress_evidence": "built_in_hash"
+      },
+      "configured": {
+        "status": "valid",
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384,
+        "config_hash": "sha256:indexed",
+        "network_egress_capable": false,
+        "network_egress_evidence": "built_in_hash"
+      },
+      "network_egress_performed": false,
+      "embedded_chunks": 0
+    },
+    "index_health": {
+      "schema_version": 1,
+      "health": "healthy_metadata",
+      "queryable": true,
+      "queryability_evidence": "committed_snapshot_quick",
+      "availability": "present",
+      "observation": {
+        "started_at_epoch_ms": 1000,
+        "completed_at_epoch_ms": 1010,
+        "inventory_status": "complete",
+        "unscannable_subtree_count": 0,
+        "control_file_error_count": 0,
+        "change_token_kind": "mtime_ns+ctime_ns",
+        "limitations": [
+          "metadata_not_content_proof",
+          "vector_payload_content_not_verified"
+        ]
+      },
+      "freshness": {
+        "status": "metadata_fresh",
+        "inspection_mode": "quick",
+        "indexed_at_epoch_s": 1,
+        "age_seconds": 0,
+        "added": 0,
+        "changed": 0,
+        "deleted": 0,
+        "metadata_unchanged": 10,
+        "content_verified": 0,
+        "samples": [],
+        "sample_limit": 20,
+        "sampled_total": 0,
+        "evidence_generation": "obs-0002"
+      },
+      "coverage": {
+        "status": "complete",
+        "evidence": "ready_snapshot",
+        "indexed_files": 10,
+        "coverage_skips": 0,
+        "pending_inspection": 0,
+        "pending_retry": 0,
+        "skip_counts": {
+          "too_large": 0,
+          "binary": 0,
+          "unreadable": 0,
+          "unsafe_path": 0,
+          "changed_during_read": 0,
+          "unsupported_encoding": 0
+        },
+        "skip_samples": [],
+        "excluded_counts": {
+          "ignored": 0,
+          "internal": 0,
+          "default_directory": 0,
+          "config_excluded": 0,
+          "unsupported_language": 0,
+          "pruned_directory": 0
+        }
+      },
+      "integrity": {
+        "status": "valid_quick",
+        "manifest": "valid",
+        "sqlite": "valid_quick",
+        "graph": "ready",
+        "graph_stale_reason": "",
+        "vector": "valid_identity_and_size"
+      },
+      "vectors": {
+        "generation": "vectors-0001",
+        "eligible_chunks": 20,
+        "rows": 20,
+        "coverage_ratio": 1,
+        "coverage_evidence": "count_only",
+        "missing_ids": null,
+        "orphan_ids": null,
+        "dimensions": 384
+      },
+      "indexed_embedding": {
+        "status": "valid",
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384,
+        "config_hash": "sha256:indexed",
+        "network_egress_capable": false,
+        "network_egress_evidence": "built_in_hash"
+      },
+      "configured_embedding": {
+        "status": "valid",
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384,
+        "config_hash": "sha256:indexed",
+        "network_egress_capable": false,
+        "network_egress_evidence": "built_in_hash"
+      },
+      "embedding_config_match": true,
+      "refresh": {
+        "required": false,
+        "kind": "none",
+        "reasons": [],
+        "recommended_action": "query"
+      },
+      "writer": {
+        "active": false,
+        "state": "idle",
+        "evidence": "lock_probe"
+      },
+      "diagnostics": []
+    }
+  },
+  "errors": [
+    {
+      "schema_version": 1,
+      "ok": false,
+      "error": {
+        "code": "repo_not_found",
+        "message": "repo not found failure",
+        "network_egress_outcome": "not_attempted"
+      }
+    },
+    {
+      "schema_version": 1,
+      "ok": false,
+      "error": {
+        "code": "missing_index",
+        "message": "missing index failure",
+        "network_egress_outcome": "not_attempted"
+      }
+    },
+    {
+      "schema_version": 1,
+      "ok": false,
+      "error": {
+        "code": "incompatible_manifest_schema",
+        "message": "incompatible manifest schema failure",
+        "network_egress_outcome": "not_attempted"
+      }
+    },
+    {
+      "schema_version": 1,
+      "ok": false,
+      "error": {
+        "code": "incompatible_operational_schema",
+        "message": "incompatible operational schema failure",
+        "network_egress_outcome": "not_attempted"
+      }
+    },
+    {
+      "schema_version": 1,
+      "ok": false,
+      "error": {
+        "code": "incompatible_signal_schema",
+        "message": "incompatible signal schema failure",
+        "network_egress_outcome": "not_attempted"
+      }
+    },
+    {
+      "schema_version": 1,
+      "ok": false,
+      "error": {
+        "code": "index_busy",
+        "message": "index busy failure",
+        "network_egress_outcome": "not_attempted"
+      }
+    },
+    {
+      "schema_version": 1,
+      "ok": false,
+      "error": {
+        "code": "authoritative_index_required",
+        "message": "authoritative index required failure",
+        "network_egress_outcome": "not_attempted"
+      }
+    },
+    {
+      "schema_version": 1,
+      "ok": false,
+      "error": {
+        "code": "inventory_incomplete",
+        "message": "inventory incomplete failure",
+        "network_egress_outcome": "not_attempted"
+      }
+    },
+    {
+      "schema_version": 1,
+      "ok": false,
+      "error": {
+        "code": "workspace_changed",
+        "message": "workspace changed failure",
+        "network_egress_outcome": "not_attempted"
+      }
+    },
+    {
+      "schema_version": 1,
+      "ok": false,
+      "error": {
+        "code": "refresh_failed",
+        "message": "refresh failed before provider request",
+        "network_egress_outcome": "not_attempted"
+      }
+    },
+    {
+      "schema_version": 1,
+      "ok": false,
+      "error": {
+        "code": "refresh_failed",
+        "message": "refresh failed after provider request",
+        "network_egress_outcome": "possible"
+      }
+    },
+    {
+      "schema_version": 1,
+      "ok": false,
+      "error": {
+        "code": "refresh_failed",
+        "message": "refresh failed after provider response",
+        "network_egress_outcome": "performed"
+      }
+    }
+  ]
+}

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 import sqlite3
+import stat
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from context_search_tool.graph_contract import (
     EDGE_QUERY_LIMIT,
@@ -26,16 +29,21 @@ from context_search_tool.graph_lifecycle import (
     GRAPH_RESOLUTION_STATE_KEY,
     GRAPH_RESOLUTION_VERSION_KEY,
     GRAPH_STALE_REASON_KEY,
+    OPERATIONAL_SCHEMA_VERSION_KEY,
     PROJECT_UNIT_TOPOLOGY_FINGERPRINT_KEY,
     SIGNAL_SCHEMA_VERSION_KEY,
     GraphCapability,
     GraphIntegrityError,
     GraphIntegrityResult,
+    IncompatibleOperationalSchemaError,
     IncompatibleSignalSchemaError,
     IndexBusyError,
+    OperationalIntegrityError,
+    TARGET_OPERATIONAL_SCHEMA_VERSION,
     TARGET_GRAPH_RESOLUTION_VERSION,
     TARGET_SIGNAL_SCHEMA_VERSION,
     read_graph_capability,
+    read_operational_capability,
 )
 from context_search_tool.models import (
     CodeRelation,
@@ -48,13 +56,257 @@ from context_search_tool.models import (
 
 logger = logging.getLogger(__name__)
 _DIRECT_TEXT_CJK_SEQUENCE_RE = re.compile(r"[㐀-鿿]{2,}")
+_SIGNAL_SQL_SAFE_TOKEN_RE = re.compile(r"[a-z0-9_./:$-]+")
 _DEFAULT_BUSY_TIMEOUT_MS = 5_000
+MAX_V5_FILE_WRITE_BATCH_SIZE = 64
+_ACTIVE_EMBEDDING_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_chunks_embedding_active
+ON chunks(embedding_id)
+WHERE deleted_at IS NULL AND embedding_id IS NOT NULL
+"""
 _RESOLVED_STATES = ("resolved_exact", "resolved_unique")
 PRODUCER_RESOLUTION_GENERATION_KEY = "graph_producer_resolution_generation"
 TEST_ASSOCIATION_SOURCE_GENERATION_KEY = (
     "graph_test_association_source_generation"
 )
 FILE_WRITE_IN_PROGRESS_KEY = "graph_file_write_in_progress"
+_OPERATIONAL_INDEX_CONFIG_HASH_KEY = "operational_index_config_hash"
+_OPERATIONAL_CONTENT_FINGERPRINT_KEY = "operational_content_fingerprint"
+_OPERATIONAL_OBSERVATION_FINGERPRINT_KEY = "operational_observation_fingerprint"
+_OPERATIONAL_OBSERVATION_GENERATION_KEY = "operational_observation_generation"
+_OPERATIONAL_MANIFEST_SCHEMA_KEY = "operational_manifest_schema_version"
+_OPERATIONAL_MANIFEST_GENERATION_KEY = "operational_manifest_generation"
+_OPERATIONAL_MANIFEST_SHA256_KEY = "operational_manifest_sha256"
+_OPERATIONAL_DESCRIPTOR_SCHEMA_KEY = "operational_descriptor_schema_version"
+_OPERATIONAL_VECTOR_GENERATION_KEY = "operational_vector_generation"
+_OPERATIONAL_DESCRIPTOR_SHA256_KEY = "operational_descriptor_sha256"
+_OPERATIONAL_VECTOR_BYTES_KEY = "operational_vector_bytes"
+_OPERATIONAL_VECTOR_IDS_BYTES_KEY = "operational_vector_ids_bytes"
+_OPERATIONAL_INDEXED_AT_KEY = "operational_indexed_at_epoch_s"
+_OPERATIONAL_MODE_KEY = "operational_operation_mode"
+_OPERATIONAL_WORK_METRICS_KEY = "operational_work_metrics"
+_OPERATIONAL_SOURCE_COUNT_KEY = "operational_source_count"
+_OPERATIONAL_CHUNK_COUNT_KEY = "operational_chunk_count"
+_OPERATIONAL_EMBEDDING_IDS_SHA256_KEY = "operational_embedding_ids_sha256"
+_OPERATIONAL_SQLITE_CHANGE_COUNTER_KEY = "operational_sqlite_change_counter"
+_OPERATION_MODES = frozenset({"index", "authoritative_index", "quick_refresh"})
+_WORK_STRING_METRICS = {
+    "vector.descriptor_action": frozenset({"reused", "published"}),
+}
+_SCAN_SKIP_REASONS = frozenset(
+    {
+        "too_large",
+        "binary",
+        "unreadable",
+        "unsafe_path",
+        "changed_during_read",
+        "unsupported_encoding",
+    }
+)
+_CHANGE_TOKEN_KINDS = frozenset(
+    {
+        "ctime_ns",
+        "stat_fallback",
+        "unavailable",
+        "mtime_ns+ctime_ns",
+        "mtime_ns",
+        "platform_specific",
+    }
+)
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_GENERATION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+_WORK_METRIC_RE = re.compile(r"[a-z][a-z0-9_.]*\Z")
+_MAX_WORK_METRICS = 128
+_TOMBSTONE_THRESHOLD_MINIMUM = 5_000
+
+
+@dataclass(frozen=True)
+class RawSQLiteSchemaVersions:
+    status: Literal["missing", "valid", "invalid"]
+    operational_version: int | None
+    graph_version: int | None
+    error_code: str | None
+
+
+@dataclass(frozen=True)
+class OperationalSourceObservation:
+    path: Path
+    language: str
+    sha256: str
+    size: int
+    mtime_ns: int
+    change_token: int | str | None
+    change_token_kind: str
+    observation_generation: int
+
+
+@dataclass(frozen=True)
+class OperationalScanSkip:
+    path: Path
+    reason: str
+    language: str | None
+    size: int | None
+    mtime_ns: int | None
+    change_token: int | str | None
+    change_token_kind: str
+    retryable: bool
+    first_observation_generation: int
+    last_observation_generation: int
+    last_retry_generation: int | None
+    metadata: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class OperationalControlObservation:
+    path: Path
+    sha256: str
+    size: int
+    mtime_ns: int
+    change_token: int | str | None
+    change_token_kind: str
+    observation_generation: int
+
+
+@dataclass(frozen=True)
+class OperationalReadyBinding:
+    index_config_hash: str
+    source_content_fingerprint: str
+    source_observation_fingerprint: str
+    observation_generation: int
+    manifest_schema_version: int
+    manifest_generation: str
+    manifest_sha256: str
+    vector_descriptor_schema_version: int
+    vector_generation: str
+    vector_descriptor_sha256: str
+    vector_bytes: int
+    vector_ids_bytes: int
+    indexed_at_epoch_s: int
+    operation_mode: str
+    work_metrics: tuple[tuple[str, int | str], ...]
+
+
+@dataclass(frozen=True)
+class ReadyVectorBinding:
+    descriptor_schema_version: int
+    generation: str
+    descriptor_sha256: str
+    vector_bytes: int
+    vector_ids_bytes: int
+    row_count: int
+
+
+@dataclass(frozen=True)
+class OperationalReadyIdentity:
+    operational_version: int
+    graph_version: int
+    graph_status: str
+    graph_stale_reason: str
+    binding: OperationalReadyBinding
+    sqlite_change_counter: int
+    sqlite_change_counter_bound: bool
+
+
+@dataclass(frozen=True)
+class OperationalSnapshot:
+    operational_version: int
+    graph_version: int
+    graph_status: str
+    graph_stale_reason: str
+    binding: OperationalReadyBinding
+    source_observations: tuple[OperationalSourceObservation, ...]
+    scan_skips: tuple[OperationalScanSkip, ...]
+    control_observations: tuple[OperationalControlObservation, ...]
+    active_embedding_ids: tuple[str, ...]
+    source_count: int
+    chunk_count: int
+    tombstone_count: int
+    sqlite_change_counter: int
+    sqlite_change_counter_bound: bool
+
+    @property
+    def ready_identity(self) -> OperationalReadyIdentity:
+        return OperationalReadyIdentity(
+            operational_version=self.operational_version,
+            graph_version=self.graph_version,
+            graph_status=self.graph_status,
+            graph_stale_reason=self.graph_stale_reason,
+            binding=self.binding,
+            sqlite_change_counter=self.sqlite_change_counter,
+            sqlite_change_counter_bound=self.sqlite_change_counter_bound,
+        )
+
+
+def inspect_raw_sqlite_schema_versions(
+    db_path: Path,
+) -> RawSQLiteSchemaVersions:
+    if db_path.is_symlink():
+        return RawSQLiteSchemaVersions("invalid", None, None, "unsafe_sqlite")
+    if not db_path.exists():
+        return RawSQLiteSchemaVersions("missing", None, None, "missing_index")
+    try:
+        path_stat = db_path.lstat()
+    except OSError:
+        return RawSQLiteSchemaVersions("invalid", None, None, "unreadable_sqlite")
+    if not stat.S_ISREG(path_stat.st_mode):
+        return RawSQLiteSchemaVersions("invalid", None, None, "unsafe_sqlite")
+
+    connection: sqlite3.Connection | None = None
+    try:
+        uri = f"{db_path.resolve(strict=True).as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=0)
+        connection.execute("PRAGMA query_only = ON")
+        table = connection.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'index_metadata'
+            """
+        ).fetchone()
+        if table is None:
+            return RawSQLiteSchemaVersions("valid", None, None, None)
+        rows = connection.execute(
+            """
+            SELECT key, value
+            FROM index_metadata
+            WHERE key IN (?, ?)
+            """,
+            (OPERATIONAL_SCHEMA_VERSION_KEY, SIGNAL_SCHEMA_VERSION_KEY),
+        ).fetchall()
+    except (OSError, sqlite3.DatabaseError):
+        return RawSQLiteSchemaVersions("invalid", None, None, "malformed_sqlite")
+    finally:
+        if connection is not None:
+            connection.close()
+    values = {str(key): value for key, value in rows}
+    operational, operational_error = _parse_raw_schema_version(
+        values.get(OPERATIONAL_SCHEMA_VERSION_KEY),
+        "invalid_operational_schema",
+    )
+    if operational_error is not None:
+        return RawSQLiteSchemaVersions("invalid", None, None, operational_error)
+    graph, graph_error = _parse_raw_schema_version(
+        values.get(SIGNAL_SCHEMA_VERSION_KEY),
+        "invalid_graph_schema",
+    )
+    if graph_error is not None:
+        return RawSQLiteSchemaVersions("invalid", operational, None, graph_error)
+    return RawSQLiteSchemaVersions("valid", operational, graph, None)
+
+
+def _parse_raw_schema_version(
+    raw: object,
+    error_code: str,
+) -> tuple[int | None, str | None]:
+    if raw is None or raw == "":
+        return None, None
+    try:
+        version = int(raw)
+    except (TypeError, ValueError):
+        return None, error_code
+    if version < 0 or str(version) != str(raw):
+        return None, error_code
+    return version, None
 
 
 class SQLiteStore:
@@ -69,6 +321,670 @@ class SQLiteStore:
                 *_v4_graph_schema_statements(),
             ):
                 connection.execute(statement)
+
+    def initialize_operational_schema_v1(
+        self,
+        *,
+        before_commit: Callable[[], None] | None = None,
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> None:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            capability = read_operational_capability(
+                _ConnectionMetadataReader(connection)
+            )
+            if capability.status == "current":
+                connection.execute("BEGIN IMMEDIATE")
+                for statement in _operational_schema_v1_statements():
+                    connection.execute(statement)
+                connection.commit()
+                _require_operational_schema_v1(connection)
+                return
+            connection.execute("BEGIN IMMEDIATE")
+            capability = read_operational_capability(
+                _ConnectionMetadataReader(connection)
+            )
+            if capability.status == "current":
+                for statement in _operational_schema_v1_statements():
+                    connection.execute(statement)
+                connection.commit()
+                _require_operational_schema_v1(connection)
+                return
+            for statement in _common_schema_statements():
+                connection.execute(statement)
+            _add_column_if_missing(
+                connection,
+                "source_files",
+                "change_token",
+                "TEXT",
+            )
+            _add_column_if_missing(
+                connection,
+                "source_files",
+                "change_token_kind",
+                "TEXT NOT NULL DEFAULT 'unavailable'",
+            )
+            _add_column_if_missing(
+                connection,
+                "source_files",
+                "observation_generation",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            for statement in _operational_schema_v1_statements():
+                connection.execute(statement)
+            if before_commit is not None:
+                before_commit()
+            connection.commit()
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
+
+    def replace_operational_observations(
+        self,
+        *,
+        observation_generation: int,
+        source_observations: tuple[OperationalSourceObservation, ...],
+        scan_skips: tuple[OperationalScanSkip, ...],
+        control_observations: tuple[OperationalControlObservation, ...] = (),
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> None:
+        if type(observation_generation) is not int or observation_generation < 0:
+            raise ValueError("observation generation must be non-negative")
+        sources = _validate_source_observations(
+            source_observations,
+            observation_generation,
+        )
+        skips = _validate_scan_skips(scan_skips, observation_generation)
+        controls = _validate_control_observations(
+            control_observations,
+            observation_generation,
+        )
+        source_paths = {_path_key(item.path) for item in sources}
+        if source_paths & {_path_key(item.path) for item in skips}:
+            raise ValueError("source and scan-skip paths must not overlap")
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            read_operational_capability(_ConnectionMetadataReader(connection))
+            _require_operational_schema_v1(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            read_operational_capability(_ConnectionMetadataReader(connection))
+            _require_operational_schema_v1(connection)
+            persisted_paths = {
+                str(row["path"])
+                for row in connection.execute(
+                    "SELECT path FROM source_files ORDER BY path"
+                ).fetchall()
+            }
+            if persisted_paths != source_paths:
+                raise OperationalIntegrityError(
+                    "operational source observations do not match source files"
+                )
+            for item in sources:
+                connection.execute(
+                    """
+                    UPDATE source_files
+                    SET language = ?, sha256 = ?, size = ?, mtime_ns = ?,
+                        change_token = ?, change_token_kind = ?,
+                        observation_generation = ?
+                    WHERE path = ?
+                    """,
+                    (
+                        item.language,
+                        item.sha256,
+                        item.size,
+                        item.mtime_ns,
+                        _encode_change_token(item.change_token),
+                        item.change_token_kind,
+                        item.observation_generation,
+                        _path_key(item.path),
+                    ),
+                )
+            connection.execute("DELETE FROM scan_skips")
+            for item in skips:
+                connection.execute(
+                    """
+                    INSERT INTO scan_skips (
+                        path, reason, language, size, mtime_ns, change_token,
+                        change_token_kind, retryable, metadata,
+                        first_observation_generation,
+                        last_observation_generation, last_retry_generation
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _path_key(item.path),
+                        item.reason,
+                        item.language,
+                        item.size,
+                        item.mtime_ns,
+                        _encode_change_token(item.change_token),
+                        item.change_token_kind,
+                        int(item.retryable),
+                        _canonical_json(dict(item.metadata)),
+                        item.first_observation_generation,
+                        item.last_observation_generation,
+                        item.last_retry_generation,
+                    ),
+                )
+            connection.execute("DELETE FROM operational_controls")
+            for item in controls:
+                connection.execute(
+                    """
+                    INSERT INTO operational_controls (
+                        path, sha256, size, mtime_ns, change_token,
+                        change_token_kind, observation_generation
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _path_key(item.path),
+                        item.sha256,
+                        item.size,
+                        item.mtime_ns,
+                        _encode_change_token(item.change_token),
+                        item.change_token_kind,
+                        item.observation_generation,
+                    ),
+                )
+            connection.commit()
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
+
+    def select_retryable_scan_skips(
+        self,
+        *,
+        limit: int,
+        retry_generation: int,
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> tuple[OperationalScanSkip, ...]:
+        if type(limit) is not int or limit < 0:
+            raise ValueError("retry limit must be non-negative")
+        if type(retry_generation) is not int or retry_generation < 0:
+            raise ValueError("retry generation must be non-negative")
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            read_operational_capability(_ConnectionMetadataReader(connection))
+            _require_operational_schema_v1(connection)
+            if limit == 0:
+                return ()
+            connection.execute("BEGIN IMMEDIATE")
+            read_operational_capability(_ConnectionMetadataReader(connection))
+            _require_operational_schema_v1(connection)
+            rows = connection.execute(
+                """
+                SELECT path, reason, language, size, mtime_ns, change_token,
+                       change_token_kind, retryable, metadata,
+                       first_observation_generation,
+                       last_observation_generation, last_retry_generation
+                FROM scan_skips
+                WHERE retryable = 1
+                ORDER BY
+                    CASE WHEN last_retry_generation IS NULL THEN 0 ELSE 1 END,
+                    last_retry_generation,
+                    first_observation_generation,
+                    path
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            paths = [str(row["path"]) for row in rows]
+            if paths:
+                connection.executemany(
+                    """
+                    UPDATE scan_skips
+                    SET last_retry_generation = ?
+                    WHERE path = ?
+                    """,
+                    [(retry_generation, path) for path in paths],
+                )
+            connection.commit()
+            return tuple(
+                _scan_skip_from_row(row, retry_generation=retry_generation)
+                for row in rows
+            )
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
+
+    def read_operational_snapshot(self) -> OperationalSnapshot | None:
+        if not self.db_path.exists():
+            return None
+        connection = _open_connection(self.db_path, _DEFAULT_BUSY_TIMEOUT_MS)
+        try:
+            connection.execute("BEGIN")
+            capability = read_operational_capability(
+                _ConnectionMetadataReader(connection)
+            )
+            if capability.status == "legacy":
+                return None
+            _require_operational_schema_v1(connection)
+            binding = _read_operational_binding(connection)
+            sources, skips, controls = _read_operational_observations(connection)
+            _validate_bound_operational_observations(
+                binding,
+                sources,
+                skips,
+                controls,
+            )
+            graph = read_graph_capability(_ConnectionMetadataReader(connection))
+            source_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) AS count FROM source_files"
+                ).fetchone()["count"]
+            )
+            chunk_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) AS count FROM chunks WHERE deleted_at IS NULL"
+                ).fetchone()["count"]
+            )
+            tombstone_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) AS count FROM chunks WHERE deleted_at IS NOT NULL"
+                ).fetchone()["count"]
+            )
+            embedding_ids = tuple(
+                sorted(
+                    str(row["embedding_id"])
+                    for row in connection.execute(
+                        """
+                        SELECT embedding_id
+                        FROM chunks
+                        WHERE deleted_at IS NULL AND embedding_id IS NOT NULL
+                        ORDER BY embedding_id
+                        """
+                    ).fetchall()
+                )
+            )
+            _validate_bound_counts(
+                connection,
+                source_count=source_count,
+                chunk_count=chunk_count,
+                embedding_ids=embedding_ids,
+            )
+            change_counter, change_counter_bound = _sqlite_change_counter_state(
+                connection,
+                self.db_path,
+            )
+            return OperationalSnapshot(
+                operational_version=capability.schema_version,
+                graph_version=graph.schema_version,
+                graph_status=graph.status,
+                graph_stale_reason=graph.stale_reason,
+                binding=binding,
+                source_observations=sources,
+                scan_skips=skips,
+                control_observations=controls,
+                active_embedding_ids=embedding_ids,
+                source_count=source_count,
+                chunk_count=chunk_count,
+                tombstone_count=tombstone_count,
+                sqlite_change_counter=change_counter,
+                sqlite_change_counter_bound=change_counter_bound,
+            )
+        finally:
+            if connection.in_transaction:
+                connection.rollback()
+            connection.close()
+
+    def read_operational_ready_identity(self) -> OperationalReadyIdentity | None:
+        """Read only the bound identity needed by a closing status fence."""
+        if not self.db_path.exists():
+            return None
+        connection = _open_connection(self.db_path, _DEFAULT_BUSY_TIMEOUT_MS)
+        try:
+            connection.execute("BEGIN")
+            capability = read_operational_capability(
+                _ConnectionMetadataReader(connection)
+            )
+            if capability.status == "legacy":
+                return None
+            _require_operational_schema_v1(connection)
+            binding = _read_operational_binding(connection)
+            graph = read_graph_capability(_ConnectionMetadataReader(connection))
+            change_counter, change_counter_bound = _sqlite_change_counter_state(
+                connection,
+                self.db_path,
+            )
+            return OperationalReadyIdentity(
+                operational_version=capability.schema_version,
+                graph_version=graph.schema_version,
+                graph_status=graph.status,
+                graph_stale_reason=graph.stale_reason,
+                binding=binding,
+                sqlite_change_counter=change_counter,
+                sqlite_change_counter_bound=change_counter_bound,
+            )
+        finally:
+            if connection.in_transaction:
+                connection.rollback()
+            connection.close()
+
+    def commit_operational_ready_v1(
+        self,
+        *,
+        binding: OperationalReadyBinding,
+        topology_fingerprint: str,
+        expected_embedding_ids: set[str],
+        expected_source_count: int,
+        expected_chunk_count: int,
+        external_validator: Callable[[], None],
+        graph_snapshot_unchanged: bool = False,
+        tombstone_purge_limit: int = 0,
+        before_commit: Callable[[], None] | None = None,
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> GraphIntegrityResult:
+        normalized_binding = _validate_operational_binding(binding)
+        if normalized_binding != binding:
+            raise ValueError("operational work metrics must be canonical")
+        if not re.fullmatch(r"[0-9a-f]{64}", topology_fingerprint):
+            raise ValueError("topology fingerprint must be a full SHA-256")
+        if type(tombstone_purge_limit) is not int or tombstone_purge_limit < 0:
+            raise ValueError("tombstone purge limit must be non-negative")
+        if type(expected_source_count) is not int or expected_source_count < 0:
+            raise ValueError("expected source count must be non-negative")
+        if type(expected_chunk_count) is not int or expected_chunk_count < 0:
+            raise ValueError("expected chunk count must be non-negative")
+        if type(graph_snapshot_unchanged) is not bool:
+            raise ValueError("graph snapshot state must be boolean")
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            read_operational_capability(_ConnectionMetadataReader(connection))
+            _require_target_schema(connection)
+            _require_operational_schema_v1(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            read_operational_capability(_ConnectionMetadataReader(connection))
+            _require_target_schema(connection)
+            _require_operational_schema_v1(connection)
+            integrity = GraphIntegrityResult()
+            if not graph_snapshot_unchanged:
+                integrity = _graph_integrity(connection)
+                if not integrity.ok:
+                    raise GraphIntegrityError("graph integrity check failed")
+                _validate_v5_snapshot(
+                    connection,
+                    expected_embedding_ids=expected_embedding_ids,
+                    expected_source_count=expected_source_count,
+                    expected_chunk_count=expected_chunk_count,
+                    expected_producer_resolution_generation=None,
+                )
+            sources, skips, controls = _read_operational_observations(connection)
+            _validate_bound_operational_observations(
+                binding,
+                sources,
+                skips,
+                controls,
+            )
+            external_validator()
+            if tombstone_purge_limit:
+                self._purge_tombstones(connection, tombstone_purge_limit)
+            now = _now()
+            next_change_counter = (
+                _sqlite_change_counter(self.db_path) + 1
+            ) & 0xFFFFFFFF
+            _write_operational_binding(
+                connection,
+                binding,
+                source_count=expected_source_count,
+                chunk_count=expected_chunk_count,
+                embedding_ids=tuple(sorted(expected_embedding_ids)),
+                sqlite_change_counter=next_change_counter,
+                now=now,
+            )
+            _set_metadata_row(
+                connection,
+                PROJECT_UNIT_TOPOLOGY_FINGERPRINT_KEY,
+                topology_fingerprint,
+                now,
+            )
+            _set_metadata_row(
+                connection,
+                GRAPH_RESOLUTION_VERSION_KEY,
+                str(TARGET_GRAPH_RESOLUTION_VERSION),
+                now,
+            )
+            _set_metadata_row(connection, GRAPH_STALE_REASON_KEY, "", now)
+            _set_metadata_row(connection, FULL_REINDEX_REQUIRED_KEY, "0", now)
+            _set_metadata_row(connection, "indexed_at", str(binding.indexed_at_epoch_s), now)
+            _set_metadata_row(
+                connection,
+                OPERATIONAL_SCHEMA_VERSION_KEY,
+                str(TARGET_OPERATIONAL_SCHEMA_VERSION),
+                now,
+            )
+            _set_metadata_row(connection, GRAPH_RESOLUTION_STATE_KEY, "ready", now)
+            if before_commit is not None:
+                before_commit()
+            connection.commit()
+            return integrity
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
+
+    def _purge_tombstones(
+        self,
+        connection: sqlite3.Connection,
+        limit: int,
+    ) -> int:
+        if limit <= 0:
+            return 0
+        changes_before = connection.total_changes
+        relation_budget = limit
+
+        counts = _maintenance_counts(connection)
+        association_limit = _maintenance_purge_count(
+            active_rows=counts["active_associations"],
+            deleted_rows=counts["orphan_associations"],
+            limit=relation_budget,
+        )
+        if association_limit:
+            association_rows = connection.execute(
+                """
+                SELECT relation_id
+                FROM code_relations
+                WHERE producer = 'test_association'
+                  AND deleted_at IS NOT NULL
+                ORDER BY deleted_at, relation_id
+                LIMIT ?
+                """,
+                (association_limit,),
+            ).fetchall()
+            association_ids = [
+                str(row["relation_id"]) for row in association_rows
+            ]
+            if association_ids:
+                connection.execute(
+                    _in_query(
+                        "DELETE FROM code_relations "
+                        "WHERE relation_id IN ({placeholders})",
+                        association_ids,
+                    ),
+                    association_ids,
+                )
+                relation_budget -= len(association_ids)
+
+        counts = _maintenance_counts(connection)
+        relation_limit = _maintenance_purge_count(
+            active_rows=counts["active_relations"],
+            deleted_rows=counts["deleted_relations"],
+            limit=relation_budget,
+        )
+        if relation_limit:
+            relation_rows = connection.execute(
+                """
+                SELECT relation_id
+                FROM code_relations
+                WHERE deleted_at IS NOT NULL
+                ORDER BY deleted_at, relation_id
+                LIMIT ?
+                """,
+                (relation_limit,),
+            ).fetchall()
+            relation_ids = [str(row["relation_id"]) for row in relation_rows]
+            if relation_ids:
+                connection.execute(
+                    _in_query(
+                        "DELETE FROM code_relations "
+                        "WHERE relation_id IN ({placeholders})",
+                        relation_ids,
+                    ),
+                    relation_ids,
+                )
+
+        counts = _maintenance_counts(connection)
+        signal_limit = _maintenance_purge_count(
+            active_rows=counts["active_signals"],
+            deleted_rows=counts["deleted_signals"],
+            limit=limit,
+        )
+        if signal_limit:
+            signal_rows = connection.execute(
+                """
+                SELECT signal_id
+                FROM code_signals
+                WHERE deleted_at IS NOT NULL
+                ORDER BY deleted_at, signal_id
+                LIMIT ?
+                """,
+                (signal_limit,),
+            ).fetchall()
+            signal_ids = [str(row["signal_id"]) for row in signal_rows]
+            if signal_ids:
+                placeholders = ", ".join("?" for _ in signal_ids)
+                connection.execute(
+                    f"""
+                        DELETE FROM code_relations
+                        WHERE deleted_at IS NOT NULL
+                          AND (
+                            source_signal_id IN ({placeholders})
+                            OR target_signal_id IN ({placeholders})
+                          )
+                        """,
+                    (*signal_ids, *signal_ids),
+                )
+                connection.execute(
+                    _in_query(
+                        "DELETE FROM code_signals "
+                        "WHERE signal_id IN ({placeholders})",
+                        signal_ids,
+                    ),
+                    signal_ids,
+                )
+
+        counts = _maintenance_counts(connection)
+        chunk_limit = _maintenance_purge_count(
+            active_rows=counts["active_chunks"],
+            deleted_rows=counts["deleted_chunks"],
+            limit=limit,
+        )
+        if chunk_limit:
+            rows = connection.execute(
+                """
+                SELECT chunk_id
+                FROM chunks
+                WHERE deleted_at IS NOT NULL
+                ORDER BY deleted_at, chunk_id
+                LIMIT ?
+                """,
+                (chunk_limit,),
+            ).fetchall()
+            chunk_ids = [str(row["chunk_id"]) for row in rows]
+            if chunk_ids:
+                signal_rows = connection.execute(
+                    _in_query(
+                        """
+                        SELECT signal_id FROM code_signals
+                        WHERE chunk_id IN ({placeholders})
+                        """,
+                        chunk_ids,
+                    ),
+                    chunk_ids,
+                ).fetchall()
+                signal_ids = [str(row["signal_id"]) for row in signal_rows]
+                self._delete_search_payloads(connection, chunk_ids)
+                connection.execute(
+                    _in_query(
+                        "DELETE FROM code_relations "
+                        "WHERE deleted_at IS NOT NULL "
+                        "AND source_chunk_id IN ({placeholders})",
+                        chunk_ids,
+                    ),
+                    chunk_ids,
+                )
+                if signal_ids:
+                    connection.execute(
+                        _in_query(
+                            "DELETE FROM code_relations "
+                            "WHERE deleted_at IS NOT NULL "
+                            "AND target_signal_id IN ({placeholders})",
+                            signal_ids,
+                        ),
+                        signal_ids,
+                    )
+                connection.execute(
+                    _in_query(
+                        "DELETE FROM code_signals "
+                        "WHERE deleted_at IS NOT NULL "
+                        "AND chunk_id IN ({placeholders})",
+                        chunk_ids,
+                    ),
+                    chunk_ids,
+                )
+                connection.execute(
+                    _in_query(
+                        "DELETE FROM chunks WHERE chunk_id IN ({placeholders})",
+                        chunk_ids,
+                    ),
+                    chunk_ids,
+                )
+
+        counts = _maintenance_counts(connection)
+        symbol_limit = _maintenance_purge_count(
+            active_rows=counts["active_symbols"],
+            deleted_rows=counts["orphan_symbols"],
+            limit=limit,
+        )
+        if symbol_limit:
+            symbol_rows = connection.execute(
+                """
+                SELECT symbols.symbol_id
+                FROM symbols
+                LEFT JOIN chunk_symbols
+                  ON chunk_symbols.symbol_id = symbols.symbol_id
+                WHERE chunk_symbols.symbol_id IS NULL
+                ORDER BY symbols.symbol_id
+                LIMIT ?
+                """,
+                (symbol_limit,),
+            ).fetchall()
+            symbol_ids = [int(row["symbol_id"]) for row in symbol_rows]
+            if symbol_ids:
+                connection.execute(
+                    _in_query(
+                        "DELETE FROM symbols WHERE symbol_id IN ({placeholders})",
+                        symbol_ids,
+                    ),
+                    symbol_ids,
+                )
+
+        return connection.total_changes - changes_before
 
     def inspect_signal_schema_version(self) -> int:
         if not self.db_path.exists():
@@ -574,36 +1490,125 @@ class SQLiteStore:
     def finish_v5_file_write(self, file: SourceFile) -> None:
         with self._connect() as connection:
             _require_target_schema(connection)
-            current = _metadata_value(connection, FILE_WRITE_IN_PROGRESS_KEY)
-            if current != _path_key(file.path):
-                raise GraphIntegrityError("file write marker mismatch")
-            connection.execute(
-                """
-                INSERT INTO source_files (
-                    path, language, sha256, size, mtime_ns,
-                    is_generated, is_test, metadata
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(path) DO UPDATE SET
-                    language = excluded.language,
-                    sha256 = excluded.sha256,
-                    size = excluded.size,
-                    mtime_ns = excluded.mtime_ns,
-                    is_generated = excluded.is_generated,
-                    is_test = excluded.is_test,
-                    metadata = excluded.metadata
-                """,
-                (
-                    _path_key(file.path),
-                    file.language,
-                    file.sha256,
-                    file.size,
-                    file.mtime_ns,
-                    int(file.is_generated),
-                    int(file.is_test),
-                    _to_json(file.metadata),
-                ),
+            self._finish_v5_file_write_in_connection(
+                connection,
+                file,
+                clear_marker=True,
             )
+
+    def write_v5_file_batch(
+        self,
+        writes: list[
+            tuple[
+                SourceFile,
+                tuple[DocumentChunk, ...],
+                tuple[CodeSignal, ...],
+                tuple[CodeRelation, ...],
+            ]
+        ],
+        *,
+        after_stage: Callable[[str], None],
+        replace_existing_relations: bool = True,
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> None:
+        if not writes:
+            raise ValueError("v5 file-write batch must not be empty")
+        if len(writes) > MAX_V5_FILE_WRITE_BATCH_SIZE:
+            raise ValueError("v5 file-write batch exceeds the bounded limit")
+        self.set_metadata(
+            FILE_WRITE_IN_PROGRESS_KEY,
+            _path_key(writes[0][0].path),
+        )
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            _require_target_schema(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            for file, chunks, signals, relations in writes:
+                _set_metadata_row(
+                    connection,
+                    FILE_WRITE_IN_PROGRESS_KEY,
+                    _path_key(file.path),
+                    _now(),
+                )
+                after_stage("file_write_started")
+                self._replace_chunks_in_connection(
+                    connection,
+                    file.path,
+                    chunks,
+                )
+                after_stage("chunks_persisted")
+                self._replace_signals_in_connection(
+                    connection,
+                    file.path,
+                    signals,
+                )
+                after_stage("signals_persisted")
+                self._replace_relations_in_connection(
+                    connection,
+                    file.path,
+                    relations,
+                    replace_existing=replace_existing_relations,
+                )
+                after_stage("producer_relations_persisted")
+                self._finish_v5_file_write_in_connection(
+                    connection,
+                    file,
+                    clear_marker=False,
+                )
+                after_stage("source_hash_persisted")
+            _set_metadata_row(
+                connection,
+                FILE_WRITE_IN_PROGRESS_KEY,
+                "",
+                _now(),
+            )
+            connection.commit()
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
+
+    def _finish_v5_file_write_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        file: SourceFile,
+        *,
+        clear_marker: bool,
+    ) -> None:
+        current = _metadata_value(connection, FILE_WRITE_IN_PROGRESS_KEY)
+        if current != _path_key(file.path):
+            raise GraphIntegrityError("file write marker mismatch")
+        connection.execute(
+            """
+            INSERT INTO source_files (
+                path, language, sha256, size, mtime_ns,
+                is_generated, is_test, metadata
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                language = excluded.language,
+                sha256 = excluded.sha256,
+                size = excluded.size,
+                mtime_ns = excluded.mtime_ns,
+                is_generated = excluded.is_generated,
+                is_test = excluded.is_test,
+                metadata = excluded.metadata
+            """,
+            (
+                _path_key(file.path),
+                file.language,
+                file.sha256,
+                file.size,
+                file.mtime_ns,
+                int(file.is_generated),
+                int(file.is_test),
+                _to_json(file.metadata),
+            ),
+        )
+        if clear_marker:
             _set_metadata_row(
                 connection,
                 FILE_WRITE_IN_PROGRESS_KEY,
@@ -717,142 +1722,184 @@ class SQLiteStore:
         return {Path(row["file_path"]) for row in rows}
 
     def replace_chunks(self, file_path: Path, chunks: list[DocumentChunk]) -> None:
+        with self._connect() as connection:
+            self._replace_chunks_in_connection(connection, file_path, chunks)
+
+    def _replace_chunks_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        file_path: Path,
+        chunks: list[DocumentChunk] | tuple[DocumentChunk, ...],
+    ) -> None:
         path = _path_key(file_path)
         deleted_at = _now()
-        with self._connect() as connection:
-            active_ids = self._active_chunk_ids_for_file(connection, path)
-            self._delete_search_payloads(connection, active_ids)
-            if active_ids:
-                connection.executemany(
-                    "UPDATE chunks SET deleted_at = ? WHERE chunk_id = ?",
-                    [(deleted_at, chunk_id) for chunk_id in active_ids],
-                )
+        active_ids = self._active_chunk_ids_for_file(connection, path)
+        self._delete_search_payloads(connection, active_ids)
+        if active_ids:
+            connection.executemany(
+                "UPDATE chunks SET deleted_at = ? WHERE chunk_id = ?",
+                [(deleted_at, chunk_id) for chunk_id in active_ids],
+            )
 
-            incoming_ids = [chunk.chunk_id for chunk in chunks]
-            self._delete_search_payloads(connection, incoming_ids)
+        incoming_ids = [chunk.chunk_id for chunk in chunks]
+        active_id_set = set(active_ids)
+        unchecked_incoming_ids = [
+            chunk_id for chunk_id in incoming_ids if chunk_id not in active_id_set
+        ]
+        existing_incoming_ids = self._existing_chunk_ids(
+            connection,
+            unchecked_incoming_ids,
+        )
+        self._delete_search_payloads(
+            connection,
+            [
+                chunk_id
+                for chunk_id in unchecked_incoming_ids
+                if chunk_id in existing_incoming_ids
+            ],
+        )
 
-            for chunk in chunks:
-                self._insert_chunk(connection, chunk)
+        for chunk in chunks:
+            self._insert_chunk(connection, chunk)
 
     def replace_signals(self, file_path: Path, signals: list[CodeSignal]) -> None:
+        with self._connect() as connection:
+            self._replace_signals_in_connection(connection, file_path, signals)
+
+    def _replace_signals_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        file_path: Path,
+        signals: list[CodeSignal] | tuple[CodeSignal, ...],
+    ) -> None:
         path = _path_key(file_path)
         deleted_at = _now()
-        with self._connect() as connection:
-            if _has_column(connection, "code_signals", "qualified_name"):
-                _replace_signals_v5(
-                    connection,
-                    path,
-                    signals,
-                    deleted_at,
-                )
-                return
+        if _has_column(connection, "code_signals", "qualified_name"):
+            _replace_signals_v5(
+                connection,
+                path,
+                signals,
+                deleted_at,
+            )
+            return
+        connection.execute(
+            """
+            UPDATE code_signals
+            SET deleted_at = ?
+            WHERE file_path = ?
+              AND deleted_at IS NULL
+            """,
+            (deleted_at, path),
+        )
+        for signal in signals:
             connection.execute(
                 """
-                UPDATE code_signals
-                SET deleted_at = ?
-                WHERE file_path = ?
-                  AND deleted_at IS NULL
-                """,
-                (deleted_at, path),
-            )
-            for signal in signals:
-                connection.execute(
-                    """
-                    INSERT INTO code_signals (
-                        signal_id, chunk_id, file_path, kind, name,
-                        start_line, end_line, language, tokens, metadata, deleted_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-                    ON CONFLICT(signal_id) DO UPDATE SET
-                        chunk_id = excluded.chunk_id,
-                        file_path = excluded.file_path,
-                        kind = excluded.kind,
-                        name = excluded.name,
-                        start_line = excluded.start_line,
-                        end_line = excluded.end_line,
-                        language = excluded.language,
-                        tokens = excluded.tokens,
-                        metadata = excluded.metadata,
-                        deleted_at = excluded.deleted_at
-                    """,
-                    (
-                        signal.signal_id,
-                        signal.chunk_id,
-                        _path_key(signal.file_path),
-                        signal.kind,
-                        signal.name,
-                        signal.start_line,
-                        signal.end_line,
-                        signal.language,
-                        _to_json_list(signal.tokens),
-                        _to_json(signal.metadata),
-                    ),
+                INSERT INTO code_signals (
+                    signal_id, chunk_id, file_path, kind, name,
+                    start_line, end_line, language, tokens, metadata, deleted_at
                 )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(signal_id) DO UPDATE SET
+                    chunk_id = excluded.chunk_id,
+                    file_path = excluded.file_path,
+                    kind = excluded.kind,
+                    name = excluded.name,
+                    start_line = excluded.start_line,
+                    end_line = excluded.end_line,
+                    language = excluded.language,
+                    tokens = excluded.tokens,
+                    metadata = excluded.metadata,
+                    deleted_at = excluded.deleted_at
+                """,
+                (
+                    signal.signal_id,
+                    signal.chunk_id,
+                    _path_key(signal.file_path),
+                    signal.kind,
+                    signal.name,
+                    signal.start_line,
+                    signal.end_line,
+                    signal.language,
+                    _to_json_list(signal.tokens),
+                    _to_json(signal.metadata),
+                ),
+            )
 
     def replace_relations(
         self, file_path: Path, relations: list[CodeRelation]
     ) -> None:
+        with self._connect() as connection:
+            self._replace_relations_in_connection(connection, file_path, relations)
+
+    def _replace_relations_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        file_path: Path,
+        relations: list[CodeRelation] | tuple[CodeRelation, ...],
+        *,
+        replace_existing: bool = True,
+    ) -> None:
         path = _path_key(file_path)
         deleted_at = _now()
-        with self._connect() as connection:
-            if _has_column(connection, "code_relations", "resolution"):
-                _replace_relations_v5(
-                    connection,
-                    path,
-                    relations,
-                    deleted_at,
-                )
-                return
-            connection.execute(
+        if _has_column(connection, "code_relations", "resolution"):
+            _replace_relations_v5(
+                connection,
+                path,
+                relations,
+                deleted_at,
+                replace_existing=replace_existing,
+            )
+            return
+        connection.execute(
+            """
+            UPDATE code_relations
+            SET deleted_at = ?
+            WHERE source_file_path = ?
+              AND deleted_at IS NULL
+            """,
+            (deleted_at, path),
+        )
+        for relation in relations:
+            source = connection.execute(
                 """
-                UPDATE code_relations
-                SET deleted_at = ?
-                WHERE source_file_path = ?
+                SELECT chunk_id, file_path
+                FROM code_signals
+                WHERE signal_id = ?
                   AND deleted_at IS NULL
                 """,
-                (deleted_at, path),
-            )
-            for relation in relations:
-                source = connection.execute(
-                    """
-                    SELECT chunk_id, file_path
-                    FROM code_signals
-                    WHERE signal_id = ?
-                      AND deleted_at IS NULL
-                    """,
-                    (relation.source_signal_id,),
-                ).fetchone()
-                if source is None:
-                    continue
-                connection.execute(
-                    """
-                    INSERT INTO code_relations (
-                        relation_id, source_signal_id, source_chunk_id,
-                        source_file_path, target_name, kind, confidence,
-                        metadata, deleted_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
-                    ON CONFLICT(relation_id) DO UPDATE SET
-                        source_signal_id = excluded.source_signal_id,
-                        source_chunk_id = excluded.source_chunk_id,
-                        source_file_path = excluded.source_file_path,
-                        target_name = excluded.target_name,
-                        kind = excluded.kind,
-                        confidence = excluded.confidence,
-                        metadata = excluded.metadata,
-                        deleted_at = excluded.deleted_at
-                    """,
-                    (
-                        relation.relation_id,
-                        relation.source_signal_id,
-                        source["chunk_id"],
-                        source["file_path"],
-                        relation.target_name,
-                        relation.kind,
-                        relation.confidence,
-                        _to_json(relation.metadata),
-                    ),
+                (relation.source_signal_id,),
+            ).fetchone()
+            if source is None:
+                continue
+            connection.execute(
+                """
+                INSERT INTO code_relations (
+                    relation_id, source_signal_id, source_chunk_id,
+                    source_file_path, target_name, kind, confidence,
+                    metadata, deleted_at
                 )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(relation_id) DO UPDATE SET
+                    source_signal_id = excluded.source_signal_id,
+                    source_chunk_id = excluded.source_chunk_id,
+                    source_file_path = excluded.source_file_path,
+                    target_name = excluded.target_name,
+                    kind = excluded.kind,
+                    confidence = excluded.confidence,
+                    metadata = excluded.metadata,
+                    deleted_at = excluded.deleted_at
+                """,
+                (
+                    relation.relation_id,
+                    relation.source_signal_id,
+                    source["chunk_id"],
+                    source["file_path"],
+                    relation.target_name,
+                    relation.kind,
+                    relation.confidence,
+                    _to_json(relation.metadata),
+                ),
+            )
 
     def signals_for_chunk(self, chunk_id: str) -> list[CodeSignal]:
         with self._connect() as connection:
@@ -917,13 +1964,16 @@ class SQLiteStore:
                 if _has_column(connection, "code_signals", "recallable")
                 else ""
             )
+            row_filter, row_filter_values = _signal_row_prefilter(normalized)
             rows = connection.execute(
                 f"""
                 SELECT *
                 FROM code_signals
                 WHERE deleted_at IS NULL
                   {legacy_filter}
-                """
+                  {row_filter}
+                """,
+                row_filter_values,
             ).fetchall()
 
         for row in rows:
@@ -1060,7 +2110,8 @@ class SQLiteStore:
                     member_name,
                     limit,
                 )
-            return [self._chunk_from_row(connection, row) for row in rows]
+            chunks_by_id = self._chunks_from_rows(connection, rows)
+            return [chunks_by_id[row["chunk_id"]] for row in rows]
 
     def chunks_matching_signal_or_symbols(
         self, target_names: list[str], limit_per_target: int
@@ -1073,6 +2124,8 @@ class SQLiteStore:
             return grouped
 
         with self._connect() as connection:
+            rows_by_target: dict[str, list[sqlite3.Row]] = {}
+            unique_rows: dict[str, sqlite3.Row] = {}
             for target_name in target_names:
                 if not target_name:
                     continue
@@ -1085,8 +2138,15 @@ class SQLiteStore:
                         member_name,
                         limit_per_target,
                     )
+                rows_by_target[target_name] = rows
+                unique_rows.update((row["chunk_id"], row) for row in rows)
+            chunks_by_id = self._chunks_from_rows(
+                connection,
+                list(unique_rows.values()),
+            )
+            for target_name, rows in rows_by_target.items():
                 grouped[target_name] = [
-                    self._chunk_from_row(connection, row) for row in rows
+                    chunks_by_id[row["chunk_id"]] for row in rows
                 ]
         return grouped
 
@@ -1224,12 +2284,17 @@ class SQLiteStore:
                         add_token_score(row["chunk_id"], token, 1.0)
 
             token_rows = connection.execute(
-                """
+                _in_query(
+                    """
                 SELECT chunk_tokens.chunk_id, chunk_tokens.token
                 FROM chunk_tokens
                 JOIN chunks ON chunks.chunk_id = chunk_tokens.chunk_id
                 WHERE chunks.deleted_at IS NULL
-                """
+                  AND chunk_tokens.token IN ({placeholders})
+                """,
+                    normalized,
+                ),
+                normalized,
             ).fetchall()
             for row in token_rows:
                 token = row["token"].lower()
@@ -1361,9 +2426,7 @@ class SQLiteStore:
                 ),
                 chunk_ids,
             ).fetchall()
-            chunks_by_id = {
-                row["chunk_id"]: self._chunk_from_row(connection, row) for row in rows
-            }
+            chunks_by_id = self._chunks_from_rows(connection, rows)
 
         return {
             chunk_id: chunks_by_id[chunk_id]
@@ -1387,7 +2450,8 @@ class SQLiteStore:
                 """,
                 (path, limit),
             ).fetchall()
-            return [self._chunk_from_row(connection, row) for row in rows]
+            chunks_by_id = self._chunks_from_rows(connection, rows)
+            return [chunks_by_id[row["chunk_id"]] for row in rows]
 
     def chunks_in_directory(self, directory: Path, limit: int) -> list[DocumentChunk]:
         if limit <= 0:
@@ -1418,7 +2482,8 @@ class SQLiteStore:
                     """,
                     (f"{directory_key}/%", limit),
                 ).fetchall()
-            return [self._chunk_from_row(connection, row) for row in rows]
+            chunks_by_id = self._chunks_from_rows(connection, rows)
+            return [chunks_by_id[row["chunk_id"]] for row in rows]
 
     def chunk_for_line(self, file_path: Path, line: int) -> DocumentChunk:
         path = _path_key(file_path)
@@ -1611,6 +2676,89 @@ class SQLiteStore:
             "tokens": int(tokens),
         }
 
+    def storage_page_metrics(self) -> tuple[int, int]:
+        """Return read-only SQLite page and freelist counters."""
+        if not self.db_path.exists():
+            return (0, 0)
+        with self._connect() as connection:
+            page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
+            freelist_count = int(
+                connection.execute("PRAGMA freelist_count").fetchone()[0]
+            )
+        return page_count, freelist_count
+
+    def journal_mode(self) -> str:
+        """Return the current SQLite journal mode without changing it."""
+        if not self.db_path.exists():
+            return "UNKNOWN"
+        connection = _open_connection(self.db_path, _DEFAULT_BUSY_TIMEOUT_MS)
+        try:
+            row = connection.execute("PRAGMA journal_mode").fetchone()
+        finally:
+            connection.close()
+        if row is None or row[0] is None:
+            return "UNKNOWN"
+        return str(row[0]).upper()
+
+    def maintenance_counts(self) -> dict[str, int]:
+        if not self.db_path.exists():
+            return {
+                "active_chunks": 0,
+                "deleted_chunks": 0,
+                "active_signals": 0,
+                "deleted_signals": 0,
+                "active_relations": 0,
+                "deleted_relations": 0,
+                "active_symbols": 0,
+                "orphan_symbols": 0,
+                "active_associations": 0,
+                "orphan_associations": 0,
+            }
+        connection = _open_connection(self.db_path, _DEFAULT_BUSY_TIMEOUT_MS)
+        try:
+            return _maintenance_counts(connection)
+        finally:
+            connection.close()
+
+    def maintenance_required(self) -> bool:
+        counts = self.maintenance_counts()
+        return any(
+            deleted > _maintenance_threshold(active)
+            for active, deleted in (
+                (counts["active_chunks"], counts["deleted_chunks"]),
+                (counts["active_signals"], counts["deleted_signals"]),
+                (counts["active_relations"], counts["deleted_relations"]),
+                (counts["active_symbols"], counts["orphan_symbols"]),
+                (
+                    counts["active_associations"],
+                    counts["orphan_associations"],
+                ),
+            )
+        )
+
+    def tombstone_count(self) -> int:
+        if not self.db_path.exists():
+            return 0
+        with self._connect() as connection:
+            return int(
+                connection.execute(
+                    """
+                    SELECT
+                        (SELECT COUNT(*) FROM chunks
+                         WHERE deleted_at IS NOT NULL)
+                      + (SELECT COUNT(*) FROM code_signals
+                         WHERE deleted_at IS NOT NULL)
+                      + (SELECT COUNT(*) FROM code_relations
+                         WHERE deleted_at IS NOT NULL)
+                      + (SELECT COUNT(*)
+                         FROM symbols
+                         LEFT JOIN chunk_symbols
+                           ON chunk_symbols.symbol_id = symbols.symbol_id
+                         WHERE chunk_symbols.symbol_id IS NULL)
+                    """
+                ).fetchone()[0]
+            )
+
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = _open_connection(self.db_path, _DEFAULT_BUSY_TIMEOUT_MS)
@@ -1636,6 +2784,23 @@ class SQLiteStore:
             (path,),
         ).fetchall()
         return [row["chunk_id"] for row in rows]
+
+    def _existing_chunk_ids(
+        self,
+        connection: sqlite3.Connection,
+        chunk_ids: list[str],
+    ) -> set[str]:
+        if not chunk_ids:
+            return set()
+        rows = connection.execute(
+            _in_query(
+                "SELECT chunk_id FROM chunks "
+                "WHERE chunk_id IN ({placeholders})",
+                chunk_ids,
+            ),
+            chunk_ids,
+        ).fetchall()
+        return {str(row["chunk_id"]) for row in rows}
 
     def _delete_search_payloads(
         self, connection: sqlite3.Connection, chunk_ids: list[str]
@@ -1785,6 +2950,72 @@ class SQLiteStore:
             """,
             (row["chunk_id"],),
         ).fetchall()
+        return self._decode_chunk_row(row, token_rows, symbol_rows)
+
+    def _chunks_from_rows(
+        self,
+        connection: sqlite3.Connection,
+        rows: list[sqlite3.Row],
+    ) -> dict[str, DocumentChunk]:
+        if not rows:
+            return {}
+
+        rows_by_id = {str(row["chunk_id"]): row for row in rows}
+        chunk_ids = list(rows_by_id)
+        token_rows = connection.execute(
+            _in_query(
+                """
+            SELECT chunk_id, token
+            FROM chunk_tokens
+            WHERE chunk_id IN ({placeholders})
+            ORDER BY rowid
+            """,
+                chunk_ids,
+            ),
+            chunk_ids,
+        ).fetchall()
+        symbol_rows = connection.execute(
+            _in_query(
+                """
+            SELECT chunk_symbols.chunk_id, symbols.*
+            FROM symbols
+            JOIN chunk_symbols ON chunk_symbols.symbol_id = symbols.symbol_id
+            WHERE chunk_symbols.chunk_id IN ({placeholders})
+            ORDER BY chunk_symbols.chunk_id,
+                     symbols.start_line,
+                     symbols.end_line,
+                     symbols.name
+            """,
+                chunk_ids,
+            ),
+            chunk_ids,
+        ).fetchall()
+        tokens_by_id: dict[str, list[sqlite3.Row]] = {
+            chunk_id: [] for chunk_id in chunk_ids
+        }
+        symbols_by_id: dict[str, list[sqlite3.Row]] = {
+            chunk_id: [] for chunk_id in chunk_ids
+        }
+        for token_row in token_rows:
+            tokens_by_id[str(token_row["chunk_id"])].append(token_row)
+        for symbol_row in symbol_rows:
+            symbols_by_id[str(symbol_row["chunk_id"])].append(symbol_row)
+
+        return {
+            chunk_id: self._decode_chunk_row(
+                row,
+                tokens_by_id[chunk_id],
+                symbols_by_id[chunk_id],
+            )
+            for chunk_id, row in rows_by_id.items()
+        }
+
+    def _decode_chunk_row(
+        self,
+        row: sqlite3.Row,
+        token_rows: list[sqlite3.Row],
+        symbol_rows: list[sqlite3.Row],
+    ) -> DocumentChunk:
         return DocumentChunk(
             chunk_id=row["chunk_id"],
             file_path=Path(row["file_path"]),
@@ -1815,6 +3046,7 @@ class GraphReadSession:
         self.db_path = db_path
         self.busy_timeout_ms = busy_timeout_ms
         self._connection: sqlite3.Connection | None = None
+        self._close_callbacks: list[Callable[[], None]] = []
         self.capability: GraphCapability
         self.graph_fault: str | None = None
         self.graph_truncated = False
@@ -1824,6 +3056,7 @@ class GraphReadSession:
         try:
             connection.execute("BEGIN")
             self._connection = connection
+            self._close_callbacks.clear()
             self.capability = read_graph_capability(self)
             return self
         except BaseException:
@@ -1835,11 +3068,26 @@ class GraphReadSession:
 
     def __exit__(self, *_exc_info: object) -> None:
         connection = self._connection
-        self._connection = None
-        if connection is not None:
-            if connection.in_transaction:
-                connection.rollback()
-            connection.close()
+        close_error: BaseException | None = None
+        try:
+            while self._close_callbacks:
+                try:
+                    self._close_callbacks.pop()()
+                except BaseException as error:
+                    if close_error is None:
+                        close_error = error
+        finally:
+            self._connection = None
+            if connection is not None:
+                if connection.in_transaction:
+                    connection.rollback()
+                connection.close()
+        if close_error is not None:
+            raise close_error
+
+    def register_close_callback(self, callback: Callable[[], None]) -> None:
+        self._require_connection()
+        self._close_callbacks.append(callback)
 
     def get_metadata(self, key: str) -> str | None:
         connection = self._require_connection()
@@ -1898,10 +3146,7 @@ class GraphReadSession:
             chunk_ids,
         ).fetchall()
         decoder = SQLiteStore(self.db_path)
-        chunks_by_id = {
-            row["chunk_id"]: decoder._chunk_from_row(connection, row)
-            for row in rows
-        }
+        chunks_by_id = decoder._chunks_from_rows(connection, rows)
         return {
             chunk_id: chunks_by_id[chunk_id]
             for chunk_id in chunk_ids
@@ -1962,13 +3207,16 @@ class GraphReadSession:
             legal_filter = "AND recallable = 1 AND producer = 'legacy'"
         else:
             legal_filter = ""
+        row_filter, row_filter_values = _signal_row_prefilter(normalized)
         rows = connection.execute(
             f"""
             SELECT *
             FROM code_signals
             WHERE deleted_at IS NULL
               {legal_filter}
-            """
+              {row_filter}
+            """,
+            row_filter_values,
         ).fetchall()
         matches: list[tuple[CodeSignal, float]] = []
         for row in rows:
@@ -2074,6 +3322,8 @@ class GraphReadSession:
             return grouped
         connection = self._require_connection()
         decoder = SQLiteStore(self.db_path)
+        rows_by_target: dict[str, list[sqlite3.Row]] = {}
+        unique_rows: dict[str, sqlite3.Row] = {}
         for target_name in target_names:
             if not target_name:
                 continue
@@ -2086,8 +3336,15 @@ class GraphReadSession:
                     member_name,
                     limit_per_target,
                 )
+            rows_by_target[target_name] = rows
+            unique_rows.update((row["chunk_id"], row) for row in rows)
+        chunks_by_id = decoder._chunks_from_rows(
+            connection,
+            list(unique_rows.values()),
+        )
+        for target_name, rows in rows_by_target.items():
             grouped[target_name] = [
-                decoder._chunk_from_row(connection, row) for row in rows
+                chunks_by_id[row["chunk_id"]] for row in rows
             ]
         return grouped
 
@@ -2701,6 +3958,22 @@ class GraphReadSession:
         )
         return source_count, chunk_count
 
+    def ready_vector_binding(self) -> ReadyVectorBinding:
+        if self.capability.status != "ready" or not self.capability.structured:
+            raise OperationalIntegrityError("ready vector binding is unavailable")
+        connection = self._require_connection()
+        binding = _read_operational_binding(connection)
+        return ReadyVectorBinding(
+            descriptor_schema_version=binding.vector_descriptor_schema_version,
+            generation=binding.vector_generation,
+            descriptor_sha256=binding.vector_descriptor_sha256,
+            vector_bytes=binding.vector_bytes,
+            vector_ids_bytes=binding.vector_ids_bytes,
+            row_count=_metadata_int_value(
+                _required_metadata(connection, _OPERATIONAL_CHUNK_COUNT_KEY)
+            ),
+        )
+
     def _require_connection(self) -> sqlite3.Connection:
         if self._connection is None:
             raise RuntimeError("graph read session is closed")
@@ -3004,6 +4277,812 @@ def _chunks_matching_member_name(
     ).fetchall()
 
 
+def operational_content_fingerprint(
+    sources: tuple[OperationalSourceObservation, ...],
+) -> str:
+    rows = []
+    seen: set[str] = set()
+    for item in sorted(sources, key=lambda value: _path_key(value.path)):
+        _validate_source_observation(item)
+        path = _operational_path(item.path)
+        if path in seen:
+            raise ValueError("duplicate operational source path")
+        seen.add(path)
+        rows.append(
+            {
+                "path": path,
+                "language": item.language,
+                "sha256": item.sha256,
+            }
+        )
+    return _sha256_canonical({"sources": rows})
+
+
+def operational_observation_fingerprint(
+    sources: tuple[OperationalSourceObservation, ...],
+    skips: tuple[OperationalScanSkip, ...],
+    controls: tuple[OperationalControlObservation, ...] = (),
+) -> str:
+    source_rows = []
+    seen: set[str] = set()
+    for item in sorted(sources, key=lambda value: _path_key(value.path)):
+        _validate_source_observation(item)
+        path = _operational_path(item.path)
+        if path in seen:
+            raise ValueError("duplicate operational observation path")
+        seen.add(path)
+        source_rows.append(
+            {
+                "path": path,
+                "language": item.language,
+                "size": item.size,
+                "mtime_ns": item.mtime_ns,
+                "change_token": item.change_token,
+                "change_token_kind": item.change_token_kind,
+            }
+        )
+    skip_rows = []
+    for item in sorted(skips, key=lambda value: _path_key(value.path)):
+        normalized = _validate_scan_skip(item)
+        path = _operational_path(normalized.path)
+        if path in seen:
+            raise ValueError("duplicate operational observation path")
+        seen.add(path)
+        skip_rows.append(
+            {
+                "path": path,
+                "reason": normalized.reason,
+                "language": normalized.language,
+                "size": normalized.size,
+                "mtime_ns": normalized.mtime_ns,
+                "change_token": normalized.change_token,
+                "change_token_kind": normalized.change_token_kind,
+                "retryable": normalized.retryable,
+                "metadata": dict(normalized.metadata),
+            }
+        )
+    control_rows = []
+    for item in _validate_control_observations(
+        controls,
+        controls[0].observation_generation if controls else 0,
+    ):
+        path = _operational_path(item.path)
+        control_rows.append(
+            {
+                "path": path,
+                "sha256": item.sha256,
+                "size": item.size,
+                "mtime_ns": item.mtime_ns,
+                "change_token": item.change_token,
+                "change_token_kind": item.change_token_kind,
+            }
+        )
+    return _sha256_canonical(
+        {
+            "sources": source_rows,
+            "scan_skips": skip_rows,
+            "controls": control_rows,
+        }
+    )
+
+
+def _operational_schema_v1_statements() -> tuple[str, ...]:
+    return (
+        _ACTIVE_EMBEDDING_INDEX_SQL,
+        """
+        CREATE TABLE IF NOT EXISTS scan_skips (
+            path TEXT PRIMARY KEY,
+            reason TEXT NOT NULL CHECK (
+                reason IN (
+                    'too_large', 'binary', 'unreadable', 'unsafe_path',
+                    'changed_during_read', 'unsupported_encoding'
+                )
+            ),
+            language TEXT,
+            size INTEGER,
+            mtime_ns INTEGER,
+            change_token TEXT,
+            change_token_kind TEXT NOT NULL,
+            retryable INTEGER NOT NULL CHECK (retryable IN (0, 1)),
+            metadata TEXT NOT NULL,
+            first_observation_generation INTEGER NOT NULL,
+            last_observation_generation INTEGER NOT NULL,
+            last_retry_generation INTEGER
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_scan_skips_retry
+        ON scan_skips(retryable, last_retry_generation, path)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS operational_controls (
+            path TEXT PRIMARY KEY,
+            sha256 TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            mtime_ns INTEGER NOT NULL,
+            change_token TEXT,
+            change_token_kind TEXT NOT NULL,
+            observation_generation INTEGER NOT NULL
+        )
+        """,
+    )
+
+
+def _add_column_if_missing(
+    connection: sqlite3.Connection,
+    table: str,
+    column: str,
+    declaration: str,
+) -> None:
+    if not re.fullmatch(r"[a-z_]+", table) or not re.fullmatch(
+        r"[a-z_]+", column
+    ):
+        raise ValueError("invalid operational schema identifier")
+    if not _has_column(connection, table, column):
+        connection.execute(
+            f"ALTER TABLE {table} ADD COLUMN {column} {declaration}"
+        )
+
+
+def _require_operational_schema_v1(connection: sqlite3.Connection) -> None:
+    required_source_columns = {
+        "path",
+        "language",
+        "sha256",
+        "size",
+        "mtime_ns",
+        "change_token",
+        "change_token_kind",
+        "observation_generation",
+    }
+    required_skip_columns = {
+        "path",
+        "reason",
+        "language",
+        "size",
+        "mtime_ns",
+        "change_token",
+        "change_token_kind",
+        "retryable",
+        "metadata",
+        "first_observation_generation",
+        "last_observation_generation",
+        "last_retry_generation",
+    }
+    required_control_columns = {
+        "path",
+        "sha256",
+        "size",
+        "mtime_ns",
+        "change_token",
+        "change_token_kind",
+        "observation_generation",
+    }
+    if (
+        not _table_exists(connection, "source_files")
+        or not _table_exists(connection, "scan_skips")
+        or not _table_exists(connection, "operational_controls")
+        or not required_source_columns <= _table_columns(connection, "source_files")
+        or not required_skip_columns <= _table_columns(connection, "scan_skips")
+        or not required_control_columns
+        <= _table_columns(connection, "operational_controls")
+    ):
+        raise OperationalIntegrityError("operational schema v1 is incomplete")
+
+
+def _validate_source_observations(
+    sources: tuple[OperationalSourceObservation, ...],
+    generation: int,
+) -> tuple[OperationalSourceObservation, ...]:
+    if not isinstance(sources, tuple):
+        raise ValueError("source observations must be an immutable tuple")
+    normalized = tuple(sorted(sources, key=lambda item: _path_key(item.path)))
+    seen: set[str] = set()
+    for item in normalized:
+        _validate_source_observation(item)
+        path = _operational_path(item.path)
+        if path in seen:
+            raise ValueError("duplicate operational source path")
+        if item.observation_generation != generation:
+            raise ValueError("source observation generation mismatch")
+        seen.add(path)
+    return normalized
+
+
+def _validate_source_observation(item: OperationalSourceObservation) -> None:
+    if not isinstance(item, OperationalSourceObservation):
+        raise ValueError("invalid source observation")
+    _operational_path(item.path)
+    if not item.language or not _SHA256_RE.fullmatch(item.sha256):
+        raise ValueError("invalid source observation identity")
+    for value in (item.size, item.mtime_ns, item.observation_generation):
+        if type(value) is not int or value < 0:
+            raise ValueError("invalid source observation metadata")
+    _validate_change_token(item.change_token, item.change_token_kind)
+
+
+def _validate_control_observations(
+    controls: tuple[OperationalControlObservation, ...],
+    generation: int,
+) -> tuple[OperationalControlObservation, ...]:
+    if not isinstance(controls, tuple):
+        raise ValueError("control observations must be an immutable tuple")
+    normalized = tuple(sorted(controls, key=lambda item: _path_key(item.path)))
+    seen: set[str] = set()
+    for item in normalized:
+        if not isinstance(item, OperationalControlObservation):
+            raise ValueError("invalid control observation")
+        path = _operational_path(item.path)
+        if path in seen:
+            raise ValueError("duplicate operational control path")
+        if not _SHA256_RE.fullmatch(item.sha256):
+            raise ValueError("invalid control observation identity")
+        for value in (item.size, item.mtime_ns, item.observation_generation):
+            if type(value) is not int or value < 0:
+                raise ValueError("invalid control observation metadata")
+        if item.observation_generation != generation:
+            raise ValueError("control observation generation mismatch")
+        _validate_change_token(item.change_token, item.change_token_kind)
+        seen.add(path)
+    return normalized
+
+
+def _validate_scan_skips(
+    skips: tuple[OperationalScanSkip, ...],
+    generation: int,
+) -> tuple[OperationalScanSkip, ...]:
+    if not isinstance(skips, tuple):
+        raise ValueError("scan skips must be an immutable tuple")
+    normalized = tuple(
+        _validate_scan_skip(item)
+        for item in sorted(skips, key=lambda value: _path_key(value.path))
+    )
+    seen: set[str] = set()
+    for item in normalized:
+        path = _operational_path(item.path)
+        if path in seen:
+            raise ValueError("duplicate scan-skip path")
+        if item.last_observation_generation != generation:
+            raise ValueError("scan-skip observation generation mismatch")
+        seen.add(path)
+    return normalized
+
+
+def _validate_scan_skip(item: OperationalScanSkip) -> OperationalScanSkip:
+    if not isinstance(item, OperationalScanSkip):
+        raise ValueError("invalid scan skip")
+    _operational_path(item.path)
+    if item.reason not in _SCAN_SKIP_REASONS:
+        raise ValueError("invalid scan-skip reason")
+    if item.language is not None and not item.language:
+        raise ValueError("invalid scan-skip language")
+    for value in (item.size, item.mtime_ns, item.last_retry_generation):
+        if value is not None and (type(value) is not int or value < 0):
+            raise ValueError("invalid scan-skip metadata")
+    for value in (
+        item.first_observation_generation,
+        item.last_observation_generation,
+    ):
+        if type(value) is not int or value < 0:
+            raise ValueError("invalid scan-skip generation")
+    if item.first_observation_generation > item.last_observation_generation:
+        raise ValueError("invalid scan-skip generation range")
+    if type(item.retryable) is not bool:
+        raise ValueError("invalid scan-skip retryability")
+    _validate_change_token(item.change_token, item.change_token_kind)
+    metadata = _normalize_skip_metadata(item.metadata)
+    return OperationalScanSkip(
+        path=item.path,
+        reason=item.reason,
+        language=item.language,
+        size=item.size,
+        mtime_ns=item.mtime_ns,
+        change_token=item.change_token,
+        change_token_kind=item.change_token_kind,
+        retryable=item.retryable,
+        first_observation_generation=item.first_observation_generation,
+        last_observation_generation=item.last_observation_generation,
+        last_retry_generation=item.last_retry_generation,
+        metadata=metadata,
+    )
+
+
+def _normalize_skip_metadata(
+    metadata: tuple[tuple[str, str], ...],
+) -> tuple[tuple[str, str], ...]:
+    if not isinstance(metadata, tuple) or len(metadata) > 16:
+        raise ValueError("invalid scan-skip metadata")
+    normalized: dict[str, str] = {}
+    for item in metadata:
+        if not isinstance(item, tuple) or len(item) != 2:
+            raise ValueError("invalid scan-skip metadata")
+        key, value = item
+        if (
+            not isinstance(key, str)
+            or not key
+            or len(key) > 64
+            or not isinstance(value, str)
+            or len(value) > 128
+            or key in normalized
+        ):
+            raise ValueError("invalid scan-skip metadata")
+        normalized[key] = value
+    return tuple(sorted(normalized.items()))
+
+
+def _validate_change_token(token: object, kind: str) -> None:
+    if kind not in _CHANGE_TOKEN_KINDS:
+        raise ValueError("invalid change-token kind")
+    if token is not None and type(token) not in {int, str}:
+        raise ValueError("invalid change token")
+
+
+def _encode_change_token(token: int | str | None) -> str | None:
+    if token is None:
+        return None
+    return _canonical_json(token)
+
+
+def _decode_change_token(raw: object) -> int | str | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise OperationalIntegrityError("invalid persisted change token")
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise OperationalIntegrityError("invalid persisted change token") from error
+    if value is not None and type(value) not in {int, str}:
+        raise OperationalIntegrityError("invalid persisted change token")
+    return value
+
+
+def _read_operational_observations(
+    connection: sqlite3.Connection,
+) -> tuple[
+    tuple[OperationalSourceObservation, ...],
+    tuple[OperationalScanSkip, ...],
+    tuple[OperationalControlObservation, ...],
+]:
+    source_rows = connection.execute(
+        """
+        SELECT path, language, sha256, size, mtime_ns, change_token,
+               change_token_kind, observation_generation
+        FROM source_files
+        ORDER BY path
+        """
+    ).fetchall()
+    skip_rows = connection.execute(
+        """
+        SELECT path, reason, language, size, mtime_ns, change_token,
+               change_token_kind, retryable, metadata,
+               first_observation_generation, last_observation_generation,
+               last_retry_generation
+        FROM scan_skips
+        ORDER BY path
+        """
+    ).fetchall()
+    control_rows = connection.execute(
+        """
+        SELECT path, sha256, size, mtime_ns, change_token,
+               change_token_kind, observation_generation
+        FROM operational_controls
+        ORDER BY path
+        """
+    ).fetchall()
+    try:
+        sources = tuple(_source_observation_from_row(row) for row in source_rows)
+        skips = tuple(_scan_skip_from_row(row) for row in skip_rows)
+        controls = tuple(
+            _control_observation_from_row(row) for row in control_rows
+        )
+        generation = (
+            sources[0].observation_generation
+            if sources
+            else controls[0].observation_generation
+            if controls
+            else None
+        )
+        if generation is not None:
+            _validate_source_observations(sources, generation)
+            _validate_control_observations(controls, generation)
+        for item in skips:
+            _validate_scan_skip(item)
+    except (TypeError, ValueError) as error:
+        if isinstance(error, OperationalIntegrityError):
+            raise
+        raise OperationalIntegrityError("invalid operational observations") from error
+    return sources, skips, controls
+
+
+def _source_observation_from_row(row: sqlite3.Row) -> OperationalSourceObservation:
+    return OperationalSourceObservation(
+        path=Path(str(row["path"])),
+        language=str(row["language"]),
+        sha256=str(row["sha256"]),
+        size=_row_int(row, "size"),
+        mtime_ns=_row_int(row, "mtime_ns"),
+        change_token=_decode_change_token(row["change_token"]),
+        change_token_kind=str(row["change_token_kind"]),
+        observation_generation=_row_int(row, "observation_generation"),
+    )
+
+
+def _control_observation_from_row(
+    row: sqlite3.Row,
+) -> OperationalControlObservation:
+    return OperationalControlObservation(
+        path=Path(str(row["path"])),
+        sha256=str(row["sha256"]),
+        size=_row_int(row, "size"),
+        mtime_ns=_row_int(row, "mtime_ns"),
+        change_token=_decode_change_token(row["change_token"]),
+        change_token_kind=str(row["change_token_kind"]),
+        observation_generation=_row_int(row, "observation_generation"),
+    )
+
+
+def _scan_skip_from_row(
+    row: sqlite3.Row,
+    *,
+    retry_generation: int | None = None,
+) -> OperationalScanSkip:
+    try:
+        metadata_raw = json.loads(str(row["metadata"]))
+    except json.JSONDecodeError as error:
+        raise OperationalIntegrityError("invalid scan-skip metadata") from error
+    if not isinstance(metadata_raw, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in metadata_raw.items()
+    ):
+        raise OperationalIntegrityError("invalid scan-skip metadata")
+    return _validate_scan_skip(
+        OperationalScanSkip(
+            path=Path(str(row["path"])),
+            reason=str(row["reason"]),
+            language=(str(row["language"]) if row["language"] is not None else None),
+            size=_optional_row_int(row, "size"),
+            mtime_ns=_optional_row_int(row, "mtime_ns"),
+            change_token=_decode_change_token(row["change_token"]),
+            change_token_kind=str(row["change_token_kind"]),
+            retryable=_row_bool(row, "retryable"),
+            first_observation_generation=_row_int(
+                row, "first_observation_generation"
+            ),
+            last_observation_generation=_row_int(
+                row, "last_observation_generation"
+            ),
+            last_retry_generation=(
+                retry_generation
+                if retry_generation is not None
+                else _optional_row_int(row, "last_retry_generation")
+            ),
+            metadata=tuple(sorted(metadata_raw.items())),
+        )
+    )
+
+
+def _row_int(row: sqlite3.Row, key: str) -> int:
+    value = row[key]
+    if type(value) is not int:
+        raise OperationalIntegrityError(f"invalid operational integer: {key}")
+    return value
+
+
+def _optional_row_int(row: sqlite3.Row, key: str) -> int | None:
+    return None if row[key] is None else _row_int(row, key)
+
+
+def _row_bool(row: sqlite3.Row, key: str) -> bool:
+    value = _row_int(row, key)
+    if value not in {0, 1}:
+        raise OperationalIntegrityError(f"invalid operational boolean: {key}")
+    return bool(value)
+
+
+def _validate_bound_operational_observations(
+    binding: OperationalReadyBinding,
+    sources: tuple[OperationalSourceObservation, ...],
+    skips: tuple[OperationalScanSkip, ...],
+    controls: tuple[OperationalControlObservation, ...],
+) -> None:
+    if any(
+        item.observation_generation != binding.observation_generation
+        for item in sources
+    ) or any(
+        item.last_observation_generation != binding.observation_generation
+        for item in skips
+    ) or any(
+        item.observation_generation != binding.observation_generation
+        for item in controls
+    ):
+        raise OperationalIntegrityError("observation generation mismatch")
+    try:
+        content_fingerprint = operational_content_fingerprint(sources)
+        observation_fingerprint = operational_observation_fingerprint(
+            sources,
+            skips,
+            controls,
+        )
+    except ValueError as error:
+        raise OperationalIntegrityError(
+            "invalid bound operational observations"
+        ) from error
+    if content_fingerprint != binding.source_content_fingerprint:
+        raise OperationalIntegrityError("source content fingerprint mismatch")
+    if observation_fingerprint != binding.source_observation_fingerprint:
+        raise OperationalIntegrityError("source observation fingerprint mismatch")
+
+
+def _validate_operational_binding(
+    binding: OperationalReadyBinding,
+) -> OperationalReadyBinding:
+    if not isinstance(binding, OperationalReadyBinding):
+        raise ValueError("invalid operational ready binding")
+    for value in (
+        binding.index_config_hash,
+        binding.source_content_fingerprint,
+        binding.source_observation_fingerprint,
+        binding.manifest_sha256,
+        binding.vector_descriptor_sha256,
+    ):
+        if not _SHA256_RE.fullmatch(value):
+            raise ValueError("invalid operational binding digest")
+    if binding.manifest_schema_version != 2:
+        raise ValueError("invalid bound manifest schema")
+    if binding.vector_descriptor_schema_version != 2:
+        raise ValueError("invalid bound vector descriptor schema")
+    if not _GENERATION_RE.fullmatch(binding.manifest_generation):
+        raise ValueError("invalid bound manifest generation")
+    if not _GENERATION_RE.fullmatch(binding.vector_generation):
+        raise ValueError("invalid bound vector generation")
+    for value in (
+        binding.observation_generation,
+        binding.vector_bytes,
+        binding.vector_ids_bytes,
+        binding.indexed_at_epoch_s,
+    ):
+        if type(value) is not int or value < 0:
+            raise ValueError("invalid operational binding count")
+    if binding.operation_mode not in _OPERATION_MODES:
+        raise ValueError("invalid operational operation mode")
+    return OperationalReadyBinding(
+        **{
+            **binding.__dict__,
+            "work_metrics": _normalize_work_metrics(binding.work_metrics),
+        }
+    )
+
+
+def _normalize_work_metrics(
+    metrics: tuple[tuple[str, int | str], ...],
+) -> tuple[tuple[str, int | str], ...]:
+    if not isinstance(metrics, tuple) or len(metrics) > _MAX_WORK_METRICS:
+        raise ValueError("invalid operational work metrics")
+    normalized: dict[str, int | str] = {}
+    for item in metrics:
+        if not isinstance(item, tuple) or len(item) != 2:
+            raise ValueError("invalid operational work metrics")
+        key, value = item
+        if (
+            not isinstance(key, str)
+            or len(key) > 128
+            or not _WORK_METRIC_RE.fullmatch(key)
+            or key in normalized
+        ):
+            raise ValueError("invalid operational work metrics")
+        if type(value) is int:
+            if value < 0:
+                raise ValueError("invalid operational work metrics")
+        elif (
+            not isinstance(value, str)
+            or value not in _WORK_STRING_METRICS.get(key, frozenset())
+        ):
+            raise ValueError("invalid operational work metrics")
+        normalized[key] = value
+    return tuple(sorted(normalized.items()))
+
+
+_OPERATIONAL_BINDING_KEYS = (
+    _OPERATIONAL_INDEX_CONFIG_HASH_KEY,
+    _OPERATIONAL_CONTENT_FINGERPRINT_KEY,
+    _OPERATIONAL_OBSERVATION_FINGERPRINT_KEY,
+    _OPERATIONAL_OBSERVATION_GENERATION_KEY,
+    _OPERATIONAL_MANIFEST_SCHEMA_KEY,
+    _OPERATIONAL_MANIFEST_GENERATION_KEY,
+    _OPERATIONAL_MANIFEST_SHA256_KEY,
+    _OPERATIONAL_DESCRIPTOR_SCHEMA_KEY,
+    _OPERATIONAL_VECTOR_GENERATION_KEY,
+    _OPERATIONAL_DESCRIPTOR_SHA256_KEY,
+    _OPERATIONAL_VECTOR_BYTES_KEY,
+    _OPERATIONAL_VECTOR_IDS_BYTES_KEY,
+    _OPERATIONAL_INDEXED_AT_KEY,
+    _OPERATIONAL_MODE_KEY,
+    _OPERATIONAL_WORK_METRICS_KEY,
+)
+
+
+def _write_operational_binding(
+    connection: sqlite3.Connection,
+    binding: OperationalReadyBinding,
+    *,
+    source_count: int,
+    chunk_count: int,
+    embedding_ids: tuple[str, ...],
+    sqlite_change_counter: int,
+    now: int,
+) -> None:
+    values = {
+        _OPERATIONAL_INDEX_CONFIG_HASH_KEY: binding.index_config_hash,
+        _OPERATIONAL_CONTENT_FINGERPRINT_KEY: binding.source_content_fingerprint,
+        _OPERATIONAL_OBSERVATION_FINGERPRINT_KEY: (
+            binding.source_observation_fingerprint
+        ),
+        _OPERATIONAL_OBSERVATION_GENERATION_KEY: str(
+            binding.observation_generation
+        ),
+        _OPERATIONAL_MANIFEST_SCHEMA_KEY: str(binding.manifest_schema_version),
+        _OPERATIONAL_MANIFEST_GENERATION_KEY: binding.manifest_generation,
+        _OPERATIONAL_MANIFEST_SHA256_KEY: binding.manifest_sha256,
+        _OPERATIONAL_DESCRIPTOR_SCHEMA_KEY: str(
+            binding.vector_descriptor_schema_version
+        ),
+        _OPERATIONAL_VECTOR_GENERATION_KEY: binding.vector_generation,
+        _OPERATIONAL_DESCRIPTOR_SHA256_KEY: binding.vector_descriptor_sha256,
+        _OPERATIONAL_VECTOR_BYTES_KEY: str(binding.vector_bytes),
+        _OPERATIONAL_VECTOR_IDS_BYTES_KEY: str(binding.vector_ids_bytes),
+        _OPERATIONAL_INDEXED_AT_KEY: str(binding.indexed_at_epoch_s),
+        _OPERATIONAL_MODE_KEY: binding.operation_mode,
+        _OPERATIONAL_WORK_METRICS_KEY: _canonical_json(dict(binding.work_metrics)),
+        _OPERATIONAL_SOURCE_COUNT_KEY: str(source_count),
+        _OPERATIONAL_CHUNK_COUNT_KEY: str(chunk_count),
+        _OPERATIONAL_EMBEDDING_IDS_SHA256_KEY: _embedding_ids_digest(embedding_ids),
+        _OPERATIONAL_SQLITE_CHANGE_COUNTER_KEY: str(sqlite_change_counter),
+    }
+    for key, value in values.items():
+        _set_metadata_row(connection, key, value, now)
+
+
+def _read_operational_binding(
+    connection: sqlite3.Connection,
+) -> OperationalReadyBinding:
+    values = {
+        key: _required_metadata(connection, key) for key in _OPERATIONAL_BINDING_KEYS
+    }
+    try:
+        raw_metrics = json.loads(values[_OPERATIONAL_WORK_METRICS_KEY])
+    except json.JSONDecodeError as error:
+        raise OperationalIntegrityError("invalid operational work metrics") from error
+    if not isinstance(raw_metrics, dict):
+        raise OperationalIntegrityError("invalid operational work metrics")
+    try:
+        binding = OperationalReadyBinding(
+            index_config_hash=values[_OPERATIONAL_INDEX_CONFIG_HASH_KEY],
+            source_content_fingerprint=values[_OPERATIONAL_CONTENT_FINGERPRINT_KEY],
+            source_observation_fingerprint=values[
+                _OPERATIONAL_OBSERVATION_FINGERPRINT_KEY
+            ],
+            observation_generation=_metadata_int_value(
+                values[_OPERATIONAL_OBSERVATION_GENERATION_KEY]
+            ),
+            manifest_schema_version=_metadata_int_value(
+                values[_OPERATIONAL_MANIFEST_SCHEMA_KEY]
+            ),
+            manifest_generation=values[_OPERATIONAL_MANIFEST_GENERATION_KEY],
+            manifest_sha256=values[_OPERATIONAL_MANIFEST_SHA256_KEY],
+            vector_descriptor_schema_version=_metadata_int_value(
+                values[_OPERATIONAL_DESCRIPTOR_SCHEMA_KEY]
+            ),
+            vector_generation=values[_OPERATIONAL_VECTOR_GENERATION_KEY],
+            vector_descriptor_sha256=values[_OPERATIONAL_DESCRIPTOR_SHA256_KEY],
+            vector_bytes=_metadata_int_value(values[_OPERATIONAL_VECTOR_BYTES_KEY]),
+            vector_ids_bytes=_metadata_int_value(
+                values[_OPERATIONAL_VECTOR_IDS_BYTES_KEY]
+            ),
+            indexed_at_epoch_s=_metadata_int_value(
+                values[_OPERATIONAL_INDEXED_AT_KEY]
+            ),
+            operation_mode=values[_OPERATIONAL_MODE_KEY],
+            work_metrics=tuple(raw_metrics.items()),
+        )
+        return _validate_operational_binding(binding)
+    except (TypeError, ValueError) as error:
+        if isinstance(error, OperationalIntegrityError):
+            raise
+        raise OperationalIntegrityError("invalid operational ready binding") from error
+
+
+def _validate_bound_counts(
+    connection: sqlite3.Connection,
+    *,
+    source_count: int,
+    chunk_count: int,
+    embedding_ids: tuple[str, ...],
+) -> None:
+    if _metadata_int_value(
+        _required_metadata(connection, _OPERATIONAL_SOURCE_COUNT_KEY)
+    ) != source_count:
+        raise OperationalIntegrityError("bound source count mismatch")
+    if _metadata_int_value(
+        _required_metadata(connection, _OPERATIONAL_CHUNK_COUNT_KEY)
+    ) != chunk_count:
+        raise OperationalIntegrityError("bound chunk count mismatch")
+    if _required_metadata(
+        connection, _OPERATIONAL_EMBEDDING_IDS_SHA256_KEY
+    ) != _embedding_ids_digest(embedding_ids):
+        raise OperationalIntegrityError("bound embedding IDs mismatch")
+
+
+def _required_metadata(connection: sqlite3.Connection, key: str) -> str:
+    value = _metadata_value(connection, key)
+    if value is None or value == "":
+        raise OperationalIntegrityError(f"missing operational binding: {key}")
+    return value
+
+
+def _metadata_int_value(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise OperationalIntegrityError("invalid operational integer") from error
+    if value < 0 or str(value) != raw:
+        raise OperationalIntegrityError("invalid operational integer")
+    return value
+
+
+def _embedding_ids_digest(ids: tuple[str, ...]) -> str:
+    return _sha256_canonical(list(ids))
+
+
+def _sqlite_change_counter_state(
+    connection: sqlite3.Connection,
+    db_path: Path,
+) -> tuple[int, bool]:
+    current = _sqlite_change_counter(db_path)
+    raw = _metadata_value(connection, _OPERATIONAL_SQLITE_CHANGE_COUNTER_KEY)
+    if raw is None:
+        return current, False
+    bound = _metadata_int_value(raw)
+    if bound > 0xFFFFFFFF:
+        raise OperationalIntegrityError("invalid SQLite change counter")
+    return current, bound == current
+
+
+def _sqlite_change_counter(db_path: Path) -> int:
+    with db_path.open("rb") as source:
+        header = source.read(28)
+    if len(header) != 28 or header[:16] != b"SQLite format 3\x00":
+        raise OperationalIntegrityError("invalid SQLite header")
+    return int.from_bytes(header[24:28], byteorder="big")
+
+
+def _operational_path(path: Path) -> str:
+    if not isinstance(path, Path):
+        raise ValueError("operational path must be a Path")
+    rendered = path.as_posix()
+    if (
+        path.is_absolute()
+        or rendered in {"", "."}
+        or ".." in path.parts
+        or "\\" in rendered
+    ):
+        raise ValueError("operational path must be repository-relative POSIX")
+    return rendered
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _sha256_canonical(value: object) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
 def _common_schema_statements() -> tuple[str, ...]:
     return (
         """
@@ -3035,6 +5114,7 @@ def _common_schema_statements() -> tuple[str, ...]:
         CREATE INDEX IF NOT EXISTS idx_chunks_file_active
         ON chunks(file_path, deleted_at)
         """,
+        _ACTIVE_EMBEDDING_INDEX_SQL,
         """
         CREATE TABLE IF NOT EXISTS symbols (
             symbol_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3218,6 +5298,7 @@ def _v5_schema_statements() -> tuple[str, ...]:
         ON code_relations(target_name, deleted_at)
         WHERE resolution = 'legacy'
         """,
+        _ACTIVE_EMBEDDING_INDEX_SQL,
     )
 
 
@@ -3292,18 +5373,21 @@ def _replace_signals_v5(
 def _replace_relations_v5(
     connection: sqlite3.Connection,
     path: str,
-    relations: list[CodeRelation],
+    relations: list[CodeRelation] | tuple[CodeRelation, ...],
     deleted_at: int,
+    *,
+    replace_existing: bool = True,
 ) -> None:
-    connection.execute(
-        """
-        UPDATE code_relations
-        SET deleted_at = ?
-        WHERE source_file_path = ?
-          AND deleted_at IS NULL
-        """,
-        (deleted_at, path),
-    )
+    if replace_existing:
+        connection.execute(
+            """
+            UPDATE code_relations
+            SET deleted_at = ?
+            WHERE source_file_path = ?
+              AND deleted_at IS NULL
+            """,
+            (deleted_at, path),
+        )
     for relation in relations:
         _upsert_relation_v5(connection, relation)
 
@@ -3794,7 +5878,13 @@ def _table_columns(
     connection: sqlite3.Connection,
     table: str,
 ) -> frozenset[str]:
-    if table not in {"code_signals", "code_relations"}:
+    if table not in {
+        "code_signals",
+        "code_relations",
+        "source_files",
+        "scan_skips",
+        "operational_controls",
+    }:
         raise ValueError("unsupported schema table")
     return frozenset(
         str(row["name"])
@@ -3913,6 +6003,34 @@ def _metadata_search_text(metadata: dict[str, Any]) -> str:
     return " ".join(values)
 
 
+def _signal_row_prefilter(tokens: list[str]) -> tuple[str, tuple[str, ...]]:
+    if not all(
+        token.isascii() and _SIGNAL_SQL_SAFE_TOKEN_RE.fullmatch(token)
+        for token in tokens
+    ):
+        return "", ()
+
+    clauses: list[str] = []
+    values: list[str] = []
+    for token in tokens:
+        clauses.append(
+            "instr(lower(name || ' ' || tokens || ' ' || metadata), ?) > 0"
+        )
+        values.append(token)
+
+    clauses.extend(
+        (
+            "name GLOB '*[^ -~]*'",
+            "instr(tokens, ?) > 0",
+            "instr(metadata, ?) > 0",
+        )
+    )
+    values.extend((r"\u", r"\u"))
+    if any(token in "none" for token in tokens):
+        clauses.append("instr(metadata, 'null') > 0")
+    return f"AND ({' OR '.join(clauses)})", tuple(values)
+
+
 def _signal_from_row(row: sqlite3.Row) -> CodeSignal:
     return CodeSignal(
         signal_id=row["signal_id"],
@@ -4001,6 +6119,88 @@ def _fts_query(tokens: list[str]) -> str:
 def _quote_fts_token(token: str) -> str:
     escaped = token.replace('"', '""')
     return f'"{escaped}"'
+
+
+def _maintenance_threshold(active_rows: int) -> int:
+    return max(_TOMBSTONE_THRESHOLD_MINIMUM, (active_rows + 19) // 20)
+
+
+def _bounded_purge_count(deleted_rows: int, limit: int) -> int:
+    return min(limit, deleted_rows)
+
+
+def _maintenance_purge_count(
+    *,
+    active_rows: int,
+    deleted_rows: int,
+    limit: int,
+) -> int:
+    if deleted_rows <= _maintenance_threshold(active_rows):
+        return 0
+    return _bounded_purge_count(deleted_rows, limit)
+
+
+def _maintenance_counts(connection: sqlite3.Connection) -> dict[str, int]:
+    def count(sql: str) -> int:
+        return int(connection.execute(sql).fetchone()[0])
+
+    active_chunks = count("SELECT COUNT(*) FROM chunks WHERE deleted_at IS NULL")
+    deleted_chunks = count(
+        "SELECT COUNT(*) FROM chunks WHERE deleted_at IS NOT NULL"
+    )
+    active_signals = count(
+        "SELECT COUNT(*) FROM code_signals WHERE deleted_at IS NULL"
+    )
+    deleted_signals = count(
+        "SELECT COUNT(*) FROM code_signals WHERE deleted_at IS NOT NULL"
+    )
+    active_relations = count(
+        "SELECT COUNT(*) FROM code_relations WHERE deleted_at IS NULL"
+    )
+    deleted_relations = count(
+        "SELECT COUNT(*) FROM code_relations WHERE deleted_at IS NOT NULL"
+    )
+    active_symbols = count(
+        """
+        SELECT COUNT(DISTINCT symbols.symbol_id)
+        FROM symbols
+        JOIN chunk_symbols ON chunk_symbols.symbol_id = symbols.symbol_id
+        """
+    )
+    orphan_symbols = count(
+        """
+        SELECT COUNT(*)
+        FROM symbols
+        LEFT JOIN chunk_symbols ON chunk_symbols.symbol_id = symbols.symbol_id
+        WHERE chunk_symbols.symbol_id IS NULL
+        """
+    )
+    active_associations = count(
+        """
+        SELECT COUNT(*)
+        FROM code_relations
+        WHERE producer = 'test_association' AND deleted_at IS NULL
+        """
+    )
+    orphan_associations = count(
+        """
+        SELECT COUNT(*)
+        FROM code_relations
+        WHERE producer = 'test_association' AND deleted_at IS NOT NULL
+        """
+    )
+    return {
+        "active_chunks": active_chunks,
+        "deleted_chunks": deleted_chunks,
+        "active_signals": active_signals,
+        "deleted_signals": deleted_signals,
+        "active_relations": active_relations,
+        "deleted_relations": deleted_relations,
+        "active_symbols": active_symbols,
+        "orphan_symbols": orphan_symbols,
+        "active_associations": active_associations,
+        "orphan_associations": orphan_associations,
+    }
 
 
 def _in_query(sql: str, values: list[Any]) -> str:

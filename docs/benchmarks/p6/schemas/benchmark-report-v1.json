@@ -1,0 +1,1156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://context-search-tool.invalid/schemas/p6/benchmark-report-v1.json",
+  "title": "P6 Benchmark Report v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "report_kind": {
+      "const": "benchmark"
+    },
+    "report_scope": {
+      "enum": [
+        "tier",
+        "performance",
+        "churn"
+      ]
+    },
+    "mode": {
+      "enum": [
+        "baseline",
+        "final"
+      ]
+    },
+    "identity": {
+      "type": "object",
+      "properties": {
+        "implementation_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "production_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "harness_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "workload_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "dirty_production_source": {
+          "const": false
+        }
+      },
+      "required": [
+        "implementation_commit",
+        "production_tree",
+        "harness_sha256",
+        "workload_sha256",
+        "dirty_production_source"
+      ],
+      "additionalProperties": false
+    },
+    "environment": {
+      "type": "object",
+      "properties": {
+        "python": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cst": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sqlite": {
+          "type": "string",
+          "minLength": 1
+        },
+        "numpy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "os": {
+          "enum": [
+            "linux",
+            "macos",
+            "windows"
+          ]
+        },
+        "architecture": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cpu_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "memory_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "local_disk_class": {
+          "enum": [
+            "ssd",
+            "unknown"
+          ]
+        },
+        "power_state": {
+          "enum": [
+            "external",
+            "unknown"
+          ]
+        },
+        "governor_state": {
+          "type": "string",
+          "minLength": 1
+        },
+        "swap_before_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "swap_after_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "background_cpu_percent": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        }
+      },
+      "required": [
+        "python",
+        "cst",
+        "sqlite",
+        "numpy",
+        "os",
+        "architecture",
+        "cpu_count",
+        "memory_bytes",
+        "local_disk_class",
+        "power_state",
+        "governor_state",
+        "swap_before_bytes",
+        "swap_after_bytes",
+        "background_cpu_percent"
+      ],
+      "additionalProperties": false
+    },
+    "workload": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "generator_version": {
+          "const": "p6-generator-v1"
+        },
+        "generator_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tier": {
+          "enum": [
+            "smoke",
+            "large",
+            "scale-5k",
+            "scale-10k",
+            "stress"
+          ]
+        },
+        "fingerprint_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "schema_version",
+        "generator_version",
+        "generator_sha256",
+        "seed",
+        "tier",
+        "fingerprint_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "operation": {
+      "type": "object",
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "case_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "case_family": {
+          "enum": [
+            "index",
+            "status",
+            "refresh",
+            "query",
+            "explore",
+            "churn"
+          ]
+        },
+        "measurement_state": {
+          "enum": [
+            "cli_process_cold",
+            "mcp_resident_warm",
+            "filesystem_cold_diagnostic"
+          ]
+        },
+        "planner_enabled": {
+          "type": "boolean"
+        },
+        "embedding_provider": {
+          "const": "hash"
+        },
+        "embedding_model": {
+          "const": "hash-v1"
+        },
+        "embedding_dimensions": {
+          "const": 384
+        },
+        "outcome": {
+          "enum": [
+            "supported",
+            "unsupported"
+          ]
+        }
+      },
+      "required": [
+        "operation_id",
+        "case_id",
+        "case_family",
+        "measurement_state",
+        "planner_enabled",
+        "embedding_provider",
+        "embedding_model",
+        "embedding_dimensions",
+        "outcome"
+      ],
+      "additionalProperties": false
+    },
+    "calibration": {
+      "type": "object",
+      "properties": {
+        "valid": {
+          "type": "boolean"
+        },
+        "sha256_bytes": {
+          "const": 536870912
+        },
+        "sha256_mib_per_s": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "numpy_rows": {
+          "const": 80000
+        },
+        "numpy_dimensions": {
+          "const": 384
+        },
+        "numpy_dot_ms": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "sqlite_rows": {
+          "const": 20000
+        },
+        "sqlite_ms": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "within_pair_percent": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        }
+      },
+      "required": [
+        "valid",
+        "sha256_bytes",
+        "sha256_mib_per_s",
+        "numpy_rows",
+        "numpy_dimensions",
+        "numpy_dot_ms",
+        "sqlite_rows",
+        "sqlite_ms",
+        "within_pair_percent"
+      ],
+      "additionalProperties": false
+    },
+    "samples": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "type": "object",
+        "properties": {
+          "sample_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]*$"
+          },
+          "pair_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_ms": {
+            "type": "number",
+            "minimum": 0
+          },
+          "stage_timings_ms": {
+            "type": "object",
+            "properties": {
+              "startup": {
+                "type": "number",
+                "minimum": 0
+              },
+              "config": {
+                "type": "number",
+                "minimum": 0
+              },
+              "manifest": {
+                "type": "number",
+                "minimum": 0
+              },
+              "inventory": {
+                "type": "number",
+                "minimum": 0
+              },
+              "source": {
+                "type": "number",
+                "minimum": 0
+              },
+              "parse": {
+                "type": "number",
+                "minimum": 0
+              },
+              "embedding": {
+                "type": "number",
+                "minimum": 0
+              },
+              "persistence": {
+                "type": "number",
+                "minimum": 0
+              },
+              "repo_profile": {
+                "type": "number",
+                "minimum": 0
+              },
+              "lexical": {
+                "type": "number",
+                "minimum": 0
+              },
+              "path_symbol": {
+                "type": "number",
+                "minimum": 0
+              },
+              "direct_text": {
+                "type": "number",
+                "minimum": 0
+              },
+              "signal": {
+                "type": "number",
+                "minimum": 0
+              },
+              "semantic": {
+                "type": "number",
+                "minimum": 0
+              },
+              "graph": {
+                "type": "number",
+                "minimum": 0
+              },
+              "vector_publication": {
+                "type": "number",
+                "minimum": 0
+              },
+              "maintenance": {
+                "type": "number",
+                "minimum": 0
+              },
+              "end_to_end": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "startup",
+              "config",
+              "manifest",
+              "inventory",
+              "source",
+              "parse",
+              "embedding",
+              "persistence",
+              "repo_profile",
+              "lexical",
+              "path_symbol",
+              "direct_text",
+              "signal",
+              "semantic",
+              "graph",
+              "vector_publication",
+              "maintenance",
+              "end_to_end"
+            ],
+            "additionalProperties": false
+          },
+          "work": {
+            "type": "object",
+            "properties": {
+              "inventory_entries": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "inventory_dirs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "control_files": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "inventory_errors": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "source_bytes_read": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "source_bytes_hashed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "peak_queued_files": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "peak_queued_chunks": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "peak_queued_text_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "vector_rows_queued": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "embedding_batch_calls": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "embedding_batch_inputs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "flush_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "repo_profile_vm_steps": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "repo_profile_rows": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "repo_profile_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "active_ids_materialized": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deleted_ids_materialized": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "id_bytes_materialized": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "lexical_vm_steps": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "lexical_rows": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "path_symbol_rows": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "path_symbol_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "direct_text_rows": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "direct_text_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "signal_rows": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "signal_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "vector_bytes_read": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "vector_bytes_hashed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "vector_bytes_written": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "vector_bytes_copied": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "vector_payload_passes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "vector_normalization_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "vector_scored_rows": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "vector_sorted_rows": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "relations_read": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "relations_resolved": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "association_inputs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "association_writes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "path_index_builds": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "paths_canonicalized": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "tombstones": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "sqlite_pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "sqlite_freelist": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "generation_count": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "inventory_entries",
+              "inventory_dirs",
+              "control_files",
+              "inventory_errors",
+              "source_bytes_read",
+              "source_bytes_hashed",
+              "peak_queued_files",
+              "peak_queued_chunks",
+              "peak_queued_text_bytes",
+              "vector_rows_queued",
+              "embedding_batch_calls",
+              "embedding_batch_inputs",
+              "flush_count",
+              "repo_profile_vm_steps",
+              "repo_profile_rows",
+              "repo_profile_bytes",
+              "active_ids_materialized",
+              "deleted_ids_materialized",
+              "id_bytes_materialized",
+              "lexical_vm_steps",
+              "lexical_rows",
+              "path_symbol_rows",
+              "path_symbol_bytes",
+              "direct_text_rows",
+              "direct_text_bytes",
+              "signal_rows",
+              "signal_bytes",
+              "vector_bytes_read",
+              "vector_bytes_hashed",
+              "vector_bytes_written",
+              "vector_bytes_copied",
+              "vector_payload_passes",
+              "vector_normalization_count",
+              "vector_scored_rows",
+              "vector_sorted_rows",
+              "relations_read",
+              "relations_resolved",
+              "association_inputs",
+              "association_writes",
+              "path_index_builds",
+              "paths_canonicalized",
+              "tombstones",
+              "sqlite_pages",
+              "sqlite_freelist",
+              "generation_count"
+            ],
+            "additionalProperties": false
+          },
+          "rss": {
+            "type": "object",
+            "properties": {
+              "process_start_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "peak_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "current_bytes": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "empty_harness_peak_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "extra_peak_bytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "process_start_bytes",
+              "peak_bytes",
+              "current_bytes",
+              "empty_harness_peak_bytes",
+              "extra_peak_bytes"
+            ],
+            "additionalProperties": false
+          },
+          "disk": {
+            "type": "object",
+            "properties": {
+              "sqlite_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "vector_payload_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "vector_id_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "descriptor_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "manifest_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "total_bytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "sqlite_bytes",
+              "vector_payload_bytes",
+              "vector_id_bytes",
+              "descriptor_bytes",
+              "manifest_bytes",
+              "total_bytes"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "sample_id",
+          "pair_id",
+          "duration_ms",
+          "stage_timings_ms",
+          "work",
+          "rss",
+          "disk"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "sample_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "median_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "p50_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "p95_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cv_population": {
+          "type": "number",
+          "minimum": 0
+        },
+        "units": {
+          "type": "object",
+          "properties": {
+            "duration": {
+              "const": "ms"
+            },
+            "bytes": {
+              "const": "bytes"
+            },
+            "rss": {
+              "const": "bytes"
+            },
+            "throughput": {
+              "const": "MiB/s"
+            },
+            "ratio": {
+              "const": "ratio"
+            },
+            "count": {
+              "const": "count"
+            }
+          },
+          "required": [
+            "duration",
+            "bytes",
+            "rss",
+            "throughput",
+            "ratio",
+            "count"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "sample_count",
+        "median_ms",
+        "p50_ms",
+        "p95_ms",
+        "max_ms",
+        "cv_population",
+        "units"
+      ],
+      "additionalProperties": false
+    },
+    "validity": {
+      "type": "object",
+      "properties": {
+        "valid": {
+          "type": "boolean"
+        },
+        "reasons": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "calibration_drift",
+              "background_cpu",
+              "swap_growth",
+              "host_cpu",
+              "host_memory",
+              "disk_class",
+              "power_state",
+              "governor_state",
+              "child_process",
+              "mixed_identity",
+              "mixed_case",
+              "missing_samples",
+              "budget_failed"
+            ]
+          }
+        },
+        "child_processes": {
+          "const": 0
+        }
+      },
+      "required": [
+        "valid",
+        "reasons",
+        "child_processes"
+      ],
+      "additionalProperties": false
+    },
+    "case_reports": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "environment": {
+            "$ref": "#/properties/environment"
+          },
+          "workload": {
+            "$ref": "#/properties/workload"
+          },
+          "operation": {
+            "$ref": "#/properties/operation"
+          },
+          "calibration": {
+            "$ref": "#/properties/calibration"
+          },
+          "samples": {
+            "$ref": "#/properties/samples"
+          },
+          "summary": {
+            "$ref": "#/properties/summary"
+          },
+          "validity": {
+            "$ref": "#/properties/validity"
+          }
+        },
+        "required": [
+          "environment",
+          "workload",
+          "operation",
+          "calibration",
+          "samples",
+          "summary",
+          "validity"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "operation": {
+                  "properties": {
+                    "outcome": {
+                      "const": "unsupported"
+                    }
+                  },
+                  "required": [
+                    "outcome"
+                  ]
+                }
+              },
+              "required": [
+                "operation"
+              ]
+            },
+            "then": {
+              "properties": {
+                "samples": {
+                  "maxItems": 0
+                },
+                "summary": {
+                  "properties": {
+                    "sample_count": {
+                      "const": 0
+                    }
+                  }
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "samples": {
+                  "minItems": 1
+                },
+                "summary": {
+                  "properties": {
+                    "sample_count": {
+                      "minimum": 1
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "churn": {
+      "type": "object",
+      "properties": {
+        "steps": {
+          "const": 100
+        },
+        "disk_page_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1.25
+        },
+        "tombstones_within_threshold": {
+          "const": true
+        },
+        "query_p95_drift_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.1
+        },
+        "generation_count_after_failure": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        }
+      },
+      "required": [
+        "steps",
+        "disk_page_ratio",
+        "tombstones_within_threshold",
+        "query_p95_drift_ratio",
+        "generation_count_after_failure"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "report_kind",
+    "report_scope",
+    "mode",
+    "identity"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "properties": {
+              "outcome": {
+                "const": "unsupported"
+              }
+            },
+            "required": [
+              "outcome"
+            ]
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "samples": {
+            "maxItems": 0
+          },
+          "summary": {
+            "properties": {
+              "sample_count": {
+                "const": 0
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "samples": {
+            "minItems": 1
+          },
+          "summary": {
+            "properties": {
+              "sample_count": {
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "report_scope": {
+            "const": "tier"
+          }
+        },
+        "required": [
+          "report_scope"
+        ]
+      },
+      "then": {
+        "required": [
+          "environment",
+          "workload",
+          "operation",
+          "calibration",
+          "samples",
+          "summary",
+          "validity"
+        ],
+        "not": {
+          "required": [
+            "case_reports"
+          ]
+        }
+      },
+      "else": {
+        "if": {
+          "properties": {
+            "report_scope": {
+              "const": "performance"
+            }
+          },
+          "required": [
+            "report_scope"
+          ]
+        },
+        "then": {
+          "required": [
+            "case_reports"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "environment"
+                ]
+              },
+              {
+                "required": [
+                  "workload"
+                ]
+              },
+              {
+                "required": [
+                  "operation"
+                ]
+              },
+              {
+                "required": [
+                  "calibration"
+                ]
+              },
+              {
+                "required": [
+                  "samples"
+                ]
+              },
+              {
+                "required": [
+                  "summary"
+                ]
+              },
+              {
+                "required": [
+                  "validity"
+                ]
+              }
+            ]
+          }
+        },
+        "else": {
+          "properties": {
+            "mode": {
+              "const": "final"
+            }
+          },
+          "required": [
+            "workload",
+            "churn"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "environment"
+                ]
+              },
+              {
+                "required": [
+                  "operation"
+                ]
+              },
+              {
+                "required": [
+                  "calibration"
+                ]
+              },
+              {
+                "required": [
+                  "samples"
+                ]
+              },
+              {
+                "required": [
+                  "summary"
+                ]
+              },
+              {
+                "required": [
+                  "validity"
+                ]
+              },
+              {
+                "required": [
+                  "case_reports"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

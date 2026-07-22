@@ -36,19 +36,17 @@ def _normalized_unit_key(value: str) -> str:
 
 
 @dataclass(frozen=True)
-class PluginContext:
-    file_path: Path
-    language: str
-    project_unit_key: str
-    project_metadata: Mapping[str, Any] = field(default_factory=dict)
-    active_paths: tuple[Path, ...] = ()
-    active_path_project_units: tuple[tuple[Path, str], ...] = ()
+class RepositoryPathIndex:
+    active_paths: tuple[Path, ...]
+    active_path_project_units: tuple[tuple[Path, str], ...]
+    _path_membership: frozenset[Path] = field(init=False, repr=False, compare=False)
+    _project_units_by_path: Mapping[Path, str] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
-        if not isinstance(self.language, str) or not self.language.strip():
-            raise ValueError("language must be a non-empty string")
-        file_path = _normalized_path(self.file_path, "file_path")
-        unit_key = _normalized_unit_key(self.project_unit_key)
         active_paths = tuple(
             sorted(
                 {
@@ -58,18 +56,77 @@ class PluginContext:
                 key=lambda path: path.as_posix(),
             )
         )
+        units_by_path: dict[Path, str] = {}
+        for raw_path, raw_key in self.active_path_project_units:
+            path = _normalized_path(raw_path, "active project path")
+            key = _normalized_unit_key(raw_key)
+            previous = units_by_path.get(path)
+            if previous is not None and previous != key:
+                raise ValueError("active path has conflicting project units")
+            units_by_path[path] = key
         units = tuple(
             sorted(
-                {
-                    (
-                        _normalized_path(path, "active project path"),
-                        _normalized_unit_key(key),
-                    )
-                    for path, key in self.active_path_project_units
-                },
+                units_by_path.items(),
                 key=lambda item: (item[0].as_posix(), item[1]),
             )
         )
+        object.__setattr__(self, "active_paths", active_paths)
+        object.__setattr__(self, "active_path_project_units", units)
+        object.__setattr__(self, "_path_membership", frozenset(active_paths))
+        object.__setattr__(
+            self,
+            "_project_units_by_path",
+            MappingProxyType(dict(units)),
+        )
+
+    def contains_path(self, path: Path | str) -> bool:
+        return _normalized_path(path, "target path") in self._path_membership
+
+    def project_unit_for_path(self, path: Path | str, default: str = "") -> str:
+        normalized = _normalized_path(path, "target path")
+        return self._project_units_by_path.get(normalized, default)
+
+
+@dataclass(frozen=True)
+class PluginContext:
+    file_path: Path
+    language: str
+    project_unit_key: str
+    project_metadata: Mapping[str, Any] = field(default_factory=dict)
+    active_paths: tuple[Path, ...] = ()
+    active_path_project_units: tuple[tuple[Path, str], ...] = ()
+    repository_path_index: RepositoryPathIndex | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.language, str) or not self.language.strip():
+            raise ValueError("language must be a non-empty string")
+        file_path = _normalized_path(self.file_path, "file_path")
+        unit_key = _normalized_unit_key(self.project_unit_key)
+        if self.repository_path_index is None:
+            active_paths = tuple(
+                sorted(
+                    {
+                        _normalized_path(path, "active path")
+                        for path in self.active_paths
+                    },
+                    key=lambda path: path.as_posix(),
+                )
+            )
+            units = tuple(
+                sorted(
+                    {
+                        (
+                            _normalized_path(path, "active project path"),
+                            _normalized_unit_key(key),
+                        )
+                        for path, key in self.active_path_project_units
+                    },
+                    key=lambda item: (item[0].as_posix(), item[1]),
+                )
+            )
+        else:
+            active_paths = self.repository_path_index.active_paths
+            units = self.repository_path_index.active_path_project_units
         object.__setattr__(self, "file_path", file_path)
         object.__setattr__(self, "language", self.language.strip().lower())
         object.__setattr__(self, "project_unit_key", unit_key)
@@ -85,7 +142,17 @@ class PluginContext:
     def source_path(self) -> Path:
         return self.file_path
 
+    def contains_path(self, path: Path | str) -> bool:
+        if self.repository_path_index is not None:
+            return self.repository_path_index.contains_path(path)
+        return _normalized_path(path, "target path") in self.active_paths
+
     def project_unit_for_path(self, path: Path | str) -> str:
+        if self.repository_path_index is not None:
+            return self.repository_path_index.project_unit_for_path(
+                path,
+                self.project_unit_key,
+            )
         normalized = _normalized_path(path, "target path")
         by_path = dict(self.active_path_project_units)
         return by_path.get(normalized, self.project_unit_key)

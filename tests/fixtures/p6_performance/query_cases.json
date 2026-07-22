@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "approved_generated_query_ids": [
+    "lexical_high",
+    "lexical_low",
+    "lexical_zero",
+    "path_symbol_ambiguity",
+    "direct_ascii",
+    "direct_cjk",
+    "signal_metadata",
+    "semantic_high",
+    "planner_off_ordinary",
+    "p4_explore"
+  ],
+  "cases": [
+    {
+      "id": "lexical_high",
+      "family": "lexical",
+      "selectivity": "high_hit",
+      "query_token": "lexicalburst",
+      "planner_enabled": false,
+      "top_k": 10
+    },
+    {
+      "id": "lexical_low",
+      "family": "lexical",
+      "selectivity": "low_hit",
+      "query_token": "raretoken",
+      "planner_enabled": false,
+      "top_k": 10
+    },
+    {
+      "id": "lexical_zero",
+      "family": "lexical",
+      "selectivity": "zero_hit",
+      "query_token": "qxvplmzn",
+      "planner_enabled": false,
+      "top_k": 10
+    },
+    {
+      "id": "path_symbol_ambiguity",
+      "family": "path",
+      "selectivity": "high_ambiguity",
+      "query_token": "AmbiguousGateway",
+      "planner_enabled": false,
+      "top_k": 10
+    },
+    {
+      "id": "direct_ascii",
+      "family": "direct",
+      "selectivity": "high_hit",
+      "query_token": "invoice/reference:ASCII-9000",
+      "planner_enabled": false,
+      "top_k": 10
+    },
+    {
+      "id": "direct_cjk",
+      "family": "direct",
+      "selectivity": "high_hit",
+      "query_token": "支付订单状态",
+      "planner_enabled": false,
+      "top_k": 10
+    },
+    {
+      "id": "signal_metadata",
+      "family": "signal",
+      "selectivity": "high_hit",
+      "query_token": "signalroute",
+      "planner_enabled": false,
+      "top_k": 10
+    },
+    {
+      "id": "semantic_high",
+      "family": "semantic",
+      "selectivity": "high_hit",
+      "query_token": "distributed idempotency saga coordinator",
+      "planner_enabled": false,
+      "top_k": 10
+    },
+    {
+      "id": "planner_off_ordinary",
+      "family": "planner",
+      "selectivity": "high_hit",
+      "query_token": "checkout service flow",
+      "planner_enabled": false,
+      "top_k": 10
+    },
+    {
+      "id": "p4_explore",
+      "family": "explore",
+      "selectivity": "high_hit",
+      "query_token": "checkout endpoint implementation tests",
+      "planner_enabled": false,
+      "top_k": 8
+    }
+  ]
+}

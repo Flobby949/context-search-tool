@@ -1729,6 +1729,48 @@ def test_mcp_index_maps_busy_to_existing_index_failed_envelope(
     }
 
 
+@pytest.mark.parametrize(
+    "error_type",
+    [
+        mcp_tools.requests.HTTPError,
+        mcp_tools.requests.ConnectionError,
+        mcp_tools.requests.Timeout,
+    ],
+)
+def test_mcp_index_sanitizes_remote_provider_request_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    secret = "SECRET https://user:password@provider.invalid/embeddings"
+    monkeypatch.setattr(
+        mcp_tools,
+        "index_repository",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            error_type(secret)
+        ),
+    )
+
+    try:
+        payload = context_search_index_tool(str(repo))
+    except Exception as exc:
+        payload = None
+        rendered = str(exc)
+    else:
+        rendered = json.dumps(payload)
+
+    assert payload == {
+        "ok": False,
+        "error": {
+            "code": "index_failed",
+            "message": "remote embedding request failed",
+        },
+    }
+    assert secret not in rendered
+
+
 def test_mcp_stats_logs_stale_without_changing_payload(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
@@ -1746,3 +1788,402 @@ def test_mcp_stats_logs_stale_without_changing_payload(
     assert payload["ok"] is True
     assert "warning" not in payload
     assert caplog.messages.count("graph_index_stale") == 1
+
+
+def _p6_mcp_health_report(case_id: str):
+    from context_search_tool import index_health
+
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "p6_contracts"
+            / "index_health_v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    raw = next(
+        item["report"] for item in fixture["cases"] if item["id"] == case_id
+    )
+    return index_health.IndexHealthReport.from_dict(raw)
+
+
+def test_mcp_status_uses_exact_shared_envelope_and_sanitized_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert hasattr(mcp_tools, "context_search_status_tool"), (
+        "P6 MCP status tool is absent"
+    )
+    assert hasattr(mcp_tools, "index_health"), "P6 shared MCP health service is absent"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    report = _p6_mcp_health_report("healthy_metadata")
+    modes: list[str] = []
+
+    def inspect(_repo: Path, *, mode: str):
+        modes.append(mode)
+        return report
+
+    monkeypatch.setattr(mcp_tools.index_health, "inspect_repository_health", inspect)
+    payload = mcp_tools.context_search_status_tool(str(repo), verify=True)
+
+    assert tuple(payload) == ("schema_version", "ok", "repo", "index_health")
+    assert payload == mcp_tools.index_health.status_success_envelope(str(repo), report)
+    assert modes == ["verified"]
+
+    missing = mcp_tools.context_search_status_tool(str(tmp_path / "missing"))
+    assert missing == {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": "repo_not_found",
+            "message": "repository root was not found",
+        },
+    }
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("PRIVATE_STATUS_FAILURE")
+
+    monkeypatch.setattr(mcp_tools.index_health, "inspect_repository_health", fail)
+    assert mcp_tools.context_search_status_tool(str(repo)) == {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": "status_failed",
+            "message": "status inspection failed",
+        },
+    }
+
+
+def test_cli_json_and_mcp_status_are_value_equal_for_one_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert hasattr(mcp_tools, "context_search_status_tool"), (
+        "P6 MCP status tool is absent"
+    )
+    assert hasattr(cli, "index_health"), "P6 CLI status service is absent"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    report = _p6_mcp_health_report("stale")
+
+    monkeypatch.setattr(
+        mcp_tools.index_health,
+        "inspect_repository_health",
+        lambda _repo, *, mode: report,
+    )
+    cli_payload = json.loads(
+        CliRunner().invoke(app, ["status", str(repo), "--json"]).stdout
+    )
+    mcp_payload = mcp_tools.context_search_status_tool(str(repo))
+
+    assert cli_payload == mcp_payload
+
+
+def test_mcp_status_missing_is_successful_and_read_only(tmp_path: Path) -> None:
+    assert hasattr(mcp_tools, "context_search_status_tool"), (
+        "P6 MCP status tool is absent"
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    payload = mcp_tools.context_search_status_tool(str(repo))
+
+    assert payload["schema_version"] == 1
+    assert payload["ok"] is True
+    assert payload["index_health"]["health"] == "missing"
+    assert not (repo / ".context-search").exists()
+
+
+@pytest.mark.parametrize(
+    ("manifest_version", "operational_version", "graph_version", "error_code"),
+    [
+        (3, None, None, "incompatible_manifest_schema"),
+        (2, 2, 5, "incompatible_operational_schema"),
+        (2, 1, 6, "incompatible_signal_schema"),
+    ],
+)
+def test_mcp_status_reports_future_but_stats_fails_before_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    manifest_version: int,
+    operational_version: int | None,
+    graph_version: int | None,
+    error_code: str,
+) -> None:
+    assert hasattr(mcp_tools, "context_search_status_tool"), (
+        "P6 MCP status tool is absent"
+    )
+    repo = tmp_path / error_code
+    repo.mkdir()
+    index_dir = repo / ".context-search"
+    index_dir.mkdir()
+    (index_dir / "manifest.json").write_text(
+        json.dumps({"schema_version": manifest_version}),
+        encoding="utf-8",
+    )
+    store = mcp_tools.SQLiteStore(index_dir / "index.sqlite")
+    store.initialize()
+    if operational_version is not None:
+        store.set_metadata("operational_schema_version", str(operational_version))
+    if graph_version is not None:
+        store.set_metadata("signal_schema_version", str(graph_version))
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("future schema crossed config preflight")
+
+    monkeypatch.setattr(mcp_tools, "load_config", forbidden)
+    status = mcp_tools.context_search_status_tool(str(repo))
+    stats = mcp_tools.context_search_stats_tool(str(repo))
+
+    assert status["ok"] is True
+    assert status["index_health"]["health"] == "incompatible"
+    assert stats == {
+        "ok": False,
+        "error": {
+            "code": error_code,
+            "message": {
+                "incompatible_manifest_schema": "incompatible manifest schema 3",
+                "incompatible_operational_schema": "incompatible operational schema 2",
+                "incompatible_signal_schema": "incompatible signal schema 6",
+            }[error_code],
+        },
+    }
+
+
+def test_mcp_stats_verify_is_additive_and_runs_one_inspection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    assert context_search_index_tool(str(repo))["ok"] is True
+    report = _p6_mcp_health_report("healthy_verified")
+    modes: list[str] = []
+
+    def inspect(_repo: Path, *, mode: str):
+        modes.append(mode)
+        return report
+
+    assert hasattr(mcp_tools, "index_health"), "P6 shared MCP health service is absent"
+    monkeypatch.setattr(mcp_tools.index_health, "inspect_repository_health", inspect)
+    payload = mcp_tools.context_search_stats_tool(str(repo), verify=True)
+
+    assert tuple(payload) == ("ok", "repo", "stats", "embedding", "index_health")
+    assert modes == ["verified"]
+    assert payload["stats"]["total_files"] == 2
+    assert payload["embedding"]["provider"] == "hash"
+    assert payload["index_health"] == mcp_tools.index_health.serialize_index_health(
+        report
+    )
+
+
+def test_mcp_refresh_uses_exact_envelope_and_never_runs_implicitly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refresh_tool = getattr(mcp_tools, "context_search_refresh_tool", None)
+    assert callable(refresh_tool), "P6 MCP refresh tool is absent"
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    assert context_search_index_tool(str(repo))["ok"] is True
+    source = repo / "ApplyAuditServiceImpl.java"
+    source.write_text(
+        'class ApplyAuditServiceImpl { String changed() { return "changed"; } }\n',
+        encoding="utf-8",
+    )
+
+    payload = refresh_tool(str(repo))
+
+    assert tuple(payload) == (
+        "schema_version",
+        "ok",
+        "repo",
+        "summary",
+        "embedding",
+        "index_health",
+    )
+    assert payload["ok"] is True
+    assert payload["summary"]["files"]["content_changed"] == 1
+    assert payload["embedding"]["indexed_before"] == payload["embedding"][
+        "configured"
+    ]
+    assert payload["index_health"]["freshness"]["status"] == "metadata_fresh"
+
+    missing = refresh_tool(str(tmp_path / "missing"))
+    assert missing == {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": "repo_not_found",
+            "message": "repository root was not found",
+            "network_egress_outcome": "not_attempted",
+        },
+    }
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("query-like surface invoked refresh")
+
+    monkeypatch.setattr(mcp_tools, "refresh_repository", forbidden)
+    assert context_search_query_tool(str(repo), "ApplyAudit")["ok"] is True
+    assert context_search_trace_tool(str(repo), "ApplyAudit")["ok"] is True
+    assert context_search_context_tool(str(repo), "ApplyAudit")["ok"] is True
+    assert mcp_tools.context_search_explore_tool(str(repo), "ApplyAudit")["ok"] is True
+
+
+def test_mcp_noop_refresh_reuses_its_bound_health_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    assert context_search_index_tool(str(repo))["ok"] is True
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("no-op refresh repeated the completed health inspection")
+
+    monkeypatch.setattr(
+        mcp_tools.index_health,
+        "inspect_repository_health",
+        forbidden,
+    )
+
+    payload = mcp_tools.context_search_refresh_tool(str(repo))
+
+    assert payload["ok"] is True
+    assert payload["summary"]["files"]["direct_dirty"] == 0
+    assert payload["index_health"]["health"] == "healthy_metadata"
+
+
+@pytest.mark.parametrize(
+    ("code", "outcome", "message"),
+    [
+        ("missing_index", "not_attempted", "an existing v2 index is required"),
+        (
+            "incompatible_manifest_schema",
+            "not_attempted",
+            "manifest schema is incompatible",
+        ),
+        (
+            "incompatible_operational_schema",
+            "not_attempted",
+            "operational schema is incompatible",
+        ),
+        (
+            "incompatible_signal_schema",
+            "not_attempted",
+            "signal schema is incompatible",
+        ),
+        ("index_busy", "not_attempted", "another index writer is active"),
+        (
+            "authoritative_index_required",
+            "not_attempted",
+            "authoritative indexing is required",
+        ),
+        (
+            "inventory_incomplete",
+            "not_attempted",
+            "repository inventory is incomplete",
+        ),
+        (
+            "workspace_changed",
+            "performed",
+            "repository changed during refresh",
+        ),
+        ("refresh_failed", "possible", "refresh failed"),
+    ],
+)
+def test_mcp_refresh_errors_are_closed_sanitized_and_preserve_egress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    code: str,
+    outcome: str,
+    message: str,
+) -> None:
+    from context_search_tool.indexer import RefreshFailure
+
+    refresh_tool = getattr(mcp_tools, "context_search_refresh_tool", None)
+    assert callable(refresh_tool), "P6 MCP refresh tool is absent"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(
+        mcp_tools,
+        "refresh_repository",
+        lambda *_args, **_kwargs: RefreshFailure(
+            code=code,
+            message="SECRET https://provider.invalid response body",
+            network_egress_outcome=outcome,
+        ),
+    )
+
+    payload = refresh_tool(str(repo))
+
+    assert payload == {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": message,
+            "network_egress_outcome": outcome,
+        },
+    }
+    assert "SECRET" not in json.dumps(payload)
+
+
+def test_mcp_refresh_post_success_inspection_failure_has_no_partial_siblings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refresh_tool = getattr(mcp_tools, "context_search_refresh_tool", None)
+    assert callable(refresh_tool), "P6 MCP refresh tool is absent"
+    repo = tmp_path / "repo"
+    _write_java_repo(repo)
+    assert context_search_index_tool(str(repo))["ok"] is True
+    (repo / "ApplyAuditServiceImpl.java").write_text(
+        'class ApplyAuditServiceImpl { String changed() { return "changed"; } }\n',
+        encoding="utf-8",
+    )
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("SECRET_INSPECTION_FAILURE")
+
+    monkeypatch.setattr(mcp_tools.index_health, "inspect_repository_health", fail)
+    payload = refresh_tool(str(repo))
+
+    assert payload == {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": "refresh_failed",
+            "message": "refresh failed",
+            "network_egress_outcome": "not_attempted",
+        },
+    }
+    assert set(payload) == {"schema_version", "ok", "error"}
+
+
+def test_mcp_refresh_unexpected_service_failure_is_fail_closed_possible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refresh_tool = getattr(mcp_tools, "context_search_refresh_tool", None)
+    assert callable(refresh_tool), "P6 MCP refresh tool is absent"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def unexpected(*_args, **_kwargs):
+        raise RuntimeError("SECRET provider state")
+
+    monkeypatch.setattr(mcp_tools, "refresh_repository", unexpected)
+    payload = refresh_tool(str(repo))
+
+    assert payload == {
+        "schema_version": 1,
+        "ok": False,
+        "error": {
+            "code": "refresh_failed",
+            "message": "refresh failed",
+            "network_egress_outcome": "possible",
+        },
+    }
+    assert "SECRET" not in json.dumps(payload)

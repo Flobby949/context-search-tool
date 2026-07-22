@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 from copy import deepcopy
+import json
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -90,6 +90,13 @@ EXPECTED_BASELINE_SKIPS = (
         "requests checkout is not configured",
     ),
 )
+
+_DISABLED_PROFILE_OPERATIONS = {
+    "sqlite.language_counts",
+    "sqlite.source_files_for_profile",
+    "sqlite.symbol_names_for_profile",
+    "sqlite.token_counts_for_profile",
+}
 
 
 def _load_baseline() -> dict[str, object]:
@@ -238,6 +245,43 @@ def _sample_anchor_operation_ledgers() -> tuple[
     return actual, expected
 
 
+def _without_disabled_profile_work(
+    projection: dict[str, object],
+) -> dict[str, object]:
+    normalized = deepcopy(projection)
+    cases = normalized["cases"]
+    assert isinstance(cases, list)
+    disabled_ledger_keys: set[str] = set()
+
+    def normalize_operations(operations: list[dict[str, object]]) -> None:
+        operations[:] = [
+            operation
+            for operation in operations
+            if operation["operation"] not in _DISABLED_PROFILE_OPERATIONS
+        ]
+        for operation in operations:
+            if operation["operation"] != "planner.plan":
+                continue
+            args = operation["args"]
+            assert isinstance(args, dict)
+            args.pop("repo_profile", None)
+
+    for case in cases:
+        assert isinstance(case, dict)
+        planner = case["effective_config"]["query_planner"]
+        if planner["enabled"]:
+            continue
+        disabled_ledger_keys.add(f"{case['repo_key']}/{case['case_id']}")
+        normalize_operations(case["ordinary_operations"])
+        normalize_operations(case["traced_operations"])
+
+    ledgers = normalized["full_stage_ledgers"]
+    assert isinstance(ledgers, dict)
+    for key in disabled_ledger_keys & set(ledgers):
+        normalize_operations(ledgers[key]["operations"])
+    return normalized
+
+
 def assert_final_junit_evidence_matches_baseline(path: Path) -> dict[str, int]:
     baseline = _load_baseline()["test_evidence"]
     root = ElementTree.parse(path).getroot()
@@ -313,16 +357,41 @@ def test_characterization_matches_immutable_baseline(tmp_path: Path) -> None:
     }
     actual = baseline_projection(tmp_path, expected_cases=baseline["cases"])
 
-    assert _without_operation_ledgers(actual) == _without_operation_ledgers(expected)
-    for actual_case, expected_case in zip(actual["cases"], expected["cases"]):
+    for case in actual["cases"]:
+        if case["effective_config"]["query_planner"]["enabled"]:
+            continue
+        for operations in (
+            case["ordinary_operations"],
+            case["traced_operations"],
+        ):
+            assert not any(
+                operation["operation"] in _DISABLED_PROFILE_OPERATIONS
+                for operation in operations
+            )
+            planner_call = next(
+                operation
+                for operation in operations
+                if operation["operation"] == "planner.plan"
+            )
+            assert planner_call["args"].get("repo_profile") is None
+
+    normalized_actual = _without_disabled_profile_work(actual)
+    normalized_expected = _without_disabled_profile_work(expected)
+    assert _without_operation_ledgers(normalized_actual) == _without_operation_ledgers(
+        normalized_expected
+    )
+    for actual_case, expected_case in zip(
+        normalized_actual["cases"],
+        normalized_expected["cases"],
+    ):
         for field in ("ordinary_operations", "traced_operations"):
             _assert_anchor_batch_operation_delta(
                 actual_case[field],
                 expected_case[field],
             )
-    for key, expected_ledger in expected["full_stage_ledgers"].items():
+    for key, expected_ledger in normalized_expected["full_stage_ledgers"].items():
         _assert_anchor_batch_operation_delta(
-            actual["full_stage_ledgers"][key]["operations"],
+            normalized_actual["full_stage_ledgers"][key]["operations"],
             expected_ledger["operations"],
         )
 

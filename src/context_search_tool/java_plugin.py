@@ -179,6 +179,8 @@ class JavaPlugin:
                 field_owner_by_line[top_level_line] = context["name"]
 
         for line_number, line in enumerate(lines, start=1):
+            if not line.strip():
+                continue
             type_match = _TYPE_RE.search(line)
             if type_match:
                 kind, name = type_match.groups()

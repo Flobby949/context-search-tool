@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://context-search-tool.invalid/schemas/p6/quality-report-v1.json",
+  "title": "P6 Quality Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "implementation_commit",
+    "production_tree",
+    "full_suite",
+    "profiles",
+    "tdd"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "implementation_commit": {"$ref": "#/$defs/git"},
+    "production_tree": {"$ref": "#/$defs/git"},
+    "full_suite": {"$ref": "#/$defs/full_suite"},
+    "profiles": {"$ref": "#/$defs/profiles"},
+    "tdd": {
+      "type": "array",
+      "minItems": 10,
+      "items": {"$ref": "#/$defs/tdd"}
+    }
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "full_suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "passed",
+        "skipped",
+        "xfail",
+        "errors",
+        "junit_sha256",
+        "skip_node_ids"
+      ],
+      "properties": {
+        "passed": {"type": "integer", "minimum": 2625},
+        "skipped": {"const": 9},
+        "xfail": {"const": 0},
+        "errors": {"const": 0},
+        "junit_sha256": {"$ref": "#/$defs/sha"},
+        "skip_node_ids": {
+          "type": "array",
+          "minItems": 9,
+          "maxItems": 9,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "selected", "trace_coverage"],
+      "properties": {
+        "passed": {"type": "integer", "minimum": 1},
+        "selected": {"type": "integer", "minimum": 1},
+        "trace_coverage": {"const": 1}
+      }
+    },
+    "pinned_real": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "selected", "byte_identical"],
+      "properties": {
+        "passed": {"const": 2},
+        "selected": {"const": 2},
+        "byte_identical": {"const": true}
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "p5_language_graphs",
+        "p4_exploration",
+        "p2_context_pack",
+        "ci",
+        "pinned_real"
+      ],
+      "properties": {
+        "p5_language_graphs": {"$ref": "#/$defs/profile"},
+        "p4_exploration": {"$ref": "#/$defs/profile"},
+        "p2_context_pack": {"$ref": "#/$defs/profile"},
+        "ci": {"$ref": "#/$defs/profile"},
+        "pinned_real": {"$ref": "#/$defs/pinned_real"}
+      }
+    },
+    "tdd": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task",
+        "checkpoint",
+        "producer_version",
+        "record_sha256",
+        "pre_change_commit",
+        "pre_change_production_tree",
+        "final_staged_tree",
+        "test_identity_sha256",
+        "red_failed",
+        "green_passed"
+      ],
+      "properties": {
+        "task": {"type": "integer", "minimum": 1, "maximum": 10},
+        "checkpoint": {"type": "integer", "minimum": 1},
+        "producer_version": {"const": "p6-benchmark-v1"},
+        "record_sha256": {"$ref": "#/$defs/sha"},
+        "pre_change_commit": {"$ref": "#/$defs/git"},
+        "pre_change_production_tree": {"$ref": "#/$defs/git"},
+        "final_staged_tree": {"$ref": "#/$defs/git"},
+        "test_identity_sha256": {"$ref": "#/$defs/sha"},
+        "red_failed": {"type": "integer", "minimum": 1},
+        "green_passed": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}
