@@ -1323,6 +1323,9 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     original_vector_sha256_file_safe = vector_store_module._sha256_file_safe
     original_load_generation = vector_store_module._load_generation
     original_load_bound_generation = vector_store_module._load_bound_generation
+    original_verify_generation_v2_streaming = (
+        vector_store_module._verify_generation_v2_streaming
+    )
     original_open_connection = sqlite_store_module._open_connection
     original_build_repo_profile = retrieval_module.build_repo_profile
     persistence_names = (
@@ -1590,9 +1593,9 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
         attributed_stage_timings["source"] += (
             time.perf_counter() - started
         ) * 1000
-        if result.content is not None:
-            attributed_work["source_bytes_read"] += len(result.content)
-            attributed_work["source_bytes_hashed"] += len(result.content)
+        if result.status == "read" and result.size is not None:
+            attributed_work["source_bytes_read"] += int(result.size)
+            attributed_work["source_bytes_hashed"] += int(result.size)
         return result
 
     def measured_health_snapshot(*args: Any, **kwargs: Any) -> Any:
@@ -1757,6 +1760,23 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
         immutable_state_load_ms += (time.perf_counter() - started) * 1000
         return result
 
+    def measured_verify_generation_v2_streaming(
+        index_dir: Path,
+        descriptor: Any,
+    ) -> Any:
+        nonlocal immutable_state_load_ms
+        vectors_path = index_dir / descriptor.vectors_file
+        ids_path = index_dir / descriptor.ids_file
+        attributed_work["vector_bytes_read"] += (
+            vectors_path.stat().st_size + ids_path.stat().st_size
+        )
+        attributed_work["vector_bytes_hashed"] += vectors_path.stat().st_size
+        attributed_work["vector_payload_passes"] += 1
+        started = time.perf_counter()
+        result = original_verify_generation_v2_streaming(index_dir, descriptor)
+        immutable_state_load_ms += (time.perf_counter() - started) * 1000
+        return result
+
     def counted_popen(*args: Any, **kwargs: Any) -> Any:
         nonlocal child_count
         child_count += 1
@@ -1822,6 +1842,9 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             vector_store_module._load_generation = measured_load_generation
             vector_store_module._load_bound_generation = (
                 measured_load_bound_generation
+            )
+            vector_store_module._verify_generation_v2_streaming = (
+                measured_verify_generation_v2_streaming
             )
         if operation in {
             "full_build",
@@ -1916,6 +1939,9 @@ def _measurement_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             vector_store_module._load_generation = original_load_generation
             vector_store_module._load_bound_generation = (
                 original_load_bound_generation
+            )
+            vector_store_module._verify_generation_v2_streaming = (
+                original_verify_generation_v2_streaming
             )
             sqlite_store_module._open_connection = original_open_connection
             retrieval_module.build_repo_profile = original_build_repo_profile
