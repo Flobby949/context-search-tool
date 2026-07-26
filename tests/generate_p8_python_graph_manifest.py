@@ -411,6 +411,8 @@ def _render(payload: dict) -> str:
 
 def main() -> int:
     mode = sys.argv[1] if len(sys.argv) > 1 else "--check"
+    if mode in {"--write-structural", "--check-structural"}:
+        return structural_main(mode)
     manifest, catalog = build_manifest(), build_catalog()
     if mode == "--write":
         MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -436,5 +438,94 @@ def main() -> int:
     return 1 if problems else 0
 
 
+
+STRUCTURAL_PATH = (
+    ROOT / "tests/fixtures/p8_python_graphs/structural_expected.json"
+)
+P8_FIXTURE_REPO = ROOT / "tests/fixtures/p8-python-graphs"
+
+
+def register_p8_forbidden_edges() -> None:
+    import generate_p5_graph_expected as p5
+
+    p5.FORBIDDEN_EDGES.setdefault(
+        "p8_python_graphs",
+        (
+            # Dynamic imports must never create an edge.
+            p5._ForbiddenEdge(
+                "python-dynamic-import",
+                ("app/dynamic.py",),
+                ("imports",),
+                target_paths=(),
+                resolved_only=True,
+            ),
+            # No relation may resolve across the nested project unit.
+            p5._ForbiddenEdge(
+                "python-cross-unit-import",
+                (),
+                ("imports", "tests"),
+                resolved_only=True,
+                cross_unit_only=True,
+            ),
+            # A malformed source contributes no python producer relation.
+            p5._ForbiddenEdge(
+                "python-malformed-source",
+                ("app/broken.py",),
+                ("imports",),
+                resolved_only=False,
+            ),
+        ),
+    )
+
+
+def build_structural_projection(*, reverse_order: bool = False) -> dict:
+    """Project the P8 fixture graph through the shared P5 machinery."""
+    import shutil
+    import tempfile
+
+    import generate_p5_graph_expected as p5
+    from context_search_tool.graph_lifecycle import (
+        GRAPH_PRODUCER_VERSION_KEY,
+    )
+    from context_search_tool.sqlite_store import SQLiteStore
+
+    register_p8_forbidden_edges()
+    with tempfile.TemporaryDirectory(prefix="cst-p8-structural-") as temp:
+        repo = Path(temp) / "repo"
+        shutil.copytree(P8_FIXTURE_REPO, repo)
+        p5._index(repo, reverse_order=reverse_order)
+        projection = p5._snapshot_projection("p8_python_graphs", repo)
+        store = SQLiteStore(repo / ".context-search/index.sqlite")
+        projection["readiness"]["graph_producer_version"] = int(
+            store.get_metadata(GRAPH_PRODUCER_VERSION_KEY) or 0
+        )
+    return projection
+
+
+def render_structural(projection: dict) -> str:
+    return json.dumps(
+        projection, ensure_ascii=False, sort_keys=True, indent=2
+    ) + "\n"
+
+
+def structural_main(mode: str) -> int:
+    forward = build_structural_projection(reverse_order=False)
+    reverse = build_structural_projection(reverse_order=True)
+    if render_structural(forward) != render_structural(reverse):
+        print("CHECK FAILED: forward/reverse structural projections differ")
+        return 1
+    rendered = render_structural(forward)
+    if mode == "--write-structural":
+        STRUCTURAL_PATH.write_text(rendered, encoding="utf-8")
+        print(f"wrote {STRUCTURAL_PATH}")
+        return 0
+    if not STRUCTURAL_PATH.exists():
+        print(f"CHECK FAILED: missing {STRUCTURAL_PATH}")
+        return 1
+    if STRUCTURAL_PATH.read_text(encoding="utf-8") != rendered:
+        print(f"CHECK FAILED: stale {STRUCTURAL_PATH}")
+        return 1
+    print("structural projection verified")
+    return 0
 if __name__ == "__main__":
     raise SystemExit(main())

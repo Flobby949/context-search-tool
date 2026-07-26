@@ -1,0 +1,1956 @@
+{
+  "counts": {
+    "active_chunks": 14,
+    "active_relations": 18,
+    "active_signals": 39,
+    "deleted_chunks": 0,
+    "deleted_relations": 0,
+    "deleted_signals": 0,
+    "relations_by_kind": {
+      "imports": 17,
+      "tests": 1
+    },
+    "relations_by_resolution": {
+      "ambiguous": 1,
+      "external": 5,
+      "resolved_exact": 7,
+      "unresolved": 5
+    },
+    "signals_by_kind": {
+      "function": 11,
+      "method": 8,
+      "module": 14,
+      "type": 6
+    },
+    "source_files": 19
+  },
+  "forbidden_edges": [
+    {
+      "id": "python-dynamic-import",
+      "relation_ids": []
+    },
+    {
+      "id": "python-cross-unit-import",
+      "relation_ids": []
+    },
+    {
+      "id": "python-malformed-source",
+      "relation_ids": []
+    }
+  ],
+  "incoming_sources": [
+    {
+      "sources": [
+        {
+          "kind": "imports",
+          "relation_id": "r5:f545f807115084f1edde310fcf2b9f22b34184826c1c1ccb6eab4f6dcd811a13",
+          "source_path": "app/api.py",
+          "source_signal_id": "s5:700e449f7b6320d5ab7dca99d0c05a21c943bbcb1cc9ccffc2c674efb0946d6a"
+        },
+        {
+          "kind": "imports",
+          "relation_id": "r5:c9254a51d2e28fb866846344214e1021cfe97bfadfee356e61d426a623e7c1a2",
+          "source_path": "app/service.py",
+          "source_signal_id": "s5:9180fb4f522e15b4dfe59fb9c03248db00282d90f9a211b206d788d5024d9a15"
+        }
+      ],
+      "target_path": "app/clients/text.py",
+      "target_signal_id": "s5:26e7561952b8cafa009f596a73467ea10da1436bae4a6b666ab344b4ddaa9dd0"
+    },
+    {
+      "sources": [
+        {
+          "kind": "imports",
+          "relation_id": "r5:f9a9c38b06c929bd5c6da7b43c6a3aea020c758dda6af5bc515226df7bee2568",
+          "source_path": "app/service.py",
+          "source_signal_id": "s5:9180fb4f522e15b4dfe59fb9c03248db00282d90f9a211b206d788d5024d9a15"
+        }
+      ],
+      "target_path": "app/api.py",
+      "target_signal_id": "s5:700e449f7b6320d5ab7dca99d0c05a21c943bbcb1cc9ccffc2c674efb0946d6a"
+    },
+    {
+      "sources": [
+        {
+          "kind": "imports",
+          "relation_id": "r5:e5c4dfbf241c85f91b5665e992208198cce488dfd9db7751fb73c9d774534989",
+          "source_path": "nested/pkg/consumer.py",
+          "source_signal_id": "s5:2f4572b3ff0ade24e2db35b6fa47b85dae00803b83c0b3ee8bde1b15c80de0d3"
+        }
+      ],
+      "target_path": "nested/pkg/target.py",
+      "target_signal_id": "s5:7d3a75ba1434b37d3a721f27b403304d588b3179e779d65ede2bba0e32e8ac97"
+    },
+    {
+      "sources": [
+        {
+          "kind": "imports",
+          "relation_id": "r5:626c07771ca0cfcf02248b41a41aa389c89f62e1a63f2062d0fbc819b9b9f3ce",
+          "source_path": "app/api.py",
+          "source_signal_id": "s5:700e449f7b6320d5ab7dca99d0c05a21c943bbcb1cc9ccffc2c674efb0946d6a"
+        },
+        {
+          "kind": "imports",
+          "relation_id": "r5:2450614d2274addeb33f928172818c46e3916ba47b67839d34642c6e2825f102",
+          "source_path": "tests/test_service.py",
+          "source_signal_id": "s5:36df7e86fe4c8b2290532f4c61143629adea415c5701fb9311b2e08861824a68"
+        },
+        {
+          "kind": "tests",
+          "relation_id": "r5:9a1a7f33cb617ccc527e6947923ae8a3be965a58317095788027631180b41fab",
+          "source_path": "tests/test_service.py",
+          "source_signal_id": "s5:36df7e86fe4c8b2290532f4c61143629adea415c5701fb9311b2e08861824a68"
+        }
+      ],
+      "target_path": "app/service.py",
+      "target_signal_id": "s5:9180fb4f522e15b4dfe59fb9c03248db00282d90f9a211b206d788d5024d9a15"
+    }
+  ],
+  "module_invariants": {
+    "active_chunk_file_count": 14,
+    "duplicate_paths": [],
+    "invalid_identity_paths": [],
+    "missing_paths": [],
+    "module_count": 14,
+    "root_unit_paths": [
+      "app/api.py",
+      "app/broken.py",
+      "app/clients/text.py",
+      "app/dupe.py",
+      "app/dupe/__init__.py",
+      "app/dynamic.py",
+      "app/service.py",
+      "lonely.py",
+      "pyproject.toml",
+      "src/payments/engine.py",
+      "tests/test_service.py"
+    ]
+  },
+  "readiness": {
+    "file_write_in_progress": "",
+    "full_reindex_required": false,
+    "graph_producer_version": 1,
+    "graph_resolution_version": 1,
+    "producer_resolution_generation": 1,
+    "project_scope_metadata_version": 1,
+    "signal_schema_version": 5,
+    "stale_reason": "",
+    "state": "ready",
+    "test_association_source_generation": 1,
+    "topology_fingerprint": "f3baebac98c299378f0ffe96f17056a834ff0b5e6406736c0b806f127c0d20a2"
+  },
+  "recovery": {
+    "exercised": false,
+    "fault_full_reindex_required": null,
+    "fault_stage": null,
+    "fault_state": null,
+    "final_matches_fresh": null,
+    "recovery_summary": null,
+    "verified_noop_summary": null
+  },
+  "relations": [
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": null,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 0,
+        "first_source_line": 1,
+        "occurrence_count": 1
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:543ef4efc9aafeefbec3885c310225e6975b6c32d3f79c998e7c20e4419722a7",
+      "selector": {
+        "candidates": [],
+        "selector_state": "external",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": "json",
+        "target_project_unit_key": "",
+        "target_qualified_name": "json",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "c050fe3906c51f9f56257d95da820a09c045835ea106afd59041e04b6e8e3665",
+        "file_path": "app/api.py",
+        "kind": "module",
+        "qualified_name": "app/api.py",
+        "signal_id": "s5:700e449f7b6320d5ab7dca99d0c05a21c943bbcb1cc9ccffc2c674efb0946d6a"
+      },
+      "state": "external",
+      "target": {
+        "file_path": null,
+        "kind": null,
+        "qualified_name": null,
+        "signal_id": ""
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": 1.0,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 0,
+        "first_source_line": 3,
+        "occurrence_count": 1
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:f545f807115084f1edde310fcf2b9f22b34184826c1c1ccb6eab4f6dcd811a13",
+      "selector": {
+        "candidates": [
+          "app/clients/text.py"
+        ],
+        "selector_state": "exact",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": "app.clients.text",
+        "target_project_unit_key": "",
+        "target_qualified_name": "app/clients/text.py",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "c050fe3906c51f9f56257d95da820a09c045835ea106afd59041e04b6e8e3665",
+        "file_path": "app/api.py",
+        "kind": "module",
+        "qualified_name": "app/api.py",
+        "signal_id": "s5:700e449f7b6320d5ab7dca99d0c05a21c943bbcb1cc9ccffc2c674efb0946d6a"
+      },
+      "state": "resolved_exact",
+      "target": {
+        "file_path": "app/clients/text.py",
+        "kind": "module",
+        "qualified_name": "app/clients/text.py",
+        "signal_id": "s5:26e7561952b8cafa009f596a73467ea10da1436bae4a6b666ab344b4ddaa9dd0"
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": 1.0,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 0,
+        "first_source_line": 2,
+        "occurrence_count": 2
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:626c07771ca0cfcf02248b41a41aa389c89f62e1a63f2062d0fbc819b9b9f3ce",
+      "selector": {
+        "candidates": [
+          "app/service.py"
+        ],
+        "selector_state": "exact",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": "app.service",
+        "target_project_unit_key": "",
+        "target_qualified_name": "app/service.py",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "c050fe3906c51f9f56257d95da820a09c045835ea106afd59041e04b6e8e3665",
+        "file_path": "app/api.py",
+        "kind": "module",
+        "qualified_name": "app/api.py",
+        "signal_id": "s5:700e449f7b6320d5ab7dca99d0c05a21c943bbcb1cc9ccffc2c674efb0946d6a"
+      },
+      "state": "resolved_exact",
+      "target": {
+        "file_path": "app/service.py",
+        "kind": "module",
+        "qualified_name": "app/service.py",
+        "signal_id": "s5:9180fb4f522e15b4dfe59fb9c03248db00282d90f9a211b206d788d5024d9a15"
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": null,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 0,
+        "first_source_line": 1,
+        "occurrence_count": 1
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:ad1192a856800bafa9eac67e58411cbe3e2462506c5216238ee1c69e1767dc28",
+      "selector": {
+        "candidates": [],
+        "selector_state": "external",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": "app.missing_external",
+        "target_project_unit_key": "",
+        "target_qualified_name": "app.missing_external",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "942adfb7ab23018600a68221e50268c78c2e224a02f00f7c21dfaf18987645bd",
+        "file_path": "app/clients/text.py",
+        "kind": "module",
+        "qualified_name": "app/clients/text.py",
+        "signal_id": "s5:26e7561952b8cafa009f596a73467ea10da1436bae4a6b666ab344b4ddaa9dd0"
+      },
+      "state": "external",
+      "target": {
+        "file_path": null,
+        "kind": null,
+        "qualified_name": null,
+        "signal_id": ""
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": null,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 0,
+        "first_source_line": 2,
+        "occurrence_count": 1
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:fd5e001da7dd69dc885513a52ef4dc4245fea048dc76d4c7f733425b4238cc0a",
+      "selector": {
+        "candidates": [
+          "app/__init__.py"
+        ],
+        "selector_state": "exact",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": "app",
+        "target_project_unit_key": "",
+        "target_qualified_name": "app/__init__.py",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "942adfb7ab23018600a68221e50268c78c2e224a02f00f7c21dfaf18987645bd",
+        "file_path": "app/clients/text.py",
+        "kind": "module",
+        "qualified_name": "app/clients/text.py",
+        "signal_id": "s5:26e7561952b8cafa009f596a73467ea10da1436bae4a6b666ab344b4ddaa9dd0"
+      },
+      "state": "unresolved",
+      "target": {
+        "file_path": null,
+        "kind": null,
+        "qualified_name": null,
+        "signal_id": ""
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": null,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 0,
+        "first_source_line": 1,
+        "occurrence_count": 1
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:d8d3e40a349ff5db5c3de7ef131d5a6c48be7684bd94a53e7c5258928416cd99",
+      "selector": {
+        "candidates": [],
+        "selector_state": "external",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": "importlib",
+        "target_project_unit_key": "",
+        "target_qualified_name": "importlib",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "c8aa78c9460be6b7743a68034863cdd707807dc40f91f57ceab5f8f21c709956",
+        "file_path": "app/dynamic.py",
+        "kind": "module",
+        "qualified_name": "app/dynamic.py",
+        "signal_id": "s5:95b3ffacdb51e02d5df69eb109a46e89b96f0034b51b1092130db40ba83190f9"
+      },
+      "state": "external",
+      "target": {
+        "file_path": null,
+        "kind": null,
+        "qualified_name": null,
+        "signal_id": ""
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": null,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 0,
+        "first_source_line": 1,
+        "occurrence_count": 1
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:03018803077add5bb0b89912c75c0ab1e19bc5943b03a6f945bcc9f28f578330",
+      "selector": {
+        "candidates": [],
+        "selector_state": "external",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": "os",
+        "target_project_unit_key": "",
+        "target_qualified_name": "os",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "46afce3834fa5acd153e13030b85fefa9758407ad1720d205ae4ebe9e09f73bc",
+        "file_path": "app/service.py",
+        "kind": "module",
+        "qualified_name": "app/service.py",
+        "signal_id": "s5:9180fb4f522e15b4dfe59fb9c03248db00282d90f9a211b206d788d5024d9a15"
+      },
+      "state": "external",
+      "target": {
+        "file_path": null,
+        "kind": null,
+        "qualified_name": null,
+        "signal_id": ""
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": null,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 0,
+        "first_source_line": 4,
+        "occurrence_count": 1
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:15af993fbc95b56fba5d12eeed261f54dd10faef30138f01ff6add7e96768cbf",
+      "selector": {
+        "candidates": [],
+        "selector_state": "unresolved",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": "..app",
+        "target_project_unit_key": "",
+        "target_qualified_name": "..app",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "46afce3834fa5acd153e13030b85fefa9758407ad1720d205ae4ebe9e09f73bc",
+        "file_path": "app/service.py",
+        "kind": "module",
+        "qualified_name": "app/service.py",
+        "signal_id": "s5:9180fb4f522e15b4dfe59fb9c03248db00282d90f9a211b206d788d5024d9a15"
+      },
+      "state": "unresolved",
+      "target": {
+        "file_path": null,
+        "kind": null,
+        "qualified_name": null,
+        "signal_id": ""
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": null,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 0,
+        "first_source_line": 1,
+        "occurrence_count": 1
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:26f827d78a4222132a0ef7799e8a856f567bc5bb38cba247a200b603f34ed943",
+      "selector": {
+        "candidates": [
+          "app/dupe.py",
+          "app/dupe/__init__.py"
+        ],
+        "selector_state": "candidates",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": "app.dupe",
+        "target_project_unit_key": "",
+        "target_qualified_name": "app/dupe.py",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "46afce3834fa5acd153e13030b85fefa9758407ad1720d205ae4ebe9e09f73bc",
+        "file_path": "app/service.py",
+        "kind": "module",
+        "qualified_name": "app/service.py",
+        "signal_id": "s5:9180fb4f522e15b4dfe59fb9c03248db00282d90f9a211b206d788d5024d9a15"
+      },
+      "state": "ambiguous",
+      "target": {
+        "file_path": null,
+        "kind": null,
+        "qualified_name": null,
+        "signal_id": ""
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": null,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 0,
+        "first_source_line": 2,
+        "occurrence_count": 2
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:92d801608d34a01cdf9b67048d2d418b31183ac7dbb042f3fccc36ee99ace601",
+      "selector": {
+        "candidates": [
+          "app/clients/__init__.py"
+        ],
+        "selector_state": "exact",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": ".clients",
+        "target_project_unit_key": "",
+        "target_qualified_name": "app/clients/__init__.py",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "46afce3834fa5acd153e13030b85fefa9758407ad1720d205ae4ebe9e09f73bc",
+        "file_path": "app/service.py",
+        "kind": "module",
+        "qualified_name": "app/service.py",
+        "signal_id": "s5:9180fb4f522e15b4dfe59fb9c03248db00282d90f9a211b206d788d5024d9a15"
+      },
+      "state": "unresolved",
+      "target": {
+        "file_path": null,
+        "kind": null,
+        "qualified_name": null,
+        "signal_id": ""
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": 1.0,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 4,
+        "first_source_line": 30,
+        "occurrence_count": 1
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:c9254a51d2e28fb866846344214e1021cfe97bfadfee356e61d426a623e7c1a2",
+      "selector": {
+        "candidates": [
+          "app/clients/text.py"
+        ],
+        "selector_state": "exact",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": "app.clients.text",
+        "target_project_unit_key": "",
+        "target_qualified_name": "app/clients/text.py",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "46afce3834fa5acd153e13030b85fefa9758407ad1720d205ae4ebe9e09f73bc",
+        "file_path": "app/service.py",
+        "kind": "module",
+        "qualified_name": "app/service.py",
+        "signal_id": "s5:9180fb4f522e15b4dfe59fb9c03248db00282d90f9a211b206d788d5024d9a15"
+      },
+      "state": "resolved_exact",
+      "target": {
+        "file_path": "app/clients/text.py",
+        "kind": "module",
+        "qualified_name": "app/clients/text.py",
+        "signal_id": "s5:26e7561952b8cafa009f596a73467ea10da1436bae4a6b666ab344b4ddaa9dd0"
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": 1.0,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 12,
+        "first_source_line": 10,
+        "occurrence_count": 1
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:f9a9c38b06c929bd5c6da7b43c6a3aea020c758dda6af5bc515226df7bee2568",
+      "selector": {
+        "candidates": [
+          "app/api.py"
+        ],
+        "selector_state": "exact",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": "app.api",
+        "target_project_unit_key": "",
+        "target_qualified_name": "app/api.py",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "46afce3834fa5acd153e13030b85fefa9758407ad1720d205ae4ebe9e09f73bc",
+        "file_path": "app/service.py",
+        "kind": "module",
+        "qualified_name": "app/service.py",
+        "signal_id": "s5:9180fb4f522e15b4dfe59fb9c03248db00282d90f9a211b206d788d5024d9a15"
+      },
+      "state": "resolved_exact",
+      "target": {
+        "file_path": "app/api.py",
+        "kind": "module",
+        "qualified_name": "app/api.py",
+        "signal_id": "s5:700e449f7b6320d5ab7dca99d0c05a21c943bbcb1cc9ccffc2c674efb0946d6a"
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": null,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 0,
+        "first_source_line": 1,
+        "occurrence_count": 1
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:426dad7f9bbd7bf69d70c7722f57252dd6d7046166e766af3d5820c276a2de5b",
+      "selector": {
+        "candidates": [],
+        "selector_state": "unresolved",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": ".orphan",
+        "target_project_unit_key": "",
+        "target_qualified_name": ".orphan",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "68304f725be8cc66dfedb051243c148cb48122ea2bf567d4f24e2836ddca618f",
+        "file_path": "lonely.py",
+        "kind": "module",
+        "qualified_name": "lonely.py",
+        "signal_id": "s5:430581fa4ace508a4263dd76ad91cad886a16003751d1a6c589f5d4f4d17f0b6"
+      },
+      "state": "unresolved",
+      "target": {
+        "file_path": null,
+        "kind": null,
+        "qualified_name": null,
+        "signal_id": ""
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": null,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 0,
+        "first_source_line": 2,
+        "occurrence_count": 1
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:f31513604d9a66ebad032cb13b546c2598bf9125d2aab47985468ef55a591e76",
+      "selector": {
+        "candidates": [],
+        "selector_state": "external",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": "app.service",
+        "target_project_unit_key": "nested",
+        "target_qualified_name": "app.service",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "38d54e93bc801f78b016d29967673b2fea0d7988761d02c48ed40cfb50ccb6cc",
+        "file_path": "nested/pkg/consumer.py",
+        "kind": "module",
+        "qualified_name": "nested/pkg/consumer.py",
+        "signal_id": "s5:2f4572b3ff0ade24e2db35b6fa47b85dae00803b83c0b3ee8bde1b15c80de0d3"
+      },
+      "state": "external",
+      "target": {
+        "file_path": null,
+        "kind": null,
+        "qualified_name": null,
+        "signal_id": ""
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": 1.0,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 0,
+        "first_source_line": 1,
+        "occurrence_count": 1
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:e5c4dfbf241c85f91b5665e992208198cce488dfd9db7751fb73c9d774534989",
+      "selector": {
+        "candidates": [
+          "nested/pkg/target.py"
+        ],
+        "selector_state": "exact",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": "pkg.target",
+        "target_project_unit_key": "nested",
+        "target_qualified_name": "nested/pkg/target.py",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "38d54e93bc801f78b016d29967673b2fea0d7988761d02c48ed40cfb50ccb6cc",
+        "file_path": "nested/pkg/consumer.py",
+        "kind": "module",
+        "qualified_name": "nested/pkg/consumer.py",
+        "signal_id": "s5:2f4572b3ff0ade24e2db35b6fa47b85dae00803b83c0b3ee8bde1b15c80de0d3"
+      },
+      "state": "resolved_exact",
+      "target": {
+        "file_path": "nested/pkg/target.py",
+        "kind": "module",
+        "qualified_name": "nested/pkg/target.py",
+        "signal_id": "s5:7d3a75ba1434b37d3a721f27b403304d588b3179e779d65ede2bba0e32e8ac97"
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": null,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 0,
+        "first_source_line": 1,
+        "occurrence_count": 2
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:49cec6453ebf90f1becb84fe2fdda04a1dc5bd3457a6764fe3c3f469e9aabf0a",
+      "selector": {
+        "candidates": [
+          "src/payments/__init__.py"
+        ],
+        "selector_state": "exact",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": "payments",
+        "target_project_unit_key": "",
+        "target_qualified_name": "src/payments/__init__.py",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "11f4ff31459a1f9bf7d8ed88e9ef1356295e54196c0211974a26794ca13d5c26",
+        "file_path": "src/payments/engine.py",
+        "kind": "module",
+        "qualified_name": "src/payments/engine.py",
+        "signal_id": "s5:d18c2f9b4b2f5c24b94723ccfcd6b7ce9f6d4dc687afa90f2fcfcc7d8821f6d1"
+      },
+      "state": "unresolved",
+      "target": {
+        "file_path": null,
+        "kind": null,
+        "qualified_name": null,
+        "signal_id": ""
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": 1.0,
+        "stored": 1.0
+      },
+      "kind": "imports",
+      "occurrence": {
+        "first_source_column": 0,
+        "first_source_line": 1,
+        "occurrence_count": 1
+      },
+      "producer": "python_ast",
+      "relation_id": "r5:2450614d2274addeb33f928172818c46e3916ba47b67839d34642c6e2825f102",
+      "selector": {
+        "candidates": [
+          "app/service.py"
+        ],
+        "selector_state": "exact",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": "app.service",
+        "target_project_unit_key": "",
+        "target_qualified_name": "app/service.py",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "9046d2a384c4aaa74d0e165232ab6e4c87a1058445763e087357e0ae86a32b45",
+        "file_path": "tests/test_service.py",
+        "kind": "module",
+        "qualified_name": "tests/test_service.py",
+        "signal_id": "s5:36df7e86fe4c8b2290532f4c61143629adea415c5701fb9311b2e08861824a68"
+      },
+      "state": "resolved_exact",
+      "target": {
+        "file_path": "app/service.py",
+        "kind": "module",
+        "qualified_name": "app/service.py",
+        "signal_id": "s5:9180fb4f522e15b4dfe59fb9c03248db00282d90f9a211b206d788d5024d9a15"
+      }
+    },
+    {
+      "confidence": {
+        "effective": 1.0,
+        "producer": 1.0,
+        "resolution": 1.0,
+        "stored": 1.0
+      },
+      "kind": "tests",
+      "occurrence": {
+        "first_source_column": 0,
+        "first_source_line": 1,
+        "occurrence_count": 1
+      },
+      "producer": "test_association",
+      "relation_id": "r5:9a1a7f33cb617ccc527e6947923ae8a3be965a58317095788027631180b41fab",
+      "selector": {
+        "candidates": [
+          "app/service.py"
+        ],
+        "selector_state": "exact",
+        "target_arity": null,
+        "target_kind": "module",
+        "target_name": "app/service.py",
+        "target_project_unit_key": "",
+        "target_qualified_name": "app/service.py",
+        "target_signature": ""
+      },
+      "source": {
+        "chunk_id": "9046d2a384c4aaa74d0e165232ab6e4c87a1058445763e087357e0ae86a32b45",
+        "file_path": "tests/test_service.py",
+        "kind": "module",
+        "qualified_name": "tests/test_service.py",
+        "signal_id": "s5:36df7e86fe4c8b2290532f4c61143629adea415c5701fb9311b2e08861824a68"
+      },
+      "state": "resolved_exact",
+      "target": {
+        "file_path": "app/service.py",
+        "kind": "module",
+        "qualified_name": "app/service.py",
+        "signal_id": "s5:9180fb4f522e15b4dfe59fb9c03248db00282d90f9a211b206d788d5024d9a15"
+      }
+    }
+  ],
+  "repository_key": "p8_python_graphs",
+  "schema": {
+    "indexes": {
+      "code_relations": [
+        "idx_code_relations_resolution_active",
+        "idx_code_relations_source_active",
+        "idx_code_relations_target_active",
+        "idx_code_relations_target_signal_active"
+      ],
+      "code_signals": [
+        "idx_code_signals_arity_active",
+        "idx_code_signals_chunk_active",
+        "idx_code_signals_file_active",
+        "idx_code_signals_recallable_active",
+        "idx_code_signals_selector_active"
+      ]
+    },
+    "tables": {
+      "code_relations": [
+        "relation_id",
+        "source_signal_id",
+        "source_chunk_id",
+        "source_file_path",
+        "target_name",
+        "kind",
+        "confidence",
+        "target_kind",
+        "target_qualified_name",
+        "target_signature",
+        "target_arity",
+        "target_project_unit_key",
+        "target_signal_id",
+        "resolution",
+        "producer",
+        "producer_confidence",
+        "resolution_confidence",
+        "metadata",
+        "deleted_at"
+      ],
+      "code_signals": [
+        "signal_id",
+        "chunk_id",
+        "file_path",
+        "kind",
+        "name",
+        "qualified_name",
+        "signature",
+        "arity",
+        "project_unit_key",
+        "producer",
+        "start_line",
+        "end_line",
+        "start_column",
+        "end_column",
+        "language",
+        "recallable",
+        "tokens",
+        "metadata",
+        "deleted_at"
+      ]
+    }
+  },
+  "schema_version": 1,
+  "signals": [
+    {
+      "arity": null,
+      "chunk_id": "c050fe3906c51f9f56257d95da820a09c045835ea106afd59041e04b6e8e3665",
+      "end_column": 0,
+      "end_line": 24,
+      "file_path": "app/api.py",
+      "kind": "module",
+      "language": "python",
+      "name": "app/api.py",
+      "producer": "core_module",
+      "project_unit_key": "",
+      "qualified_name": "app/api.py",
+      "recallable": false,
+      "signal_id": "s5:700e449f7b6320d5ab7dca99d0c05a21c943bbcb1cc9ccffc2c674efb0946d6a",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "c050fe3906c51f9f56257d95da820a09c045835ea106afd59041e04b6e8e3665",
+      "end_column": 21,
+      "end_line": 16,
+      "file_path": "app/api.py",
+      "kind": "type",
+      "language": "python",
+      "name": "ApiHandler",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.api.ApiHandler",
+      "recallable": true,
+      "signal_id": "s5:3c9c747e1780e163758bae3eef72ee781098e7b5eadd0b92c5603751f5fc48f1",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 7
+    },
+    {
+      "arity": null,
+      "chunk_id": "c050fe3906c51f9f56257d95da820a09c045835ea106afd59041e04b6e8e3665",
+      "end_column": 43,
+      "end_line": 9,
+      "file_path": "app/api.py",
+      "kind": "method",
+      "language": "python",
+      "name": "handle",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.api.ApiHandler.handle",
+      "recallable": true,
+      "signal_id": "s5:bbe1d336cbf70362c0a592f25f3dfe4d217bc0675584ff3b2f2d4f00e2df9da6",
+      "signature": "",
+      "start_column": 4,
+      "start_line": 8
+    },
+    {
+      "arity": null,
+      "chunk_id": "c050fe3906c51f9f56257d95da820a09c045835ea106afd59041e04b6e8e3665",
+      "end_column": 37,
+      "end_line": 12,
+      "file_path": "app/api.py",
+      "kind": "method",
+      "language": "python",
+      "name": "handle_async",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.api.ApiHandler.handle_async",
+      "recallable": true,
+      "signal_id": "s5:09e11178a97b8697f26b2ddb1cfd8e7bba43b31bd7a5a9867792c05c11e0926a",
+      "signature": "",
+      "start_column": 4,
+      "start_line": 11
+    },
+    {
+      "arity": null,
+      "chunk_id": "c050fe3906c51f9f56257d95da820a09c045835ea106afd59041e04b6e8e3665",
+      "end_column": 21,
+      "end_line": 16,
+      "file_path": "app/api.py",
+      "kind": "type",
+      "language": "python",
+      "name": "Pagination",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.api.ApiHandler.Pagination",
+      "recallable": true,
+      "signal_id": "s5:389b8b0bd9c0612480c9bc9742c20e6a9852fa5d65394f5829f228f7cc4bceb9",
+      "signature": "",
+      "start_column": 4,
+      "start_line": 14
+    },
+    {
+      "arity": null,
+      "chunk_id": "c050fe3906c51f9f56257d95da820a09c045835ea106afd59041e04b6e8e3665",
+      "end_column": 21,
+      "end_line": 16,
+      "file_path": "app/api.py",
+      "kind": "method",
+      "language": "python",
+      "name": "page_size",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.api.ApiHandler.Pagination.page_size",
+      "recallable": true,
+      "signal_id": "s5:1eadbd0453def9df1d7365c778f21268362041d7230be4d6c7d2583d9e1b9d9f",
+      "signature": "",
+      "start_column": 8,
+      "start_line": 15
+    },
+    {
+      "arity": null,
+      "chunk_id": "c050fe3906c51f9f56257d95da820a09c045835ea106afd59041e04b6e8e3665",
+      "end_column": 23,
+      "end_line": 20,
+      "file_path": "app/api.py",
+      "kind": "function",
+      "language": "python",
+      "name": "make_handler",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.api.make_handler",
+      "recallable": true,
+      "signal_id": "s5:1f457c0fd85c047b7af79fd2ed9b509039f8918f31ba3cb73558b0188560c3c9",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 19
+    },
+    {
+      "arity": null,
+      "chunk_id": "c050fe3906c51f9f56257d95da820a09c045835ea106afd59041e04b6e8e3665",
+      "end_column": 23,
+      "end_line": 24,
+      "file_path": "app/api.py",
+      "kind": "function",
+      "language": "python",
+      "name": "stream_handler",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.api.stream_handler",
+      "recallable": true,
+      "signal_id": "s5:32cdbec9f0d511169c2a4da070ce387a6edc4b4d2a2a2fb7dcad14653c53a38e",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 23
+    },
+    {
+      "arity": null,
+      "chunk_id": "6c4049abee06376ef658e2be9ee3bb6d85d77e4cf346eda350b9263eed664b69",
+      "end_column": 0,
+      "end_line": 2,
+      "file_path": "app/broken.py",
+      "kind": "module",
+      "language": "python",
+      "name": "app/broken.py",
+      "producer": "core_module",
+      "project_unit_key": "",
+      "qualified_name": "app/broken.py",
+      "recallable": false,
+      "signal_id": "s5:8ba1999100b615d9458a9f495937c158611165c6fdb96c4a86996d03a734e99a",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "942adfb7ab23018600a68221e50268c78c2e224a02f00f7c21dfaf18987645bd",
+      "end_column": 0,
+      "end_line": 7,
+      "file_path": "app/clients/text.py",
+      "kind": "module",
+      "language": "python",
+      "name": "app/clients/text.py",
+      "producer": "core_module",
+      "project_unit_key": "",
+      "qualified_name": "app/clients/text.py",
+      "recallable": false,
+      "signal_id": "s5:26e7561952b8cafa009f596a73467ea10da1436bae4a6b666ab344b4ddaa9dd0",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "942adfb7ab23018600a68221e50268c78c2e224a02f00f7c21dfaf18987645bd",
+      "end_column": 22,
+      "end_line": 7,
+      "file_path": "app/clients/text.py",
+      "kind": "type",
+      "language": "python",
+      "name": "TextClient",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.clients.text.TextClient",
+      "recallable": true,
+      "signal_id": "s5:5f4b5ba5160a960def20e119d6967f7213d132dac1e571ae2ffa86bbf0c2e8b6",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 5
+    },
+    {
+      "arity": null,
+      "chunk_id": "942adfb7ab23018600a68221e50268c78c2e224a02f00f7c21dfaf18987645bd",
+      "end_column": 22,
+      "end_line": 7,
+      "file_path": "app/clients/text.py",
+      "kind": "method",
+      "language": "python",
+      "name": "send",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.clients.text.TextClient.send",
+      "recallable": true,
+      "signal_id": "s5:4fb60300317ad8df400af5726c22a884bbb708db7bccc975235361f1af586d28",
+      "signature": "",
+      "start_column": 4,
+      "start_line": 6
+    },
+    {
+      "arity": null,
+      "chunk_id": "d3d0aeb301c23e94842fda1486cca5ddaa31776cbd614f06363d81fe766f8c67",
+      "end_column": 0,
+      "end_line": 2,
+      "file_path": "app/dupe.py",
+      "kind": "module",
+      "language": "python",
+      "name": "app/dupe.py",
+      "producer": "core_module",
+      "project_unit_key": "",
+      "qualified_name": "app/dupe.py",
+      "recallable": false,
+      "signal_id": "s5:414e82a28898ddfbe0db994a3b052ee3b0ab3aa2b7a4b59ed6048e7fe21c15bf",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "d3d0aeb301c23e94842fda1486cca5ddaa31776cbd614f06363d81fe766f8c67",
+      "end_column": 19,
+      "end_line": 2,
+      "file_path": "app/dupe.py",
+      "kind": "function",
+      "language": "python",
+      "name": "dupe_module_function",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.dupe.dupe_module_function",
+      "recallable": true,
+      "signal_id": "s5:3aaf5669a8bf0485fdb51378821868b059173a29b01114e5ffba4648a9c58695",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "cbe29edcb01a1ae6c4d6f28d6e372444cd733dfa26c44a6a08746525493346e4",
+      "end_column": 0,
+      "end_line": 2,
+      "file_path": "app/dupe/__init__.py",
+      "kind": "module",
+      "language": "python",
+      "name": "app/dupe/__init__.py",
+      "producer": "core_module",
+      "project_unit_key": "",
+      "qualified_name": "app/dupe/__init__.py",
+      "recallable": false,
+      "signal_id": "s5:20b52f99b9e3cba5d1dce27f73b4cc912c98d4724850e8dbd3190eafda0c74ab",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "cbe29edcb01a1ae6c4d6f28d6e372444cd733dfa26c44a6a08746525493346e4",
+      "end_column": 20,
+      "end_line": 2,
+      "file_path": "app/dupe/__init__.py",
+      "kind": "function",
+      "language": "python",
+      "name": "dupe_package_function",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.dupe.dupe_package_function",
+      "recallable": true,
+      "signal_id": "s5:d7b5fae52d964cb4e5ab7235f81733008f5db04383056b490655bc280c9b9e6a",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "c8aa78c9460be6b7743a68034863cdd707807dc40f91f57ceab5f8f21c709956",
+      "end_column": 0,
+      "end_line": 7,
+      "file_path": "app/dynamic.py",
+      "kind": "module",
+      "language": "python",
+      "name": "app/dynamic.py",
+      "producer": "core_module",
+      "project_unit_key": "",
+      "qualified_name": "app/dynamic.py",
+      "recallable": false,
+      "signal_id": "s5:95b3ffacdb51e02d5df69eb109a46e89b96f0034b51b1092130db40ba83190f9",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "c8aa78c9460be6b7743a68034863cdd707807dc40f91f57ceab5f8f21c709956",
+      "end_column": 24,
+      "end_line": 7,
+      "file_path": "app/dynamic.py",
+      "kind": "function",
+      "language": "python",
+      "name": "load",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.dynamic.load",
+      "recallable": true,
+      "signal_id": "s5:fa689da9352767f1d55e61bcf18fca2ff2cb2f8200ca78eba76db342aba7d1ba",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 4
+    },
+    {
+      "arity": null,
+      "chunk_id": "46afce3834fa5acd153e13030b85fefa9758407ad1720d205ae4ebe9e09f73bc",
+      "end_column": 0,
+      "end_line": 39,
+      "file_path": "app/service.py",
+      "kind": "module",
+      "language": "python",
+      "name": "app/service.py",
+      "producer": "core_module",
+      "project_unit_key": "",
+      "qualified_name": "app/service.py",
+      "recallable": false,
+      "signal_id": "s5:9180fb4f522e15b4dfe59fb9c03248db00282d90f9a211b206d788d5024d9a15",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "46afce3834fa5acd153e13030b85fefa9758407ad1720d205ae4ebe9e09f73bc",
+      "end_column": 26,
+      "end_line": 11,
+      "file_path": "app/service.py",
+      "kind": "type",
+      "language": "python",
+      "name": "PosixService",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.service.PosixService",
+      "recallable": true,
+      "signal_id": "s5:ac474989c04c6b6e380dbe95c72827b4b5ab2601601e2c6186bc2e7d01855e84",
+      "signature": "",
+      "start_column": 4,
+      "start_line": 8
+    },
+    {
+      "arity": null,
+      "chunk_id": "46afce3834fa5acd153e13030b85fefa9758407ad1720d205ae4ebe9e09f73bc",
+      "end_column": 26,
+      "end_line": 11,
+      "file_path": "app/service.py",
+      "kind": "method",
+      "language": "python",
+      "name": "run",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.service.PosixService.run",
+      "recallable": true,
+      "signal_id": "s5:122c7d4c35ed4e14161fe73667d4d730b3b177e0175793317f57db57776442ff",
+      "signature": "",
+      "start_column": 8,
+      "start_line": 9
+    },
+    {
+      "arity": null,
+      "chunk_id": "46afce3834fa5acd153e13030b85fefa9758407ad1720d205ae4ebe9e09f73bc",
+      "end_column": 29,
+      "end_line": 26,
+      "file_path": "app/service.py",
+      "kind": "type",
+      "language": "python",
+      "name": "Service",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.service.Service",
+      "recallable": true,
+      "signal_id": "s5:408914fd13b34e7076fbc2df469b9b0b89de448d1b23093bd733653ee486f1e3",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 14
+    },
+    {
+      "arity": null,
+      "chunk_id": "46afce3834fa5acd153e13030b85fefa9758407ad1720d205ae4ebe9e09f73bc",
+      "end_column": 20,
+      "end_line": 17,
+      "file_path": "app/service.py",
+      "kind": "method",
+      "language": "python",
+      "name": "conditional_method",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.service.Service.conditional_method",
+      "recallable": true,
+      "signal_id": "s5:1b3213a3a8f7520e1a44975defbef8912d2b0734648c8ea2fadcee9019803ded",
+      "signature": "",
+      "start_column": 8,
+      "start_line": 16
+    },
+    {
+      "arity": null,
+      "chunk_id": "46afce3834fa5acd153e13030b85fefa9758407ad1720d205ae4ebe9e09f73bc",
+      "end_column": 29,
+      "end_line": 26,
+      "file_path": "app/service.py",
+      "kind": "method",
+      "language": "python",
+      "name": "run",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.service.Service.run",
+      "recallable": true,
+      "signal_id": "s5:66789576acecfd5427732baab7be1d8e895088a1929fdb4bbff259a3de0d1633",
+      "signature": "",
+      "start_column": 4,
+      "start_line": 19
+    },
+    {
+      "arity": null,
+      "chunk_id": "46afce3834fa5acd153e13030b85fefa9758407ad1720d205ae4ebe9e09f73bc",
+      "end_column": 20,
+      "end_line": 35,
+      "file_path": "app/service.py",
+      "kind": "function",
+      "language": "python",
+      "name": "build_service",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.service.build_service",
+      "recallable": true,
+      "signal_id": "s5:2ad427708613033fb8a89585739cf860bdd1901c5715816d19313f1b64ebeda8",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 29
+    },
+    {
+      "arity": null,
+      "chunk_id": "46afce3834fa5acd153e13030b85fefa9758407ad1720d205ae4ebe9e09f73bc",
+      "end_column": 18,
+      "end_line": 39,
+      "file_path": "app/service.py",
+      "kind": "function",
+      "language": "python",
+      "name": "run_async",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "app.service.run_async",
+      "recallable": true,
+      "signal_id": "s5:f12ccc4e69152543de8ea9fa33595a9d950f50f648f4b32ca967cf3c9780ec3e",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 38
+    },
+    {
+      "arity": null,
+      "chunk_id": "68304f725be8cc66dfedb051243c148cb48122ea2bf567d4f24e2836ddca618f",
+      "end_column": 0,
+      "end_line": 5,
+      "file_path": "lonely.py",
+      "kind": "module",
+      "language": "python",
+      "name": "lonely.py",
+      "producer": "core_module",
+      "project_unit_key": "",
+      "qualified_name": "lonely.py",
+      "recallable": false,
+      "signal_id": "s5:430581fa4ace508a4263dd76ad91cad886a16003751d1a6c589f5d4f4d17f0b6",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "68304f725be8cc66dfedb051243c148cb48122ea2bf567d4f24e2836ddca618f",
+      "end_column": 15,
+      "end_line": 5,
+      "file_path": "lonely.py",
+      "kind": "function",
+      "language": "python",
+      "name": "lonely_function",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "lonely.lonely_function",
+      "recallable": true,
+      "signal_id": "s5:cf248f289e12dcc388a2bdacb815df4c22deef172a656928ca24dedad34ee3a2",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 4
+    },
+    {
+      "arity": null,
+      "chunk_id": "38d54e93bc801f78b016d29967673b2fea0d7988761d02c48ed40cfb50ccb6cc",
+      "end_column": 0,
+      "end_line": 6,
+      "file_path": "nested/pkg/consumer.py",
+      "kind": "module",
+      "language": "python",
+      "name": "nested/pkg/consumer.py",
+      "producer": "core_module",
+      "project_unit_key": "nested",
+      "qualified_name": "nested/pkg/consumer.py",
+      "recallable": false,
+      "signal_id": "s5:2f4572b3ff0ade24e2db35b6fa47b85dae00803b83c0b3ee8bde1b15c80de0d3",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "38d54e93bc801f78b016d29967673b2fea0d7988761d02c48ed40cfb50ccb6cc",
+      "end_column": 25,
+      "end_line": 6,
+      "file_path": "nested/pkg/consumer.py",
+      "kind": "function",
+      "language": "python",
+      "name": "consume",
+      "producer": "python_ast",
+      "project_unit_key": "nested",
+      "qualified_name": "pkg.consumer.consume",
+      "recallable": true,
+      "signal_id": "s5:3093cc609501b3317295d18ffeb1977304b8fe11ffcc06271bcccb4a132c6853",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 5
+    },
+    {
+      "arity": null,
+      "chunk_id": "e50fd3d624d83b589a4f182b029d7421c5e793334c79efd395c5bffd3a2d5c3a",
+      "end_column": 0,
+      "end_line": 2,
+      "file_path": "nested/pkg/target.py",
+      "kind": "module",
+      "language": "python",
+      "name": "nested/pkg/target.py",
+      "producer": "core_module",
+      "project_unit_key": "nested",
+      "qualified_name": "nested/pkg/target.py",
+      "recallable": false,
+      "signal_id": "s5:7d3a75ba1434b37d3a721f27b403304d588b3179e779d65ede2bba0e32e8ac97",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "e50fd3d624d83b589a4f182b029d7421c5e793334c79efd395c5bffd3a2d5c3a",
+      "end_column": 13,
+      "end_line": 2,
+      "file_path": "nested/pkg/target.py",
+      "kind": "function",
+      "language": "python",
+      "name": "target_value",
+      "producer": "python_ast",
+      "project_unit_key": "nested",
+      "qualified_name": "pkg.target.target_value",
+      "recallable": true,
+      "signal_id": "s5:09ec49e2c6e04e7760cca24f4de0f811db76e42edc043af915f9f59eb24cbc27",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "94a9eb50a073e140677e2f2a63e470fe53db50d8e751235ba00f1de3236ed1e7",
+      "end_column": 0,
+      "end_line": 3,
+      "file_path": "nested/pyproject.toml",
+      "kind": "module",
+      "language": "toml",
+      "name": "nested/pyproject.toml",
+      "producer": "core_module",
+      "project_unit_key": "nested",
+      "qualified_name": "nested/pyproject.toml",
+      "recallable": false,
+      "signal_id": "s5:fe850bbdf3ded508381ad60319f2a4259a68563f75559e3f48736a449d738f50",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "4573ef004f462c9f711e170e48f9a26891624a161d9c403c92088f05ec3fd42a",
+      "end_column": 0,
+      "end_line": 3,
+      "file_path": "pyproject.toml",
+      "kind": "module",
+      "language": "toml",
+      "name": "pyproject.toml",
+      "producer": "core_module",
+      "project_unit_key": "",
+      "qualified_name": "pyproject.toml",
+      "recallable": false,
+      "signal_id": "s5:c696c1e0713f7796f94a89a604446bb5c8e8b5ae7fcb53e4d7d32df4329328b5",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "11f4ff31459a1f9bf7d8ed88e9ef1356295e54196c0211974a26794ca13d5c26",
+      "end_column": 0,
+      "end_line": 7,
+      "file_path": "src/payments/engine.py",
+      "kind": "module",
+      "language": "python",
+      "name": "src/payments/engine.py",
+      "producer": "core_module",
+      "project_unit_key": "",
+      "qualified_name": "src/payments/engine.py",
+      "recallable": false,
+      "signal_id": "s5:d18c2f9b4b2f5c24b94723ccfcd6b7ce9f6d4dc687afa90f2fcfcc7d8821f6d1",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "11f4ff31459a1f9bf7d8ed88e9ef1356295e54196c0211974a26794ca13d5c26",
+      "end_column": 21,
+      "end_line": 7,
+      "file_path": "src/payments/engine.py",
+      "kind": "type",
+      "language": "python",
+      "name": "Engine",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "src.payments.engine.Engine",
+      "recallable": true,
+      "signal_id": "s5:fc010c1af74ee80de9da27146e38bee782f6f0c8a2c1f518c90c9a846873a8df",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 5
+    },
+    {
+      "arity": null,
+      "chunk_id": "11f4ff31459a1f9bf7d8ed88e9ef1356295e54196c0211974a26794ca13d5c26",
+      "end_column": 21,
+      "end_line": 7,
+      "file_path": "src/payments/engine.py",
+      "kind": "method",
+      "language": "python",
+      "name": "charge",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "src.payments.engine.Engine.charge",
+      "recallable": true,
+      "signal_id": "s5:44d4446e1cb99db4561f1f3724b41f1ecd29f352a31e678aed73cf58edefe5de",
+      "signature": "",
+      "start_column": 4,
+      "start_line": 6
+    },
+    {
+      "arity": null,
+      "chunk_id": "9046d2a384c4aaa74d0e165232ab6e4c87a1058445763e087357e0ae86a32b45",
+      "end_column": 0,
+      "end_line": 5,
+      "file_path": "tests/test_service.py",
+      "kind": "module",
+      "language": "python",
+      "name": "tests/test_service.py",
+      "producer": "core_module",
+      "project_unit_key": "",
+      "qualified_name": "tests/test_service.py",
+      "recallable": false,
+      "signal_id": "s5:36df7e86fe4c8b2290532f4c61143629adea415c5701fb9311b2e08861824a68",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 1
+    },
+    {
+      "arity": null,
+      "chunk_id": "9046d2a384c4aaa74d0e165232ab6e4c87a1058445763e087357e0ae86a32b45",
+      "end_column": 32,
+      "end_line": 5,
+      "file_path": "tests/test_service.py",
+      "kind": "function",
+      "language": "python",
+      "name": "test_service_runs",
+      "producer": "python_ast",
+      "project_unit_key": "",
+      "qualified_name": "tests.test_service.test_service_runs",
+      "recallable": true,
+      "signal_id": "s5:26a9c067c4e0a056c71e161a1869ba492910f89bc5168a2cbbad1255593f0cb9",
+      "signature": "",
+      "start_column": 0,
+      "start_line": 4
+    }
+  ],
+  "test_invariants": {
+    "associations": [
+      {
+        "occurrence_count": 1,
+        "relation_id": "r5:9a1a7f33cb617ccc527e6947923ae8a3be965a58317095788027631180b41fab",
+        "resolution": "resolved_exact",
+        "resolution_basis": "exact_test_import",
+        "source_path": "tests/test_service.py",
+        "target_path": "app/service.py"
+      }
+    ],
+    "classified_test_paths": [
+      "tests/test_service.py"
+    ],
+    "cross_unit_relation_ids": [],
+    "non_test_source_relation_ids": [],
+    "test_target_relation_ids": [],
+    "unresolved_relation_ids": []
+  },
+  "topology": {
+    "fingerprint": "f3baebac98c299378f0ffe96f17056a834ff0b5e6406736c0b806f127c0d20a2",
+    "project_units": [
+      {
+        "key": "",
+        "kind": "python",
+        "languages": [
+          "python"
+        ],
+        "markers": [
+          "pyproject.toml"
+        ]
+      },
+      {
+        "key": "nested",
+        "kind": "python",
+        "languages": [
+          "python"
+        ],
+        "markers": [
+          "pyproject.toml"
+        ]
+      }
+    ]
+  },
+  "truncation": [
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "__init__.py"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "app/__init__.py"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "app/api.py"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "app/broken.py"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "app/clients/__init__.py"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "app/clients/text.py"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "app/dupe.py"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "app/dupe/__init__.py"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "app/dynamic.py"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "app/service.py"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "lonely.py"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "nested/pkg/__init__.py"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "nested/pkg/consumer.py"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "nested/pkg/target.py"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "nested/pyproject.toml"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "pyproject.toml"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "src/payments/__init__.py"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "src/payments/engine.py"
+    },
+    {
+      "counts": [
+        {
+          "count": 0,
+          "key": "graph_omitted_relation_count"
+        },
+        {
+          "count": 0,
+          "key": "graph_omitted_signal_count"
+        }
+      ],
+      "file_path": "tests/test_service.py"
+    }
+  ]
+}
