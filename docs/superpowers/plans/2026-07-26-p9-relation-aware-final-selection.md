@@ -307,4 +307,71 @@ env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/src:$PWD/tests" \
 
 ## Implementation Record
 
-Status: Not started. Record only observed, verified results.
+Status: Tasks 0-4 executed 2026-07-26; disposition **reject** (stop rule
+applied); Task 5 ship docs intentionally not written; branch left
+unmerged.
+
+```text
+entry: main b9fa965, clean tree, full suite 2960 passed.
+baseline capture (v2 runner): deterministic twice; all relation_slot
+  false; gold manifest verified.
+
+implementation (branch feat/p9-relation-final-selection):
+  capture schema v2 (relation_slot per selected entry);
+  RELATION_FINAL_SLOTS=2 / RELATION_SLOT_SCAN_DEPTH=50;
+  _apply_relation_slots post-pass in split_results_and_anchors;
+  relation_slot_selected decision counter (informational, excluded from
+  the bucket-sum invariant); reason "relation slot"; internal trace
+  reason mapped to the frozen schema-v1 vocabulary at the tracing
+  boundary (retrieval_trace/models.py is P4-frozen and untouched).
+
+review-driven contract refinements recorded during RED/GREEN:
+  1. eviction protects the rank-1 winner and relation-supported
+     selections; the design's evidence_priority==0 proxy marked every
+     original-direct result, so the quota could never fire;
+  2. eligibility narrowed to resolved import support and excludes
+     ranker-penalized generated artifacts: on the protected P5 quality
+     fixtures the broad GRAPH_SCORE_KEYS predicate admitted
+     generated/test artifacts through tests/routes edges
+     (generic-test-conventions regression caught by the quality gate).
+
+verification state before A/B: unit + e2e + registration-order
+  determinism + ContextPack smoke green; characterization overlay pins
+  all 13 case hashes with a structural zero-activity invariant (quota
+  fires on no protected fixture); full suite 2963 passed, 0 non-env
+  failures.
+
+paired A/B (baseline b9fa965 vs candidate, both captures deterministic):
+  quota fired 36 times across the 18 gold cases;
+  newly satisfied required items: ZERO;
+  lost required (gate 3 FAIL): daily-portfolio-risk
+    src/services/decision_signal_service.py (support),
+    daily-prefetch-tests tests/test_data_fetcher_prefetch_stock_names.py
+    (test), redink-image-flow backend/utils/image_compressor.py
+    (support);
+  recall: RedInk 1.0 -> 0.941, daily 0.8 -> 0.75,
+    combined 0.860 -> 0.807 (delta -0.053);
+  gates 1/2/3/4/5 FAIL; 6-11 pass; latency unchanged (0.503s).
+  disposition: reject. No constant was tuned after the comparison.
+
+falsified hypothesis, precisely: "highest-ranked not-yet-selected
+  relation-supported overflow ~= the missing gold support files" is
+  false on the pinned repositories. The overflow's top relation-
+  supported entries are OTHER imported modules of the seeds (noise per
+  the closed world), ranked 13-14 by residual direct evidence, while
+  the gold support targets (registry.py, decision_profile.py,
+  decision_action.py) sit at ranks ~20-40. Rank order within the
+  relation-supported set does not correlate with gold relevance at the
+  margin; eviction additionally removed required files that happened to
+  carry no resolved import support in that query's expansion.
+
+next-phase boundary (evidence for the successor design):
+  membership rules keyed on relation support alone cannot discriminate
+  gold from co-imported noise; the missing signal is query affinity of
+  the relation TARGET itself (semantic/lexical match of the candidate's
+  own content), i.e. the discriminator fast-context obtains by reading
+  candidates. A bounded target-affinity gate on quota admission (e.g.
+  requiring nonzero direct token/semantic evidence on the candidate) or
+  a lightweight rerank of the relation-supported overflow are the two
+  smallest reviewed mechanisms consistent with this record.
+```
