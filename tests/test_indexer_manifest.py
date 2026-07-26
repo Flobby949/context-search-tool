@@ -1172,3 +1172,87 @@ def test_quick_refresh_stale_entry_reason_matrix_never_uses_noop(
     assert rejected.code == "authoritative_index_required"
     assert rejected.network_egress_outcome == "not_attempted"
     assert (repo / ".context-search" / "index.sqlite").read_bytes() == before
+
+
+def _create_layout_v1_index(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE chunks (
+                chunk_id TEXT PRIMARY KEY,
+                file_path TEXT NOT NULL,
+                start_line INTEGER NOT NULL,
+                end_line INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                chunk_type TEXT NOT NULL,
+                embedding_id TEXT,
+                deleted_at INTEGER,
+                metadata TEXT NOT NULL
+            );
+            CREATE TABLE chunk_tokens (
+                chunk_id TEXT NOT NULL,
+                token TEXT NOT NULL
+            );
+            CREATE TABLE index_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            INSERT INTO chunks VALUES
+                ('old-1', 'App.java', 1, 5, 'class App {}',
+                 'symbol', 'old-1', NULL, '{}');
+            INSERT INTO chunk_tokens VALUES ('old-1', 'app');
+            """
+        )
+
+
+def test_index_repository_resets_and_rebuilds_layout_v1_index(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App { String canApply; }\n", encoding="utf-8")
+    index_dir = repo / ".context-search"
+    index_dir.mkdir()
+    _create_layout_v1_index(index_dir / "index.sqlite")
+    (index_dir / "manifest.json").write_text("{}", encoding="utf-8")
+    (index_dir / "vectors.npy").write_bytes(b"stale")
+    (index_dir / "vector_ids.deadbeef.json").write_text("[]", encoding="utf-8")
+    (index_dir / "mcp_calls.jsonl").write_text('{"kept": true}\n', encoding="utf-8")
+
+    summary = index_repository(repo, DEFAULT_CONFIG)
+
+    assert summary.files_indexed == 1
+    store = SQLiteStore(index_dir / "index.sqlite")
+    store.require_current_storage_layout()
+    with sqlite3.connect(index_dir / "index.sqlite") as connection:
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(chunk_tokens)")
+        }
+        chunk_count = connection.execute(
+            "SELECT COUNT(*) FROM chunks WHERE deleted_at IS NULL"
+        ).fetchone()[0]
+    assert columns == {"chunk_ref", "token"}
+    assert chunk_count >= 1
+    assert json.loads((index_dir / "manifest.json").read_text()) != {}
+    stale_vectors = index_dir / "vectors.npy"
+    assert not stale_vectors.exists() or stale_vectors.read_bytes() != b"stale"
+    assert not (index_dir / "vector_ids.deadbeef.json").exists()
+    assert (index_dir / "mcp_calls.jsonl").read_text() == '{"kept": true}\n'
+
+
+def test_index_repository_rejects_future_storage_layout(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+    index_dir = repo / ".context-search"
+    index_dir.mkdir()
+    _create_layout_v1_index(index_dir / "index.sqlite")
+    with sqlite3.connect(index_dir / "index.sqlite") as connection:
+        connection.execute(
+            "INSERT INTO index_metadata VALUES ('storage_layout_version', '3', 0)"
+        )
+
+    with pytest.raises(sqlite_store_module.IncompatibleStorageLayoutError):
+        index_repository(repo, DEFAULT_CONFIG)

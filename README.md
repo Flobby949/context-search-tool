@@ -599,6 +599,17 @@ cst clean /path/to/repo
 cst index /path/to/repo
 ```
 
+### 查询时报 incompatible_storage_layout
+
+索引存储布局已升级(lexical token 表改用整数引用,v2)。运行:
+
+```bash
+cst index /path/to/repo
+```
+
+`index` 会检测旧布局并自动执行一次完整重建;`clean` 不是必需的。`config.toml`
+和 `mcp_calls.jsonl` 会保留,其余索引产物全部重新生成。
+
 ### openai-compatible 缺少 base_url
 
 配置中必须写：

@@ -104,12 +104,14 @@ from context_search_tool.scanner import (
 from context_search_tool.sqlite_store import (
     FILE_WRITE_IN_PROGRESS_KEY,
     MAX_V5_FILE_WRITE_BATCH_SIZE,
+    IncompatibleStorageLayoutError,
     OperationalControlObservation,
     OperationalReadyBinding,
     OperationalScanSkip,
     OperationalSnapshot,
     OperationalSourceObservation,
     SQLiteStore,
+    TARGET_STORAGE_LAYOUT_VERSION,
     operational_content_fingerprint,
     operational_observation_fingerprint,
 )
@@ -435,6 +437,9 @@ def refresh_repository(
     tracker = _EgressTracker(network_capable=True)
     try:
         with exclusive_index_lock(resolved / ".context-search"):
+            SQLiteStore(
+                resolved / ".context-search" / "index.sqlite"
+            ).require_current_storage_layout()
             effective_config = _freeze_effective_config(
                 config
                 if config is not None
@@ -461,6 +466,8 @@ def refresh_repository(
         return _refresh_failure("incompatible_operational_schema")
     except IncompatibleSignalSchemaError:
         return _refresh_failure("incompatible_signal_schema")
+    except IncompatibleStorageLayoutError:
+        return _refresh_failure("incompatible_storage_layout")
     except InventoryIncompleteError:
         return _refresh_failure("inventory_incomplete", tracker.outcome)
     except WorkspaceChangedError:
@@ -491,6 +498,7 @@ def build_v5_index_snapshot(
     index_dir = prepare_index_directory(repo)
 
     with exclusive_index_lock(index_dir):
+        _reset_incompatible_storage_layout(index_dir)
         store = SQLiteStore(index_dir / "index.sqlite")
         stored_version = store.inspect_signal_schema_version()
         _require_authoritative_schema_compatibility(repo, store, stored_version)
@@ -563,6 +571,9 @@ def _refresh_failure(
         "incompatible_manifest_schema": "manifest schema is incompatible",
         "incompatible_operational_schema": "operational schema is incompatible",
         "incompatible_signal_schema": "signal schema is incompatible",
+        "incompatible_storage_layout": (
+            "index storage layout requires `cst index` to rebuild"
+        ),
         "index_busy": "another index writer is active",
         "inventory_incomplete": "repository inventory is incomplete",
         "workspace_changed": "repository changed during refresh",
@@ -1543,6 +1554,44 @@ def _validate_refresh_summary(summary: RefreshSummaryV1) -> None:
         raise ValueError("vector payload pass accounting mismatch")
     if vector.bytes_hashed > vector.bytes_read:
         raise ValueError("vector hash bytes exceed vector read bytes")
+
+
+_STORAGE_LAYOUT_RESET_ARTIFACTS = (
+    "index.sqlite",
+    "index.sqlite-wal",
+    "index.sqlite-shm",
+    "manifest.json",
+    "vector_snapshot.json",
+)
+
+
+def _reset_incompatible_storage_layout(index_dir: Path) -> None:
+    """Replace a pre-v2 storage layout with a fresh full build.
+
+    The lexical layout change invalidates every derived artifact (chunk ids
+    feed the manifest, vector ids, and operational observations), so the only
+    consistent upgrade is the fresh-index path. config.toml and the MCP
+    feedback log are preserved; everything else is regenerated.
+    """
+    db_path = index_dir / "index.sqlite"
+    if not db_path.exists():
+        return
+    store = SQLiteStore(db_path)
+    stored = store.inspect_storage_layout_version()
+    if stored > TARGET_STORAGE_LAYOUT_VERSION:
+        raise IncompatibleStorageLayoutError(stored)
+    if stored == TARGET_STORAGE_LAYOUT_VERSION:
+        return
+    if store.inspect_physical_storage_layout() != 1:
+        return
+    for name in _STORAGE_LAYOUT_RESET_ARTIFACTS:
+        path = index_dir / name
+        if os.path.lexists(path):
+            path.unlink()
+    for path in index_dir.glob("vectors*.npy"):
+        path.unlink()
+    for path in index_dir.glob("vector_ids*.json"):
+        path.unlink()
 
 
 def _require_authoritative_schema_compatibility(

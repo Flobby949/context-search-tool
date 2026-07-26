@@ -407,6 +407,28 @@ Expected on the clean tree: only the 4 known worker failures.
 
 ### Task 3: Auto-rebuild migration on `cst index`
 
+> **Revised during implementation (2026-07-26).** The in-place SQLite
+> migration written below was implemented and then replaced. Real-index E2E
+> showed the layout change invalidates state beyond SQLite — the operational
+> schema's extended columns, manifest.json source observations, and vector
+> artifacts all cross-check against chunk identity, and each fix surfaced the
+> next mismatch (missing operational columns → skipped re-chunking via
+> preserved `source_files` → "operational source observations do not match
+> source files"). The shipped design moves the upgrade up a layer:
+> `indexer._reset_incompatible_storage_layout(index_dir)` runs under the
+> exclusive index lock at the start of `index_repository`, and when the
+> *physical* layout is v1 (`chunks` exists without a `chunk_ref` column —
+> checked via `SQLiteStore.inspect_physical_storage_layout()` so future-schema
+> databases are refused, not deleted) it removes index.sqlite, manifest.json,
+> vector artifacts, and snapshots (keeping `config.toml` and `mcp_calls*`),
+> letting the proven fresh-build path regenerate everything.
+> `refresh_repository` fails closed with the coded
+> `incompatible_storage_layout` RefreshFailure. `migrate_storage_layout_v2`
+> no longer exists; the layout stamp is written by `initialize()` and
+> `initialize_v5()`. Tests live in `tests/test_indexer_manifest.py`
+> (`test_index_repository_resets_and_rebuilds_layout_v1_index`,
+> `test_index_repository_rejects_future_storage_layout`).
+
 **Files:**
 - Modify: `src/context_search_tool/sqlite_store.py`
 - Test: `tests/test_sqlite_store.py`
