@@ -399,3 +399,49 @@ AI生成搜索策略 → 多轮迭代搜索 → grep扩展 → 结果排序
 > 测试 3 "数据看板统计图表功能" 的失败揭示了 CST 的核心问题：
 > **词法匹配 + 字符级 Hash embedding 无法处理中英文混合代码库**。
 > 这在中国开发者的日常场景中非常常见（中文查询 + 英文代码）。
+
+---
+
+# 2026-07-26 复测:存储布局 v2 后的三项目对比
+
+## 测试环境
+
+- CST: main @ `1d64414`(存储布局 v2、路径去重 P7、hash-v1 embedding)
+- fast-context: MCP 默认参数(tree_depth 自动、max_turns=3、lightweight)
+- 标准答案:先行人工阅读代码确立,再对双方输出评分
+- 项目:
+  - `backend-template` — 166 Java + 46 TS + 39 Vue(Spring 插件覆盖区)
+  - `Investment-Assistant` — 123 Java + 33 Go + 27 TS(混合栈)
+  - `imagebed` — 19 Go(无 CST 插件,通用基线)
+
+## 逐查询结果
+
+| # | 查询 | 判定 | 关键证据 |
+|---|---|---|---|
+| Q1 | 用户登录认证和JWT令牌生成流程(中文) | **fast-context 明显胜** | fc 前 5 全中(AuthService/JwtUtils/AuthController/JwtAuthenticationFilter/SecurityConfig);CST 漏 `JwtUtils.java` 定义处,#1 为 MenuService |
+| Q2 | data scope permission filtering | **CST 首位胜** | CST #1 直接命中 `DataScopeInterceptor`;fc 的 AI 轮前 4 为前端/实体噪声,但覆盖了 Utils/注解/Context,CST 漏此三件 |
+| Q3 | AI助手对话历史的保存和加载(中文) | **CST 略胜** | 双方前 3 相同;CST 前 5 干净并带出 useChat.ts/ai.service.ts 前端链路;fc 5-8 为 .env/docker 噪声 |
+| Q4 | user token blacklist logout flow | **fast-context 略胜** | 双方核心五件套全中;fc 排序更准且发现 http-tests/token-blacklist.http;CST #2 为半相关 SseController |
+| Q5 | image upload handler and storage backend selection(Go) | **fast-context 明显胜** | fc 命中 storage.go 接口 + 3 实现 + main.go L106-127 的 `switch cfg.Storage.Type` 选择逻辑;CST 漏 storage.go/local.go/s3.go |
+
+## 汇总
+
+| 维度 | CST | fast-context |
+|---|---|---|
+| top-1 正确率 | 4/5 | 3/5 |
+| 核心文件覆盖 | 漏定义点(JwtUtils、storage.go) | 基本全覆盖 |
+| 噪声形态 | 同域其他 Controller/半相关文件 | grep 扩展的 README/docker/env |
+| 时延 | 0.5–5.4s 本地 | 未精确计时(远程 3 轮,timeout 配置 30s) |
+| 输出 | 完整代码上下文 118–232KB JSON | 文件+行号+grep 关键词 ~2-5KB |
+| 索引 | 三项目共 ~3s 预建 | 免索引 |
+
+## 归因
+
+两个明显败场同根因:**缺定义点结构信号**。
+
+1. Q1:`JwtUtils` 是令牌生成的定义处,但词频排序把使用方(MenuService 等)顶到定义方之前 —— 即 P1-3 已记录的 "定义 vs 使用" 缺陷,曾在本仓库 `NumpyVectorStore` 查询中复现(定义文件排 #3,两个使用文件在前)。
+2. Q5:Go 无插件,通用基线抓不住接口-实现结构(`storage.go` 接口完全未进前 8)。
+
+结论:外部对照再次验证路线图优先级 —— P8 静态结构检索(及向 Go 等语言推广)是当前最大质量杠杆。CST 保持的优势:本地一个数量级的速度、离线确定性、可解释分数、插件区的执行点首位精度(Q2)。
+
+次级发现:fc 每轮返回 grep 关键词供 agent 追查,CST 的 `followup_keywords` 名义上同职责,但为原始 token 直出(单结果最多 450+ 个,含 `if`/`for`/`self` 等),无导航价值。
