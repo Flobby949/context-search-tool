@@ -3,19 +3,22 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 Date: 2026-07-26
-Status: Ready for review; implementation not authorized or started
+Status: Revised after adversarial review (r2); implementation not authorized
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
 Behavior baseline: `b9fa965` (main with P8 merged)
 Design:
 `docs/superpowers/specs/2026-07-26-p9-relation-aware-final-selection-design.md`
 
-**Goal:** Let relation-supported candidates enter final selection through a
-bounded reserved quota, credited mechanically, without changing any score.
+**Goal:** Let relation-supported results enter final selection through a
+bounded reserved quota, credited by the acceptance harness, without changing
+any score.
 
-**Architecture:** One selection-stage rule inside the P7 selector: scan the
-ranked list to depth 50 for path-distinct relation-supported candidates,
-take at most 2, evict only non-relation-supported, non-protected lowest
-ranks, and record relation provenance as the credit witness.
+**Architecture:** One post-pass inside `split_results_and_anchors`
+(`retrieval_core/selection.py`): scan the path-deduplicated ranked list to
+overall rank 50 for relation-supported, non-anchor, path-distinct items,
+take at most 2 in ranked order, evict only non-protected
+(`evidence_priority != 0`) lowest ranks, append takes at the end, add the
+reason `"relation slot"`, and count `relation_slot_selected`.
 
 **Tech Stack:** Python 3.11+, existing retrieval core; no new dependencies.
 
@@ -23,16 +26,22 @@ ranks, and record relation provenance as the credit witness.
 
 - Supported acceptance runtime: `.quality/p5-runtime/bin/python`
   (Python 3.13.12, SQLite 3.51.2); run tests with
-  `env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/src" <runtime> -m pytest -q`.
-- No score, weight, decay, budget, acquisition, or schema change; the only
-  product files touched are the three in the design change surface.
+  `env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/src" .quality/p5-runtime/bin/python -m pytest -q -p no:cacheprovider`.
+- Product files touched: `retrieval_core/relation_policy.py` and
+  `retrieval_core/selection.py` only. The harness file
+  `tests/p8_real_python_graphs_acceptance.py` is extended (capture schema
+  v2). No score/weight/decay/budget/acquisition change; `tracing.py`,
+  `retrieval.py`, expansion, ranking, formatters stay untouched.
 - `RELATION_FINAL_SLOTS = 2`, `RELATION_SLOT_SCAN_DEPTH = 50`; do not tune
   either after seeing the first A/B comparison (design stop rule).
-- Characterization handling follows the P7 overlay precedent; baseline.json
-  is never edited.
-- Reuse the P8 gold manifest, pinned sources, and paired runner unchanged;
-  capture a fresh baseline at `b9fa965` before any candidate exists and
-  never overwrite it.
+- Characterization: pin new hashes for ALL 13 fixture cases (the counter is
+  visible in every trace); baseline.json is never edited.
+- Reuse the P8 gold manifest and pinned sources unchanged; capture a fresh
+  v2 baseline at `b9fa965` before any candidate exists and never overwrite
+  it.
+- In `tests/test_retrieval_pipeline.py` use bare, already-imported facade
+  names (`query_repository`, `index_repository`) — the migration ledger
+  pins attribute-reference counts.
 - Do not commit/push beyond the working branch unless the user asks.
 - Known environment failures (p6 measurement workers on this machine) are
   out of scope; the dirty-tree p6 gates clear on each commit.
@@ -42,175 +51,259 @@ ranks, and record relation provenance as the credit witness.
 | action | path | purpose |
 | --- | --- | --- |
 | modify | `src/context_search_tool/retrieval_core/relation_policy.py` | quota constants |
-| modify | `src/context_search_tool/retrieval_core/selection.py` | quota scan/eviction/provenance |
-| modify | `src/context_search_tool/retrieval_core/tracing.py` | `relation_slot_selected` final-stage counter |
-| modify | `tests/test_retrieval_core_primitives.py` | policy constants exactness |
-| modify | `tests/test_retrieval_pipeline.py` | end-to-end quota behavior (ledger-safe: bare facade names only) |
-| modify | `tests/test_exploration_p7.py` or `tests/test_retrieval_trace.py` | trace counter |
-| modify | `tests/test_retrieval_core_characterization.py` | `EXPECTED_P9_FINAL_TRACE_HASHES` overlay |
-| create | evidence under a task `mktemp -d` root | baseline/candidate captures, comparison |
+| modify | `src/context_search_tool/retrieval_core/selection.py` | quota post-pass, reason, `_FINAL_TRACE_DECISION_KEYS` entry, counting |
+| modify | `tests/p8_real_python_graphs_acceptance.py` | capture schema v2, `relation_slot` flag, credit rule |
+| modify | `tests/test_retrieval_core_primitives.py` | policy constants + selector unit tests |
+| modify | `tests/test_retrieval_pipeline.py` | end-to-end quota behavior; pinned decision tuples at 8942-8949, 9020; monkeypatch guard 8965 |
+| modify | `tests/test_retrieval_trace_pipeline.py` | pinned tuples at ~461-468, 544, 968 and the sum-invariant assertion at ~469 |
+| modify | `tests/test_formatters.py` | pinned decision rendering at ~126 |
+| modify | `tests/test_retrieval_core_characterization.py` | `EXPECTED_P9_FINAL_TRACE_HASHES` overlay (all 13 cases) |
+| modify | `tests/test_p8_real_python_graphs_acceptance.py` | v2 schema + credit-rule tests |
+| create | evidence under `$P9_RUN_ROOT` (mktemp) | captures, comparison |
 
 ---
 
 ### Task 0: Freeze The P9 Baseline
 
-**Files:** evidence only; no product changes.
+**Files:** `tests/p8_real_python_graphs_acceptance.py` (schema v2 first),
+`tests/test_p8_real_python_graphs_acceptance.py`; then evidence only.
 
-- [ ] **Step 0.1:** Verify entry state: `git rev-parse HEAD` = `b9fa965`
-  ancestor tip of main, clean tree, full suite green
-  (expected: 2960 passed).
-- [ ] **Step 0.2:** Create `P9_RUN_ROOT="$(mktemp -d /private/tmp/cst-p9-run.XXXXXX)"`.
-  Reuse the existing pinned clones (re-clone via
-  `tests/p8_python_graph_identity.py` validation if the P8 root is gone).
-- [ ] **Step 0.3:** Capture the baseline with the P8 runner against the
-  CURRENT tree (which is the baseline for P9):
-  `p8_real_python_graphs_acceptance.py capture <repo-root> <repos-dir>
-  $P9_RUN_ROOT/baseline.json 2`. Run twice; normalized projections must be
-  byte-identical. Record structural counts.
-- [ ] **Step 0.4:** Validate gold via
-  `generate_p8_python_graph_manifest.py --check` and record the manifest
-  hash. Gold is frozen; no edits in P9.
+- [ ] **Step 0.1:** Verify entry: clean tree on main at `b9fa965` (or its
+  ff-descendant with no product diffs), full suite green (expected 2960
+  passed on the supported runtime).
+- [ ] **Step 0.2: RED for capture v2.** In
+  `tests/test_p8_real_python_graphs_acceptance.py` extend the synthetic
+  capture builder so every selected entry carries
+  `"relation_slot": False`, set the expected `schema_version` to 2, and
+  assert `check` rejects a v1 payload. Run
+  `pytest -q tests/test_p8_real_python_graphs_acceptance.py` — RED.
+- [ ] **Step 0.3: Implement v2** in `p8_real_python_graphs_acceptance.py`:
+  `CAPTURE_SCHEMA_VERSION = 2`; in the capture loop set
+  `entry["relation_slot"] = "relation slot" in result.reasons`; `check`
+  accepts only version 2. GREEN; commit
+  `test: bump P9 acceptance capture schema to v2`.
+- [ ] **Step 0.4: Prepare pinned sources.** If the P8 clone root is gone:
+
+```bash
+export P9_RUN_ROOT="$(mktemp -d /private/tmp/cst-p9-run.XXXXXX)"
+git clone https://github.com/HisMax/RedInk.git "$P9_RUN_ROOT/RedInk"
+git -C "$P9_RUN_ROOT/RedInk" checkout 4d48722344594cf00e0498f0e1ed3df9cd4fd6be
+git clone https://github.com/ZhuLinsen/daily_stock_analysis.git "$P9_RUN_ROOT/daily_stock_analysis"
+git -C "$P9_RUN_ROOT/daily_stock_analysis" checkout 487e49e565ffd1b96a7cf4d855f99cee3c981eaa
+```
+
+  Then validate via `p8_python_graph_identity.validate_protected_source`
+  for both repos (counts 28/203 and both hash pairs).
+- [ ] **Step 0.5: Baseline capture (twice):**
+
+```bash
+env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/src:$PWD/tests" \
+  .quality/p5-runtime/bin/python tests/p8_real_python_graphs_acceptance.py \
+  capture "$PWD" "$P9_RUN_ROOT" "$P9_RUN_ROOT/baseline.json" 2
+```
+
+  and a second run to `baseline-repeat.json`. The two captures must be
+  byte-identical after deleting the top-level `timing` and
+  `implementation` keys (compare with a 5-line python snippet). All
+  baseline entries must have `relation_slot: false`. Never overwrite
+  `baseline.json` afterwards.
+- [ ] **Step 0.6:** `generate_p8_python_graph_manifest.py --check` passes;
+  record the manifest hash. Gold is frozen; no edits in P9.
 
 ### Task 1: RED/GREEN Quota Constants And Selector Unit
 
 **Files:**
 - Modify: `src/context_search_tool/retrieval_core/relation_policy.py`
 - Modify: `src/context_search_tool/retrieval_core/selection.py`
-- Test: `tests/test_retrieval_core_primitives.py`, `tests/test_retrieval_pipeline.py`
+- Test: `tests/test_retrieval_core_primitives.py`
 
 **Interfaces:**
 - Produces: `relation_policy.RELATION_FINAL_SLOTS == 2`,
-  `relation_policy.RELATION_SLOT_SCAN_DEPTH == 50`, and a pure helper in
-  `selection.py`:
+  `relation_policy.RELATION_SLOT_SCAN_DEPTH == 50`, and inside
+  `selection.py` a pure helper the post-pass and tests share:
 
 ```python
-def apply_relation_slots(
-    ordered: list[core_types._ExpandedResult],
-    *,
-    final_top_k: int,
-    protected_chunk_ids: set[str],
-) -> tuple[list[core_types._ExpandedResult], int]:
-    """Return the final selection with up to RELATION_FINAL_SLOTS quota
-    swaps applied, plus the relation_slot_selected count."""
+def _apply_relation_slots(
+    selected: list[core_types._ExpandedResult],
+    overflow: list[core_types._ExpandedResult],
+) -> tuple[
+    list[core_types._ExpandedResult],
+    list[core_types._ExpandedResult],
+    int,
+]:
+    """Return (final_selection, swapped_out, relation_slot_selected).
+
+    `selected` is the ordinary path-diverse selection in ranked order;
+    `overflow` is the remaining path-deduplicated ranked tail, already
+    truncated so that len(selected) + len(overflow) <=
+    RELATION_SLOT_SCAN_DEPTH and stripped of anchor-kind items by the
+    caller. Eligibility: "resolved_relation" in score_parts and any
+    GRAPH_SCORE_KEYS key present. Protection: evidence_priority == 0
+    members of `selected` are never evicted. Takes append in ranked
+    order; each take evicts the lowest-ranked non-protected member.
+    """
 ```
 
-  A result is relation-supported when its `score_parts` contain any key in
-  `relation_policy.GRAPH_SCORE_KEYS` and its metadata-carried provenance
-  names a persisted relation ID (already available on expansion results;
-  thread it through `_ExpandedResult` score_parts — no new dataclass
-  field).
-
-- [ ] **Step 1.1: Write the failing policy test** in
-  `tests/test_retrieval_core_primitives.py`, extending
-  `test_relation_policy_values_are_exact`:
+- [ ] **Step 1.1: Failing policy test** — extend
+  `test_relation_policy_values_are_exact`
+  (`tests/test_retrieval_core_primitives.py:331`):
 
 ```python
     assert relation_policy.RELATION_FINAL_SLOTS == 2
     assert relation_policy.RELATION_SLOT_SCAN_DEPTH == 50
 ```
 
-- [ ] **Step 1.2: Write the failing selector unit test** (same file):
-  construct ~15 synthetic `_ExpandedResult` items over distinct paths where
-  items at ranks 13 and 14 carry `graph_imports_match` in score_parts and
-  ranks 11-12 do not; assert:
-  - returned selection contains the rank-13/14 paths;
-  - the evicted items are exactly the previous ranks 11-12;
-  - a protected item at rank 12 (chunk_id in `protected_chunk_ids`) is
-    never evicted (construct a second scenario);
-  - an already relation-supported member of the selection is never
-    evicted;
-  - count returned equals the number of swaps;
-  - no relation-supported candidate below `RELATION_SLOT_SCAN_DEPTH` is
-    considered (place one at rank 51 and assert it stays out);
-  - with zero relation-supported candidates the output is the identical
-    list object contents and count 0.
+- [ ] **Step 1.2: Failing selector unit tests** (same file), building
+  `_ExpandedResult` items with the existing test constructors. Scenarios:
+  - takes at overflow ranks 1-2 (score_parts
+    `{"graph_imports_match": 0.3, "resolved_relation": 1.0}`) enter; the
+    two lowest-ranked `selected` members with `evidence_priority=2` are
+    evicted; count == 2; final order = surviving selected order + takes
+    appended in ranked order;
+  - a `selected` tail member with `evidence_priority == 0` is never
+    evicted (construct a selection whose last two members are protected;
+    only one take happens against the single non-protected member);
+  - an overflow item without `resolved_relation` (bare
+    `graph_imports_match` only) is not eligible;
+  - zero eligible overflow items → returned selection equals input list
+    contents, swapped_out empty, count 0;
+  - determinism: calling twice on copies yields identical outputs.
 - [ ] **Step 1.3:** Run
   `pytest -q tests/test_retrieval_core_primitives.py -k relation` —
-  expected RED (missing constants/helper).
-- [ ] **Step 1.4: Implement** the constants and `apply_relation_slots`;
-  wire it into `assemble_query_output` immediately after the existing P7
-  path-diverse cut, before `RetrievalResult` construction; append reason
-  `"relation slot"` to swapped-in items via the existing reasons channel.
-- [ ] **Step 1.5:** Run the same selection twice; assert list equality in
-  the unit test (determinism). GREEN, twice; `git diff --check`; commit
+  expected RED (missing constants and helper).
+- [ ] **Step 1.4: Implement** the constants and `_apply_relation_slots`,
+  and wire the post-pass into `split_results_and_anchors`
+  (selection.py:80-164): after the ordinary path-diverse selection is
+  determined and before trace decisions are finalized, build `overflow`
+  from the remaining path-deduplicated ranked, non-anchor items up to
+  overall rank `RELATION_SLOT_SCAN_DEPTH`, apply the helper, append the
+  reason `"relation slot"` to takes via the existing reasons list, and
+  keep evicted items out of `results` (they are counted per Step 2.2).
+- [ ] **Step 1.5:** GREEN twice; `git diff --check`; commit
   `feat: reserve relation-supported final slots (P9 Task 1)`.
 
-### Task 2: RED/GREEN End-To-End And Trace Counter
+### Task 2: RED/GREEN Trace Counter, Pinned Tuples, End-To-End
 
 **Files:**
-- Modify: `src/context_search_tool/retrieval_core/tracing.py`
-- Test: `tests/test_retrieval_pipeline.py`, `tests/test_retrieval_trace.py`
+- Modify: `src/context_search_tool/retrieval_core/selection.py`
+- Test: `tests/test_retrieval_pipeline.py`,
+  `tests/test_retrieval_trace_pipeline.py`, `tests/test_formatters.py`
 
-- [ ] **Step 2.1: Failing end-to-end test** in `test_retrieval_pipeline.py`
-  (bare `query_repository`/`index_repository` names only — the migration
-  ledger pins attribute-reference counts): extend the existing P8 mini
-  workflow so one imported target (`app/wire.py`) shares no query token,
-  add 12+ direct-matching sibling files so `wire.py` ranks below the
-  final cut, and assert:
-  - `app/wire.py` is selected;
-  - its reasons contain `"relation slot"` and `"static module dependency"`;
-  - final paths are unique and two repeated calls return identical order;
-  - the top direct winner is unchanged versus the same query with the
-    sibling set reduced (protected-winner witness).
-- [ ] **Step 2.2: Failing trace test**: the final-selection stage decision
-  counts include `["relation_slot_selected", N]` with the exact N from the
-  pipeline fixture, following the `duplicate_result_path` precedent.
-- [ ] **Step 2.3:** Implement the counter in `tracing.py` (same insertion
-  style as `duplicate_result_path`); GREEN both tests twice; commit
-  `feat: trace relation slot selections (P9 Task 2)`.
+- [ ] **Step 2.1: Failing counter contract.** Add to
+  `_FINAL_TRACE_DECISION_KEYS` (selection.py:46-53) the new literal
+  `"relation_slot_selected"`, TEST-FIRST by updating the pinned
+  decision-count expectations to include `["relation_slot_selected", N]`:
+  - `tests/test_retrieval_trace_pipeline.py:461-468` (exact tuple) and
+    the invariant at line ~469, which becomes: the sum of all decision
+    counts EXCLUDING `relation_slot_selected` equals
+    `final_stage.input_count` (a swap moves one item out and one in, so
+    the selected/limit buckets stay balanced; the new counter is
+    informational);
+  - the further exact tuples at `test_retrieval_trace_pipeline.py:544`
+    and `:968`;
+  - `tests/test_retrieval_pipeline.py:8942-8949` and `:9020`, and the
+    `_FINAL_TRACE_DECISION_KEYS` monkeypatch guard at `:8965`;
+  - `tests/test_formatters.py:126` rendering expectation.
+  Run those suites — RED with the old tuples.
+- [ ] **Step 2.2: Implement counting** in `split_results_and_anchors`
+  (same style as `duplicate_result_path` at selection.py:133-135):
+  swapped-out items increment `result_limit` (they were cut by policy),
+  takes count toward `selected`, and `relation_slot_selected` records
+  the number of swaps. GREEN.
+- [ ] **Step 2.3: Failing end-to-end test** in
+  `tests/test_retrieval_pipeline.py` (bare facade names): extend the
+  P8 mini workflow (`_p8_mini_workflow`, :12024) with 12+ direct-matching
+  sibling files sharing the query tokens so `app/wire.py` (no query
+  token) ranks below the ordinary cut; assert:
+  - `app/wire.py` is selected and its reasons contain
+    `"relation slot"` and `"static module dependency"`;
+  - final paths unique; two repeated calls identical;
+  - the rank-1 direct winner is the same as in the unmodified mini
+    workflow (protected-winner witness);
+  - a reverse-registration variant (index with plugins reversed via
+    `build_v5_index_snapshot(..., graph_plugins=list(reversed(...)))`)
+    returns the identical final path list.
+- [ ] **Step 2.4: ContextPack smoke** (same test file): build the context
+  pack via the bare `build_context_pack`-equivalent public path already
+  used in the file, assert the quota-selected `app/wire.py` appears as a
+  pack item without error. GREEN twice; commit
+  `feat: trace and prove relation slot selections (P9 Task 2)`.
 
 ### Task 3: Characterization Overlay
 
-**Files:**
-- Modify: `tests/test_retrieval_core_characterization.py`
+**Files:** `tests/test_retrieval_core_characterization.py`
 
-- [ ] **Step 3.1:** Run the characterization suite; collect the failing
-  cases' actual final trace hashes (these are the P9 deltas).
-- [ ] **Step 3.2:** Add `EXPECTED_P9_FINAL_TRACE_HASHES` and
-  `_normalize_p9_final_trace_delta(actual, expected)` following the P7
-  normalizer shape exactly: assert actual == P9 pinned hash, assert it
-  differs from the P7 pinned value only for cases whose final stage shows
-  `relation_slot_selected > 0` (a case with zero quota activity must keep
-  its P7 hash), strip/restore the new counter like P7 did for
-  `duplicate_result_path`, and chain it inside
-  `test_characterization_matches_immutable_baseline` before the P7
-  normalizer.
-- [ ] **Step 3.3:** Full suite on the supported runtime — target: only the
-  known p6 worker environment failures on a clean tree. Commit
+- [ ] **Step 3.1:** Run the characterization suite; ALL 13 cases fail on
+  `trace_json_sha256` (the counter is present in every trace). Collect
+  each case's actual hash.
+- [ ] **Step 3.2:** Add `EXPECTED_P9_FINAL_TRACE_HASHES` (all 13 keys) and
+  `_normalize_p9_final_trace_delta(actual, expected)` chained BEFORE the
+  existing P7 normalizer inside
+  `test_characterization_matches_immutable_baseline`:
+  - assert each actual hash equals its P9 pin;
+  - substitute the P7-pinned hash (`EXPECTED_P7_FINAL_TRACE_HASHES`)
+    for each case so the untouched P7 normalizer still validates its own
+    pin and the baseline substitution chain;
+  - in `full_stage_ledgers`, assert the final stage contains the entry
+    `["relation_slot_selected", 0]` for the fixture cases (zero-activity
+    structural invariant: fixture repos must not trigger the quota) and
+    pop that entry before the P7 normalizer pops its
+    `duplicate_result_path` entry, preserving the existing index
+    arithmetic at characterization.py:262-263.
+  If any fixture case shows `relation_slot_selected > 0`, STOP: that is
+  an unreviewed behavior change on protected fixtures.
+- [ ] **Step 3.3:** Full suite on the supported runtime — target: green on
+  a clean tree except known worker failures. Commit
   `test: pin P9 final-selection characterization overlay (P9 Task 3)`.
 
-### Task 4: Paired A/B And Ship Gates
+### Task 4: Paired A/B, Credit Rule, Ship Gates
 
-**Files:** evidence only.
+**Files:** `tests/p8_real_python_graphs_acceptance.py` (compare/credit),
+`tests/test_p8_real_python_graphs_acceptance.py`; evidence.
 
-- [ ] **Step 4.1:** Candidate capture (twice, deterministic-identical)
-  into `$P9_RUN_ROOT/candidate.json`.
-- [ ] **Step 4.2:** Extend the P8 `compare` gates in a P9 wrapper script
-  under `tests/` only if gate arithmetic differs; otherwise reuse
-  `compare` and evaluate the design's nine P9 gates from the report plus
-  the quota-credit rule (a gain is credited only when the selected entry
-  carries the `relation slot` reason and relation provenance).
-- [ ] **Step 4.3:** Apply the fixed disposition. If gate 2 fails, stop:
-  record the failure boundary; do not raise `RELATION_FINAL_SLOTS`.
-- [ ] **Step 4.4:** On `ship`: run the standard p8_python quality profile
-  (18/18, zero errors) and the fast-context comparison scoring script on
-  the six-case subset; record all numbers.
+- [ ] **Step 4.1: RED credit-rule tests** in the runner test file:
+  synthetic captures where (a) a gained required path has
+  `relation_slot: true` + a witness → credited; (b) gained with
+  `relation_slot: false` → uncredited; (c) `relation_slot: true` but no
+  witness row → uncredited and gate 2 unsatisfied. RED, then implement in
+  `compare`: credit requires `relation_slot` AND `relation_witness`
+  (already looked up at capture time; when several rows qualify the
+  capture records the lexicographically smallest
+  `(source_path, relation_id)`). GREEN; commit
+  `test: credit quota-selected gains in the paired comparison (P9 Task 4a)`.
+- [ ] **Step 4.2: Candidate capture (twice):** same command as Step 0.5
+  with output `candidate.json` / `candidate-repeat.json`; identical after
+  removing `timing`/`implementation`.
+- [ ] **Step 4.3: Compare and evaluate the design's nine gates:**
+
+```bash
+env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/src:$PWD/tests" \
+  .quality/p5-runtime/bin/python tests/p8_real_python_graphs_acceptance.py \
+  compare "$P9_RUN_ROOT/baseline.json" "$P9_RUN_ROOT/candidate.json" \
+  "$P9_RUN_ROOT/comparison.json"
+```
+
+  Apply the fixed disposition. If gate 2 fails, stop and record; do not
+  raise the constants.
+- [ ] **Step 4.4: On `ship`:** run the standard p8_python quality profile
+  (18/18, zero errors) and re-score the six-case fast-context subset;
+  record all numbers.
 
 ### Task 5: Record And Docs
 
 - [ ] **Step 5.1:** Fill this plan's Implementation Record with observed
-  values only (both dispositions possible; a non-ship result records the
-  boundary and stops, per the P8 precedent).
-- [ ] **Step 5.2:** On `ship` only: README selection note +
-  `docs/retrieval-quality.md` gate description + roadmap status line.
-  Commit docs separately.
+  values only (either disposition; a non-ship result records the boundary
+  and stops).
+- [ ] **Step 5.2:** On `ship` only: README selection note,
+  `docs/retrieval-quality.md` gate description, roadmap status line;
+  separate docs commit.
 
 ## Stop Conditions
 
 - Any protected-direct winner change in unit/e2e tests.
-- Characterization delta in a case with `relation_slot_selected == 0`.
+- Any characterization fixture case with `relation_slot_selected > 0`.
 - Gate 2 failure (insufficient credited gains) — report, do not tune.
-- Latency regression > 5% on the paired mean.
+- Query latency mean regression > 5% in the paired comparison.
 
 ## Implementation Record
 
