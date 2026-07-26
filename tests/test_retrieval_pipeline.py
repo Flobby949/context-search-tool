@@ -12105,3 +12105,84 @@ def test_python_relation_targets_respect_p7_path_diversity(
     second_paths = [str(result.file_path) for result in second.results]
     assert first_paths == second_paths
     assert len(first_paths) == len(set(first_paths))
+
+
+def _p9_quota_workflow(tmp_path: Path) -> Path:
+    repo = _p8_mini_workflow(tmp_path)
+    # Crowd the ranking with direct matches for every query token so the
+    # graph-only target app/wire.py drops below the ordinary final cut.
+    for index in range(14):
+        (repo / "app" / f"api_entry_helper_{index}.py").write_text(
+            "def api_entry_helper_%d():\n"
+            "    # api entry helper\n"
+            "    return 'api entry %d'\n" % (index, index),
+            encoding="utf-8",
+        )
+    index_repository(repo, DEFAULT_CONFIG)
+    return repo
+
+
+def test_relation_slot_recovers_graph_only_target_end_to_end(
+    tmp_path: Path,
+) -> None:
+    repo = _p9_quota_workflow(tmp_path)
+
+    bundle = query_repository(repo, "handle_order api entry", DEFAULT_CONFIG)
+
+    by_path = {str(result.file_path): result for result in bundle.results}
+    paths = [str(result.file_path) for result in bundle.results]
+    assert len(paths) == len(set(paths))
+    assert "app/wire.py" in by_path
+    wire = by_path["app/wire.py"]
+    assert "relation slot" in wire.reasons
+    assert "static module dependency" in wire.reasons
+    assert paths[0] == "app/api.py"
+
+    repeat = query_repository(repo, "handle_order api entry", DEFAULT_CONFIG)
+    assert [str(result.file_path) for result in repeat.results] == paths
+
+
+def test_relation_slot_selection_is_registration_order_independent(
+    tmp_path: Path,
+) -> None:
+    from context_search_tool.indexer import build_v5_index_snapshot
+    from context_search_tool.plugins import default_plugins
+    from context_search_tool.scanner import scan_workspace_v5
+
+    forward_repo = _p9_quota_workflow(tmp_path / "forward")
+    reverse_repo = tmp_path / "reverse" / "p8repo"
+    import shutil
+
+    shutil.copytree(
+        forward_repo, reverse_repo, ignore=shutil.ignore_patterns(".context-search")
+    )
+    build_v5_index_snapshot(
+        reverse_repo,
+        DEFAULT_CONFIG,
+        graph_plugins=list(reversed(default_plugins())),
+        scanner=scan_workspace_v5,
+    )
+
+    forward = query_repository(forward_repo, "handle_order api entry", DEFAULT_CONFIG)
+    reverse = query_repository(reverse_repo, "handle_order api entry", DEFAULT_CONFIG)
+
+    assert [str(r.file_path) for r in forward.results] == [
+        str(r.file_path) for r in reverse.results
+    ]
+
+
+def test_relation_slot_result_flows_into_context_pack(tmp_path: Path) -> None:
+    repo = _p9_quota_workflow(tmp_path)
+
+    bundle = query_repository(repo, "handle_order api entry", DEFAULT_CONFIG)
+    options = resolve_context_pack_options(
+        DEFAULT_CONFIG,
+        context_lines=None,
+        max_evidence_anchors=evidence_anchor_top_k(
+            DEFAULT_CONFIG.retrieval.final_top_k
+        ),
+    )
+    pack = build_context_pack(bundle, options)
+
+    item_paths = {item.file_path for item in pack.items}
+    assert "app/wire.py" in item_paths

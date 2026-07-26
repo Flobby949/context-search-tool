@@ -231,6 +231,134 @@ def _normalize_followup_filter_delta(
     return normalized
 
 
+EXPECTED_P9_FINAL_TRACE_HASHES: dict[tuple[str, str, str], str] = {
+    (
+        "ci",
+        "java_spring_mini",
+        "apply-audit-endpoint",
+    ): "e870f3b7710cb664f82d02fb13326c4f7dcb9d78284f96b41a245c62db143dee",
+    (
+        "ci",
+        "java_spring_mini",
+        "workbench-audit-localized-cjk",
+    ): "b7aef9dc530563f52e1656d4333dbca4e75c1330affcb56a147ce5b352c957b6",
+    (
+        "ci",
+        "program_tool",
+        "ai-chat",
+    ): "67ee7008bb46cbdbdc103203068bd8f1909227648bc7b1ddee9aa3ee3454e68e",
+    (
+        "ci",
+        "program_tool",
+        "app-layout-theme",
+    ): "547bfedec6423a8765c0d5dd8a7ae7ea5084ca33ca0503249b65bbc81f20d36c",
+    (
+        "ci",
+        "program_tool",
+        "json-to-entity",
+    ): "96a7b7afc82ce2dd760657324aa7e09831439a051534d5bd2217d66ff8535edf",
+    (
+        "ci",
+        "program_tool",
+        "mqtt-tool",
+    ): "6b891df66793ff7f7cf3bb2e2421c786e79f1dadba31ec90e1e2303d200494e4",
+    (
+        "ci",
+        "program_tool",
+        "qrcode-tool",
+    ): "4c878d048e24ac3c5fcbda16b7080d5b883b2bb9a9a0f96232c3d023e50d4a1d",
+    (
+        "ci",
+        "program_tool",
+        "watermark-remover",
+    ): "f7855be219c721d61cf40abdc6347f3c0c44ec253ab4e6e450d6a5d18d051c68",
+    (
+        "p2_context_pack",
+        "context_pack_docs",
+        "program-tool-developer-docs",
+    ): "e1e23ecb9838736707aafe9d6d6f45c72b7355dda21dba759654ef7761bf601b",
+    (
+        "p2_context_pack",
+        "context_pack_frontend",
+        "qrcode-feature-context",
+    ): "1d9993aaf846f39243f2cf91e169c8112cb7c5b3078830be9551d35ec92fa304",
+    (
+        "p2_context_pack",
+        "context_pack_java",
+        "workspace-page-flow",
+    ): "c8449ef9f64c01dfaa23ced3bf1d60c2ae01e292a9ac65ad4e98741525aedb5e",
+    (
+        "p2_context_pack",
+        "context_pack_java",
+        "workspace-service-symbol",
+    ): "655552533fb7c30387b4d6382b60e7adc53c00311604a042062491bd49d66908",
+    (
+        "p2_context_pack",
+        "context_pack_java",
+        "workspace-test-file",
+    ): "9c2f45cafef740f2e3913e48e822c4cdc9b667ba88201e66da2a9f609299aae5",
+}
+
+
+def _normalize_p9_final_trace_delta(
+    actual: dict[str, object],
+    expected: dict[str, object],
+) -> dict[str, object]:
+    """Reverse the reviewed P9 relation-slot delta.
+
+    The relation_slot_selected decision counter is present (value 0
+    included) in every final-selection trace, so every case's
+    trace_json_sha256 moves off its P7 pin. This overlay pins the new
+    hashes for all cases, asserts the structural zero-activity invariant
+    on the protected fixtures (the quota must not fire there), strips the
+    counter the same way the P7 normalizer strips duplicate_result_path,
+    and substitutes the P7-pinned hashes so the untouched P7 normalizer
+    keeps validating its own delta chain against the immutable baseline.
+    """
+    normalized = deepcopy(actual)
+    expected_cases = {
+        (case["profile"], case["repo_key"], case["case_id"]): case
+        for case in expected["cases"]
+    }
+    mismatches: dict[tuple[str, str, str], str] = {}
+    for case in normalized["cases"]:
+        key = (case["profile"], case["repo_key"], case["case_id"])
+        actual_hash = case["hashes"]["trace_json_sha256"]
+        if EXPECTED_P9_FINAL_TRACE_HASHES.get(key) != actual_hash:
+            mismatches[key] = actual_hash
+        case["hashes"]["trace_json_sha256"] = EXPECTED_P7_FINAL_TRACE_HASHES[
+            key
+        ]
+    if mismatches:
+        raise AssertionError(
+            "P9 trace hashes changed:\n"
+            + "\n".join(
+                f"    {key}: \"{value}\","
+                for key, value in sorted(mismatches.items())
+            )
+        )
+    for ledger in normalized["full_stage_ledgers"].values():
+        final_stage = next(
+            stage
+            for stage in ledger["stages"]
+            if stage["name"] == "final_selection"
+        )
+        for counts in (
+            final_stage["decision_counts"],
+            final_stage["live_output"]["decision_counts"],
+        ):
+            entry_index = next(
+                index
+                for index, entry in enumerate(counts)
+                if entry[0] == "relation_slot_selected"
+            )
+            assert counts[entry_index][1] == 0, (
+                "protected fixture case activated the relation quota"
+            )
+            counts.pop(entry_index)
+    return normalized
+
+
 def _normalize_p7_final_trace_delta(
     actual: dict[str, object],
     expected: dict[str, object],
@@ -538,7 +666,10 @@ def test_characterization_matches_immutable_baseline(tmp_path: Path) -> None:
 
     normalized_actual = _without_disabled_profile_work(
         _normalize_followup_filter_delta(
-            _normalize_p7_final_trace_delta(actual, expected),
+            _normalize_p7_final_trace_delta(
+                _normalize_p9_final_trace_delta(actual, expected),
+                expected,
+            ),
             expected,
         )
     )

@@ -281,7 +281,15 @@ def _final_selections(
             retrieval_trace.TraceSelection(
                 rank=rank,
                 selection_kind=selected.kind,
-                selection_reason=selected.reason,
+                selection_reason=(
+                    # The public trace vocabulary is frozen at schema v1;
+                    # quota takes are still selections within the result
+                    # limit there. The relation_slot_selected decision
+                    # counter carries the quota signal.
+                    "selected_within_result_limit"
+                    if selected.reason == "selected_relation_slot"
+                    else selected.reason
+                ),
                 file_path=item.file_path.as_posix(),
                 start_line=item.start_line,
                 end_line=item.end_line,

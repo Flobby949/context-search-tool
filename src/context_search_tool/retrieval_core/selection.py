@@ -56,10 +56,18 @@ _FINAL_TRACE_DECISION_KEYS = (
 
 
 def _relation_slot_supported(item: core_types._ExpandedResult) -> bool:
+    # v1 scope: static module dependencies only. The P9 evidence (P8 A/B,
+    # ablation, and the fast-context comparison) is exclusively about
+    # import edges; tests/routes/calls edges admitted generated and test
+    # artifacts on the protected P5 fixtures and stay out of the quota, as
+    # do candidates the ranker already penalized as generated artifacts.
     parts = item.score_parts
-    return "resolved_relation" in parts and any(
-        key in parts for key in relation_policy.GRAPH_SCORE_KEYS
-    )
+    if any(
+        parts.get(key, 0.0) < 0
+        for key in ("generated_output_penalty", "generated_schema_penalty", "penalty")
+    ):
+        return False
+    return "resolved_relation" in parts and "graph_imports_match" in parts
 
 
 def _apply_relation_slots(
@@ -75,8 +83,9 @@ def _apply_relation_slots(
     ``selected`` is the ordinary path-diverse selection in ranked order;
     ``overflow`` is the remaining path-deduplicated ranked tail, already
     bounded by RELATION_SLOT_SCAN_DEPTH and stripped of anchor-kind items
-    by the caller. Protected direct results (evidence_priority == 0) are
-    never evicted. Takes append at the end in ranked order.
+    by the caller. Eviction scans from the bottom, never evicts the
+    rank-1 winner, and never evicts an already relation-supported
+    selection. Takes append at the end in ranked order.
     """
     takes: list[core_types._ExpandedResult] = []
     survivors = list(selected)
@@ -89,8 +98,8 @@ def _apply_relation_slots(
         evict_index = next(
             (
                 index
-                for index in range(len(survivors) - 1, -1, -1)
-                if survivors[index].evidence_priority != 0
+                for index in range(len(survivors) - 1, 0, -1)
+                if not _relation_slot_supported(survivors[index])
             ),
             None,
         )

@@ -208,6 +208,11 @@ P7_FINAL_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/retrieval_core/selection.py",
 }
 
+P9_RELATION_SLOT_PRODUCTION_CHANGES = {
+    "src/context_search_tool/formatters.py",
+    "src/context_search_tool/retrieval_trace/models.py",
+}
+
 P8_PYTHON_GRAPH_PRODUCTION_CHANGES = {
     "src/context_search_tool/python_graph.py",
     "src/context_search_tool/plugins.py",
@@ -963,6 +968,7 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         | P6_TASK9_PRODUCTION_CHANGES
         | P7_FINAL_REVIEWED_PRODUCTION_CHANGES
         | P8_PYTHON_GRAPH_PRODUCTION_CHANGES
+        | P9_RELATION_SLOT_PRODUCTION_CHANGES
     )
 
     source_status = subprocess.run(
@@ -989,6 +995,7 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         | P6_TASK9_PRODUCTION_CHANGES
         | P7_FINAL_REVIEWED_PRODUCTION_CHANGES
         | P8_PYTHON_GRAPH_PRODUCTION_CHANGES
+        | P9_RELATION_SLOT_PRODUCTION_CHANGES
     )
 
     subprocess.run(

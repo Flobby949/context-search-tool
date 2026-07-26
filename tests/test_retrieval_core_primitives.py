@@ -571,11 +571,11 @@ def test_relation_slots_swap_bottom_ranks_for_supported_overflow() -> None:
     ]
 
 
-def test_relation_slots_never_evict_protected_direct() -> None:
+def test_relation_slots_never_evict_winner_or_relation_supported() -> None:
     selected = [
-        _slot_item("src/a.py"),
-        _slot_item("src/b.py", priority=0),
-        _slot_item("src/c.py", priority=0),
+        _slot_item("src/winner.py"),
+        _slot_item("src/rel_kept.py", graph=True, resolved=True),
+        _slot_item("src/direct.py"),
     ]
     overflow = [
         _slot_item("src/rel_a.py", graph=True, resolved=True),
@@ -586,13 +586,15 @@ def test_relation_slots_never_evict_protected_direct() -> None:
         list(selected), list(overflow)
     )
 
+    # Only src/direct.py is evictable: the rank-1 winner and the already
+    # relation-supported selection are protected.
     assert count == 1
-    assert [str(item.file_path) for item in swapped_out] == ["src/a.py"]
-    assert {str(item.file_path) for item in final} == {
-        "src/b.py",
-        "src/c.py",
+    assert [str(item.file_path) for item in swapped_out] == ["src/direct.py"]
+    assert [str(item.file_path) for item in final] == [
+        "src/winner.py",
+        "src/rel_kept.py",
         "src/rel_a.py",
-    }
+    ]
 
 
 def test_relation_slots_require_resolved_relation_provenance() -> None:

@@ -93,12 +93,20 @@ P8_PYTHON_GRAPH_PRODUCTION_CHANGES = {
     "src/context_search_tool/python_graph.py",
 }
 
+P9_RELATION_SLOT_PRODUCTION_CHANGES = {
+    "src/context_search_tool/retrieval_core/relation_policy.py",
+    "src/context_search_tool/retrieval_core/selection.py",
+    "src/context_search_tool/formatters.py",
+    "src/context_search_tool/retrieval_trace/models.py",
+}
+
 REVIEWED_PRODUCTION_CHANGES = (
     ALLOWED_PRODUCTION_CHANGES
     | P5_REVIEWED_PRODUCTION_CHANGES
     | P6_TASK2_PRODUCTION_CHANGES
     | P6_TASK9_PRODUCTION_CHANGES
     | P8_PYTHON_GRAPH_PRODUCTION_CHANGES
+    | P9_RELATION_SLOT_PRODUCTION_CHANGES
 )
 
 
