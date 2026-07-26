@@ -1996,6 +1996,47 @@ next-phase decision (from the observed failure boundary, in order):
   3. gate 2/4/5 (credited gains) were not met: observed daily gains came
      from declaration chunking, suggesting the next quality lever may be
      declaration-signal recall rather than import-edge expansion.
+
+follow-up round (2026-07-26, same session, user-directed root-cause fix):
+
+  fix 1 - edge N+1 (defect, fixed): _resolved_edge materialized the full
+    chunk (3 SQL) per visited edge for a pure existence check.
+    GraphReadSession now uses a cached SELECT 1 plus a signal_for_id
+    cache. Dense-import regression test pins O(final_top_k)
+    materializations (107 -> 27 on a 40-fan fixture). Real daily query:
+    6.4s -> 0.65s profiled; paired mean 4.349s -> 0.508s.
+
+  fix 2 - producer lexical double-count (defect, fixed): the producer's
+    declaration-name lexical channel re-proposed names that generic
+    chunk tokenization already counts. Ablation A/B attribution:
+      full producer:        combined delta 0.0,   3 required lost,
+                            RedInk 1.0 -> 0.941
+      lexical channel off:  combined delta +0.018, 2 lost, RedInk 1.0
+      symbols+lexical off:  combined delta +0.018, 1 lost,
+                            5 relation-supported cases
+    The channel was removed permanently (python_graph.parse now proposes
+    no separate lexical tokens); declaration symbols/chunking stay.
+
+  final committed configuration A/B (baseline 117f46b):
+    RedInk recall 1.0 -> 1.0; daily 0.775 -> 0.800;
+    combined +0.0175; timing index daily 1.28s -> 2.38s,
+    query mean 0.374s -> 0.508s (+36%, review threshold, no longer
+    pathological); lost required: 2 daily support paths
+    (agent tools registry.py, config.py).
+
+  remaining gate failures are POLICY-level, not defects, and are out of
+  P8's frozen scope by design:
+    - gates 2/4/5: net gains flow through declaration chunking, so the
+      import-credit arithmetic cannot be satisfied without either a
+      ranking change (forbidden) or crediting declaration effects
+      (a gate redefinition, i.e. a reviewed design change);
+    - gate 3/10: with frozen weights, new evidence (graph candidates and
+      re-chunked declarations) competes with weak direct support files
+      for P7 slots; preventing any fallout requires a selection-policy
+      decision, reserved for the next phase.
+  disposition remains reject for shipping the retrieval-quality claim;
+  the branch carries the producer, lifecycle, runner, and the two fixes
+  as reviewed, fully-tested infrastructure.
 ```
 
 Original template (unfilled) follows for reference:

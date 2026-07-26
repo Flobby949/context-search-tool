@@ -9,7 +9,6 @@ objects; no AST node survives ``extract_python_facts``.
 from __future__ import annotations
 
 import ast
-import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -39,7 +38,6 @@ _SIGNAL_KIND_BY_DECLARATION = {
     "function": "function",
     "method": "method",
 }
-_TOKEN_SEGMENT_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
 
 _PARSE_FAILURES: tuple[tuple[type[BaseException], str], ...] = (
     (SyntaxError, "syntax_error"),
@@ -306,19 +304,6 @@ def python_module_name(file_path: Path, project_unit_key: str) -> str:
     return ".".join(segments)
 
 
-def _declaration_name_tokens(declarations) -> tuple[str, ...]:
-    tokens: list[str] = []
-    for fact in declarations:
-        lowered = fact.name.lower()
-        if lowered not in tokens:
-            tokens.append(lowered)
-        for match in _TOKEN_SEGMENT_RE.finditer(fact.name):
-            segment = match.group(0).lower()
-            if segment not in tokens:
-                tokens.append(segment)
-    return tuple(tokens)
-
-
 class PythonGraphProducer:
     name = "python_graph"
 
@@ -358,10 +343,16 @@ class PythonGraphProducer:
             )
             for fact in facts.declarations
         )
+        # No separate producer lexical channel: declaration names are
+        # already present in the source text and counted once by generic
+        # chunk tokenization. The paired real A/B showed the extra channel
+        # double-counts those names and reshuffles direct ranking
+        # corpus-wide (RedInk required recall 1.0 -> 0.94) with zero
+        # credited benefit.
         return ParsedGraphFacts(
             facts=facts,
             symbols=symbols,
-            lexical_tokens=_declaration_name_tokens(facts.declarations),
+            lexical_tokens=(),
             metadata=metadata,
             fallback_required=False,
         )
