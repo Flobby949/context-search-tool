@@ -55,17 +55,17 @@ _FINAL_TRACE_DECISION_KEYS = (
 )
 
 
+# P10: token-level affinity only. The near-universal hash-semantic
+# channels gate almost nothing (P9a record); token_coverage is the
+# pipeline's faithful content-vs-query token measure and is computed for
+# every ranked candidate, unlike the top-k-gated channel keys.
 _DIRECT_AFFINITY_KEYS = (
     "lexical",
-    "semantic",
-    "planner_semantic",
     "path_symbol",
     "direct_text",
-    "signal",
     "planner_lexical",
     "planner_path_symbol",
-    "planner_signal",
-    "planner_hint",
+    "token_coverage",
 )
 
 

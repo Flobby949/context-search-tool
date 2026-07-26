@@ -330,6 +330,14 @@ def test_context_merge_bounds_same_file_growth_without_dropping_evidence() -> No
 
 def test_relation_policy_values_are_exact() -> None:
     assert relation_policy.RELATION_SLOTS_ENABLED is False
+    assert selection._DIRECT_AFFINITY_KEYS == (
+        "lexical",
+        "path_symbol",
+        "direct_text",
+        "planner_lexical",
+        "planner_path_symbol",
+        "token_coverage",
+    )
     assert relation_policy.RELATION_FINAL_SLOTS == 2
     assert relation_policy.RELATION_SLOT_SCAN_DEPTH == 50
     assert relation_policy.MAX_EXPANSION_DEPTH == 3
@@ -520,8 +528,12 @@ def _slot_item(
     graph: bool = False,
     resolved: bool = False,
     score: float = 0.5,
+    parts: dict[str, float] | None = None,
 ) -> core_types._ExpandedResult:
-    parts: dict[str, float] = {"lexical": score} if score else {}
+    if parts is None:
+        parts = {"lexical": score} if score else {}
+    else:
+        parts = dict(parts)
     if graph:
         parts["graph_imports_match"] = 0.3
     if resolved:
@@ -651,3 +663,30 @@ def test_relation_slots_require_target_query_affinity() -> None:
     final_paths = [str(item.file_path) for item in final]
     assert "src/with_affinity.py" in final_paths
     assert "src/no_affinity.py" not in final_paths
+
+
+def test_relation_slots_ignore_semantic_only_affinity() -> None:
+    selected = [_slot_item(f"src/direct{i}.py") for i in range(3)]
+    semantic_only = _slot_item(
+        "src/semantic_only.py",
+        parts={"semantic": 0.4},
+        graph=True,
+        resolved=True,
+        score=0.0,
+    )
+    token_affine = _slot_item(
+        "src/token_affine.py",
+        parts={"semantic": 0.4, "token_coverage": 0.1},
+        graph=True,
+        resolved=True,
+        score=0.0,
+    )
+
+    final, _swapped, count = selection._apply_relation_slots(
+        list(selected), [semantic_only, token_affine]
+    )
+
+    assert count == 1
+    final_paths = [str(item.file_path) for item in final]
+    assert "src/token_affine.py" in final_paths
+    assert "src/semantic_only.py" not in final_paths
