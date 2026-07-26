@@ -365,6 +365,20 @@ falsified hypothesis, precisely: "highest-ranked not-yet-selected
   margin; eviction additionally removed required files that happened to
   carry no resolved import support in that query's expansion.
 
+P9a follow-up round (same session, user-directed):
+  mechanism: eligibility additionally requires nonzero direct evidence
+  on the candidate itself (the record's "target-affinity gate").
+  fixture finding: direct and graph acquisition do not co-occur on one
+  candidate in the synthetic fixture (direct acquisition owns the
+  candidate without graph parts), so the gated quota is inert there;
+  the e2e tests pin that safe behavior.
+  real A/B: quota still fired 30 times (hash-embedding semantic scores
+  are near-universal, so "any direct evidence" gates almost nothing);
+  combined recall 0.860 -> 0.825 (-0.035), two required support losses.
+  disposition: reject. Iteration stopped here deliberately: narrowing
+  the affinity predicate further after two seen comparisons would be
+  fitting the gate to the gold.
+
 next-phase boundary (evidence for the successor design):
   membership rules keyed on relation support alone cannot discriminate
   gold from co-imported noise; the missing signal is query affinity of
@@ -374,4 +388,10 @@ next-phase boundary (evidence for the successor design):
   requiring nonzero direct token/semantic evidence on the candidate) or
   a lightweight rerank of the relation-supported overflow are the two
   smallest reviewed mechanisms consistent with this record.
+  P9a adds: the affinity definition must exclude the near-universal
+  hash-semantic channel BEFORE the next comparison is run (token-level
+  evidence only), and the direct/graph channel co-occurrence semantics
+  in candidate merging must be specified explicitly, because the two
+  channels currently meet only on real repositories, not in synthetic
+  fixtures.
 ```

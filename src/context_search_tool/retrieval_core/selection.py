@@ -55,6 +55,20 @@ _FINAL_TRACE_DECISION_KEYS = (
 )
 
 
+_DIRECT_AFFINITY_KEYS = (
+    "lexical",
+    "semantic",
+    "planner_semantic",
+    "path_symbol",
+    "direct_text",
+    "signal",
+    "planner_lexical",
+    "planner_path_symbol",
+    "planner_signal",
+    "planner_hint",
+)
+
+
 def _relation_slot_supported(item: core_types._ExpandedResult) -> bool:
     # v1 scope: static module dependencies only. The P9 evidence (P8 A/B,
     # ablation, and the fast-context comparison) is exclusively about
@@ -67,7 +81,15 @@ def _relation_slot_supported(item: core_types._ExpandedResult) -> bool:
         for key in ("generated_output_penalty", "generated_schema_penalty", "penalty")
     ):
         return False
-    return "resolved_relation" in parts and "graph_imports_match" in parts
+    if "resolved_relation" not in parts or "graph_imports_match" not in parts:
+        return False
+    # P9a target-affinity gate: the P9 A/B falsified "relation support
+    # alone discriminates gold from co-imported noise" (36 quota firings,
+    # zero required gains, three required losses). A candidate must carry
+    # nonzero direct evidence of its own to take a slot.
+    return any(
+        parts.get(key, 0.0) > 0 for key in _DIRECT_AFFINITY_KEYS
+    )
 
 
 def _apply_relation_slots(

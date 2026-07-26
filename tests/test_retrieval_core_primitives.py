@@ -520,7 +520,7 @@ def _slot_item(
     resolved: bool = False,
     score: float = 0.5,
 ) -> core_types._ExpandedResult:
-    parts: dict[str, float] = {"lexical": score}
+    parts: dict[str, float] = {"lexical": score} if score else {}
     if graph:
         parts["graph_imports_match"] = 0.3
     if resolved:
@@ -630,3 +630,23 @@ def test_relation_slots_are_deterministic() -> None:
         str(i.file_path) for i in second[0]
     ]
     assert first[2] == second[2] == 2
+
+
+def test_relation_slots_require_target_query_affinity() -> None:
+    """P9a: relation support alone is not a relevance signal (the P9 A/B
+    falsified that); a quota candidate must carry nonzero direct evidence
+    of its own."""
+    selected = [_slot_item(f"src/direct{i}.py") for i in range(4)]
+    overflow = [
+        _slot_item("src/no_affinity.py", graph=True, resolved=True, score=0.0),
+        _slot_item("src/with_affinity.py", graph=True, resolved=True),
+    ]
+
+    final, swapped_out, count = selection._apply_relation_slots(
+        list(selected), list(overflow)
+    )
+
+    assert count == 1
+    final_paths = [str(item.file_path) for item in final]
+    assert "src/with_affinity.py" in final_paths
+    assert "src/no_affinity.py" not in final_paths
