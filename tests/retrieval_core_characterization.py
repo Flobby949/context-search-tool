@@ -650,7 +650,7 @@ class OperationRecorder:
             def __init__(self, planner: Any) -> None:
                 self._planner = planner
 
-            def plan(self, query: str, *, repo_profile: Any = None) -> QueryPlan:
+            def plan(self, query: str, *, repo_profile: Any = None, support_lexicon: Any = None) -> QueryPlan:
                 entry = recorder.add(
                     "planner.plan",
                     args={"query": query, "repo_profile": repo_profile},

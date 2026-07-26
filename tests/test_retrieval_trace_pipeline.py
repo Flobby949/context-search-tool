@@ -353,7 +353,7 @@ def test_recall_previews_have_relative_paths_and_no_content(tmp_path: Path) -> N
 
 
 class FixedPlanner:
-    def plan(self, query: str, repo_profile=None) -> QueryPlan:
+    def plan(self, query: str, repo_profile=None, support_lexicon=None) -> QueryPlan:
         return QueryPlan(
             original_query=query,
             rewritten_queries=["approval state"],
@@ -620,7 +620,7 @@ def test_manifest_planner_and_provider_failures_propagate_without_partial_trace(
     repo, config = _indexed_repo(tmp_path)
 
     class FailingPlanner:
-        def plan(self, query: str, repo_profile=None) -> QueryPlan:
+        def plan(self, query: str, repo_profile=None, support_lexicon=None) -> QueryPlan:
             raise ValueError("PLANNER_FAILURE_SENTINEL")
 
     class FailingProvider:

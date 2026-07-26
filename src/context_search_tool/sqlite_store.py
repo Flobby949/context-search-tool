@@ -2710,6 +2710,47 @@ class SQLiteStore:
             ).fetchall()
         return [str(row["name"]) for row in rows]
 
+    def planner_support_lexicon(self) -> frozenset[str]:
+        """Full-index support set for planner hint filtering (P12)."""
+        from context_search_tool.tokenizer import tokenize_query
+
+        with self._connect() as connection:
+            token_rows = connection.execute(
+                """
+                SELECT DISTINCT chunk_tokens.token
+                FROM chunk_tokens
+                JOIN chunks ON chunks.chunk_ref = chunk_tokens.chunk_ref
+                WHERE chunks.deleted_at IS NULL
+                """
+            ).fetchall()
+            symbol_rows = connection.execute(
+                "SELECT DISTINCT name FROM symbols"
+            ).fetchall()
+            path_rows = connection.execute(
+                """
+                SELECT DISTINCT source_files.path
+                FROM source_files
+                JOIN chunks ON chunks.file_path = source_files.path
+                WHERE chunks.deleted_at IS NULL
+                """
+            ).fetchall()
+        tokens: set[str] = {
+            str(row["token"]).lower() for row in token_rows
+        }
+        for row in symbol_rows:
+            tokens.update(
+                token.lower()
+                for token in tokenize_query(str(row["name"]))
+            )
+        for row in path_rows:
+            tokens.update(
+                token.lower()
+                for token in tokenize_query(str(row["path"]))
+            )
+        return frozenset(
+            token for token in tokens if len(token) >= 2
+        )
+
     def token_counts_for_profile(self, limit: int) -> list[str]:
         if limit <= 0:
             return []

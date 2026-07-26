@@ -196,4 +196,24 @@ post-comparison edit.
 
 ## Implementation Record
 
-Status: Not started. Record only observed, verified results.
+Status: In progress.
+
+### Task 0 (complete)
+
+- Branch `feat/p12-repo-grounded-planner`; suite 2984 passed / 0 failed.
+- Run root: `/private/tmp/cst-p12-run.qEObUs`.
+- Digests: qwen3.5:4b-mlx `61aa3858e9d3...`, bge-m3 `790764642607...`.
+- Cross-process pinned-chat probe: DIVERGED with temperature/seed only;
+  6× byte-equal (two prompts × three processes) after adding
+  `top_k: 1` — frozen as the pre-Task-1 amendment (`ac7f8c8`).
+- Durable pinning `.quality/p12-eval-sources/`: backend-template 390
+  files `ea2f35d6f720a811…`, Investment-Assistant 375 `940e450a9d96baa7…`,
+  git-course 109 `bb3c00b5b4968497…` (aggregate sha16 prefixes; full
+  manifest gitignored alongside).
+- Held-out sealed BEFORE Task 1's first commit:
+  `.quality/p12-eval-sources/heldout.json` sha256
+  `73fd5fa6e2b4551cd1c8acf8915e9b4ee2fe4cd6094c11f6f0ab0404ed4e9909`,
+  8 queries / 18 required paths, all verified present. Disclosure: 4 of
+  8 independently converge on gold-adjacent areas (scrape-guard, SSE,
+  hints/score, corrupt-profile); 4 are fresh (audit desensitize, dict
+  cache, generator mapping, idempotent submit).

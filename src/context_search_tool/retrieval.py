@@ -313,7 +313,16 @@ def _query_repository_impl(
         if planner is not None or config.query_planner.enabled
         else None
     )
-    plan = planner_instance.plan(query, repo_profile=repo_profile)
+    support_lexicon = (
+        store.planner_support_lexicon()
+        if config.query_planner.enabled
+        else None
+    )
+    plan = planner_instance.plan(
+        query,
+        repo_profile=repo_profile,
+        support_lexicon=support_lexicon,
+    )
     query_variants, discarded_variants = query_planner.build_query_variants(
         query,
         plan,

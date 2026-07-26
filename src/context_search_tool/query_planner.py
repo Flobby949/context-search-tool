@@ -64,12 +64,22 @@ DO:
 
 
 class QueryPlanner(Protocol):
-    def plan(self, query: str, repo_profile: RepoProfile | None = None) -> QueryPlan:
+    def plan(
+        self,
+        query: str,
+        repo_profile: RepoProfile | None = None,
+        support_lexicon: frozenset[str] | None = None,
+    ) -> QueryPlan:
         ...
 
 
 class DisabledQueryPlanner:
-    def plan(self, query: str, repo_profile: RepoProfile | None = None) -> QueryPlan:
+    def plan(
+        self,
+        query: str,
+        repo_profile: RepoProfile | None = None,
+        support_lexicon: frozenset[str] | None = None,
+    ) -> QueryPlan:
         return disabled_plan(query)
 
 
@@ -83,7 +93,12 @@ class OllamaQueryPlanner:
         self.session = session or requests.Session()
         self.session.trust_env = config.use_system_proxy
 
-    def plan(self, query: str, repo_profile: RepoProfile | None = None) -> QueryPlan:
+    def plan(
+        self,
+        query: str,
+        repo_profile: RepoProfile | None = None,
+        support_lexicon: frozenset[str] | None = None,
+    ) -> QueryPlan:
         start = time.perf_counter()
         try:
             response = self.session.post(
@@ -93,6 +108,11 @@ class OllamaQueryPlanner:
                     "stream": False,
                     "think": False,
                     "format": "json",
+                    "options": {
+                        "temperature": 0,
+                        "seed": 0,
+                        "top_k": 1,
+                    },
                     "messages": [
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {
@@ -139,6 +159,7 @@ class OllamaQueryPlanner:
                 model=self.config.model,
                 latency_ms=_elapsed_ms(start),
                 repo_profile=repo_profile,
+                support_lexicon=support_lexicon,
             )
         except requests.Timeout:
             return self._fallback(
@@ -223,6 +244,7 @@ def clean_planner_payload(
     model: str,
     latency_ms: int | None,
     repo_profile: RepoProfile | None = None,
+    support_lexicon: frozenset[str] | None = None,
 ) -> QueryPlan:
     try:
         raw_rewritten_queries = payload.get("rewritten_queries", [])
@@ -253,8 +275,12 @@ def clean_planner_payload(
         )
 
     discarded_hints: list[str] = list(discarded_rewrites)
-    if repo_profile is not None:
-        vocabulary = profile_vocabulary(repo_profile)
+    if support_lexicon is not None or repo_profile is not None:
+        vocabulary = (
+            support_lexicon
+            if support_lexicon is not None
+            else profile_vocabulary(repo_profile)
+        )
         original_tokens = tokenize_query(original_query)
         rewritten_queries, dropped = _filter_rewritten_queries(
             rewritten_queries,

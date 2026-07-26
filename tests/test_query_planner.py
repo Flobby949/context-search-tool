@@ -642,3 +642,67 @@ def test_planner_from_config_returns_disabled_planner_when_disabled() -> None:
     planner = planner_from_config(QueryPlannerConfig(enabled=False))
 
     assert planner.plan("query").status == "disabled"
+
+
+def test_clean_planner_payload_filters_against_the_support_lexicon() -> None:
+    plan = clean_planner_payload(
+        original_query="how is the trading day schedule checked",
+        payload={
+            "rewritten_queries": [
+                "cron trading day skip",
+                "unrelatedword elsewhere",
+            ],
+            "grep_keywords": ["isTradingDay", "LaunchGuard"],
+            "symbol_hints": ["SyncLogHelper"],
+            "intent": "feature_lookup",
+        },
+        config=QueryPlannerConfig(),
+        provider="ollama",
+        model="qwen3.5:4b-mlx",
+        latency_ms=10,
+        repo_profile=_python_requests_profile(),
+        support_lexicon=frozenset(
+            {"is", "trading", "day", "cron", "skip", "sync", "log", "helper"}
+        ),
+    )
+
+    # Lexicon members survive even though the profile sample lacks them.
+    assert plan.grep_keywords == ["isTradingDay"]
+    assert plan.symbol_hints == ["SyncLogHelper"]
+    assert plan.rewritten_queries == ["cron trading day skip"]
+    assert "LaunchGuard" in plan.discarded_hints
+
+
+def test_planner_request_pins_sampling_and_forwards_the_lexicon() -> None:
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "rewritten_queries": [],
+                            "grep_keywords": ["get"],
+                            "symbol_hints": [],
+                            "intent": "unknown",
+                        }
+                    )
+                }
+            },
+        )
+    )
+    planner = OllamaQueryPlanner(QueryPlannerConfig(), session=session)
+
+    plan = planner.plan(
+        "where are cookies kept",
+        repo_profile=None,
+        support_lexicon=frozenset({"get"}),
+    )
+
+    call = session.calls[0]
+    assert call["json"]["options"] == {
+        "temperature": 0,
+        "seed": 0,
+        "top_k": 1,
+    }
+    assert plan.grep_keywords == ["get"]

@@ -93,7 +93,7 @@ class FakePlanner:
         self.calls.append(query)
         return self.query_plan
 
-    def plan(self, query: str, repo_profile: object | None = None) -> QueryPlan:
+    def plan(self, query: str, repo_profile: object | None = None, support_lexicon: object | None = None) -> QueryPlan:
         self.calls.append(query)
         self.repo_profiles.append(repo_profile)
         return self.query_plan
@@ -103,7 +103,7 @@ class CapturingPlanner:
     def __init__(self) -> None:
         self.repo_profile = None
 
-    def plan(self, query: str, repo_profile=None) -> QueryPlan:
+    def plan(self, query: str, repo_profile=None, support_lexicon=None) -> QueryPlan:
         self.repo_profile = repo_profile
         return QueryPlan(
             original_query=query,
@@ -5131,7 +5131,7 @@ def test_planner_disabled_skips_repository_profile(
         return real_build_repo_profile(store)
 
     class RecordingDisabledPlanner:
-        def plan(self, query: str, repo_profile: object | None = None) -> QueryPlan:
+        def plan(self, query: str, repo_profile: object | None = None, support_lexicon: object | None = None) -> QueryPlan:
             received_profiles.append(repo_profile)
             return query_planner.disabled_plan(query)
 
@@ -12282,3 +12282,87 @@ def test_stub_similarity_resolver_admits_graph_target_end_to_end(
     wire = by_path.get("app/wire.py")
     assert wire is not None
     assert "relation slot" in wire.reasons
+
+
+def test_planner_support_lexicon_covers_tokens_symbols_and_paths(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "lexicon-ws"
+    repo.mkdir()
+    (repo / "alpha_service.py").write_text(
+        "def alpha():\n    # trading day cron refresh\n    return 1\n",
+        encoding="utf-8",
+    )
+    tools = repo / "tools"
+    tools.mkdir()
+    (tools / "sync_log_helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+    lexicon = store.planner_support_lexicon()
+    assert isinstance(lexicon, frozenset)
+    for token in ("trading", "cron", "sync", "log", "helper", "alpha"):
+        assert token in lexicon
+    assert all(token == token.lower() for token in lexicon)
+
+    (repo / "alpha_service.py").unlink()
+    index_repository(repo, DEFAULT_CONFIG)
+    refreshed = SQLiteStore(
+        index_dir_for(repo) / "index.sqlite"
+    ).planner_support_lexicon()
+    assert "trading" not in refreshed
+    assert "sync" in refreshed
+
+
+def test_planner_receives_the_support_lexicon_when_enabled(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "lexicon-thread-ws"
+    repo.mkdir()
+    (repo / "alpha_service.py").write_text(
+        "def alpha():\n    # trading day cron refresh\n    return 1\n",
+        encoding="utf-8",
+    )
+    enabled = dataclasses.replace(
+        DEFAULT_CONFIG,
+        query_planner=dataclasses.replace(
+            DEFAULT_CONFIG.query_planner, enabled=True
+        ),
+    )
+    index_repository(repo, DEFAULT_CONFIG)
+
+    received: list[object] = []
+
+    class RecordingPlanner:
+        def plan(self, query, repo_profile=None, support_lexicon=None):
+            received.append(support_lexicon)
+            return query_planner.disabled_plan(query)
+
+    query_repository(repo, "trading refresh", enabled, planner=RecordingPlanner())
+
+    assert len(received) == 1
+    assert isinstance(received[0], frozenset)
+    assert "trading" in received[0]
+
+
+def test_planner_off_skips_the_lexicon_build(tmp_path: Path) -> None:
+    repo = tmp_path / "lexicon-off-ws"
+    repo.mkdir()
+    (repo / "beta_service.py").write_text("VALUE = 2\n", encoding="utf-8")
+    index_repository(repo, DEFAULT_CONFIG)
+
+    calls = {"count": 0}
+    original = SQLiteStore.planner_support_lexicon
+
+    def counting(self):
+        calls["count"] += 1
+        return original(self)
+
+    SQLiteStore.planner_support_lexicon = counting
+    try:
+        bundle = query_repository(repo, "beta value", DEFAULT_CONFIG)
+    finally:
+        SQLiteStore.planner_support_lexicon = original
+
+    assert calls["count"] == 0
+    assert [str(r.file_path) for r in bundle.results] == ["beta_service.py"]
