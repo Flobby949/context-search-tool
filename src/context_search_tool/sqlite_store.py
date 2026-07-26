@@ -309,6 +309,21 @@ def _parse_raw_schema_version(
     return version, None
 
 
+STORAGE_LAYOUT_VERSION_KEY = "storage_layout_version"
+TARGET_STORAGE_LAYOUT_VERSION = 2
+
+
+class IncompatibleStorageLayoutError(RuntimeError):
+    code = "incompatible_storage_layout"
+
+    def __init__(self, stored_version: int) -> None:
+        self.stored_version = stored_version
+        super().__init__(
+            "index storage layout "
+            f"{stored_version} is not supported; run `cst index` to rebuild"
+        )
+
+
 class SQLiteStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -321,6 +336,21 @@ class SQLiteStore:
                 *_v4_graph_schema_statements(),
             ):
                 connection.execute(statement)
+            _set_metadata_row(
+                connection,
+                STORAGE_LAYOUT_VERSION_KEY,
+                str(TARGET_STORAGE_LAYOUT_VERSION),
+                _now(),
+            )
+
+    def inspect_storage_layout_version(self) -> int:
+        with self._connect() as connection:
+            return _stored_storage_layout_version(connection)
+
+    def require_current_storage_layout(self) -> None:
+        stored = self.inspect_storage_layout_version()
+        if stored != TARGET_STORAGE_LAYOUT_VERSION:
+            raise IncompatibleStorageLayoutError(stored)
 
     def initialize_operational_schema_v1(
         self,
@@ -5856,6 +5886,21 @@ def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
         ).fetchone()
         is not None
     )
+
+
+def _stored_storage_layout_version(connection: sqlite3.Connection) -> int:
+    if not _table_exists(connection, "index_metadata"):
+        return 0
+    row = connection.execute(
+        "SELECT value FROM index_metadata WHERE key = ?",
+        (STORAGE_LAYOUT_VERSION_KEY,),
+    ).fetchone()
+    if row is None:
+        return 0
+    try:
+        return int(row[0])
+    except (TypeError, ValueError):
+        return 0
 
 
 def _set_metadata_row(

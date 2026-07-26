@@ -2,6 +2,8 @@ import sqlite3
 import tracemalloc
 from pathlib import Path
 
+import pytest
+
 from context_search_tool import sqlite_store as sqlite_store_module
 from context_search_tool.models import (
     CodeRelation,
@@ -766,3 +768,37 @@ def test_direct_text_search_reads_each_active_chunk_once(
     assert len(results) == 10
     assert all(result.source == "direct_text" for result in results)
     assert decoded_rows == 1000
+
+
+def test_initialize_stamps_current_storage_layout(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+
+    assert store.inspect_storage_layout_version() == 2
+    store.require_current_storage_layout()
+
+
+def test_storage_layout_guard_rejects_old_and_newer_layouts(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+
+    with sqlite3.connect(tmp_path / "index.sqlite") as connection:
+        connection.execute(
+            "UPDATE index_metadata SET value = '3' WHERE key = ?",
+            (sqlite_store_module.STORAGE_LAYOUT_VERSION_KEY,),
+        )
+    with pytest.raises(sqlite_store_module.IncompatibleStorageLayoutError) as newer:
+        store.require_current_storage_layout()
+    assert newer.value.stored_version == 3
+    assert newer.value.code == "incompatible_storage_layout"
+
+    with sqlite3.connect(tmp_path / "index.sqlite") as connection:
+        connection.execute(
+            "DELETE FROM index_metadata WHERE key = ?",
+            (sqlite_store_module.STORAGE_LAYOUT_VERSION_KEY,),
+        )
+    with pytest.raises(sqlite_store_module.IncompatibleStorageLayoutError) as older:
+        store.require_current_storage_layout()
+    assert older.value.stored_version == 0
