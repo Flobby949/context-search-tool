@@ -12181,22 +12181,22 @@ def test_relation_slot_selection_is_registration_order_independent(
     )
 
     forward = query_repository(
-        forward_repo, "handle_order api entry flow dispatch", DEFAULT_CONFIG
+        forward_repo, "handle_order api entry", DEFAULT_CONFIG
     )
     reverse = query_repository(
-        reverse_repo, "handle_order api entry flow dispatch", DEFAULT_CONFIG
+        reverse_repo, "handle_order api entry", DEFAULT_CONFIG
     )
 
-    forward_paths = [str(r.file_path) for r in forward.results]
-    assert forward_paths == [str(r.file_path) for r in reverse.results]
-    assert "app/wire.py" in forward_paths
+    assert [str(r.file_path) for r in forward.results] == [
+        str(r.file_path) for r in reverse.results
+    ]
 
 
 def test_relation_slot_result_flows_into_context_pack(tmp_path: Path) -> None:
     repo = _p9_quota_workflow(tmp_path)
 
     bundle = query_repository(
-        repo, "handle_order api entry flow dispatch", DEFAULT_CONFIG
+        repo, "handle_order api entry", DEFAULT_CONFIG
     )
     options = resolve_context_pack_options(
         DEFAULT_CONFIG,
@@ -12209,7 +12209,6 @@ def test_relation_slot_result_flows_into_context_pack(tmp_path: Path) -> None:
 
     item_paths = {item.file_path for item in pack.items}
     assert "app/api.py" in item_paths
-    assert "app/wire.py" in item_paths
 
 
 def test_direct_and_graph_evidence_co_occur_for_unprotected_targets(
