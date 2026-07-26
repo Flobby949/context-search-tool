@@ -46,6 +46,7 @@ class _FinalTraceDecisions:
 _FINAL_TRACE_DECISION_KEYS = (
     "selected_result",
     "selected_anchor",
+    "duplicate_result_path",
     "duplicate_anchor",
     "result_limit",
     "anchor_limit",
@@ -100,6 +101,7 @@ def split_results_and_anchors(
     )
     code_results: list[core_types._ExpandedResult] = []
     evidence_anchors: list[EvidenceAnchor] = []
+    seen_result_paths: set[Path] = set()
     seen_anchor_keys: set[tuple[str, Path]] = set()
 
     for item in expanded:
@@ -128,6 +130,11 @@ def split_results_and_anchors(
                 trace_counts["anchor_limit"] += 1
             continue
 
+        if item.file_path in seen_result_paths:
+            if trace_counts is not None:
+                trace_counts["duplicate_result_path"] += 1
+            continue
+        seen_result_paths.add(item.file_path)
         if len(code_results) < final_top_k:
             code_results.append(item)
             if trace_selected is not None and trace_counts is not None:

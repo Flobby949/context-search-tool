@@ -48,6 +48,74 @@ EXPECTED_FULL_LEDGER_KEYS = (
     "java_spring_mini/apply-audit-endpoint",
 )
 
+EXPECTED_P7_FINAL_TRACE_HASHES = {
+    (
+        "ci",
+        "program_tool",
+        "watermark-remover",
+    ): "24a0a9eedfc210d2178593baee4b5da15f5da39a6a2ada983889675d9470cb7d",
+    (
+        "ci",
+        "program_tool",
+        "mqtt-tool",
+    ): "667c385d75079f8bef83bb8f02f61296273ae9be4ada2760217583707592fd7a",
+    (
+        "ci",
+        "program_tool",
+        "qrcode-tool",
+    ): "694f23aa2037e90902d2155c5acbb676f6e16886a8b96b435e05786e377498f1",
+    (
+        "ci",
+        "program_tool",
+        "json-to-entity",
+    ): "6b4bb68ac3a371b451a18c60e435ba775d299be7b1fe4234dd5c0f9949d01009",
+    (
+        "ci",
+        "program_tool",
+        "app-layout-theme",
+    ): "3b3d7dafda7ff4ba2fec9b9ca1dfa6eb36f7b4e84647252cdf559ef410dbac83",
+    (
+        "ci",
+        "program_tool",
+        "ai-chat",
+    ): "e147d6d87a326ed7b19533b1f9c6cda8f71c9a1a8af02fd19ec06656e3d638a9",
+    (
+        "ci",
+        "java_spring_mini",
+        "apply-audit-endpoint",
+    ): "7bd5a8bb847fdd120d06b551f667a9e69240e833635f0e9fee0da6bddb3f06c6",
+    (
+        "ci",
+        "java_spring_mini",
+        "workbench-audit-localized-cjk",
+    ): "9e7fb5cdc9b086f6ab18a0b83513265d26a1814777328c94d5e3b39239fcc798",
+    (
+        "p2_context_pack",
+        "context_pack_java",
+        "workspace-page-flow",
+    ): "479e2baa8b36caca33d7fba8f4789c04ee9d5a7a38baaec192175b1b00dac57b",
+    (
+        "p2_context_pack",
+        "context_pack_java",
+        "workspace-test-file",
+    ): "3acda4c6c8134136bb8b7a86bcb90d9b25d7496bd94cf32354b51622b7a606bb",
+    (
+        "p2_context_pack",
+        "context_pack_java",
+        "workspace-service-symbol",
+    ): "fff1a12a24acaa7e8953db7a244a5515a653402f3ed3b69fb5ac79a2a96f99e7",
+    (
+        "p2_context_pack",
+        "context_pack_frontend",
+        "qrcode-feature-context",
+    ): "13c0d97a8ad97a34d590f9527f95e50179d2ec164ba234e1d1cc8bf6cc962f9b",
+    (
+        "p2_context_pack",
+        "context_pack_docs",
+        "program-tool-developer-docs",
+    ): "759232a7d284ffb9ca40f5a935417ffc7d9ba5f67081c9b012ae607563578af0",
+}
+
 EXPECTED_BASELINE_SKIPS = (
     (
         "tests.test_quality_catalog::"
@@ -101,6 +169,39 @@ _DISABLED_PROFILE_OPERATIONS = {
 
 def _load_baseline() -> dict[str, object]:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
+def _normalize_p7_final_trace_delta(
+    actual: dict[str, object],
+    expected: dict[str, object],
+) -> dict[str, object]:
+    normalized = deepcopy(actual)
+    expected_cases = {
+        (case["profile"], case["repo_key"], case["case_id"]): case
+        for case in expected["cases"]
+    }
+    assert set(EXPECTED_P7_FINAL_TRACE_HASHES) == set(expected_cases)
+
+    for case in normalized["cases"]:
+        key = (case["profile"], case["repo_key"], case["case_id"])
+        hashes = case["hashes"]
+        expected_hashes = expected_cases[key]["hashes"]
+        actual_trace_hash = hashes["trace_json_sha256"]
+        assert actual_trace_hash == EXPECTED_P7_FINAL_TRACE_HASHES[key]
+        assert actual_trace_hash != expected_hashes["trace_json_sha256"]
+        hashes["trace_json_sha256"] = expected_hashes["trace_json_sha256"]
+
+    for ledger in normalized["full_stage_ledgers"].values():
+        final_stage = next(
+            stage for stage in ledger["stages"] if stage["name"] == "final_selection"
+        )
+        for counts in (
+            final_stage["decision_counts"],
+            final_stage["live_output"]["decision_counts"],
+        ):
+            assert counts[2] == ["duplicate_result_path", 0]
+            counts.pop(2)
+    return normalized
 
 
 def _without_operation_ledgers(value: dict[str, Any]) -> dict[str, object]:
@@ -375,7 +476,9 @@ def test_characterization_matches_immutable_baseline(tmp_path: Path) -> None:
             )
             assert planner_call["args"].get("repo_profile") is None
 
-    normalized_actual = _without_disabled_profile_work(actual)
+    normalized_actual = _without_disabled_profile_work(
+        _normalize_p7_final_trace_delta(actual, expected)
+    )
     normalized_expected = _without_disabled_profile_work(expected)
     assert _without_operation_ledgers(normalized_actual) == _without_operation_ledgers(
         normalized_expected

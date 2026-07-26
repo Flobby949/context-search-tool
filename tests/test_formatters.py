@@ -123,6 +123,7 @@ def _trace() -> RetrievalTrace:
                 decision_counts=(
                     ("selected_result", 1),
                     ("selected_anchor", 0),
+                    ("duplicate_result_path", 0),
                     ("duplicate_anchor", 0),
                     ("result_limit", 0),
                     ("anchor_limit", 0),

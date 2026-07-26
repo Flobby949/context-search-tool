@@ -203,6 +203,11 @@ P6_TASK9_PRODUCTION_CHANGES = {
     "src/context_search_tool/path_roles.py",
 }
 
+P7_FINAL_REVIEWED_PRODUCTION_CHANGES = {
+    "src/context_search_tool/formatters.py",
+    "src/context_search_tool/retrieval_core/selection.py",
+}
+
 P4_IMPLEMENTATION_BASELINE = "b827707325d0ee4e9c6b2bcb3dee39955c263822"
 THIS_TEST_PATH = "tests/test_retrieval_core_boundaries.py"
 
@@ -307,6 +312,7 @@ def _normalize_current_test_reference(
     if reference["file"] not in {
         THIS_TEST_PATH,
         "tests/test_retrieval_pipeline.py",
+        "tests/test_retrieval_trace_pipeline.py",
     }:
         return reference
     frozen_reference = next(
@@ -905,6 +911,13 @@ def test_runtime_inventory_excludes_annotations_but_keeps_live_loads() -> None:
     assert _runtime_name_load_lines(tree, "Owner") == [2, 3]
 
 
+def test_p7_final_reviewed_production_overlay_is_exact() -> None:
+    assert P7_FINAL_REVIEWED_PRODUCTION_CHANGES == {
+        "src/context_search_tool/formatters.py",
+        "src/context_search_tool/retrieval_core/selection.py",
+    }
+
+
 def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
     changed = set(
         subprocess.run(
@@ -932,6 +945,7 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         | P6_TASK3_PRODUCTION_CHANGES
         | P6_TASK4_PRODUCTION_CHANGES
         | P6_TASK9_PRODUCTION_CHANGES
+        | P7_FINAL_REVIEWED_PRODUCTION_CHANGES
     )
 
     source_status = subprocess.run(
@@ -956,6 +970,7 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         | P6_TASK3_PRODUCTION_CHANGES
         | P6_TASK4_PRODUCTION_CHANGES
         | P6_TASK9_PRODUCTION_CHANGES
+        | P7_FINAL_REVIEWED_PRODUCTION_CHANGES
     )
 
     subprocess.run(

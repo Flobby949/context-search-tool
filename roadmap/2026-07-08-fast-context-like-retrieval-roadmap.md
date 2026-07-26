@@ -353,14 +353,13 @@ Phase 1 remains independently pending at 6/7. Phase 6 status follows.
 
 ### Phase 6: Freshness, Performance, And Large Repositories
 
-Status: Basic implementation complete (2026-07-22); release-grade acceptance
-pending. Read-only health/status, metadata and verified freshness, explicit
-incremental refresh, bound lifecycle state, exact-search hot-path improvements,
-and the deterministic benchmark harness are implemented. The local full suite
-and focused large-repository status/refresh diagnostics passed. Complete
-large/scale/stress/churn and paired performance evidence, the 12-cell runtime
-matrix, final decision records, and privacy-audited publication were deferred.
-Phase 6 is therefore not marked fully accepted, and Phase 7 has not started.
+Status: Closed for roadmap sequencing (2026-07-26) after the basic
+implementation completed on 2026-07-22. Read-only health/status, metadata and
+verified freshness, explicit incremental refresh, bound lifecycle state,
+exact-search hot-path improvements, and the deterministic benchmark harness are
+implemented. Complete large/scale/stress/churn evidence, the 12-cell runtime
+matrix, final decision records, and privacy-audited publication remain explicit
+release-grade acceptance debt; they no longer block retrieval-quality work.
 
 Goal: make CST dependable on larger repositories and repeated agent use.
 
@@ -378,20 +377,51 @@ Success signal:
 - Large repository queries stay within clear latency and memory budgets.
 - Incremental workflows are reliable before any daemon-style experience is introduced.
 
-### Phase 7: Optional Product Surfaces
+### Phase 7: Path-Diverse Evidence Selection
 
-Goal: improve usability after the retrieval core is strong.
+Status: Complete (2026-07-26)
 
-Possible work:
+Operative plan:
+`docs/superpowers/plans/2026-07-26-p7-final-path-diverse-evidence-selection.md`
 
-- Quality reports that show benchmark changes between branches.
-- A small local dashboard for inspecting index health and retrieval traces.
-- Review-diff helpers that call the retrieval engine for changed files.
-- Project memory only if it clearly improves retrieval and can be kept separate from source indexing.
+Goal: stop repeated chunks from one large file consuming the final evidence
+budget after ranking has already acquired useful paths.
 
-Success signal:
+Work:
 
-- Product surfaces make the retrieval engine easier to trust, not broader for its own sake.
+- Keep the first, highest-ranked ordinary result for each exact repository path.
+- Spend `final_top_k` on distinct ordinary paths while keeping evidence anchors
+  independent.
+- Expose skipped repeats through the additive RetrievalTrace v1
+  `duplicate_result_path` decision count.
+- Reuse the same central QueryBundle rule in query, context, explore, and MCP
+  adapters without widening candidate or context budgets.
+
+Acceptance evidence:
+
+- deterministic CI quality passed 8/8;
+- the focused retrieval, trace, ContextPack, exploration, formatter, and
+  protected P3.2 contracts passed;
+- the immutable P3.2 baseline was not rewritten: all 13 legacy projections kept
+  their non-trace hashes and the four full ledgers added only the zero-valued
+  canonical decision key;
+- a pinned public Python probe improved from 2 unique paths in 12 results to
+  12/12, retained the pipeline path, and recovered the provider base path;
+- the same probe recorded 76 duplicate-result-path decisions and produced a
+  12-path ContextPack; a sanitized Java check also returned 12/12 unique paths;
+- P6 protection passed 81/81 from a clean acceptance commit.
+- the second full clean-suite run passed 2,899 tests with the established 9
+  optional skips and no failures.
+
+Boundary:
+
+Phase 7 does not add Python AST relations, a new recall source, score changes,
+file aggregation, MMR, ContextPack reservation, or RetrievalTrace v2. Remaining
+Python structural/ranking misses require a separate evidence-backed phase.
+
+The optional dashboard, review-diff helpers, and project-memory ideas from the
+earlier roadmap remain future product-surface candidates rather than P7
+requirements.
 
 ## API Direction
 

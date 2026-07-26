@@ -664,6 +664,69 @@ for the P4 input manifest, and
 `4235ec5539c548005d75b98be4a0c347364d40ec28a79fc45b10d351bcf8bed7`
 for the retrieval-core baseline. Phase 1 remains `6/7`; Phase 6 is next.
 
+## Phase 7 Final Path-Diverse Selection Acceptance
+
+P7 Final changes the existing `final_selection` boundary rather than adding a
+recall source or a second ContextPack policy. Ordinary results now retain only
+the first, highest-ranked chunk for each exact repository-relative path.
+Evidence anchors keep their existing independent `(anchor_kind, file_path)`
+allocation. No score, candidate limit, context budget, content, span, or
+upstream rank is changed.
+
+RetrievalTrace v1 keeps its schema and final stage. Its canonical
+`decision_counts` sequence is now:
+
+```text
+selected_result
+selected_anchor
+duplicate_result_path
+duplicate_anchor
+result_limit
+anchor_limit
+```
+
+The counters still sum exactly to the final-selection input population.
+`duplicate_result_path` includes later repeats encountered after the result
+limit is full.
+
+Acceptance evidence:
+
+- the deterministic `ci` quality profile selected, executed, and passed `8/8`;
+- focused retrieval/trace tests passed `266`, ContextPack/formatter tests passed
+  `156`, and exploration runner/fusion plus P7 integration tests passed `40`;
+- all `26` retrieval-core boundary and characterization tests passed;
+- the protected P3.2 fixture remains immutable. A P7 overlay freezes the exact
+  new trace hash for all 13 legacy cases and proves that the four full stage
+  ledgers add only `duplicate_result_path=0`; all non-trace hashes remain
+  unchanged;
+- the P6 paired/benchmark/worker protection group passed `81/81` in a temporary
+  clean acceptance commit. Its final post-review working-tree rerun also passed
+  `81/81`. An earlier post-review sequential run was `80/81`; the new failure,
+  which had no matching entry failure, was
+  `tests/test_p6_measurement_worker.py::test_final_resident_benchmark_reuses_one_session`,
+  which then passed `1/1`. The later complete P6 group and full suite both
+  passed without any P6 file change;
+- the second complete clean-suite run passed `2,899` with the established `9`
+  optional skips and no failures. The first run reproduced one entry-baseline
+  P6 checkpoint calibration instability; its exact node passed immediately in
+  isolation before the clean full rerun passed;
+- after the final evidence-test strengthening, the post-review working-tree
+  focused group passed `462`, and the complete suite passed `2,900` with the
+  same `9` optional skips, `16` warnings, and no failures. This supplements
+  rather than replaces the historical clean-commit result;
+- on the pinned public Python probe, query diversity improved from `2/12` paths
+  to `12/12`; `src/core/pipeline.py` remained present and
+  `data_provider/base.py` became selectable. The trace recorded `76` duplicate
+  result paths and the ContextPack contained 12 unique paths;
+- a sanitized Java check returned `12/12` unique paths and retained the
+  previously represented high-level chain.
+
+The public probe is a mechanism check, not a new claim of fast-context parity.
+Targets still ranked below the selected distinct-path population remain
+evidence for a later Python structural-acquisition or ranking experiment.
+Widening the result/context pool was explicitly rejected because the probe
+admitted unrelated paths without reliably recovering those residual targets.
+
 ## MCP Feedback Privacy
 
 ```bash

@@ -239,6 +239,7 @@ _TRACE_PLANNER_KEYS = {
 _TRACE_DECISION_KEYS = (
     "selected_result",
     "selected_anchor",
+    "duplicate_result_path",
     "duplicate_anchor",
     "result_limit",
     "anchor_limit",

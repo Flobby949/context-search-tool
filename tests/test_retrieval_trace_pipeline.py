@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -24,7 +24,14 @@ from context_search_tool.context_pack import (
     resolve_context_pack_options,
 )
 from context_search_tool.embeddings import HashEmbeddingProvider
-from context_search_tool.formatters import format_json, format_markdown, query_payload
+from context_search_tool.formatters import (
+    format_json,
+    format_markdown,
+    format_trace_json,
+    format_trace_markdown,
+    query_payload,
+    trace_payload,
+)
 from context_search_tool.indexer import index_repository
 from context_search_tool.models import (
     DocumentChunk,
@@ -412,20 +419,63 @@ def test_complete_trace_has_all_canonical_stages_and_final_provenance(
 
 def test_final_selection_stage_explains_limits_and_anchor_duplicates(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo, config = _indexed_repo(tmp_path)
-    traced = retrieval.trace_repository(repo, "audit", config)
-    selection = traced.trace.stages[-1]
-
-    assert selection.name == "final_selection"
-    assert tuple(dict(selection.decision_counts)) == (
-        "selected_result",
-        "selected_anchor",
-        "duplicate_anchor",
-        "result_limit",
-        "anchor_limit",
+    config = replace(
+        config,
+        retrieval=replace(config.retrieval, final_top_k=1),
     )
-    assert sum(dict(selection.decision_counts).values()) == selection.input_count
+    expand_ranked_chunks = context_expansion.expand_ranked_chunks
+
+    def controlled_expansion(*args, **kwargs) -> list[core_types._ExpandedResult]:
+        template = expand_ranked_chunks(*args, **kwargs)[0]
+
+        def expanded(file_path: str, start_line: int) -> core_types._ExpandedResult:
+            return replace(
+                template,
+                file_path=Path(file_path),
+                start_line=start_line,
+                end_line=start_line,
+                content=f"{file_path}:{start_line}",
+            )
+
+        return [
+            expanded("src/AuditController.py", 1),
+            expanded("src/AuditController.py", 2),
+            expanded("README.md", 1),
+            expanded("README.md", 2),
+            expanded("src/AuditService.py", 1),
+        ]
+
+    monkeypatch.setattr(
+        context_expansion,
+        "expand_ranked_chunks",
+        controlled_expansion,
+    )
+
+    traced = retrieval.trace_repository(repo, "audit", config)
+    final_stage = traced.trace.stages[-1]
+
+    assert final_stage.name == "final_selection"
+    assert final_stage.decision_counts == (
+        ("selected_result", 1),
+        ("selected_anchor", 1),
+        ("duplicate_result_path", 1),
+        ("duplicate_anchor", 1),
+        ("result_limit", 1),
+        ("anchor_limit", 0),
+    )
+    assert sum(dict(final_stage.decision_counts).values()) == final_stage.input_count
+    assert [item.file_path for item in traced.trace.final_selections] == [
+        "src/AuditController.py",
+        "README.md",
+    ]
+    assert traced.trace.schema_version == 1
+
+    envelope = trace_payload(repo, "audit", traced.trace)
+    assert '"duplicate_result_path": 1' in format_trace_json(envelope)
+    assert "duplicate_result_path=1" in format_trace_markdown(envelope)
 
 
 def test_adjustments_are_strongest_first_and_bounded(tmp_path: Path) -> None:
@@ -491,6 +541,7 @@ def test_merged_final_selection_keeps_origins_best_ranks_and_clamp() -> None:
         counts=(
             ("selected_result", 1),
             ("selected_anchor", 0),
+            ("duplicate_result_path", 0),
             ("duplicate_anchor", 0),
             ("result_limit", 0),
             ("anchor_limit", 0),
@@ -914,6 +965,7 @@ def test_trace_adapters_never_read_content_or_private_context_content() -> None:
         counts=(
             ("selected_result", 1),
             ("selected_anchor", 0),
+            ("duplicate_result_path", 0),
             ("duplicate_anchor", 0),
             ("result_limit", 0),
             ("anchor_limit", 0),

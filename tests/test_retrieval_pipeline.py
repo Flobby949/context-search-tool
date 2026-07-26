@@ -8936,6 +8936,7 @@ def test_split_results_and_anchors_preserves_overloads_and_ordinary_allocations(
             counts=(
                 ("selected_result", 1),
                 ("selected_anchor", 0),
+                ("duplicate_result_path", 0),
                 ("duplicate_anchor", 0),
                 ("result_limit", 0),
                 ("anchor_limit", 0),
@@ -8966,6 +8967,106 @@ def test_split_results_and_anchors_preserves_overloads_and_ordinary_allocations(
     )
 
     assert ordinary == ([item], [])
+
+
+def test_split_results_and_anchors_spends_slots_on_distinct_result_paths() -> None:
+    def expanded(
+        chunk_id: str,
+        file_path: str,
+        start_line: int,
+    ) -> core_types._ExpandedResult:
+        return core_types._ExpandedResult(
+            chunk_ids=[chunk_id],
+            file_path=Path(file_path),
+            start_line=start_line,
+            end_line=start_line + 4,
+            content=f"{chunk_id} content",
+            score=1.0 - start_line / 100,
+            score_parts={"direct_text": 1.0 - start_line / 100},
+            reasons=["direct text match"],
+            followup_keywords=[],
+            rank_tier=0,
+            rerank_score=1.0 - start_line / 100,
+            evidence_class="original_direct",
+            evidence_priority=0,
+        )
+
+    first_a = expanded("a-1", "src/a/worker.py", 1)
+    second_a = expanded("a-2", "src/a/worker.py", 10)
+    first_b = expanded("b-1", "src/b/worker.py", 20)
+    first_c = expanded("c-1", "src/c/worker.py", 30)
+    second_b = expanded("b-2", "src/b/worker.py", 40)
+
+    results, anchors, decisions = selection.split_results_and_anchors(
+        [first_a, second_a, first_b, first_c, second_b],
+        final_top_k=2,
+        anchor_top_k=1,
+        collect_trace=True,
+    )
+
+    assert results == [first_a, first_b]
+    assert results[0] is first_a
+    assert results[0].content == "a-1 content"
+    assert anchors == []
+    assert decisions.counts == (
+        ("selected_result", 2),
+        ("selected_anchor", 0),
+        ("duplicate_result_path", 2),
+        ("duplicate_anchor", 0),
+        ("result_limit", 1),
+        ("anchor_limit", 0),
+    )
+
+    available, available_anchors = selection.split_results_and_anchors(
+        [first_a, second_a, first_b, second_b],
+        final_top_k=5,
+        anchor_top_k=1,
+    )
+
+    assert available == [first_a, first_b]
+    assert available_anchors == []
+
+
+def test_split_results_and_anchors_uses_exact_paths_not_basenames() -> None:
+    first = core_types._ExpandedResult(
+        chunk_ids=["src-worker"],
+        file_path=Path("src/worker.py"),
+        start_line=1,
+        end_line=2,
+        content="src worker",
+        score=1.0,
+        score_parts={"direct_text": 1.0},
+        reasons=["direct text match"],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=1.0,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+    second = core_types._ExpandedResult(
+        chunk_ids=["test-worker"],
+        file_path=Path("tests/worker.py"),
+        start_line=1,
+        end_line=2,
+        content="test worker",
+        score=0.9,
+        score_parts={"direct_text": 0.9},
+        reasons=["direct text match"],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=0.9,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+
+    results, anchors = selection.split_results_and_anchors(
+        [first, second],
+        final_top_k=2,
+        anchor_top_k=1,
+    )
+
+    assert results == [first, second]
+    assert anchors == []
 
 
 def test_evidence_anchors_do_not_consume_code_result_slots() -> None:

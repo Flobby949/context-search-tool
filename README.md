@@ -687,7 +687,9 @@ src/context_search_tool/
 
 当前版本已经可以作为本地代码检索底座使用，尤其适合从 Java/Spring endpoint、service/interface/mapper/XML/DTO/test 链路，或 Vue/React route/view/service/type 链路出发找相关上下文。
 
-P6 已完成基本实现：索引 freshness/health、显式增量刷新、生命周期绑定与维护、精确检索热点优化和可恢复 benchmark harness 已落地，本地全量回归与专项大仓诊断通过。完整 large/scale/stress/churn、跨平台矩阵和发布级 acceptance 证据仍待完成，因此 P6 尚未标记为完全验收，Phase 7 也未开始。更强 embedding/provider 与额外语言插件仍可继续评估，但不会替代本地精确召回。
+P6 已完成基本实现：索引 freshness/health、显式增量刷新、生命周期绑定与维护、精确检索热点优化和可恢复 benchmark harness 已落地。按当前路线决策，P6 作为阶段已关闭；完整 large/scale/stress/churn、跨平台矩阵和发布级证据仍保留为运维验收债务，不阻塞后续检索质量工作。
+
+P7 Final 已把普通结果的 `final_top_k` 明确为“最多 K 个不同文件”：排序后的同一路径只保留第一个最高排名 chunk，证据 anchor 继续独立分配，RetrievalTrace v1 新增 `duplicate_result_path` 计数。公开 Python 项目的固定探针从 12 个结果仅 2 个路径提升到 12 个不同路径，并恢复了 pipeline 与 provider base 两个已在扩展候选中出现、但原先被重复 chunk 挤掉的文件。这个改动不会合并片段、扩大候选池或修改分数，也不代表已经达到 fast-context 的结构化检索能力；剩余 Python 跨模块缺口仍应作为独立的结构召回/排序实验。
 
 - cross-encoder 或 LLM rerank
 - remote MCP deployment or hosted multi-user service
