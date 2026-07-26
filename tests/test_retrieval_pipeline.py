@@ -12323,9 +12323,11 @@ def test_planner_receives_the_support_lexicon_when_enabled(
         "def alpha():\n    # trading day cron refresh\n    return 1\n",
         encoding="utf-8",
     )
-    enabled = dataclasses.replace(
+    import dataclasses as _dc
+
+    enabled = _dc.replace(
         DEFAULT_CONFIG,
-        query_planner=dataclasses.replace(
+        query_planner=_dc.replace(
             DEFAULT_CONFIG.query_planner, enabled=True
         ),
     )

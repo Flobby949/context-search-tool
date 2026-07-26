@@ -93,6 +93,10 @@ P8_PYTHON_GRAPH_PRODUCTION_CHANGES = {
     "src/context_search_tool/python_graph.py",
 }
 
+P12_PLANNER_PRODUCTION_CHANGES = {
+    "src/context_search_tool/query_planner.py",
+}
+
 P9_RELATION_SLOT_PRODUCTION_CHANGES = {
     "src/context_search_tool/retrieval_core/relation_policy.py",
     "src/context_search_tool/retrieval_core/selection.py",
@@ -106,6 +110,7 @@ REVIEWED_PRODUCTION_CHANGES = (
     | P6_TASK2_PRODUCTION_CHANGES
     | P6_TASK9_PRODUCTION_CHANGES
     | P8_PYTHON_GRAPH_PRODUCTION_CHANGES
+    | P12_PLANNER_PRODUCTION_CHANGES
     | P9_RELATION_SLOT_PRODUCTION_CHANGES
 )
 
