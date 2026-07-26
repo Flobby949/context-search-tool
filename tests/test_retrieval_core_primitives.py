@@ -329,6 +329,7 @@ def test_context_merge_bounds_same_file_growth_without_dropping_evidence() -> No
 
 
 def test_relation_policy_values_are_exact() -> None:
+    assert relation_policy.RELATION_SLOTS_ENABLED is False
     assert relation_policy.RELATION_FINAL_SLOTS == 2
     assert relation_policy.RELATION_SLOT_SCAN_DEPTH == 50
     assert relation_policy.MAX_EXPANSION_DEPTH == 3

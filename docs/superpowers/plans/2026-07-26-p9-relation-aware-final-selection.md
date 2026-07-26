@@ -379,6 +379,13 @@ P9a follow-up round (same session, user-directed):
   the affinity predicate further after two seen comparisons would be
   fitting the gate to the gold.
 
+safety patch (same day): RELATION_SLOTS_ENABLED = False gates the
+  post-pass off at the call site; helper logic and unit tests stay for
+  the successor; counter remains present (value 0), so the v2 captures,
+  characterization pins, and schema hold. Verified: zero quota firings
+  and selected membership identical to the b9fa965 baseline on the
+  pinned repositories.
+
 next-phase boundary (evidence for the successor design):
   membership rules keyed on relation support alone cannot discriminate
   gold from co-imported noise; the missing signal is query affinity of

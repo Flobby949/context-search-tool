@@ -235,9 +235,12 @@ def split_results_and_anchors(
             if trace_counts is not None:
                 trace_counts["result_limit"] += 1
 
-    code_results, swapped_out, slot_count = _apply_relation_slots(
-        code_results, slot_overflow
-    )
+    if relation_policy.RELATION_SLOTS_ENABLED:
+        code_results, swapped_out, slot_count = _apply_relation_slots(
+            code_results, slot_overflow
+        )
+    else:
+        swapped_out, slot_count = [], 0
     if slot_count:
         taken = code_results[-slot_count:]
         code_results[-slot_count:] = [

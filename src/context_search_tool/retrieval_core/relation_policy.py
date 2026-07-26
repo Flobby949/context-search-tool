@@ -22,7 +22,10 @@ from context_search_tool.graph_contract import (
 # Keep the public v4 aliases stable until Task 10 activates schema 5.
 MAX_EXPANSION_DEPTH = MAX_LEGACY_RELATION_HOPS
 
-# P9: final-selection quota for relation-supported results.
+# P9: final-selection quota for relation-supported results. Disabled
+# pending the successor review: both paired A/B rounds rejected the
+# active mechanism (see the P9 plan's implementation record).
+RELATION_SLOTS_ENABLED = False
 RELATION_FINAL_SLOTS = 2
 RELATION_SLOT_SCAN_DEPTH = 50
 MAX_EXPANSION_CANDIDATES = MAX_RELATION_EXPANDED_CANDIDATES
