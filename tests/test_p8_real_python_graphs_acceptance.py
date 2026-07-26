@@ -273,6 +273,9 @@ def test_credit_requires_relation_slot_and_witness() -> None:
 
     # Gained through drift (no relation_slot): reported, never credited.
     drift = _synthetic_capture(improved=True)
+    for case in drift["cases"].values():
+        for entry in case["selected"]:
+            entry["relation_slot"] = False
     report = runner.compare(baseline, drift)
     assert report["newly_satisfied"]
     assert all(not row["credited"] for row in report["newly_satisfied"])
