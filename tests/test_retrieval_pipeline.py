@@ -12209,3 +12209,38 @@ def test_relation_slot_result_flows_into_context_pack(tmp_path: Path) -> None:
 
     item_paths = {item.file_path for item in pack.items}
     assert "app/api.py" in item_paths
+
+
+def test_direct_and_graph_evidence_co_occur_for_unprotected_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P10 fixture-shape proof: the pipeline already merges relation
+    score parts onto a direct candidate for the same chunk when that
+    chunk is not a protected direct winner. No product change may be
+    made to satisfy this test (design pre-committed rule 2)."""
+    repo = _p9_quota_workflow(tmp_path)
+    monkeypatch.setattr(
+        selection.relation_policy, "RELATION_SLOTS_ENABLED", True
+    )
+    seen: dict[str, dict[str, float]] = {}
+    original = selection._apply_relation_slots
+
+    def recorder(selected, overflow):
+        for item in overflow:
+            seen[str(item.file_path)] = dict(item.score_parts)
+        return original(selected, overflow)
+
+    monkeypatch.setattr(selection, "_apply_relation_slots", recorder)
+    # The longer query dilutes wire.py's token coverage below the strong
+    # original-direct threshold (0.2), leaving it an unprotected weak
+    # direct candidate that the existing merge path may combine with its
+    # relation evidence.
+    query_repository(
+        repo, "handle_order api entry flow dispatch", DEFAULT_CONFIG
+    )
+
+    wire = seen.get("app/wire.py")
+    assert wire is not None
+    assert wire.get("token_coverage", 0.0) > 0.0
+    assert "resolved_relation" in wire and "graph_imports_match" in wire
