@@ -1,160 +1,172 @@
 # P12 Repo-Grounded Planner Translation v1 Design
 
 Date: 2026-07-26
-Status: Draft for adversarial review; implementation not authorized
+Status: Revised after adversarial review (r2); implementation authorized by the user conditional on this revision
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
-Behavior baseline: current main (`04e11fe`)
-Predecessors: P11 implementation record (reject; rule-7 statement names
-LLM-based mechanisms as the remaining class), P12 exploratory eval
-(2026-07-26, three pinned projects, 21 intent-phrased queries).
+Behavior baseline: `04e11fe` (main)
+Predecessors: P11 record (rule-7 names LLM mechanisms as the remaining
+class), P12 exploratory eval (21 intent queries / 53 required files,
+three pinned projects).
 
-## Problem, Stated From Evidence
+Review r2 note: the draft bundled three levers (lexicon filter, profile
+enrichment, sampling pinning) and pinned sampling inside the candidate
+source, which made the baseline capture structurally unable to satisfy
+its own determinism STOP. r2 narrows the treatment to ONE lever (the
+filter), reclassifies sampling pinning as runner infrastructure applied
+identically to both trees, defers profile enrichment to a successor
+experiment, and adds the held-out set, the planner-off reference, and
+the guard-allowlist edits both reviewers demanded.
 
-The P12 exploratory eval (21 intent-phrased queries, 53 required files,
-three projects of 82/271/287 files) measured the ladder:
+## Problem (evidence unchanged from r1)
 
-| config | recall@12 |
-| --- | --- |
-| hash (default) | 16/53 (30%) |
-| bge-m3 index | 18/53 (34%) |
-| bge + planner on | 20/53 (38%) |
-| fast-context (agentic, remote LLM) | 36/53 (68%) |
+Ladder on the frozen-able gold: hash 16/53 → bge 18/53 → bge+planner
+20/53 → fast-context 36/53. Probe evidence: for `ia-cron-jobs` (0/2)
+qwen's RAW output contained `isTradingDay`, `cron`, `schedule`,
+`non-trading day` — all real lexicon members (verified in
+`chunk_tokens`) — and ALL were discarded because the support vocabulary
+is the 2.5KB profile sample (130 tokens vs 41,513 in the index).
+Hallucinations (`LaunchGuard`) were also present, so the filter must
+stay — grounded against the true lexicon. Disclosure: this diagnosis
+was derived from the same 21 queries that form the gold; the probe
+touched `ia-cron-jobs` and `gc-env-check` token-by-token. The held-out
+protocol below exists because of that contamination.
 
-The dominant failure is missing intent→identifier translation. The
-planner was built to be exactly that translator, and probing it shows
-the translation IS produced and then destroyed in post-processing:
+## The Single Treatment Lever
 
-- For `ia-cron-jobs` (a 0/2 query), qwen3.5:4b returned raw hints
-  `isTradingDay` (a real method in the gold file's call chain), `cron`,
-  `schedule`, `non-trading day`, `sync`/`result record`. Every one was
-  discarded by `_filter_identifier_hints` / `_filter_rewritten_queries`
-  because the support vocabulary is built from the same 2.5KB
-  `RepoProfile` sample the model saw — 130 distinct tokens for a repo
-  whose index holds 41,513 distinct `chunk_tokens` rows. All six probe
-  tokens (`trading`, `day`, `cron`, `schedule`, `sync`, `log`) exist in
-  the full lexicon.
-- For pure-Go `git-course`, `symbols` is empty (no Go symbol producer),
-  the profile carries 82 vocabulary tokens against a 21,281-token
-  lexicon, and the filter reduced the planner's rewritten queries to
-  `"go tui orchestrator"` / `"go error"` / `"go app"`.
-- The anti-hallucination *intent* of the filter is sound: for
-  `gc-env-check` qwen also invented `LaunchGuard`, `PreStartValidators`
-  — names that exist nowhere and should be dropped.
+`clean_planner_payload` filters hints and rewritten queries against the
+full indexed lexicon instead of `profile_vocabulary(repo_profile)`.
+Nothing else about planner behavior changes in this experiment.
+Deferred to a successor (NOT in this A/B): profile cap enrichment and
+the basename-symbol fallback for symbol-less languages (the successor
+will use the plan's simpler files-order stem definition), prompt text
+changes, planner-on-by-default.
 
-Diagnosis: the filter's support set is a starved sample, so it has a
-catastrophic false-negative rate on correct translations, while the
-model's input profile is too thin to ground it (and blind for languages
-without a symbol producer). The mechanism class (LLM reads and
-translates the query) is the one P11's exhaustion statement left open;
-this is its cheapest instantiation — one local LLM call that already
-ships behind `query_planner.enabled = False`.
+## Pre-Committed Rules (fixed at this revision)
 
-## Pre-Committed Rules (fixed before any comparison)
+1. **Support = full indexed lexicon.** Store API (frozen name)
+   `planner_support_lexicon() -> frozenset[str]`: lowercased
+   `distinct chunk_tokens.token` over active chunks ∪
+   `tokenize_query(symbols.name)` ∪ `tokenize_query(source_files.path)`,
+   dropping tokens shorter than 2. Filter helpers, term granularity,
+   all-tokens-supported rule, ≥2-supported-tokens rewritten-query rule,
+   caps, and `discarded_hints` recording are byte-preserved; only the
+   vocabulary set changes. Legacy path: with `support_lexicon=None` the
+   existing `profile_vocabulary` behavior is untouched.
+2. **Lexicon gating:** built in `retrieval.py` iff
+   `config.query_planner.enabled` is true (measured build cost on the
+   pinned copies: 15.0 / 32.8 / 88.6 ms). Injected test planners with
+   planner-disabled config receive `support_lexicon=None`; exploration
+   follow-up probes (DisabledQueryPlanner injections) never pay the
+   cost. Planner-off retrieval remains structurally unchanged.
+3. **Sampling pinning is runner infrastructure, not treatment.** The
+   P12 acceptance runner monkeypatches the planner request of WHICHEVER
+   tree PYTHONPATH selects to inject
+   `"options": {"temperature": 0, "seed": 0}` (precedent:
+   `_install_bge_truncation`). The candidate source ALSO ships the same
+   options as product behavior; because the runner injects identically
+   on both sides, this cannot differ between sides and is not a lever
+   in the A/B.
+4. **Privacy:** the repo gains NO per-file inventory of the user's
+   projects. Committed fixture carries queries + required paths +
+   aggregate sha256 + file count per project only; the full per-file
+   manifest lives in gitignored `.quality/`. Planner egress posture
+   unchanged (metadata to the user-configured local endpoint only).
+5. **Gold, storage, drift.** The 21 queries / 53 required items are
+   frozen exactly as archived; the three project copies move at Task 0
+   into durable gitignored `.quality/p12-eval-sources/` and are pinned
+   by the aggregate manifest then. At capture time: content drift =
+   STOP (never re-pin); copies lost = BLOCKED (restore from the durable
+   root only).
+6. **Held-out set.** At Task 0 a FRESH agent with no access to the
+   failure analysis authors 8 intent-phrased queries with required
+   files over the same three pinned copies; the set is sealed
+   (sha256 recorded in the plan record) before any implementation
+   commit, evaluated EXACTLY once, at comparison time, on both
+   baseline and candidate captures. Pre-committed interpretation: the
+   held-out delta is reported verbatim in the record; if the gold
+   gates pass but the held-out delta is ≤ 0, the disposition is still
+   governed by the gates, and the record MUST carry a named
+   "benchmark-fit risk" caveat; no re-runs, no query edits.
+7. **Captures and determinism.**
+   - Config frozen: ToolConfig defaults except
+     `embedding = bge/bge-m3/1024` and `query_planner.enabled = true`
+     (every other planner field at its default; `final_top_k = 12`).
+   - "Hit" := the required path appears among the 12 selected results.
+   - Each capture runs the 21 queries TWICE in one process; per-query
+     required-rank maps must match between passes (STOP otherwise) —
+     valid on both trees because the runner injects the options pin.
+   - Each SIDE is captured twice in separate processes; the two
+     captures must be byte-identical modulo timing/implementation
+     (P11 discipline; catches reindex and cross-process drift).
+   - Task 0 probes cross-process chat stability: the same pinned chat
+     request in two processes must return byte-equal content
+     (precondition; failure = BLOCKED).
+   - No other Ollama clients may run during captures.
+   - Per-query planner `status` is recorded; any status ≠ "ok" in any
+     pass of any capture = STOP (silent-fallback guard).
+8. **Reference and gates.** Captures: planner-OFF reference (bge, one
+   capture, double-pass rule applies without planner), baseline
+   (main tree, planner on), candidate (working tree, planner on).
+   - G1: candidate hits ≥ baseline hits + 5.
+   - G2: no project subtotal decreases (candidate vs baseline).
+   - G3: no query falls from ≥1 (baseline) to 0 (candidate).
+   - G4: mean latency over ALL queries of BOTH passes:
+     candidate ≤ 1.5 × baseline.
+   - G5: hash-default regression — full suite green including the
+     boundaries guards (extended by the pre-declared allowlists
+     below); any characterization drift = STOP.
+   - G6: candidate hits ≥ planner-off reference hits + 3 (shipping a
+     planner worse than no planner is forbidden).
+   One comparison, one disposition, no post-comparison edits.
+9. **Guard allowlists are part of the reviewed change.** 
+   `test_retrieval_core_boundaries.py` gains
+   `P12_PLANNER_PRODUCTION_CHANGES = {"src/context_search_tool/query_planner.py"}`
+   OR'd into the protected-diff assertions, and
+   `_is_p4_public_facade_reference` admits
+   `tests/p12_planner_acceptance.py` + the `tests/test_p12_` prefix.
+   New pipeline tests reuse existing imports (ledger reference counts
+   pinned); stub planners updated per plan (characterization proxy
+   accepts and does NOT record the new kwarg, so frozen baselines are
+   untouched). `retrieval.py` gains no new top-level defs or module
+   assignments (EXPECTED_LOCAL_DEFINITIONS stays).
+10. **Disposition statements (pre-committed).**
+    - G1 fails: "full-lexicon grounding of the shipped planner did not
+      reach +5 on the gold (measured delta: X). Remaining levers:
+      profile enrichment, prompt v3, multi-turn retrieval, listwise
+      rerank — a product decision." (No claim about model size or the
+      class beyond the measured lever.)
+    - Reject caused only by G2/G3: "grounding helps in aggregate but
+      regresses named queries: [ids]; per-query loss analysis attached."
+    - Reject caused only by G4: "latency regression: numbers; mechanism
+      effect otherwise as measured."
+    - G6 fails: "the planner (grounded or not) underperforms
+      planner-off on this gold; enabling it is not recommended."
 
-1. **Support = the full indexed lexicon.** A new store API (frozen
-   name: `planner_support_lexicon`) returns the lowercased token set
-   `distinct chunk_tokens.token (active chunks) ∪
-   tokenize_query(symbols.name) ∪ tokenize_query(source_files.path)`.
-   `clean_planner_payload` filters against THIS set instead of
-   `profile_vocabulary(repo_profile)`. Filter semantics are otherwise
-   byte-preserved: same term granularity, same all-tokens-supported
-   rule for hints, same ≥2-supported-tokens rule for rewritten queries
-   (support = lexicon ∪ original-query tokens), same caps, same
-   `discarded_hints` recording.
-2. **Profile enrichment (model input only).** `RepoProfileLimits`
-   becomes `max_files 32, max_symbols 96, max_tokens 64, max_chars
-   6000` (languages unchanged). When the symbols table is empty, the
-   profile's `symbols` list is filled with file-basename identifiers
-   (deterministic: stem of each `source_files` path, most-chunks-first,
-   deduped, same 96 cap). The profile remains model input and telemetry
-   only; it no longer defines the filter.
-3. **Reproducibility.** The Ollama chat request gains
-   `"options": {"temperature": 0, "seed": 0}`. `PROMPT_VERSION` and the
-   system prompt text are unchanged in P12 (prompt engineering is a
-   separate lever; one lever per experiment).
-4. **Activation and privacy unchanged.** Planner stays default-off,
-   provider-gated to `ollama`. The enriched profile is the same
-   category of metadata (paths, symbol names, tokens — never file
-   bodies) flowing to the same user-configured local endpoint.
-5. **The A/B.** Frozen gold: the 21 P12 queries with their 53 required
-   paths, checked into the repo as a fixture; the three project copies
-   pinned by a content-inventory sha256 manifest (drift = STOP, never
-   re-pin). Both sides run bge-m3 index + planner on, captured by the
-   candidate runner: baseline = detached worktree at main, candidate =
-   working tree. One comparison, one disposition.
-6. **Determinism rule.** Every capture runs its query set twice in one
-   process; the per-query required-rank maps must be identical between
-   the two passes (temperature 0 + seed 0). Divergence is a STOP, not
-   an averaging opportunity.
-7. **Gates.**
-   - G1: candidate required hits ≥ baseline required hits + 5 (on the
-     measured baseline capture, not the exploratory 20/53).
-   - G2: no project's hit subtotal decreases.
-   - G3: no query falls from ≥1 hit (baseline) to 0 (candidate).
-   - G4: candidate mean query latency ≤ 1.5 × baseline mean (planner
-     path measured like-for-like; formula recorded in the record).
-   - G5: hash-default regression — the standing P8 harness hash
-     baseline (planner off) plus the full test suite stay green;
-     planner-off retrieval is structurally unreachable by this change
-     (`DisabledQueryPlanner` short-circuits), and any characterization
-     drift is a STOP.
-   If G1 fails, the record must state: query-side LLM grounding is
-   insufficient at this model size; the remaining levers are prompt
-   engineering (v3), multi-turn retrieval, or result-side listwise
-   rerank — a product decision, no same-family variants without a new
-   review.
-8. **No post-comparison edits** to any constant, filter rule, prompt,
-   or gold definition.
+## Capture Evidence Schema (rule for the runner)
 
-## Architecture
-
-### Selected: full-lexicon support + enriched profile
-
-- `sqlite_store.py`: `planner_support_lexicon() -> frozenset[str]` —
-  one query over `chunk_tokens` (active chunks) plus tokenized symbol
-  names and file paths, built per retrieval call (~tens of ms at 40k
-  tokens; `chunk_tokens.token` is indexed).
-- `query_planner.py`: `clean_planner_payload` accepts
-  `support_lexicon: frozenset[str] | None`; when provided it replaces
-  `profile_vocabulary` as the filter base. `OllamaQueryPlanner.plan`
-  gains the same optional parameter, threaded from retrieval. Request
-  gains pinned `options`.
-- `repo_profile.py`: cap changes; basename-symbol fallback.
-- `src/context_search_tool/retrieval.py`: builds the lexicon alongside
-  the existing `build_repo_profile(store)` call and passes both.
-- Runner: `tests/p12_planner_acceptance.py` (capture/compare/check),
-  gold + inventory manifest under `tests/fixtures/p12_planner/`.
-
-### Rejected: directory tree in the prompt
-
-The probe shows correct translations already emerge from the starved
-profile (`isTradingDay` was produced without any tree). Tree injection
-grows the payload and the hallucination surface before the cheap fix is
-measured. Deferred, not forbidden.
-
-### Rejected: dropping the filter entirely
-
-`LaunchGuard` / `PreStartValidators` demonstrate real hallucinations.
-Unfiltered hints feed `planner_lexical` / `planner_path_symbol`
-scoring; the P10 record shows what ungrounded token affinity does.
-
-### Rejected: result-side LLM rerank first
-
-Strictly more expensive per query (candidate content through an LLM vs
-one query-text call), and P12's evidence localizes the loss at query
-understanding, not candidate ordering.
+Per query, per pass: planner status, latency, required-rank map,
+selected relative paths, kept/discarded hint COUNTS, and the surviving
+grep keywords / symbol hints / rewritten queries (identifier strings —
+same privacy category as selected paths; `check` still rejects
+`content`/`snippet`). Capture header: implementation identity,
+embedding identity + digest, planner identity (provider, model, digest,
+PROMPT_VERSION, prompt_hash, injected options), config fingerprint.
 
 ## Change Surface
 
 | file | responsibility |
 | --- | --- |
-| `sqlite_store.py` | `planner_support_lexicon` |
-| `query_planner.py` | lexicon-based filtering, pinned options |
-| `repo_profile.py` | caps, basename-symbol fallback |
-| `retrieval.py` | thread lexicon into the planner call |
-| `tests/p12_planner_acceptance.py` | frozen gold runner |
-| tests per plan | unit matrix, e2e planner pins, A/B captures |
+| `sqlite_store.py` | `planner_support_lexicon` (top-level cycle-free `tokenize_query` import) |
+| `query_planner.py` | `support_lexicon` kwarg through Protocol/planners/clean; options in request (product) |
+| `retrieval.py` | inline lexicon build (gated) + threading; no new top-level defs |
+| `tests/test_retrieval_core_boundaries.py` | P12 allowlists (rule 9) |
+| `tests/test_query_planner.py` | lexicon filter matrix, options pin |
+| `tests/test_retrieval_pipeline.py` | threading e2e, planner-off pin, stub signature updates |
+| `tests/test_retrieval_trace_pipeline.py` | stub signature updates |
+| `tests/retrieval_core_characterization.py` | proxy accepts+ignores kwarg |
+| `tests/p12_planner_acceptance.py` (+unit test file) | runner per rules 3/7/8 + evidence schema |
+| `tests/fixtures/p12_planner/gold.json` | queries + required + aggregate shas only |
 
-Untouched: selection/ranking/expansion/candidates scoring,
-`retrieval_trace/models.py` (P4-frozen), relation machinery, README
-privacy posture (planner section reviewed, not weakened).
+Untouched: `repo_profile.py` (enrichment deferred), selection/ranking/
+expansion/candidates, `retrieval_trace/models.py` (P4-frozen), relation
+machinery, prompt text, `PROMPT_VERSION`.
