@@ -35,6 +35,7 @@ def _case(
                 "rank": index + 1,
                 "path": path,
                 "graph_origin": graph_origin,
+                "relation_slot": False,
                 "relation_witness": (
                     {"relation_id": f"r5:{path}", "target_path": path}
                     if witness
@@ -86,7 +87,7 @@ def _synthetic_capture(*, improved: bool) -> dict:
         contextual=[f"data_provider/f{i}.py" for i in range(10)],
     )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "manifest_sha256": "m" * 64,
         "implementation": {"base_commit": "c" * 40, "dirty": False},
         "repositories": {},
@@ -245,3 +246,14 @@ def test_implementation_identity_tracks_dirty_state(tmp_path: Path) -> None:
         "tests/new_test.py": untracked_dirty["untracked_files"]["tests/new_test.py"]
     }
     assert untracked_dirty != tracked_dirty
+
+
+def test_check_rejects_v1_captures(tmp_path: Path) -> None:
+    payload = _synthetic_capture(improved=False)
+    del payload["cases"]["daily-case-11"]
+    payload["schema_version"] = 1
+    stale = tmp_path / "v1.json"
+    stale.write_text(runner._canonical(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="capture schema"):
+        runner.check(stale)

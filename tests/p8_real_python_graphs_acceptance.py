@@ -27,7 +27,7 @@ import p8_python_graph_identity as identity
 from generate_p8_python_graph_manifest import build_manifest
 
 SENTINEL_RANK = 13
-CAPTURE_SCHEMA_VERSION = 1
+CAPTURE_SCHEMA_VERSION = 2
 
 SOURCES = {
     "redink": {
@@ -217,6 +217,7 @@ def capture(
                 "rank": rank,
                 "path": path,
                 "graph_origin": "graph_imports_match" in result.score_parts,
+                "relation_slot": "relation slot" in result.reasons,
                 "relation_witness": None,
             }
             if entry["graph_origin"]:
