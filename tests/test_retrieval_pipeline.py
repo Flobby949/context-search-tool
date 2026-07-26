@@ -5,7 +5,13 @@ from typing import get_args, get_type_hints
 import numpy as np
 import pytest
 
-from context_search_tool import chunker, query_planner, retrieval, tokenizer
+from context_search_tool import (
+    chunker,
+    query_planner,
+    retrieval,
+    sqlite_store,
+    tokenizer,
+)
 from context_search_tool.config import (
     DEFAULT_CONFIG,
     EmbeddingConfig,
@@ -11964,3 +11970,51 @@ def test_ready_v5_spring_path_scores_only_the_exact_endpoint(
         "service-interface"
     ].score_parts
     assert "spring_path_executor_match" not in by_id["executor"].score_parts
+
+
+def _create_layout_v1_index(db_path: Path) -> None:
+    import sqlite3
+
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE chunks (
+                chunk_id TEXT PRIMARY KEY,
+                file_path TEXT NOT NULL,
+                start_line INTEGER NOT NULL,
+                end_line INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                chunk_type TEXT NOT NULL,
+                embedding_id TEXT,
+                deleted_at INTEGER,
+                metadata TEXT NOT NULL
+            );
+            CREATE TABLE chunk_tokens (
+                chunk_id TEXT NOT NULL,
+                token TEXT NOT NULL
+            );
+            CREATE VIRTUAL TABLE chunks_fts
+            USING fts5(chunk_id UNINDEXED, file_path, content, tokens);
+            CREATE TABLE index_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            INSERT INTO chunks VALUES
+                ('old-1', 'src/App.java', 1, 5, 'class App {}',
+                 'symbol', 'old-1', NULL, '{}');
+            INSERT INTO chunk_tokens VALUES ('old-1', 'app');
+            """
+        )
+
+
+def test_query_repository_rejects_layout_v1_index_with_coded_error(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / ".context-search").mkdir(parents=True)
+    _create_layout_v1_index(repo / ".context-search" / "index.sqlite")
+
+    with pytest.raises(sqlite_store.IncompatibleStorageLayoutError) as excinfo:
+        query_repository(repo, "audit", ToolConfig())
+    assert excinfo.value.code == "incompatible_storage_layout"

@@ -140,6 +140,7 @@ def _query_repository_v5(
         )
 
     store = sqlite_store.SQLiteStore(db_path)
+    store.require_current_storage_layout()
     session_context = (
         graph_session_factory()
         if graph_session_factory is not None
@@ -270,6 +271,7 @@ def _query_repository_impl(
     manifest.assert_manifest_compatible(repo, config)
 
     store = sqlite_store.SQLiteStore(db_path)
+    store.require_current_storage_layout()
     try:
         deleted_ids = (
             graph_session.deleted_chunk_ids()

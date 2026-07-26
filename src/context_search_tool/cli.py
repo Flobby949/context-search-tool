@@ -55,7 +55,10 @@ from context_search_tool.retrieval import (
     trace_repository,
 )
 from context_search_tool.retrieval_trace import RetrievalTraceError
-from context_search_tool.sqlite_store import SQLiteStore
+from context_search_tool.sqlite_store import (
+    IncompatibleStorageLayoutError,
+    SQLiteStore,
+)
 
 app = typer.Typer(
     help="Context Search Tool",
@@ -90,6 +93,7 @@ def index(repo: Optional[Path] = typer.Argument(None)) -> None:
         IncompatibleManifestSchemaError,
         IncompatibleOperationalSchemaError,
         IncompatibleSignalSchemaError,
+        IncompatibleStorageLayoutError,
         IndexBusyError,
         index_health.IndexCorruptionError,
         ValueError,
@@ -142,7 +146,11 @@ def query(
             context_lines=context_lines,
             full_file=full_file,
         )
-    except (ValueError, requests.HTTPError) as exc:
+    except (
+        IncompatibleStorageLayoutError,
+        ValueError,
+        requests.HTTPError,
+    ) as exc:
         _exit_with_error(exc)
 
     if json_output:
@@ -198,7 +206,11 @@ def trace(
     except RetrievalTraceError:
         typer.echo("Retrieval trace failed", err=True)
         raise typer.Exit(code=1)
-    except (ValueError, requests.HTTPError) as exc:
+    except (
+        IncompatibleStorageLayoutError,
+        ValueError,
+        requests.HTTPError,
+    ) as exc:
         _exit_with_error(exc)
     except Exception:
         typer.echo("Retrieval trace failed", err=True)
@@ -265,7 +277,11 @@ def context(
             context_lines=context_lines,
             full_file=full_file,
         )
-    except (ValueError, requests.HTTPError) as exc:
+    except (
+        IncompatibleStorageLayoutError,
+        ValueError,
+        requests.HTTPError,
+    ) as exc:
         _exit_with_error(exc)
 
     try:
@@ -356,7 +372,11 @@ def explore(
             context_lines=context_lines,
             full_file=full_file,
         )
-    except (ValueError, requests.HTTPError) as exc:
+    except (
+        IncompatibleStorageLayoutError,
+        ValueError,
+        requests.HTTPError,
+    ) as exc:
         _exit_with_error(exc)
     except Exception:
         _exit_explore_error()

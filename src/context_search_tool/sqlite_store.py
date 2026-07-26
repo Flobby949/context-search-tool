@@ -1122,6 +1122,10 @@ class SQLiteStore:
                 (PRODUCER_RESOLUTION_GENERATION_KEY, "0"),
                 (TEST_ASSOCIATION_SOURCE_GENERATION_KEY, "-1"),
                 (FILE_WRITE_IN_PROGRESS_KEY, ""),
+                (
+                    STORAGE_LAYOUT_VERSION_KEY,
+                    str(TARGET_STORAGE_LAYOUT_VERSION),
+                ),
             ):
                 _set_metadata_row(connection, key, value, now)
             if before_commit is not None:
