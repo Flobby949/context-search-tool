@@ -10,16 +10,25 @@ from __future__ import annotations
 
 import ast
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from context_search_tool.graph_contract import generate_v5_signal_id
+from context_search_tool.graph_contract import (
+    MAX_PYTHON_IMPORTS_PER_FILE,
+    generate_v5_relation_id,
+    generate_v5_signal_id,
+)
 from context_search_tool.graph_plugins import (
     MaterializedGraph,
     ParsedGraphFacts,
     PluginContext,
 )
-from context_search_tool.models import CodeSignal, DocumentChunk, SymbolRef
+from context_search_tool.models import (
+    CodeRelation,
+    CodeSignal,
+    DocumentChunk,
+    SymbolRef,
+)
 
 MAX_PYTHON_DECLARATION_FACTS = 4095
 
@@ -402,9 +411,33 @@ class PythonGraphProducer:
                 signal.signal_id,
             )
         )
+
+        merged: dict[str, CodeRelation] = {}
+        for fact in facts.imports:
+            selector = python_module_selector(context, fact)
+            _merge_python_relation(
+                merged,
+                _python_import_relation(context, module_signal, fact, selector),
+            )
+        relations = sorted(
+            merged.values(),
+            key=lambda relation: (
+                int(relation.metadata.get("first_source_line", 0)),
+                int(relation.metadata.get("first_source_column", 0)),
+                relation.target_qualified_name,
+                relation.relation_id,
+            ),
+        )
+        metadata = dict(parsed.metadata)
+        if len(relations) > MAX_PYTHON_IMPORTS_PER_FILE:
+            metadata["graph_omitted_imports"] = (
+                len(relations) - MAX_PYTHON_IMPORTS_PER_FILE
+            )
+            relations = relations[:MAX_PYTHON_IMPORTS_PER_FILE]
         return MaterializedGraph(
             signals=tuple(signals),
-            metadata=parsed.metadata,
+            relations=tuple(relations),
+            metadata=metadata,
         )
 
 
@@ -457,3 +490,179 @@ def _declaration_signal(
         end_column=fact.range.end_col,
         recallable=True,
     )
+
+
+@dataclass(frozen=True)
+class PythonModuleSelector:
+    state: str  # "exact" | "candidates" | "external" | "unresolved"
+    specifier: str
+    candidates: tuple[str, ...]
+
+
+def _module_path_candidates(base: str, *, package_only: bool) -> tuple[str, ...]:
+    if package_only:
+        return (f"{base}/__init__.py", f"{base}/__init__.pyw")
+    return (
+        f"{base}.py",
+        f"{base}.pyw",
+        f"{base}/__init__.py",
+        f"{base}/__init__.pyw",
+    )
+
+
+def _active_same_unit_candidates(
+    context: PluginContext, candidates: tuple[str, ...]
+) -> tuple[str, ...]:
+    kept = {
+        candidate
+        for candidate in candidates
+        if context.contains_path(candidate)
+        and context.project_unit_for_path(candidate) == context.project_unit_key
+    }
+    return tuple(sorted(kept))
+
+
+def python_module_selector(
+    context: PluginContext, fact: PythonImportFact
+) -> PythonModuleSelector:
+    specifier = "." * fact.relative_level + fact.module
+    unit = context.project_unit_key
+    prefix = f"{unit}/" if unit else ""
+
+    if fact.relative_level == 0:
+        if not fact.module:
+            return PythonModuleSelector("unresolved", specifier, ())
+        relative = fact.module.replace(".", "/")
+        raw = tuple(
+            candidate
+            for base in (f"{prefix}{relative}", f"{prefix}src/{relative}")
+            for candidate in _module_path_candidates(base, package_only=False)
+        )
+        candidates = _active_same_unit_candidates(context, raw)
+        if not candidates:
+            return PythonModuleSelector("external", specifier, ())
+        state = "exact" if len(candidates) == 1 else "candidates"
+        return PythonModuleSelector(state, specifier, candidates)
+
+    file_relative = context.file_path.as_posix()
+    inner = (
+        file_relative[len(prefix):]
+        if prefix and file_relative.startswith(prefix)
+        else file_relative
+    )
+    segments = inner.split("/")
+    filename = segments[-1]
+    stem = filename
+    for suffix in _PYTHON_SUFFIXES:
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    is_init = stem == "__init__"
+    package = segments[:-1]
+    remove = fact.relative_level - 1
+    if remove > len(package):
+        return PythonModuleSelector("unresolved", specifier, ())
+    base_segments = package[: len(package) - remove] if remove else package
+
+    if not base_segments:
+        # Above the top package. The single closed exception: a
+        # project-unit-root __init__.py may import an exact sibling.
+        if is_init and not package and fact.relative_level == 1 and fact.module:
+            sibling = fact.module.replace(".", "/")
+            raw = _module_path_candidates(
+                f"{prefix}{sibling}", package_only=False
+            )
+            candidates = _active_same_unit_candidates(context, raw)
+            if len(candidates) == 1:
+                return PythonModuleSelector("exact", specifier, candidates)
+            if len(candidates) > 1:
+                return PythonModuleSelector("candidates", specifier, candidates)
+        return PythonModuleSelector("unresolved", specifier, ())
+
+    if fact.module:
+        target = "/".join(base_segments + fact.module.split("."))
+        raw = _module_path_candidates(f"{prefix}{target}", package_only=False)
+    else:
+        target = "/".join(base_segments)
+        raw = _module_path_candidates(f"{prefix}{target}", package_only=True)
+    candidates = _active_same_unit_candidates(context, raw)
+    if not candidates:
+        return PythonModuleSelector("unresolved", specifier, ())
+    state = "exact" if len(candidates) == 1 else "candidates"
+    return PythonModuleSelector(state, specifier, candidates)
+
+
+def _python_import_relation(
+    context: PluginContext,
+    module_signal: CodeSignal,
+    fact: PythonImportFact,
+    selector: PythonModuleSelector,
+) -> CodeRelation:
+    target_project_unit_key = context.project_unit_key
+    if selector.state == "exact" and selector.candidates:
+        target_project_unit_key = context.project_unit_for_path(
+            selector.candidates[0]
+        )
+    target_qualified_name = (
+        selector.candidates[0] if selector.candidates else selector.specifier
+    )
+    relation_id = generate_v5_relation_id(
+        source_signal_id=module_signal.signal_id,
+        kind="imports",
+        target_kind="module",
+        target_qualified_name=target_qualified_name,
+        target_signature="",
+        target_arity=None,
+        target_project_unit_key=target_project_unit_key,
+        producer=_GRAPH_PRODUCER,
+    )
+    return CodeRelation(
+        relation_id=relation_id,
+        source_signal_id=module_signal.signal_id,
+        target_name=selector.specifier,
+        kind="imports",
+        confidence=1.0,
+        metadata={
+            "selector_state": selector.state,
+            "specifier": selector.specifier,
+            "candidates": selector.candidates,
+            "import_form": fact.import_form,
+            "relative_level": fact.relative_level,
+            "first_source_line": fact.range.start_line,
+            "first_source_column": fact.range.start_col,
+            "occurrence_count": 1,
+        },
+        target_kind="module",
+        target_qualified_name=target_qualified_name,
+        target_project_unit_key=target_project_unit_key,
+        resolution="unresolved",
+        producer=_GRAPH_PRODUCER,
+        producer_confidence=1.0,
+    )
+
+
+def _merge_python_relation(
+    relations: dict[str, CodeRelation], relation: CodeRelation
+) -> None:
+    existing = relations.get(relation.relation_id)
+    if existing is None:
+        relations[relation.relation_id] = relation
+        return
+    existing_position = (
+        int(existing.metadata.get("first_source_line", 0)),
+        int(existing.metadata.get("first_source_column", 0)),
+    )
+    next_position = (
+        int(relation.metadata.get("first_source_line", 0)),
+        int(relation.metadata.get("first_source_column", 0)),
+    )
+    selected = (
+        relation.metadata
+        if next_position < existing_position
+        else existing.metadata
+    )
+    metadata = dict(selected)
+    metadata["occurrence_count"] = int(
+        existing.metadata.get("occurrence_count", 1)
+    ) + int(relation.metadata.get("occurrence_count", 1))
+    relations[relation.relation_id] = replace(existing, metadata=metadata)

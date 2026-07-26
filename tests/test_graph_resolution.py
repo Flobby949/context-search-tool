@@ -157,9 +157,11 @@ def test_exact_module_and_complete_candidate_set_resolution(tmp_path: Path) -> N
     assert exact.resolution_confidence == 1.0
     assert exact.confidence == 0.85
     assert candidate is not None
-    assert candidate.resolution == "resolved_unique"
-    assert candidate.target_signal_id == "page"
-    assert candidate.resolution_confidence == 0.9
+    # P8 reviewed generic guard: more than one distinct active candidate is a
+    # path-level ambiguity and stays ambiguous even when only one candidate
+    # currently has a core module signal (fail closed for every producer).
+    assert candidate.resolution == "ambiguous"
+    assert candidate.target_signal_id == ""
 
 
 def test_empty_scanned_module_candidate_inventory_never_uses_stale_target(
@@ -700,3 +702,163 @@ def test_changed_ready_index_reresolves_every_active_structured_relation(
     assert relation is not None
     assert relation.resolution in {"resolved_exact", "resolved_unique"}
     assert relation.target_signal_id
+
+
+def _python_import_row(
+    relation_id: str,
+    *,
+    state: str,
+    candidates: list[str],
+    target: str,
+    unit: str = "",
+) -> CodeRelation:
+    return CodeRelation(
+        relation_id=relation_id,
+        source_signal_id="py-source",
+        target_name=target,
+        kind="imports",
+        confidence=1.0,
+        target_kind="module",
+        target_qualified_name=target,
+        target_project_unit_key=unit,
+        resolution="unresolved",
+        producer="python_ast",
+        producer_confidence=1.0,
+        metadata={
+            "selector_state": state,
+            "candidates": candidates,
+            "specifier": target,
+        },
+    )
+
+
+def _python_source(store: SQLiteStore, *, unit: str = "") -> None:
+    _add_file(
+        store,
+        "app/consumer.py",
+        [_module("py-source", "py-source-chunk", "app/consumer.py", unit)],
+    )
+
+
+def test_python_module_rows_resolve_only_exact_same_unit_paths(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    _python_source(store)
+    _add_file(
+        store,
+        "app/service.py",
+        [_module("py-service", "py-service-chunk", "app/service.py")],
+    )
+    _add_file(
+        store,
+        "app/dupe.py",
+        [_module("py-dupe", "py-dupe-chunk", "app/dupe.py")],
+    )
+    rows = [
+        _python_import_row(
+            "py-exact",
+            state="exact",
+            candidates=["app/service.py"],
+            target="app/service.py",
+        ),
+        _python_import_row(
+            "py-exact-empty",
+            state="exact",
+            candidates=["app/empty.py"],
+            target="app/empty.py",
+        ),
+        _python_import_row(
+            "py-tie-one-signal",
+            state="candidates",
+            candidates=["app/dupe.py", "app/dupe/__init__.py"],
+            target="app/dupe.py",
+        ),
+        _python_import_row(
+            "py-external",
+            state="external",
+            candidates=[],
+            target="json",
+        ),
+        _python_import_row(
+            "py-relative-unresolved",
+            state="unresolved",
+            candidates=[],
+            target="..app",
+        ),
+        _python_import_row(
+            "py-cross-unit",
+            state="exact",
+            candidates=["nested/pkg/target.py"],
+            target="nested/pkg/target.py",
+            unit="nested",
+        ),
+    ]
+    store.append_graph_relations(rows)
+
+    resolve_graph_relations(store)
+
+    exact = store.graph_relation_for_id("py-exact")
+    assert exact is not None
+    assert exact.resolution == "resolved_exact"
+    assert exact.target_signal_id == "py-service"
+    assert exact.resolution_confidence == 1.0
+    assert exact.confidence == 1.0
+
+    empty = store.graph_relation_for_id("py-exact-empty")
+    assert empty is not None
+    assert empty.resolution == "unresolved"
+    assert empty.target_signal_id == ""
+
+    tie = store.graph_relation_for_id("py-tie-one-signal")
+    assert tie is not None
+    assert tie.resolution == "ambiguous"
+    assert tie.target_signal_id == ""
+
+    external = store.graph_relation_for_id("py-external")
+    assert external is not None
+    assert external.resolution == "external"
+    assert external.target_signal_id == ""
+
+    relative = store.graph_relation_for_id("py-relative-unresolved")
+    assert relative is not None
+    assert relative.resolution == "unresolved"
+    assert relative.target_signal_id == ""
+
+    cross = store.graph_relation_for_id("py-cross-unit")
+    assert cross is not None
+    assert cross.resolution == "unresolved"
+    assert cross.target_signal_id == ""
+
+
+def test_python_candidate_tie_stays_ambiguous_regardless_of_order(
+    tmp_path: Path,
+) -> None:
+    for reverse in (False, True):
+        store = _store(tmp_path / ("reverse" if reverse else "forward"))
+        _python_source(store)
+        files = [
+            ("app/dupe.py", "py-dupe", "py-dupe-chunk"),
+            ("app/dupe/__init__.py", "py-dupe-pkg", "py-dupe-pkg-chunk"),
+        ]
+        if reverse:
+            files.reverse()
+        for file_path, signal_id, chunk_id in files:
+            _add_file(store, file_path, [_module(signal_id, chunk_id, file_path)])
+        store.append_graph_relations(
+            [
+                _python_import_row(
+                    "py-tie",
+                    state="candidates",
+                    candidates=["app/dupe.py", "app/dupe/__init__.py"],
+                    target="app/dupe.py",
+                )
+            ]
+        )
+
+        resolve_graph_relations(store)
+
+        tie = store.graph_relation_for_id("py-tie")
+        assert tie is not None
+        assert tie.resolution == "ambiguous"
+        assert tie.target_signal_id == ""

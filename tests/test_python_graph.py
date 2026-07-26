@@ -498,3 +498,282 @@ def test_v5_build_with_python_producer_materializes_symbol_chunks(
     ids = [r["signal_id"] for r in rows]
     assert len(ids) == len(set(ids))
     assert "app/empty.py" not in by_file
+
+
+from context_search_tool.graph_contract import (
+    MAX_PYTHON_IMPORTS_PER_FILE,
+    generate_v5_relation_id,
+)
+from context_search_tool.python_graph import (
+    PythonImportFact,
+    PythonSourceRange,
+    python_module_selector,
+)
+
+_FIXTURE_ACTIVE = (
+    "__init__.py",
+    "app/__init__.py",
+    "app/api.py",
+    "app/broken.py",
+    "app/clients/__init__.py",
+    "app/clients/text.py",
+    "app/dupe.py",
+    "app/dupe/__init__.py",
+    "app/dynamic.py",
+    "app/service.py",
+    "lonely.py",
+    "nested/pkg/__init__.py",
+    "nested/pkg/consumer.py",
+    "nested/pkg/target.py",
+    "src/payments/__init__.py",
+    "src/payments/engine.py",
+    "tests/test_service.py",
+)
+
+
+def _selector_context(file_path: str, unit: str = "") -> PluginContext:
+    units = tuple(
+        (
+            _P(path),
+            "nested" if path.startswith("nested/") else "",
+        )
+        for path in _FIXTURE_ACTIVE
+    )
+    return PluginContext(
+        file_path=_P(file_path),
+        language="python",
+        project_unit_key=unit,
+        active_paths=tuple(_P(path) for path in _FIXTURE_ACTIVE),
+        active_path_project_units=units,
+    )
+
+
+def _import_fact(
+    module: str,
+    level: int = 0,
+    form: str = "import",
+    star: bool = False,
+    line: int = 1,
+) -> PythonImportFact:
+    return PythonImportFact(
+        import_form=form,
+        module=module,
+        relative_level=level,
+        is_star=star,
+        range=PythonSourceRange(line, 0, line, 10),
+    )
+
+
+def test_python_import_budget_contract() -> None:
+    assert MAX_PYTHON_IMPORTS_PER_FILE == 256
+
+
+def test_selector_absolute_forms_resolve_by_active_paths() -> None:
+    context = _selector_context("app/api.py")
+
+    exact = python_module_selector(context, _import_fact("app.service"))
+    assert exact.state == "exact"
+    assert exact.specifier == "app.service"
+    assert exact.candidates == ("app/service.py",)
+
+    from_form = python_module_selector(
+        context, _import_fact("app.service", form="from")
+    )
+    assert from_form.state == "exact"
+    assert from_form.candidates == ("app/service.py",)
+
+    star = python_module_selector(
+        context, _import_fact("app.service", form="from", star=True)
+    )
+    assert star.state == "exact"
+
+    package = python_module_selector(context, _import_fact("app.clients"))
+    assert package.state == "exact"
+    assert package.candidates == ("app/clients/__init__.py",)
+
+    external = python_module_selector(context, _import_fact("json"))
+    assert external.state == "external"
+    assert external.candidates == ()
+
+
+def test_selector_module_package_tie_is_ambiguous() -> None:
+    context = _selector_context("app/api.py")
+
+    tie = python_module_selector(context, _import_fact("app.dupe"))
+
+    assert tie.state == "candidates"
+    assert tie.candidates == ("app/dupe.py", "app/dupe/__init__.py")
+
+
+def test_selector_src_root_layout_and_tie() -> None:
+    context = _selector_context("src/payments/engine.py")
+
+    src_spelling = python_module_selector(
+        context, _import_fact("payments.engine", form="from")
+    )
+    assert src_spelling.state == "exact"
+    assert src_spelling.candidates == ("src/payments/engine.py",)
+
+    root_spelling = python_module_selector(
+        context, _import_fact("src.payments.engine", form="from")
+    )
+    assert root_spelling.state == "exact"
+    assert root_spelling.candidates == ("src/payments/engine.py",)
+
+
+def test_selector_relative_forms() -> None:
+    context = _selector_context("app/api.py")
+
+    sibling = python_module_selector(
+        context, _import_fact("service", level=1, form="from")
+    )
+    assert sibling.state == "exact"
+    assert sibling.specifier == ".service"
+    assert sibling.candidates == ("app/service.py",)
+
+    parent = python_module_selector(
+        context,
+        _import_fact("clients", level=2, form="from"),
+    )
+    assert parent.state == "unresolved"
+
+    from_clients = python_module_selector(
+        _selector_context("app/clients/text.py"),
+        _import_fact("clients", level=2, form="from"),
+    )
+    assert from_clients.state == "exact"
+    assert from_clients.candidates == ("app/clients/__init__.py",)
+
+    escape = python_module_selector(
+        context, _import_fact("app", level=3, form="from")
+    )
+    assert escape.state == "unresolved"
+
+    bare_star = python_module_selector(
+        _selector_context("app/service.py"),
+        _import_fact("", level=1, form="from", star=True),
+    )
+    assert bare_star.state == "exact"
+    assert bare_star.candidates == ("app/__init__.py",)
+
+    rootless = python_module_selector(
+        _selector_context("lonely.py"),
+        _import_fact("orphan", level=1, form="from"),
+    )
+    assert rootless.state == "unresolved"
+
+
+def test_selector_unit_root_init_sibling_exception() -> None:
+    context = _selector_context("__init__.py")
+
+    sibling = python_module_selector(
+        context, _import_fact("lonely", level=1, form="from")
+    )
+
+    assert sibling.state == "exact"
+    assert sibling.candidates == ("lonely.py",)
+
+
+def test_selector_cross_unit_target_is_not_selected() -> None:
+    context = _selector_context("nested/pkg/consumer.py", unit="nested")
+
+    same_unit = python_module_selector(context, _import_fact("pkg.target"))
+    assert same_unit.state == "exact"
+    assert same_unit.candidates == ("nested/pkg/target.py",)
+
+    cross_unit = python_module_selector(
+        context, _import_fact("app.service", form="from")
+    )
+    assert cross_unit.state == "external"
+    assert cross_unit.candidates == ()
+
+
+def test_import_relations_project_exact_v5_rows() -> None:
+    producer = PythonGraphProducer()
+    context = _selector_context("app/api.py")
+    parsed = producer.parse(context, (FIXTURE / "app/api.py").read_bytes())
+    chunks = (_chunk_for("app/api.py", 1, 400, "chunk-all"),)
+    module_signal = _module_signal("app/api.py")
+
+    graph = producer.materialize(context, parsed, chunks, module_signal)
+
+    by_target = {
+        relation.metadata["specifier"]: relation for relation in graph.relations
+    }
+    # `import app.service` and `from .service import ...` resolve to the same
+    # target module, so they merge into one relation per the design.
+    assert set(by_target) == {"json", "app.service", "app.clients.text"}
+    relation = by_target["app.service"]
+    assert relation.metadata["occurrence_count"] == 2
+    assert relation.source_signal_id == module_signal.signal_id
+    assert relation.kind == "imports"
+    assert relation.target_kind == "module"
+    assert relation.producer == "python_ast"
+    assert relation.producer_confidence == 1.0
+    assert relation.resolution == "unresolved"
+    assert relation.target_qualified_name == "app/service.py"
+    assert relation.metadata["selector_state"] == "exact"
+    assert relation.metadata["import_form"] == "import"
+    assert relation.metadata["relative_level"] == 0
+    assert relation.metadata["first_source_line"] == 2
+    expected_id = generate_v5_relation_id(
+        source_signal_id=module_signal.signal_id,
+        kind="imports",
+        target_kind="module",
+        target_qualified_name="app/service.py",
+        target_signature="",
+        target_arity=None,
+        target_project_unit_key="",
+        producer="python_ast",
+    )
+    assert relation.relation_id == expected_id
+    assert "bindings" not in relation.metadata
+    assert "aliases" not in relation.metadata
+
+
+def test_repeated_imports_merge_and_distinct_targets_do_not() -> None:
+    producer = PythonGraphProducer()
+    context = _selector_context("app/service.py")
+    parsed = producer.parse(
+        context, (FIXTURE / "app/service.py").read_bytes()
+    )
+    chunks = (_chunk_for("app/service.py", 1, 400, "chunk-all"),)
+
+    graph = producer.materialize(
+        context, parsed, chunks, _module_signal("app/service.py")
+    )
+
+    clients = [
+        relation
+        for relation in graph.relations
+        if relation.target_qualified_name == "app/clients/__init__.py"
+    ]
+    assert len(clients) == 1
+    assert clients[0].metadata["occurrence_count"] == 2
+    assert clients[0].metadata["first_source_line"] == 2
+    specs = sorted(
+        relation.metadata["specifier"] for relation in graph.relations
+    )
+    assert specs == sorted(
+        ["os", "app.dupe", ".clients", "..app", "app.api", "app.clients.text"]
+    )
+
+
+def test_import_cap_retains_first_256_and_records_omission() -> None:
+    producer = PythonGraphProducer()
+    lines = b"".join(
+        b"import external_module_%03d\n" % index for index in range(257)
+    )
+    context = _selector_context("app/api.py")
+    parsed = producer.parse(context, lines)
+    chunks = (_chunk_for("app/api.py", 1, 400, "chunk-all"),)
+
+    graph = producer.materialize(
+        context, parsed, chunks, _module_signal("app/api.py")
+    )
+
+    assert len(graph.relations) == 256
+    specs = [relation.metadata["specifier"] for relation in graph.relations]
+    assert specs[0] == "external_module_000"
+    assert specs[-1] == "external_module_255"
+    assert graph.metadata["graph_omitted_imports"] == 1

@@ -106,6 +106,14 @@ def _classify_relation(
         candidates = _string_tuple(candidate_value)
         if not isinstance(candidate_value, (list, tuple)) and relation.target_qualified_name:
             candidates = (relation.target_qualified_name,)
+        if (
+            selector_state == "candidates"
+            and len(dict.fromkeys(candidates)) > 1
+        ):
+            # A multi-path module ambiguity is a path-level fact. A missing
+            # core module signal on one candidate (for example an empty
+            # file) must not turn it into a unique resolution.
+            return replace(cleared, resolution="ambiguous")
         matches = session.find_modules(
             candidates,
             relation.target_project_unit_key,
