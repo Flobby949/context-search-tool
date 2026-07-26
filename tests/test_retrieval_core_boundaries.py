@@ -208,6 +208,17 @@ P7_FINAL_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/retrieval_core/selection.py",
 }
 
+P8_PYTHON_GRAPH_PRODUCTION_CHANGES = {
+    "src/context_search_tool/python_graph.py",
+    "src/context_search_tool/plugins.py",
+    "src/context_search_tool/graph_contract.py",
+    "src/context_search_tool/graph_lifecycle.py",
+    "src/context_search_tool/graph_resolution.py",
+    "src/context_search_tool/sqlite_store.py",
+    "src/context_search_tool/indexer.py",
+    "src/context_search_tool/retrieval_core/relation_policy.py",
+}
+
 P4_IMPLEMENTATION_BASELINE = "b827707325d0ee4e9c6b2bcb3dee39955c263822"
 THIS_TEST_PATH = "tests/test_retrieval_core_boundaries.py"
 
@@ -946,6 +957,7 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         | P6_TASK4_PRODUCTION_CHANGES
         | P6_TASK9_PRODUCTION_CHANGES
         | P7_FINAL_REVIEWED_PRODUCTION_CHANGES
+        | P8_PYTHON_GRAPH_PRODUCTION_CHANGES
     )
 
     source_status = subprocess.run(
@@ -971,6 +983,7 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         | P6_TASK4_PRODUCTION_CHANGES
         | P6_TASK9_PRODUCTION_CHANGES
         | P7_FINAL_REVIEWED_PRODUCTION_CHANGES
+        | P8_PYTHON_GRAPH_PRODUCTION_CHANGES
     )
 
     subprocess.run(

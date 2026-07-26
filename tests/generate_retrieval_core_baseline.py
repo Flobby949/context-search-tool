@@ -328,7 +328,12 @@ def _call_name(node: ast.expr) -> str:
 
 def _scan_file(path: Path) -> list[Reference]:
     relative = path.relative_to(ROOT).as_posix()
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except SyntaxError:
+        # Deliberately malformed fixture sources (e.g. the P8 parser
+        # fixtures) are test data and cannot reference facade symbols.
+        return []
     aliases = _module_aliases(tree)
     references: list[Reference] = []
     for node in ast.walk(tree):
