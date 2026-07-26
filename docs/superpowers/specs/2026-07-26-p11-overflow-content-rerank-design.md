@@ -1,7 +1,7 @@
 # P11 Overflow Content Rerank v1 Design
 
 Date: 2026-07-26
-Status: Revised after adversarial review (r2)
+Status: Executed 2026-07-26; disposition reject (rule 7 applied; see the plan's implementation record)
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
 Behavior baseline: `4467978` (main; quota machinery inert)
 Predecessors: P8/P9/P10 implementation records; the P10 exhaustion
