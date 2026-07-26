@@ -168,6 +168,31 @@ def _embedding_config(embedding: str):
     raise ValueError(f"unsupported embedding argument: {embedding}")
 
 
+_BGE_MAX_TEXT_CHARS = 4000
+
+
+def _install_bge_truncation() -> None:
+    """Capture infrastructure, applied identically to whichever tree the
+    PYTHONPATH selects: Ollama rejects a single text whose tokenization
+    exceeds bge-m3's 8192-token context (dense CJK crosses it near 7k
+    chars), so every text is deterministically truncated before
+    embedding. Never edits a source tree; queries are unaffected in
+    practice (far below the cap)."""
+    from context_search_tool.embeddings_bge import BGEEmbeddingProvider
+
+    if getattr(BGEEmbeddingProvider, "_p8_runner_truncation", False):
+        return
+    original = BGEEmbeddingProvider.embed_texts
+
+    def truncated(self, texts: list[str]) -> list:
+        return original(
+            self, [text[:_BGE_MAX_TEXT_CHARS] for text in texts]
+        )
+
+    BGEEmbeddingProvider.embed_texts = truncated
+    BGEEmbeddingProvider._p8_runner_truncation = True
+
+
 def _ollama_model_digest(model: str) -> str | None:
     import requests
 
@@ -208,6 +233,8 @@ def capture(
     from context_search_tool.retrieval import query_repository
 
     config = _embedding_config(embedding)
+    if embedding == "bge":
+        _install_bge_truncation()
     digest = (
         _ollama_model_digest(config.embedding.model)
         if embedding == "bge"

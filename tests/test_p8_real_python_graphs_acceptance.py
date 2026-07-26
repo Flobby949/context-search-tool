@@ -350,3 +350,27 @@ def test_indexed_identity_assertion_rejects_mismatch(tmp_path: Path) -> None:
         runner._assert_indexed_identity(
             workspace, runner._embedding_config("bge")
         )
+
+
+def test_bge_truncation_bounds_every_embedded_text() -> None:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from context_search_tool.config import EmbeddingConfig
+    from context_search_tool.embeddings_bge import BGEEmbeddingProvider
+
+    runner._install_bge_truncation()
+    runner._install_bge_truncation()  # idempotent
+
+    provider = BGEEmbeddingProvider(
+        EmbeddingConfig(provider="bge", model="bge-m3", dimensions=1024)
+    )
+    seen: list[int] = []
+
+    def fake_batch(texts: list[str]) -> list[object]:
+        seen.extend(len(text) for text in texts)
+        return [object()] * len(texts)
+
+    provider._embed_batch = fake_batch
+    provider.embed_texts(["x" * 50_000, "short"])
+
+    assert seen
+    assert max(seen) <= runner._BGE_MAX_TEXT_CHARS
