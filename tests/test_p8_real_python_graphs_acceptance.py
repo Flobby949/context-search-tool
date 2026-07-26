@@ -35,7 +35,7 @@ def _case(
                 "rank": index + 1,
                 "path": path,
                 "graph_origin": graph_origin,
-                "relation_slot": False,
+                "relation_slot": witness,
                 "relation_witness": (
                     {"relation_id": f"r5:{path}", "target_path": path}
                     if witness
