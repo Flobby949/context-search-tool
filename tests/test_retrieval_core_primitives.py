@@ -15,6 +15,7 @@ from context_search_tool.retrieval_core import (
     ordering,
     ranking,
     relation_policy,
+    selection,
     types as core_types,
 )
 
@@ -478,3 +479,32 @@ def test_candidate_base_score_remains_present_and_uncalled() -> None:
 
     assert len(definitions) == 1
     assert calls == []
+
+
+def test_followup_keyword_filter_drops_noise_and_preserves_identifier_order() -> None:
+    tokens = [
+        "vector",
+        "if",
+        "store",
+        "for",
+        "self",
+        "def",
+        "chunk_ref",
+        "a",
+        "0",
+        "42",
+        "return",
+        "publish",
+        "the",
+        "vector",
+    ]
+
+    filtered = selection.filter_followup_keywords(tokens)
+
+    assert filtered == ["vector", "store", "chunk_ref", "publish", "vector"]
+
+
+def test_followup_keyword_filter_keeps_cjk_and_domain_words() -> None:
+    assert selection.filter_followup_keywords(
+        ["审批", "workspace", "None", "import", "工作台"]
+    ) == ["审批", "workspace", "工作台"]

@@ -214,7 +214,7 @@ def assemble_query_output(
                 "evidence_priority": float(item.evidence_priority),
             },
             reasons=_result_reasons(item.reasons + result_reasons[index]),
-            followup_keywords=item.followup_keywords,
+            followup_keywords=filter_followup_keywords(item.followup_keywords),
             semantic_matches=item.semantic_matches,
             spans=item.spans,
             _context_content=item._context_content,
@@ -672,6 +672,46 @@ def _evidence_anchor_kind(path: Path) -> str:
     if name == "pom.xml":
         return "pom"
     return ""
+
+
+# Tokens with no navigation value as follow-up search keywords: language
+# keywords shared across the indexed languages plus English glue words.
+# Identifiers, path segments, and CJK terms pass through unchanged.
+_FOLLOWUP_STOPWORDS = frozenset(
+    {
+        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+        "to", "of", "in", "on", "at", "by", "or", "and", "not", "no", "yes",
+        "it", "its", "this", "that", "these", "those", "with", "as", "from",
+        "into", "out", "up", "down", "over", "under", "then", "than", "so",
+        "do", "does", "did", "done", "can", "could", "will", "would",
+        "should", "must", "may", "might", "have", "has", "had", "get", "set",
+        "use", "used", "using",
+        "if", "else", "elif", "for", "while", "switch", "case", "break",
+        "continue", "return", "def", "class", "func", "fn", "function",
+        "var", "let", "const", "new", "self", "super", "import", "export",
+        "package", "module", "public", "private", "protected", "static",
+        "final", "void", "int", "str", "string", "bool", "boolean", "float",
+        "double", "long", "short", "byte", "char", "true", "false", "none",
+        "null", "nil", "raise", "try", "except", "catch", "finally", "throw",
+        "throws", "pass", "yield", "await", "async", "lambda", "type",
+        "interface", "struct", "enum", "impl", "pub", "mut", "extends",
+        "implements", "abstract", "override", "virtual", "instanceof",
+        "typeof",
+    }
+)
+
+
+def filter_followup_keywords(tokens: list[str]) -> list[str]:
+    filtered: list[str] = []
+    for token in tokens:
+        if len(token) < 2:
+            continue
+        if token.isdigit():
+            continue
+        if token.lower() in _FOLLOWUP_STOPWORDS:
+            continue
+        filtered.append(token)
+    return filtered
 
 
 def _followup_keywords(results: list[RetrievalResult]) -> list[str]:
