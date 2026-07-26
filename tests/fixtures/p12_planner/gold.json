@@ -1,0 +1,202 @@
+{
+ "projects": {
+  "Investment-Assistant": {
+   "aggregate_sha256": "940e450a9d96baa740c13de423d9517a0bde4299f1aff668e36831768d3e3adf",
+   "file_count": 375,
+   "queries": [
+    {
+     "id": "ia-scrape-guard",
+     "query": "When we scrape the third-party fund data provider, what stops us from getting throttled or blocked — is there request pacing, retry-on-failure, or browser header spoofing?",
+     "required": [
+      "collector/pkg/httpx/client.go",
+      "collector/pkg/ua/pool.go"
+     ]
+    },
+    {
+     "id": "ia-cron-jobs",
+     "query": "每天定时抓取净值和盘中估值的任务是怎么配置和触发的？遇到非交易日会跳过吗，每次跑完的结果记录在哪里？",
+     "required": [
+      "collector/cmd/collector/main.go",
+      "collector/internal/repository/sync_log_repo.go"
+     ]
+    },
+    {
+     "id": "ia-add-fund",
+     "query": "A user types in a fund code the system has never seen before — walk me through what happens end to end. Where does the fund data actually come from, and does the HTTP call block until it lands?",
+     "required": [
+      "investment-assistant-backend/src/main/java/com/investment/application/fund/FundAppService.java",
+      "investment-assistant-backend/src/main/java/com/investment/infra/external/impl/CollectorServiceClient.java",
+      "collector/internal/service/fund_service.go"
+     ]
+    },
+    {
+     "id": "ia-ai-tools",
+     "query": "How does the chat assistant know it must look up my actual holdings rather than inventing numbers, and where is its persona and answer-formatting behaviour defined?",
+     "required": [
+      "investment-assistant-backend/src/main/java/com/investment/infra/config/SpringAIConfig.java",
+      "investment-assistant-backend/src/main/java/com/investment/application/ai/tools/PositionTools.java"
+     ]
+    },
+    {
+     "id": "ia-sse-stream",
+     "query": "Why does the assistant's answer appear token-by-token in the browser, and what keeps that long-lived connection from being duplicated across tabs or silently dying?",
+     "required": [
+      "investment-assistant-backend/src/main/java/com/investment/infra/sse/SseServer.java",
+      "frontend/src/views/chat/composables/useSseConnection.ts",
+      "investment-assistant-backend/src/main/java/com/investment/application/ai/AIAssistantService.java"
+     ]
+    },
+    {
+     "id": "ia-pnl-calc",
+     "query": "用户买入或卖出之后，持仓的平均成本、浮动盈亏以及整个组合的总收益率分别是怎么算出来的？除了交易时算，还有没有定时重算的地方？",
+     "required": [
+      "investment-assistant-backend/src/main/java/com/investment/application/position/TradeAppService.java",
+      "investment-assistant-backend/src/main/java/com/investment/application/portfolio/PortfolioAppService.java",
+      "investment-assistant-backend/src/main/java/com/investment/application/position/PositionProfitCalculator.java"
+     ]
+    },
+    {
+     "id": "ia-logout-token",
+     "query": "After a user signs out, why does their still-unexpired bearer token stop working right away, and how does an authenticated identity get made visible to the service layer?",
+     "required": [
+      "investment-assistant-backend/src/main/java/com/investment/infra/security/TokenBlacklistService.java",
+      "investment-assistant-backend/src/main/java/com/investment/infra/security/JwtAuthenticationFilter.java",
+      "investment-assistant-backend/src/main/java/com/investment/infra/security/AuthenticationInterceptor.java"
+     ]
+    }
+   ]
+  },
+  "backend-template": {
+   "aggregate_sha256": "ea2f35d6f720a81119d38efbd91daf330770f0bf6be99e5b120ba84fad443203",
+   "file_count": 390,
+   "queries": [
+    {
+     "id": "bt-jwt-parse",
+     "query": "请求头里带的那串凭证是怎么被解析出来、还原成当前登录用户的？哪些接口路径可以不带凭证直接访问？",
+     "required": [
+      "backend/admin-boot/src/main/java/top/flobby/admin/security/JwtAuthenticationFilter.java",
+      "backend/admin-common/src/main/java/top/flobby/admin/common/utils/JwtUtils.java",
+      "backend/admin-boot/src/main/java/top/flobby/admin/security/SecurityConstants.java"
+     ]
+    },
+    {
+     "id": "bt-login-lock",
+     "query": "If someone keeps typing the wrong password, what stops them from retrying forever, where is that counter stored, and how long do they stay blocked?",
+     "required": [
+      "backend/admin-system/src/main/java/top/flobby/admin/system/application/LoginLockService.java",
+      "backend/admin-system/src/main/java/top/flobby/admin/system/application/AuthService.java"
+     ]
+    },
+    {
+     "id": "bt-dept-cascade",
+     "query": "When an admin flips the toggle to deactivate a top-level org unit, why do all the units nested under it also go inactive, and what does that do to the people assigned to them?",
+     "required": [
+      "backend/admin-system/src/main/java/top/flobby/admin/system/application/DepartmentService.java",
+      "backend/admin-system/src/main/java/top/flobby/admin/system/infrastructure/repository/JpaDepartmentRepository.java",
+      "backend/admin-system/src/main/java/top/flobby/admin/system/infrastructure/security/UserDetailsServiceImpl.java"
+     ]
+    },
+    {
+     "id": "bt-menu-routes",
+     "query": "Only some menu entries show up in the sidebar after I sign in — where does that list of pages come from, and how does the client turn the server's answer into real page components?",
+     "required": [
+      "frontend/src/stores/permission.ts",
+      "backend/admin-system/src/main/java/top/flobby/admin/system/application/MenuService.java"
+     ]
+    },
+    {
+     "id": "bt-prod-config",
+     "query": "Nothing is hardcoded when the stack runs in containers — where do the DB and Redis credentials and the token signing key actually come from, and how does the app know which settings profile to use?",
+     "required": [
+      "backend/admin-boot/src/main/resources/application-prod.yml",
+      "docker-compose.yml",
+      "backend/admin-boot/src/main/resources/application.yml"
+     ]
+    },
+    {
+     "id": "bt-error-flow",
+     "query": "后端抛出的业务错误，是怎么变成前端弹出的那句中文提示的？未登录和无权限这两种情况又是在哪里被写成响应体的？",
+     "required": [
+      "backend/admin-common/src/main/java/top/flobby/admin/common/exception/GlobalExceptionHandler.java",
+      "frontend/src/utils/request.ts",
+      "backend/admin-boot/src/main/java/top/flobby/admin/security/JwtAuthenticationEntryPoint.java"
+     ]
+    },
+    {
+     "id": "bt-data-scope",
+     "query": "Two accounts hit the same list accounts endpoint and get different numbers of rows back — what decides which records each person is allowed to see, and where is that restriction injected into the SQL?",
+     "required": [
+      "backend/admin-boot/src/main/java/top/flobby/admin/security/DataScopeInterceptor.java",
+      "backend/admin-common/src/main/java/top/flobby/admin/common/utils/DataScopeUtils.java",
+      "backend/admin-system/src/main/java/top/flobby/admin/system/infrastructure/repository/UserRepositoryImpl.java"
+     ]
+    }
+   ]
+  },
+  "git-course": {
+   "aggregate_sha256": "bb3c00b5b496849737e11ca1827c21e0d3e807a94654edfdc255867ae3f4c580",
+   "file_count": 109,
+   "queries": [
+    {
+     "id": "gc-exec-sandbox",
+     "query": "When a learner types text at the prompt inside the training UI and presses Enter, where does that text actually get run, and how does the app keep them from starting an editor that would freeze the interface?",
+     "required": [
+      "internal/infrastructure/sandbox/manager.go",
+      "internal/tui/app.go"
+     ]
+    },
+    {
+     "id": "gc-hints-score",
+     "query": "学员连续做错好几次之后，那些循序渐进的小贴士是怎么一级级放出来的？看过之后又会怎么影响最终得分？",
+     "required": [
+      "internal/app/orchestrator.go",
+      "internal/domain/progress/scorer.go",
+      "internal/tui/app.go"
+     ]
+    },
+    {
+     "id": "gc-unlock",
+     "query": "What stops a learner from skipping straight to the final stage, and what state actually changes at the moment they earn the right to advance?",
+     "required": [
+      "internal/domain/progress/profile.go",
+      "internal/app/orchestrator.go"
+     ]
+    },
+    {
+     "id": "gc-corrupt-profile",
+     "query": "If someone hand-edits the JSON file that remembers a learner's progress and leaves it malformed, what happens on the next launch — is the work just lost?",
+     "required": [
+      "internal/infrastructure/filesystem/profile.go",
+      "internal/app/session.go",
+      "cmd/git-course/main.go"
+     ]
+    },
+    {
+     "id": "gc-author-lesson",
+     "query": "I want to author an eighth stage with its own narrative text, goals and graded tips — where do I write it, and what code turns that authored file into something the program can render?",
+     "required": [
+      "internal/infrastructure/filesystem/lesson.go",
+      "internal/domain/lesson/lesson.go"
+     ]
+    },
+    {
+     "id": "gc-merge-check",
+     "query": "How does the grading confirm a learner genuinely combined two branches together rather than faking the end state, and how does the app know which check to run for a given stage?",
+     "required": [
+      "internal/domain/evaluator/rules/git_merge.go",
+      "internal/domain/evaluator/registry.go"
+     ]
+    },
+    {
+     "id": "gc-env-check",
+     "query": "程序在真正跑起来之前会做哪些自检？哪些条件不满足就直接拒绝启动、并提示用户先去修？",
+     "required": [
+      "internal/infrastructure/platform/env.go",
+      "cmd/git-course/main.go"
+     ]
+    }
+   ]
+  }
+ },
+ "schema_version": 1
+}
