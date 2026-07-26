@@ -262,7 +262,8 @@ def _literal_v4_database(path: Path, *, version: int = 4) -> None:
                 metadata TEXT NOT NULL
             );
             CREATE TABLE chunks (
-                chunk_id TEXT PRIMARY KEY,
+                chunk_ref INTEGER PRIMARY KEY,
+                chunk_id TEXT NOT NULL UNIQUE,
                 file_path TEXT NOT NULL,
                 start_line INTEGER NOT NULL,
                 end_line INTEGER NOT NULL,

@@ -2316,9 +2316,9 @@ class SQLiteStore:
             token_rows = connection.execute(
                 _in_query(
                     """
-                SELECT chunk_tokens.chunk_id, chunk_tokens.token
+                SELECT chunks.chunk_id, chunk_tokens.token
                 FROM chunk_tokens
-                JOIN chunks ON chunks.chunk_id = chunk_tokens.chunk_id
+                JOIN chunks ON chunks.chunk_ref = chunk_tokens.chunk_ref
                 WHERE chunks.deleted_at IS NULL
                   AND chunk_tokens.token IN ({placeholders})
                 """,
@@ -2673,7 +2673,7 @@ class SQLiteStore:
                 """
                 SELECT chunk_tokens.token, COUNT(*) AS count
                 FROM chunk_tokens
-                JOIN chunks ON chunks.chunk_id = chunk_tokens.chunk_id
+                JOIN chunks ON chunks.chunk_ref = chunk_tokens.chunk_ref
                 WHERE chunks.deleted_at IS NULL
                 GROUP BY chunk_tokens.token
                 ORDER BY count DESC, chunk_tokens.token
@@ -2862,7 +2862,13 @@ class SQLiteStore:
         )
         connection.execute(
             _in_query(
-                "DELETE FROM chunk_tokens WHERE chunk_id IN ({placeholders})",
+                """
+                DELETE FROM chunk_tokens
+                WHERE chunk_ref IN (
+                    SELECT chunk_ref FROM chunks
+                    WHERE chunk_id IN ({placeholders})
+                )
+                """,
                 chunk_ids,
             ),
             chunk_ids,
@@ -2939,12 +2945,16 @@ class SQLiteStore:
                 (chunk.chunk_id, cursor.lastrowid),
             )
 
+        chunk_ref = connection.execute(
+            "SELECT chunk_ref FROM chunks WHERE chunk_id = ?",
+            (chunk.chunk_id,),
+        ).fetchone()[0]
         connection.executemany(
             """
-            INSERT INTO chunk_tokens (chunk_id, token)
+            INSERT INTO chunk_tokens (chunk_ref, token)
             VALUES (?, ?)
             """,
-            [(chunk.chunk_id, token) for token in chunk.lexical_tokens],
+            [(chunk_ref, token) for token in chunk.lexical_tokens],
         )
         if chunk.deleted_at is None:
             connection.execute(
@@ -2967,10 +2977,10 @@ class SQLiteStore:
             """
             SELECT token
             FROM chunk_tokens
-            WHERE chunk_id = ?
+            WHERE chunk_ref = ?
             ORDER BY rowid
             """,
-            (row["chunk_id"],),
+            (row["chunk_ref"],),
         ).fetchall()
         symbol_rows = connection.execute(
             """
@@ -2997,10 +3007,11 @@ class SQLiteStore:
         token_rows = connection.execute(
             _in_query(
                 """
-            SELECT chunk_id, token
+            SELECT chunks.chunk_id, chunk_tokens.token
             FROM chunk_tokens
-            WHERE chunk_id IN ({placeholders})
-            ORDER BY rowid
+            JOIN chunks ON chunks.chunk_ref = chunk_tokens.chunk_ref
+            WHERE chunks.chunk_id IN ({placeholders})
+            ORDER BY chunk_tokens.rowid
             """,
                 chunk_ids,
             ),
@@ -5131,7 +5142,8 @@ def _common_schema_statements() -> tuple[str, ...]:
         """,
         """
         CREATE TABLE IF NOT EXISTS chunks (
-            chunk_id TEXT PRIMARY KEY,
+            chunk_ref INTEGER PRIMARY KEY,
+            chunk_id TEXT NOT NULL UNIQUE,
             file_path TEXT NOT NULL,
             start_line INTEGER NOT NULL,
             end_line INTEGER NOT NULL,
@@ -5169,9 +5181,9 @@ def _common_schema_statements() -> tuple[str, ...]:
         """,
         """
         CREATE TABLE IF NOT EXISTS chunk_tokens (
-            chunk_id TEXT NOT NULL,
+            chunk_ref INTEGER NOT NULL,
             token TEXT NOT NULL,
-            FOREIGN KEY (chunk_id) REFERENCES chunks(chunk_id)
+            FOREIGN KEY (chunk_ref) REFERENCES chunks(chunk_ref)
         )
         """,
         """

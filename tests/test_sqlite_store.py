@@ -770,6 +770,25 @@ def test_direct_text_search_reads_each_active_chunk_once(
     assert decoded_rows == 1000
 
 
+def test_lexical_tokens_round_trip_preserves_order_in_layout_v2(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    chunk = _chunk("order-chunk", "src/Order.java", ["zeta", "alpha", "zeta2"])
+    store.replace_chunks(chunk.file_path, [chunk])
+
+    loaded = store.chunk_for_id("order-chunk")
+
+    assert loaded.lexical_tokens == ["zeta", "alpha", "zeta2"]
+    with sqlite3.connect(tmp_path / "index.sqlite") as connection:
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(chunk_tokens)")
+        }
+    assert columns == {"chunk_ref", "token"}
+
+
 def test_initialize_stamps_current_storage_layout(tmp_path: Path) -> None:
     store = SQLiteStore(tmp_path / "index.sqlite")
     store.initialize()
