@@ -1899,9 +1899,106 @@ The stop condition does not authorize adding the next mechanism. A
 
 ## Implementation Record
 
-Status: Not started
+Status: Tasks 0-8 executed 2026-07-26; disposition **reject** (stop rule
+applied); Task 9 completion docs intentionally not written.
 
-Record after authorized execution:
+Observed record:
+
+```text
+entry:
+  behavior baseline: 117f46bdd9f067d50ce66b553cd85d7488649eed
+    (re-anchored from the plan's 75cc65e: post-plan main merged storage
+     layout v2 [retrieval-neutral] and followup-keyword filtering
+     [rendered-output change]; anchoring to the last pre-P8 commit keeps
+     the A/B a pure P8 delta; original anchor retained in
+     tests/p8_python_graph_identity.py)
+  implementation tree: feat/p8-python-static-structure (commits a2fd260,
+    df3330b, 264d828, 671731a, 67d3e49, + Tasks 4-7 commits)
+  Python: 3.13.12 (.quality/p5-runtime)
+  SQLite: 3.51.2
+
+frozen inputs:
+  RedInk 4d487223: 28 files, inventory 0da08ce1..., content 53644c92...
+  daily 487e49e5: 203 files, inventory 76cca5c6..., content 0b77bceb...
+  gold manifest hash: 459e6a56c0f7c3b033e34dafeba623b15e221d19ff59244d7fa29a47621f7767
+
+RED: every task followed RED->GREEN with double GREEN runs; notable
+  reviewed corrections during RED: same-statement imports order by
+  semantic target; .service/app.service merge (same target module);
+  compile() maps bad source encoding to syntax_error; explain relation
+  rows carry no producer field.
+
+changed product files: python_graph.py (new), plugins.py,
+  graph_contract.py (MAX_PYTHON_IMPORTS_PER_FILE), graph_lifecycle.py
+  (graph_producer_version read rules), sqlite_store.py (producer version
+  stamping at v5 init/migrate/both ready publications),
+  graph_resolution.py (generic multi-candidate ambiguity guard),
+  retrieval_core/relation_policy.py (reason -> "static module dependency").
+  No weight/decay/budget/query/planner/P7 edits.
+
+structural projection: forward/reverse byte-identical; 19 files,
+  14 modules, 25 declarations, imports {ambiguous 1, external 5,
+  resolved_exact 7, unresolved 5}, 1 exact test association;
+  incremental change/revert and delete/restore converge (active
+  structure; tombstone + resolution-generation counters normalized).
+
+real paired profile (evidence: $P8_BASELINE_ROOT/evidence/*.json):
+  RedInk: recall@12 1.0 -> 0.941 (image_compressor.py displaced)
+  daily: recall@12 0.775 -> 0.800
+  combined: 0.842 -> 0.842 (delta 0.0)
+  candidate graph: daily 696 resolved-exact imports + 3 test assoc,
+    RedInk 35 resolved-exact imports; witnesses map to persisted r5: ids
+  newly satisfied: 3 daily required paths, all credited=False
+    (declaration-chunking/direct effects, not graph-origin selection)
+  lost required (gate 3 FAIL): daily-agent-execution
+    src/agent/tools/registry.py, daily-runtime-scheduler src/config.py,
+    redink-image-flow backend/utils/image_compressor.py
+  relation-supported cases: 3 (need >=6 across both repos)
+  noise: 0.713 -> 0.713 (delta 0.0, gate 8 PASS)
+  P7 continuity: 12 unique paths, both required present (gate 9 PASS)
+  determinism: second candidate capture byte-identical after
+    timing/identity normalization (gate 11 PASS)
+  disposition: reject
+
+performance (REJECT trigger): daily index 1.28s -> 2.60s (+102%,
+  gate: <=25%); query latency mean 0.374s -> 4.349s (~12x; gate: <=10%
+  and <5ms absolute). Profile attribution: expansion._resolved_edge ->
+  chunk_for_id loads chunks one edge at a time (1,231 edge visits,
+  8,713 SQL executes, 5.9s of 6.7s in one profiled query). Existing
+  N+1 in relation expansion, first exposed by import-graph edge density;
+  P5 work caps themselves held.
+
+P5/P6/P7: focused suites all green (411-entry gate at Task 0; 400
+  protected graph/P7 tests green after Task 3; 187 lifecycle/store/
+  refresh/manifest/health after Task 4; 327 retrieval/trace/explain/
+  exploration/formatters after Task 6).
+
+CI quality: standard p8_python profile prepare (remote pinned clones)
+  + run: selected=18 executed=18 errors=0 (informational).
+
+full suite: 2954 passed, 0 failed, 5 skipped (supported runtime).
+
+privacy/diff audit: captures contain repository-relative paths and
+  hashes only; check rejects absolute paths/source bodies; no user
+  directory was indexed or modified.
+
+residual limitations: reject evidence, not shipped behavior. The
+  producer/lifecycle/graph code is inert for retrieval quality claims
+  until a follow-up passes the gates.
+
+next-phase decision (from the observed failure boundary, in order):
+  1. batch chunk materialization in relation expansion
+     (_resolved_relation_candidates) - performance fix, not weight
+     tuning; rerun this A/B unchanged;
+  2. then re-examine gate 3 fallout: graph-origin candidates displacing
+     required support paths through P7 slots is a selection-pressure
+     interaction, only meaningful to judge at sane latency;
+  3. gate 2/4/5 (credited gains) were not met: observed daily gains came
+     from declaration chunking, suggesting the next quality lever may be
+     declaration-signal recall rather than import-edge expansion.
+```
+
+Original template (unfilled) follows for reference:
 
 ```text
 entry:

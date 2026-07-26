@@ -361,15 +361,17 @@ def build_catalog() -> dict:
     repos: dict[str, dict] = {
         "redink": {
             "repo_key": "p8_redink",
-            "path_env": "CST_P8_REDINK_REPO",
-            "repo_dir_name": "RedInk",
+            "source_url": identity.REDINK_URL,
+            "source_commit": identity.REDINK_COMMIT,
+            "checkout_dir": "p8-redink",
             "profiles": ["p8_python"],
             "queries": [],
         },
         "daily": {
             "repo_key": "p8_daily",
-            "path_env": "CST_P8_DAILY_REPO",
-            "repo_dir_name": "daily_stock_analysis",
+            "source_url": identity.DAILY_URL,
+            "source_commit": identity.DAILY_COMMIT,
+            "checkout_dir": "p8-daily",
             "profiles": ["p8_python"],
             "queries": [],
         },

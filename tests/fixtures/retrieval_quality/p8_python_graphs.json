@@ -15,8 +15,9 @@
   "repos": [
     {
       "repo_key": "p8_redink",
-      "path_env": "CST_P8_REDINK_REPO",
-      "repo_dir_name": "RedInk",
+      "source_url": "https://github.com/HisMax/RedInk.git",
+      "source_commit": "4d48722344594cf00e0498f0e1ed3df9cd4fd6be",
+      "checkout_dir": "p8-redink",
       "profiles": [
         "p8_python"
       ],
@@ -171,8 +172,9 @@
     },
     {
       "repo_key": "p8_daily",
-      "path_env": "CST_P8_DAILY_REPO",
-      "repo_dir_name": "daily_stock_analysis",
+      "source_url": "https://github.com/ZhuLinsen/daily_stock_analysis.git",
+      "source_commit": "487e49e565ffd1b96a7cf4d855f99cee3c981eaa",
+      "checkout_dir": "p8-daily",
       "profiles": [
         "p8_python"
       ],
