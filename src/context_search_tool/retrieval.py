@@ -763,32 +763,15 @@ def relation_slot_similarities(
 ):
     """Build the P11 relation-slot similarity resolver.
 
-    Inert (returns ``None``) when the indexed provider is ``hash``, the
-    vector snapshot is unavailable, or the query vector is missing; the
-    quota in ``split_results_and_anchors`` then admits nothing. The
-    resolver scores chunk ids by the same normalized dot product the
-    semantic stage uses, against the published vector snapshot only.
+    P11 disposition: reject. The A/B on the frozen gold (bge-m3 indexed
+    vectors, both sides) admitted ten overflow items with zero credited
+    required gains and evicted one baseline required item, so the
+    resolver is unconditionally ``None`` and the relation quota in
+    ``split_results_and_anchors`` admits nothing under every provider.
+    The admission machinery and its tests remain for a reviewed
+    successor; see the P11 plan's implementation record.
     """
-    if (
-        config.embedding.provider == "hash"
-        or vector_snapshot is None
-        or query_vector is None
-    ):
-        return None
-
-    def resolver(chunk_ids: list[str]) -> dict[str, float]:
-        wanted = set(chunk_ids)
-        if not wanted:
-            return {}
-        similarities: dict[str, float] = {}
-        for item in vector_snapshot.search(
-            query_vector, len(vector_snapshot.ids), set()
-        ):
-            if item.chunk_id in wanted:
-                similarities[item.chunk_id] = item.score
-        return similarities
-
-    return resolver
+    return None
 
 def normalize_score(scores: list[float]) -> list[float]:
     return ranking.normalize_score(scores)
