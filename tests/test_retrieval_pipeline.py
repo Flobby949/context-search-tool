@@ -11922,7 +11922,7 @@ def _assert_resolved_frontend_import(bundle) -> None:
         if item.file_path.as_posix() == "src/services/sessionApi.ts"
     )
     assert "graph_imports_match" in result.score_parts
-    assert "frontend import dependency" in result.reasons
+    assert "static module dependency" in result.reasons
     assert result.score_parts["graph_seed_original"] == pytest.approx(1.0)
     assert result.spans[0].sources == ("relation",)
 
@@ -12019,3 +12019,86 @@ def test_query_repository_rejects_layout_v1_index_with_coded_error(
     with pytest.raises(sqlite_store.IncompatibleStorageLayoutError) as excinfo:
         query_repository(repo, "audit", ToolConfig())
     assert excinfo.value.code == "incompatible_storage_layout"
+
+
+def _p8_mini_workflow(tmp_path: Path) -> Path:
+    repo = tmp_path / "p8repo"
+    (repo / "app").mkdir(parents=True)
+    (repo / "tests").mkdir()
+    (repo / "app" / "api.py").write_text(
+        "from app.engine import Dispatcher\n"
+        "from app.wire import WirePlan\n\n\n"
+        "def handle_order(payload):\n"
+        "    return Dispatcher().run(WirePlan(payload))\n",
+        encoding="utf-8",
+    )
+    (repo / "app" / "engine.py").write_text(
+        "from app.relay import RelayGate\n\n\n"
+        "class Dispatcher:\n"
+        "    def run(self, plan):\n"
+        "        return RelayGate().push(plan)\n",
+        encoding="utf-8",
+    )
+    (repo / "app" / "wire.py").write_text(
+        "class WirePlan:\n"
+        "    def __init__(self, payload):\n"
+        "        self.payload = payload\n",
+        encoding="utf-8",
+    )
+    (repo / "app" / "relay.py").write_text(
+        "class RelayGate:\n"
+        "    def push(self, plan):\n"
+        "        return plan\n",
+        encoding="utf-8",
+    )
+    (repo / "tests" / "test_api.py").write_text(
+        "from app.api import handle_order\n\n\n"
+        "def test_handle_order():\n"
+        "    assert handle_order({}) == {}\n",
+        encoding="utf-8",
+    )
+    index_repository(repo, DEFAULT_CONFIG)
+    return repo
+
+
+def test_python_imports_expand_through_existing_relation_policy(
+    tmp_path: Path,
+) -> None:
+    repo = _p8_mini_workflow(tmp_path)
+
+    bundle = query_repository(repo, "handle_order api entry", DEFAULT_CONFIG)
+
+    by_path = {}
+    for result in bundle.results:
+        by_path.setdefault(str(result.file_path), result)
+    assert "app/api.py" in by_path
+    # engine/wire share no query token; they arrive through the resolved
+    # python import edges only.
+    assert "app/engine.py" in by_path
+    assert "app/wire.py" in by_path
+    for target in ("app/engine.py", "app/wire.py"):
+        result = by_path[target]
+        assert "graph_imports_match" in result.score_parts
+        assert "static module dependency" in result.reasons
+        assert "frontend import dependency" not in result.reasons
+
+    engine_seed = query_repository(repo, "Dispatcher run plan", DEFAULT_CONFIG)
+    engine_paths = {
+        str(result.file_path): result for result in engine_seed.results
+    }
+    assert "app/relay.py" in engine_paths
+    assert "graph_imports_match" in engine_paths["app/relay.py"].score_parts
+
+
+def test_python_relation_targets_respect_p7_path_diversity(
+    tmp_path: Path,
+) -> None:
+    repo = _p8_mini_workflow(tmp_path)
+
+    first = query_repository(repo, "handle_order OrderService", DEFAULT_CONFIG)
+    second = query_repository(repo, "handle_order OrderService", DEFAULT_CONFIG)
+
+    first_paths = [str(result.file_path) for result in first.results]
+    second_paths = [str(result.file_path) for result in second.results]
+    assert first_paths == second_paths
+    assert len(first_paths) == len(set(first_paths))

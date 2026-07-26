@@ -53,7 +53,7 @@ GRAPH_REASON_BY_SCORE_KEY = MappingProxyType(
         "graph_implements_match": "Spring interface implementation",
         "graph_uses_type_match": "repository-local related type",
         "graph_routes_to_match": "frontend route target",
-        "graph_imports_match": "frontend import dependency",
+        "graph_imports_match": "static module dependency",
         "graph_mapped_by_match": "MyBatis mapper statement",
         "graph_tests_match": "associated test module",
     }

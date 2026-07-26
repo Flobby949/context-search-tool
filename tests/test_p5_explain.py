@@ -434,3 +434,50 @@ def _relation(
         producer_confidence=producer_confidence,
         resolution_confidence=1.0 if resolved else None,
     )
+
+
+def test_ready_explain_projects_python_signals_and_import_relations(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "pyrepo"
+    (repo / "app").mkdir(parents=True)
+    (repo / "app" / "api.py").write_text(
+        "from app.engine import Dispatcher\n\n\n"
+        "def handle(payload):\n"
+        "    return Dispatcher().run(payload)\n",
+        encoding="utf-8",
+    )
+    (repo / "app" / "engine.py").write_text(
+        "class Dispatcher:\n"
+        "    def run(self, plan):\n"
+        "        return plan\n",
+        encoding="utf-8",
+    )
+
+    index_repository(repo, DEFAULT_CONFIG)
+    payload = context_search_explain_tool(str(repo), "app/api.py:4")
+
+    graph = payload["graph"]
+    assert graph["status"] == "ready"
+    python_signals = [
+        signal
+        for signal in graph["signals"]
+        if signal["producer"] == "python_ast"
+    ]
+    assert [
+        (signal["kind"], signal["name"], signal["qualified_name"])
+        for signal in python_signals
+    ] == [("function", "handle", "app.api.handle")]
+    assert python_signals[0]["recallable"] is True
+
+    imports = [
+        relation
+        for relation in graph["outgoing"]
+        if relation["kind"] == "imports"
+    ]
+    assert len(imports) == 1
+    assert imports[0]["resolution"] == "resolved_exact"
+    assert imports[0]["confidence"] == 1.0
+    assert imports[0]["target_signal_id"]
+    assert imports[0]["target_path"] == "app/engine.py"
+    assert graph["omitted_outgoing_count"] == 0

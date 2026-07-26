@@ -236,7 +236,7 @@ def test_resolved_graph_merge_scoring_and_provenance_are_single_channel() -> Non
     assert ranking._combined_score(merged) == pytest.approx(0.7)
     assert ranking._evidence_class(merged) == "planner_relation"
     assert context_expansion._span_sources(merged) == ("relation",)
-    assert "frontend import dependency" in ranking._reasons(merged, "query")
+    assert "static module dependency" in ranking._reasons(merged, "query")
 
 
 def test_context_merge_keeps_a_protected_direct_result_exact() -> None:
@@ -353,7 +353,7 @@ def test_relation_policy_values_are_exact() -> None:
         "graph_implements_match": "Spring interface implementation",
         "graph_uses_type_match": "repository-local related type",
         "graph_routes_to_match": "frontend route target",
-        "graph_imports_match": "frontend import dependency",
+        "graph_imports_match": "static module dependency",
         "graph_mapped_by_match": "MyBatis mapper statement",
         "graph_tests_match": "associated test module",
     }
