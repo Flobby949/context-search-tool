@@ -417,7 +417,10 @@ Expected on the clean tree: only the 4 known worker failures.
   (`graph_lifecycle.py:18`) and the v5 migration shape
   (`migrate_signal_schema_v5`, sqlite_store.py:~1051).
 - Produces: `SQLiteStore.migrate_storage_layout_v2() -> None`, called from
-  `initialize()` before the schema statements run.
+  BOTH schema entry points before their schema statements run: `initialize()`
+  (MCP/tests path, mcp_tools.py:793) and `initialize_operational_schema_v1()`
+  (the real `cst index`/refresh path — the CLI indexer never calls plain
+  `initialize()`, discovered during implementation).
 
 - [ ] **Step 1: Write the failing test**
 

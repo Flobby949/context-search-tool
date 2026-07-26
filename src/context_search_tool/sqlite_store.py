@@ -330,6 +330,7 @@ class SQLiteStore:
 
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.migrate_storage_layout_v2()
         with self._connect() as connection:
             for statement in (
                 *_common_schema_statements(),
@@ -342,6 +343,61 @@ class SQLiteStore:
                 str(TARGET_STORAGE_LAYOUT_VERSION),
                 _now(),
             )
+
+    def migrate_storage_layout_v2(
+        self,
+        *,
+        busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
+    ) -> None:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = _open_connection(self.db_path, busy_timeout_ms)
+        try:
+            stored = _stored_storage_layout_version(connection)
+            if stored > TARGET_STORAGE_LAYOUT_VERSION:
+                raise IncompatibleStorageLayoutError(stored)
+            if stored == TARGET_STORAGE_LAYOUT_VERSION:
+                return
+            if not _table_exists(connection, "chunks"):
+                return
+            connection.execute("BEGIN IMMEDIATE")
+            stored = _stored_storage_layout_version(connection)
+            if stored == TARGET_STORAGE_LAYOUT_VERSION:
+                connection.rollback()
+                return
+            for table in (
+                "chunk_tokens",
+                "chunk_symbols",
+                "symbols",
+                "chunks_fts",
+                "chunks",
+            ):
+                connection.execute(f"DROP TABLE IF EXISTS {table}")
+            if not _table_exists(connection, "index_metadata"):
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS index_metadata (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
+                        updated_at INTEGER NOT NULL
+                    )
+                    """
+                )
+            now = _now()
+            _set_metadata_row(connection, FULL_REINDEX_REQUIRED_KEY, "1", now)
+            _set_metadata_row(
+                connection,
+                STORAGE_LAYOUT_VERSION_KEY,
+                str(TARGET_STORAGE_LAYOUT_VERSION),
+                now,
+            )
+            connection.commit()
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.rollback()
+            _raise_if_busy(error)
+            raise
+        finally:
+            connection.close()
 
     def inspect_storage_layout_version(self) -> int:
         with self._connect() as connection:
@@ -359,6 +415,7 @@ class SQLiteStore:
         busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
     ) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.migrate_storage_layout_v2(busy_timeout_ms=busy_timeout_ms)
         connection = _open_connection(self.db_path, busy_timeout_ms)
         try:
             capability = read_operational_capability(
