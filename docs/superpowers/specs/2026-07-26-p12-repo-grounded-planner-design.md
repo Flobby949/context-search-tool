@@ -61,7 +61,7 @@ changes, planner-on-by-default.
 3. **Sampling pinning is runner infrastructure, not treatment.** The
    P12 acceptance runner monkeypatches the planner request of WHICHEVER
    tree PYTHONPATH selects to inject
-   `"options": {"temperature": 0, "seed": 0}` (precedent:
+   `"options": {"temperature": 0, "seed": 0, "top_k": 1}` (precedent:
    `_install_bge_truncation`). The candidate source ALSO ships the same
    options as product behavior; because the runner injects identically
    on both sides, this cannot differ between sides and is not a lever

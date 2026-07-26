@@ -47,7 +47,7 @@ Per the design's Change Surface table (r2), plus
 - [ ] **0.2** Ollama: tags list `bge-m3` AND `qwen3.5:4b-mlx`; record
   digests. Cross-process pinned-chat probe: run the SAME
   `/api/chat` request (model qwen3.5:4b-mlx, `format:"json"`,
-  `think:false`, `options {"temperature":0,"seed":0}`, fixed messages)
+  `think:false`, `options {"temperature":0,"seed":0,"top_k":1}`, fixed messages)
   in TWO separate python processes; byte-equal `message.content`
   required, else BLOCKED. Note: no other Ollama clients during captures.
 - [ ] **0.3** Durable pinning: `rsync` the three copies from
@@ -97,7 +97,7 @@ Per the design's Change Surface table (r2), plus
   - legacy pin: `support_lexicon=None` + profile ⇒ byte-identical
     behavior (existing tests at ~430-462 untouched and green).
   - request pin: monkeypatched session asserts body contains
-    `"options": {"temperature": 0, "seed": 0}` and that
+    `"options": {"temperature": 0, "seed": 0, "top_k": 1}` and that
     `plan(query, repo_profile=..., support_lexicon=...)` forwards the
     lexicon. RED: unexpected kwarg.
 - [ ] **2.2 GREEN** in `query_planner.py`: `support_lexicon` kwarg on
