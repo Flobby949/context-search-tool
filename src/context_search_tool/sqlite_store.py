@@ -3138,6 +3138,10 @@ class GraphReadSession:
         self.capability: GraphCapability
         self.graph_fault: str | None = None
         self.graph_truncated = False
+        # Per-session lookup caches. The session holds one read
+        # transaction, so cached answers stay consistent for its lifetime.
+        self._chunk_exists_cache: dict[str, bool] = {}
+        self._signal_cache: dict[str, CodeSignal | None] = {}
 
     def __enter__(self) -> GraphReadSession:
         connection = _open_connection(self.db_path, self.busy_timeout_ms)
@@ -3243,6 +3247,18 @@ class GraphReadSession:
 
     def chunk_for_id(self, chunk_id: str) -> DocumentChunk | None:
         return self.chunks_for_ids([chunk_id]).get(chunk_id)
+
+    def active_chunk_exists(self, chunk_id: str) -> bool:
+        cached = self._chunk_exists_cache.get(chunk_id)
+        if cached is not None:
+            return cached
+        row = self._require_connection().execute(
+            "SELECT 1 FROM chunks WHERE chunk_id = ? AND deleted_at IS NULL",
+            (chunk_id,),
+        ).fetchone()
+        exists = row is not None
+        self._chunk_exists_cache[chunk_id] = exists
+        return exists
 
     def chunk_for_line(self, file_path: Path, line: int) -> DocumentChunk | None:
         row = self._require_connection().execute(
@@ -3465,6 +3481,8 @@ class GraphReadSession:
             or not self.capability.structured
         ):
             return None
+        if signal_id in self._signal_cache:
+            return self._signal_cache[signal_id]
         row = self._require_connection().execute(
             """
             SELECT *
@@ -3474,7 +3492,9 @@ class GraphReadSession:
             """,
             (signal_id,),
         ).fetchone()
-        return _signal_from_row(row) if row is not None else None
+        signal = _signal_from_row(row) if row is not None else None
+        self._signal_cache[signal_id] = signal
+        return signal
 
     def signals_for_chunk(
         self,

@@ -198,3 +198,61 @@ def test_incremental_paths_converge_to_the_fresh_projection() -> None:
         service.write_text(service_body, encoding="utf-8")
         p5._index(repo, reverse_order=False)
         assert _project(repo) == fresh
+
+
+def test_dense_import_expansion_does_not_materialize_chunks_per_edge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Relation expansion needs edge-target existence, not full chunks.
+
+    A dense Python import graph must not trigger one full chunk
+    materialization (chunk row + tokens + symbols) per visited edge; that
+    N+1 pattern produced a ~12x query latency regression in the P8 real
+    A/B. Full materialization stays reserved for final candidates.
+    """
+    from context_search_tool.config import DEFAULT_CONFIG
+    from context_search_tool.indexer import index_repository
+    from context_search_tool.retrieval import query_repository
+
+    repo = tmp_path / "dense"
+    (repo / "app").mkdir(parents=True)
+    fan_out = 40
+    seed_imports = "".join(
+        f"from app.dep{index} import value{index}\n" for index in range(fan_out)
+    )
+    (repo / "app" / "hub.py").write_text(
+        seed_imports + "\n\ndef hub_entry():\n    return None\n",
+        encoding="utf-8",
+    )
+    for index in range(fan_out):
+        (repo / "app" / f"dep{index}.py").write_text(
+            f"value{index} = {index}\n\n\ndef helper{index}():\n"
+            f"    return value{index}\n",
+            encoding="utf-8",
+        )
+    index_repository(repo, DEFAULT_CONFIG)
+
+    import context_search_tool.sqlite_store as sqlite_store_module
+
+    calls = {"count": 0}
+    original = sqlite_store_module.SQLiteStore._chunks_from_rows
+
+    def counting(self, connection, rows):
+        calls["count"] += 1
+        return original(self, connection, rows)
+
+    monkeypatch.setattr(
+        sqlite_store_module.SQLiteStore, "_chunks_from_rows", counting
+    )
+
+    bundle = query_repository(repo, "hub_entry", DEFAULT_CONFIG)
+
+    assert any(
+        str(result.file_path) == "app/hub.py" for result in bundle.results
+    )
+    # Bounded per-final-result loads (summary + relation-support checks,
+    # each O(final_top_k)) plus a few batched stages are fine; one load
+    # per visited edge is not. With fan_out=40 the pre-fix count was 107
+    # and grew with edge count; the bound below is edge-count independent.
+    assert calls["count"] <= 30, calls["count"]

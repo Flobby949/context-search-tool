@@ -983,7 +983,7 @@ def _resolved_edge(
         else relation.source_signal_id
     )
     neighbor = session.signal_for_id(neighbor_id)
-    if neighbor is None or session.chunk_for_id(neighbor.chunk_id) is None:
+    if neighbor is None or not session.active_chunk_exists(neighbor.chunk_id):
         session.record_graph_fault("dangling_target")
         return None
     try:

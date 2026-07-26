@@ -1132,3 +1132,4 @@ def test_seed_and_candidate_caps_return_the_canonical_prefix(
         "target-0",
     ]
     assert session.graph_truncated
+
