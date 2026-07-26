@@ -1,0 +1,499 @@
+{
+  "schema_version": 1,
+  "profile_configs": {
+    "p8_python": {
+      "embedding": {
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384
+      },
+      "query_planner": {
+        "enabled": false
+      }
+    }
+  },
+  "repos": [
+    {
+      "repo_key": "p8_redink",
+      "path_env": "CST_P8_REDINK_REPO",
+      "repo_dir_name": "RedInk",
+      "profiles": [
+        "p8_python"
+      ],
+      "queries": [
+        {
+          "id": "redink-app-wiring",
+          "query": "Flask app register API blueprints routes",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "backend/app.py",
+              "top_k": 12
+            },
+            {
+              "path": "backend/routes/__init__.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        },
+        {
+          "id": "redink-content-flow",
+          "query": "content generation route service text chat client",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "backend/routes/content_routes.py",
+              "top_k": 12
+            },
+            {
+              "path": "backend/services/content.py",
+              "top_k": 12
+            },
+            {
+              "path": "backend/utils/text_client.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        },
+        {
+          "id": "redink-outline-flow",
+          "query": "outline generation upload base64 service text client",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "backend/routes/outline_routes.py",
+              "top_k": 12
+            },
+            {
+              "path": "backend/services/outline.py",
+              "top_k": 12
+            },
+            {
+              "path": "backend/utils/text_client.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        },
+        {
+          "id": "redink-image-flow",
+          "query": "image generation retry service generator factory compressor",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "backend/routes/image_routes.py",
+              "top_k": 12
+            },
+            {
+              "path": "backend/services/image.py",
+              "top_k": 12
+            },
+            {
+              "path": "backend/generators/factory.py",
+              "top_k": 12
+            },
+            {
+              "path": "backend/utils/image_compressor.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        },
+        {
+          "id": "redink-history-flow",
+          "query": "history list detail delete route service archive",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "backend/routes/history_routes.py",
+              "top_k": 12
+            },
+            {
+              "path": "backend/services/history.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        },
+        {
+          "id": "redink-provider-config",
+          "query": "配置页面保存文本服务商和图片服务商 YAML active_provider",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "backend/routes/config_routes.py",
+              "top_k": 12
+            },
+            {
+              "path": "backend/config.py",
+              "top_k": 12
+            },
+            {
+              "path": "backend/routes/utils.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        }
+      ]
+    },
+    {
+      "repo_key": "p8_daily",
+      "path_env": "CST_P8_DAILY_REPO",
+      "repo_dir_name": "daily_stock_analysis",
+      "profiles": [
+        "p8_python"
+      ],
+      "queries": [
+        {
+          "id": "daily-prefetch-continuity",
+          "query": "data fetcher prefetch stock names provider fallback pipeline",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "src/core/pipeline.py",
+              "top_k": 12
+            },
+            {
+              "path": "data_provider/base.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        },
+        {
+          "id": "daily-prefetch-tests",
+          "query": "tests for stock name prefetch provider fallback pipeline",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "tests/test_data_fetcher_prefetch_stock_names.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/core/pipeline.py",
+              "top_k": 12
+            },
+            {
+              "path": "data_provider/base.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        },
+        {
+          "id": "daily-import-parser",
+          "query": "import parser stock name resolver code normalization",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "src/services/import_parser.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/services/name_to_code_resolver.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/services/stock_code_utils.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        },
+        {
+          "id": "daily-analysis-context",
+          "query": "analysis context builder schema prompt sanitized fields",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "src/services/analysis_context_builder.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/schemas/analysis_context_pack.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        },
+        {
+          "id": "daily-notification-diagnostics",
+          "query": "notification diagnostics channel routing contracts endpoints",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "src/services/notification_diagnostics.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/notification_routing.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/notification_contracts.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        },
+        {
+          "id": "daily-task-queue",
+          "query": "task queue run diagnostics stock code analysis metadata",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "src/services/task_queue.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/services/run_diagnostics.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/utils/analysis_metadata.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/services/stock_code_utils.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        },
+        {
+          "id": "daily-runtime-scheduler",
+          "query": "runtime scheduler schedule times config service",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "src/services/runtime_scheduler.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/scheduler.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/config.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        },
+        {
+          "id": "daily-portfolio-risk",
+          "query": "portfolio risk positions decisions repository calculations",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "src/services/portfolio_risk_service.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/services/portfolio_service.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/repositories/portfolio_repo.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/services/decision_signal_service.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        },
+        {
+          "id": "daily-alert-worker",
+          "query": "alert worker rules history decisions market phase service",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "src/services/alert_worker.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/services/alert_service.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/services/history_service.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/services/decision_signal_service.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        },
+        {
+          "id": "daily-backtest",
+          "query": "backtest service engine repository performance evaluation",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "src/services/backtest_service.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/core/backtest_engine.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/repositories/backtest_repo.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        },
+        {
+          "id": "daily-agent-execution",
+          "query": "agent execution loop tool registry chat context provider trace",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "src/agent/executor.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/agent/runner.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/agent/tools/registry.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/agent/chat_context.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/agent/provider_trace.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        },
+        {
+          "id": "daily-decision-signal",
+          "query": "decision signal service repository profile action guardrail",
+          "tags": [
+            "p8",
+            "python"
+          ],
+          "gate": "informational",
+          "expected_top_k": [
+            {
+              "path": "src/services/decision_signal_service.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/repositories/decision_signal_repo.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/schemas/decision_profile.py",
+              "top_k": 12
+            },
+            {
+              "path": "src/schemas/decision_action.py",
+              "top_k": 12
+            }
+          ],
+          "preferred_rank": [],
+          "absent_top_k": []
+        }
+      ]
+    }
+  ]
+}
