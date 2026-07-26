@@ -13,6 +13,8 @@ from context_search_tool.retrieval_core import (
 )
 
 
+MAX_MERGED_RESULT_BYTES = 16384
+
 _SPAN_SOURCE_KEYS = (
     "path_symbol",
     "lexical",
@@ -239,7 +241,12 @@ def _merge_overlapping_results(
                     merged.append(current)
                     current = result
                     continue
-                current = _merge_expanded_result(current, result)
+                candidate = _merge_expanded_result(current, result)
+                if len(candidate.content.encode("utf-8")) > MAX_MERGED_RESULT_BYTES:
+                    merged.append(current)
+                    current = result
+                    continue
+                current = candidate
                 continue
             merged.append(current)
             current = result

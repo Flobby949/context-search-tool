@@ -286,6 +286,47 @@ def test_context_merge_keeps_a_protected_direct_result_exact() -> None:
     assert direct.spans == (RetrievalSpan(1, 3, 0.8, ("lexical",)),)
 
 
+def test_context_merge_bounds_same_file_growth_without_dropping_evidence() -> None:
+    line = "x" * 79
+    results = [
+        core_types._ExpandedResult(
+            chunk_ids=[f"chunk-{index}"],
+            file_path=Path("src/Big.py"),
+            start_line=index * 50 + 1,
+            end_line=index * 50 + 50,
+            content="\n".join([line] * 50),
+            score=1.0,
+            score_parts={"lexical": 1.0},
+            reasons=["lexical match"],
+            followup_keywords=[f"token{index}"],
+            rank_tier=2,
+            rerank_score=1.0,
+            evidence_class="original_direct",
+            evidence_priority=0,
+            spans=(
+                RetrievalSpan(
+                    index * 50 + 1,
+                    index * 50 + 50,
+                    1.0,
+                    ("lexical",),
+                ),
+            ),
+        )
+        for index in range(6)
+    ]
+
+    merged = context_expansion._merge_overlapping_results(results)
+
+    for item in merged:
+        assert (
+            len(item.content.encode("utf-8"))
+            <= context_expansion.MAX_MERGED_RESULT_BYTES
+        )
+    assert {chunk_id for item in merged for chunk_id in item.chunk_ids} == {
+        f"chunk-{index}" for index in range(6)
+    }
+
+
 def test_relation_policy_values_are_exact() -> None:
     assert relation_policy.MAX_EXPANSION_DEPTH == 3
     assert relation_policy.MAX_EXPANSION_CANDIDATES == 1000
