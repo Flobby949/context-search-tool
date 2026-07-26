@@ -9,9 +9,28 @@ objects; no AST node survives ``extract_python_facts``.
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass
+from pathlib import Path
+
+from context_search_tool.graph_contract import generate_v5_signal_id
+from context_search_tool.graph_plugins import (
+    MaterializedGraph,
+    ParsedGraphFacts,
+    PluginContext,
+)
+from context_search_tool.models import CodeSignal, DocumentChunk, SymbolRef
 
 MAX_PYTHON_DECLARATION_FACTS = 4095
+
+_GRAPH_PRODUCER = "python_ast"
+_PYTHON_SUFFIXES = (".py", ".pyw")
+_SIGNAL_KIND_BY_DECLARATION = {
+    "class": "type",
+    "function": "function",
+    "method": "method",
+}
+_TOKEN_SEGMENT_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
 
 _PARSE_FAILURES: tuple[tuple[type[BaseException], str], ...] = (
     (SyntaxError, "syntax_error"),
@@ -255,4 +274,186 @@ def extract_python_facts(file_path: str, content: bytes) -> PythonFactSet:
         imports=tuple(imports),
         diagnostics=(),
         omitted_declaration_count=omitted,
+    )
+
+
+def python_module_name(file_path: Path, project_unit_key: str) -> str:
+    relative = file_path.as_posix()
+    if project_unit_key:
+        prefix = project_unit_key.rstrip("/") + "/"
+        if relative.startswith(prefix):
+            relative = relative[len(prefix):]
+    for suffix in _PYTHON_SUFFIXES:
+        if relative.endswith(suffix):
+            relative = relative[: -len(suffix)]
+            break
+    segments = relative.split("/")
+    if len(segments) > 1 and segments[-1] == "__init__":
+        segments = segments[:-1]
+    elif segments == ["__init__"]:
+        # Project-unit-root __init__ keeps a stable declaration identity
+        # without claiming a runtime package name.
+        return "__init__"
+    return ".".join(segments)
+
+
+def _declaration_name_tokens(declarations) -> tuple[str, ...]:
+    tokens: list[str] = []
+    for fact in declarations:
+        lowered = fact.name.lower()
+        if lowered not in tokens:
+            tokens.append(lowered)
+        for match in _TOKEN_SEGMENT_RE.finditer(fact.name):
+            segment = match.group(0).lower()
+            if segment not in tokens:
+                tokens.append(segment)
+    return tuple(tokens)
+
+
+class PythonGraphProducer:
+    name = "python_graph"
+
+    def supports(self, context: PluginContext) -> bool:
+        return context.file_path.suffix in _PYTHON_SUFFIXES
+
+    def parse(self, context: PluginContext, content: bytes) -> ParsedGraphFacts:
+        if not self.supports(context):
+            raise ValueError("PythonGraphProducer received an unsupported source")
+        facts = extract_python_facts(context.file_path.as_posix(), content)
+        metadata: dict[str, object] = {
+            "graph_parse_status": (
+                "ast" if facts.parse_status == "ok" else facts.parse_status
+            ),
+            "graph_diagnostics": {
+                item.code: item.count for item in facts.diagnostics
+            },
+        }
+        if facts.omitted_declaration_count:
+            metadata["graph_omitted_declarations"] = (
+                facts.omitted_declaration_count
+            )
+        symbols = tuple(
+            SymbolRef(
+                name=fact.name,
+                kind=fact.kind,
+                start_line=fact.range.start_line,
+                end_line=fact.range.end_line,
+                language="python",
+                metadata={
+                    "qualified_name": _qualified_declaration_name(
+                        context, fact
+                    ),
+                    "owner_qualified_name": fact.owner_qualified_name,
+                    "is_async": fact.is_async,
+                },
+            )
+            for fact in facts.declarations
+        )
+        return ParsedGraphFacts(
+            facts=facts,
+            symbols=symbols,
+            lexical_tokens=_declaration_name_tokens(facts.declarations),
+            metadata=metadata,
+            fallback_required=False,
+        )
+
+    def materialize(
+        self,
+        context: PluginContext,
+        parsed: ParsedGraphFacts,
+        chunks: tuple[DocumentChunk, ...],
+        module_signal: CodeSignal,
+    ) -> MaterializedGraph:
+        facts = parsed.facts
+        if not isinstance(facts, PythonFactSet) or facts.parse_status != "ok":
+            return MaterializedGraph(metadata=parsed.metadata)
+        if module_signal.file_path != context.file_path:
+            raise ValueError("module signal does not belong to the plugin context")
+
+        ordered_chunks = tuple(
+            sorted(
+                chunks,
+                key=lambda item: (item.start_line, item.end_line, item.chunk_id),
+            )
+        )
+        signals: list[CodeSignal] = []
+        for fact in facts.declarations:
+            chunk = next(
+                (
+                    candidate
+                    for candidate in ordered_chunks
+                    if candidate.start_line
+                    <= fact.range.start_line
+                    <= candidate.end_line
+                ),
+                None,
+            )
+            if chunk is None:
+                metadata = dict(parsed.metadata)
+                metadata["graph_materialize_status"] = "missing_chunk"
+                return MaterializedGraph(metadata=metadata)
+            signals.append(_declaration_signal(context, fact, chunk))
+        signals.sort(
+            key=lambda signal: (
+                signal.start_line,
+                signal.start_column,
+                signal.end_line,
+                signal.end_column,
+                signal.signal_id,
+            )
+        )
+        return MaterializedGraph(
+            signals=tuple(signals),
+            metadata=parsed.metadata,
+        )
+
+
+def _qualified_declaration_name(
+    context: PluginContext, fact: PythonDeclarationFact
+) -> str:
+    module = python_module_name(context.file_path, context.project_unit_key)
+    owner = f".{fact.owner_qualified_name}" if fact.owner_qualified_name else ""
+    return f"{module}{owner}.{fact.name}"
+
+
+def _declaration_signal(
+    context: PluginContext,
+    fact: PythonDeclarationFact,
+    chunk: DocumentChunk,
+) -> CodeSignal:
+    qualified_name = _qualified_declaration_name(context, fact)
+    kind = _SIGNAL_KIND_BY_DECLARATION[fact.kind]
+    signal_id = generate_v5_signal_id(
+        file_path=context.file_path.as_posix(),
+        kind=kind,
+        qualified_name=qualified_name,
+        signature="",
+        start_line=fact.range.start_line,
+        start_column=fact.range.start_col,
+        end_line=fact.range.end_line,
+        end_column=fact.range.end_col,
+        producer=_GRAPH_PRODUCER,
+    )
+    return CodeSignal(
+        signal_id=signal_id,
+        chunk_id=chunk.chunk_id,
+        file_path=context.file_path,
+        kind=kind,
+        name=fact.name,
+        start_line=fact.range.start_line,
+        end_line=fact.range.end_line,
+        language="python",
+        tokens=[],
+        metadata={
+            "owner_qualified_name": fact.owner_qualified_name,
+            "is_async": fact.is_async,
+        },
+        qualified_name=qualified_name,
+        signature="",
+        arity=None,
+        project_unit_key=context.project_unit_key,
+        producer=_GRAPH_PRODUCER,
+        start_column=fact.range.start_col,
+        end_column=fact.range.end_col,
+        recallable=True,
     )

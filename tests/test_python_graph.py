@@ -229,3 +229,272 @@ def test_parse_returns_frozen_fact_types() -> None:
     except Exception:
         raised = True
     assert raised
+
+
+from pathlib import Path as _P
+
+from context_search_tool.graph_contract import generate_v5_signal_id
+from context_search_tool.graph_plugins import PluginContext
+from context_search_tool.models import CodeSignal, DocumentChunk
+from context_search_tool.python_graph import (
+    PythonGraphProducer,
+    python_module_name,
+)
+
+
+def _context(path: str, language: str = "python", unit: str = "") -> PluginContext:
+    return PluginContext(
+        file_path=_P(path),
+        language=language,
+        project_unit_key=unit,
+    )
+
+
+def _chunk_for(path: str, start: int, end: int, chunk_id: str) -> DocumentChunk:
+    return DocumentChunk(
+        chunk_id=chunk_id,
+        file_path=_P(path),
+        start_line=start,
+        end_line=end,
+        content="",
+        chunk_type="text",
+        lexical_tokens=[],
+        metadata={},
+    )
+
+
+def _module_signal(path: str) -> CodeSignal:
+    return CodeSignal(
+        signal_id=f"module::{path}",
+        chunk_id="chunk-module",
+        file_path=_P(path),
+        kind="module",
+        name=path,
+        start_line=1,
+        end_line=1,
+        language="python",
+        producer="core_module",
+    )
+
+
+def test_supports_uses_exact_suffix_authority() -> None:
+    producer = PythonGraphProducer()
+
+    assert producer.supports(_context("pkg/mod.py", language="text")) is True
+    assert producer.supports(_context("pkg/mod.pyw", language="go")) is True
+    assert producer.supports(_context("pkg/mod.pyi", language="python")) is False
+    assert producer.supports(_context("pkg/MOD.PY", language="python")) is False
+    assert producer.supports(_context("pkg/mod.go", language="python")) is False
+
+
+def test_python_module_name_projection() -> None:
+    assert python_module_name(_P("app/api.py"), "") == "app.api"
+    assert python_module_name(_P("app/__init__.py"), "") == "app"
+    assert python_module_name(_P("src/payments/engine.py"), "") == (
+        "src.payments.engine"
+    )
+    assert python_module_name(_P("__init__.py"), "") == "__init__"
+    assert python_module_name(_P("nested/pkg/target.py"), "nested") == (
+        "pkg.target"
+    )
+    assert python_module_name(_P("pkg/Mixed_Case.pyw"), "") == "pkg.Mixed_Case"
+
+
+def test_declaration_signals_project_reviewed_kinds_and_identity() -> None:
+    producer = PythonGraphProducer()
+    context = _context("app/api.py")
+    content = (FIXTURE / "app/api.py").read_bytes()
+    parsed = producer.parse(context, content)
+
+    assert parsed.fallback_required is False
+    assert parsed.metadata["graph_parse_status"] == "ast"
+    kinds = {(s.name, s.kind) for s in parsed.symbols}
+    assert kinds == {
+        ("ApiHandler", "class"),
+        ("handle", "method"),
+        ("handle_async", "method"),
+        ("Pagination", "class"),
+        ("page_size", "method"),
+        ("make_handler", "function"),
+        ("stream_handler", "function"),
+    }
+
+    chunks = (_chunk_for("app/api.py", 1, 400, "chunk-all"),)
+    graph = producer.materialize(
+        context, parsed, chunks, _module_signal("app/api.py")
+    )
+
+    by_name = {signal.qualified_name: signal for signal in graph.signals}
+    handler = by_name["app.api.ApiHandler"]
+    assert handler.kind == "type"
+    assert handler.producer == "python_ast"
+    assert handler.language == "python"
+    assert handler.recallable is True
+    assert handler.signature == ""
+    assert handler.arity is None
+    assert handler.chunk_id == "chunk-all"
+    method = by_name["app.api.ApiHandler.Pagination.page_size"]
+    assert method.kind == "method"
+    function = by_name["app.api.make_handler"]
+    assert function.kind == "function"
+    assert by_name["app.api.ApiHandler.handle_async"].metadata["is_async"] is True
+
+    expected_id = generate_v5_signal_id(
+        file_path="app/api.py",
+        kind="type",
+        qualified_name="app.api.ApiHandler",
+        signature="",
+        start_line=handler.start_line,
+        start_column=handler.start_column,
+        end_line=handler.end_line,
+        end_column=handler.end_column,
+        producer="python_ast",
+    )
+    assert handler.signal_id == expected_id
+
+
+def test_init_signals_use_containing_package_name() -> None:
+    producer = PythonGraphProducer()
+    context = _context("app/dupe/__init__.py")
+    parsed = producer.parse(
+        context, (FIXTURE / "app/dupe/__init__.py").read_bytes()
+    )
+    chunks = (_chunk_for("app/dupe/__init__.py", 1, 40, "chunk-init"),)
+
+    graph = producer.materialize(
+        context, parsed, chunks, _module_signal("app/dupe/__init__.py")
+    )
+
+    assert [signal.qualified_name for signal in graph.signals] == [
+        "app.dupe.dupe_package_function"
+    ]
+
+
+def test_missing_chunk_attachment_fails_closed() -> None:
+    producer = PythonGraphProducer()
+    context = _context("app/api.py")
+    parsed = producer.parse(context, (FIXTURE / "app/api.py").read_bytes())
+    chunks = (_chunk_for("app/api.py", 1, 2, "chunk-tiny"),)
+
+    graph = producer.materialize(
+        context, parsed, chunks, _module_signal("app/api.py")
+    )
+
+    assert graph.signals == ()
+    assert graph.relations == ()
+    assert graph.metadata["graph_materialize_status"] == "missing_chunk"
+
+
+def test_signal_ordering_is_input_order_independent() -> None:
+    producer = PythonGraphProducer()
+    context = _context("app/service.py")
+    parsed = producer.parse(context, (FIXTURE / "app/service.py").read_bytes())
+    chunks = (_chunk_for("app/service.py", 1, 400, "chunk-all"),)
+
+    first = producer.materialize(
+        context, parsed, chunks, _module_signal("app/service.py")
+    )
+    second = producer.materialize(
+        context, parsed, tuple(reversed(chunks)), _module_signal("app/service.py")
+    )
+
+    assert [s.signal_id for s in first.signals] == [
+        s.signal_id for s in second.signals
+    ]
+    ordering = [
+        (s.start_line, s.start_column, s.end_line, s.end_column)
+        for s in first.signals
+    ]
+    assert ordering == sorted(ordering)
+
+
+def test_parse_failure_produces_no_symbols_and_bounded_metadata() -> None:
+    producer = PythonGraphProducer()
+    context = _context("app/broken.py")
+
+    parsed = producer.parse(context, (FIXTURE / "app/broken.py").read_bytes())
+
+    assert parsed.symbols == ()
+    assert parsed.fallback_required is False
+    assert parsed.metadata["graph_parse_status"] == "syntax_error"
+    assert parsed.metadata["graph_diagnostics"] == {"syntax_error": 1}
+    graph = producer.materialize(
+        context,
+        parsed,
+        (_chunk_for("app/broken.py", 1, 40, "chunk-b"),),
+        _module_signal("app/broken.py"),
+    )
+    assert graph.signals == ()
+    assert graph.relations == ()
+
+
+def test_v5_build_with_python_producer_materializes_symbol_chunks(
+    tmp_path,
+) -> None:
+    from context_search_tool.config import DEFAULT_CONFIG
+    from context_search_tool.indexer import (
+        build_v5_index_snapshot,
+        scan_workspace_v5,
+    )
+    from context_search_tool.sqlite_store import SQLiteStore
+
+    repo = tmp_path / "repo"
+    (repo / "app").mkdir(parents=True)
+    (repo / "app" / "service.py").write_text(
+        "import os\n\n\nclass OrderService:\n"
+        "    def submit(self, payload):\n        return payload\n\n\n"
+        "def build_order_service():\n    return OrderService()\n",
+        encoding="utf-8",
+    )
+    (repo / "app" / "empty.py").write_text("", encoding="utf-8")
+
+    producer = PythonGraphProducer()
+    summary = build_v5_index_snapshot(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[producer],
+        scanner=scan_workspace_v5,
+    )
+    assert summary.files_indexed >= 1
+
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    chunks = store.chunks_for_file(_P("app/service.py"), limit=50)
+    assert any(chunk.chunk_type == "symbol" for chunk in chunks)
+    producer_tokens = {
+        "orderservice",
+        "order",
+        "service",
+        "submit",
+        "build_order_service",
+        "build",
+    }
+    for chunk in chunks:
+        for token in chunk.lexical_tokens:
+            if token.lower() in producer_tokens:
+                assert token.lower() in chunk.content.lower()
+
+    import sqlite3 as _sqlite3
+
+    with _sqlite3.connect(repo / ".context-search" / "index.sqlite") as conn:
+        conn.row_factory = _sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT signal_id, kind, name, producer, file_path
+            FROM code_signals WHERE deleted_at IS NULL
+            """
+        ).fetchall()
+    by_file: dict[str, list] = {}
+    for row in rows:
+        by_file.setdefault(row["file_path"], []).append(row)
+    service_rows = by_file.get("app/service.py", [])
+    modules = [r for r in service_rows if r["kind"] == "module"]
+    python_rows = [r for r in service_rows if r["producer"] == "python_ast"]
+    assert len(modules) == 1
+    assert sorted((r["kind"], r["name"]) for r in python_rows) == [
+        ("function", "build_order_service"),
+        ("method", "submit"),
+        ("type", "OrderService"),
+    ]
+    ids = [r["signal_id"] for r in rows]
+    assert len(ids) == len(set(ids))
+    assert "app/empty.py" not in by_file
