@@ -68,6 +68,7 @@ EXPECTED_LOCAL_DEFINITIONS = {
     "trace_repository",
     "evidence_anchor_top_k",
     "normalize_score",
+    "relation_slot_similarities",
     "_query_repository_v5",
     "_query_repository_impl",
 }

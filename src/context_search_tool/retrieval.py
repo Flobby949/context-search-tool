@@ -345,22 +345,28 @@ def _query_repository_impl(
         input_count=len(query_variants),
     )
     if graph_session is None:
-        semantic_candidates, query_variants, variant_retrieval_status = (
-            candidates.semantic_candidates(
-                index_dir,
-                query_variants,
-                config,
-                deleted_ids,
-            )
+        (
+            semantic_candidates,
+            query_variants,
+            variant_retrieval_status,
+            semantic_query_vector,
+        ) = candidates.semantic_candidates(
+            index_dir,
+            query_variants,
+            config,
+            deleted_ids,
         )
     else:
-        semantic_candidates, query_variants, variant_retrieval_status = (
-            candidates.semantic_candidates_from_snapshot(
-                vector_snapshot,
-                query_variants,
-                config,
-                deleted_ids,
-            )
+        (
+            semantic_candidates,
+            query_variants,
+            variant_retrieval_status,
+            semantic_query_vector,
+        ) = candidates.semantic_candidates_from_snapshot(
+            vector_snapshot,
+            query_variants,
+            config,
+            deleted_ids,
         )
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_candidate_stage(
@@ -680,6 +686,9 @@ def _query_repository_impl(
         "final_selection",
         input_count=len(expanded),
     )
+    similarity_resolver = relation_slot_similarities(
+        config, semantic_query_vector, vector_snapshot
+    )
     trace_decisions = None
     if trace_collector is None:
         visible_results, evidence_anchors = (
@@ -687,6 +696,7 @@ def _query_repository_impl(
                 expanded,
                 final_top_k=config.retrieval.final_top_k,
                 anchor_top_k=evidence_anchor_top_k(config.retrieval.final_top_k),
+                similarity_resolver=similarity_resolver,
             )
         )
     else:
@@ -696,6 +706,7 @@ def _query_repository_impl(
                 final_top_k=config.retrieval.final_top_k,
                 anchor_top_k=evidence_anchor_top_k(config.retrieval.final_top_k),
                 collect_trace=True,
+                similarity_resolver=similarity_resolver,
             )
         )
     stopped = tracing.stop_stage(trace_collector, token)
@@ -742,6 +753,42 @@ def evidence_anchor_top_k(max_results: int) -> int:
         return 0
     return max(1, min(5, max_results // 3))
 
+
+
+
+def relation_slot_similarities(
+    config: ToolConfig,
+    query_vector: list[float] | None,
+    vector_snapshot: candidates.NumpyVectorStore | None,
+):
+    """Build the P11 relation-slot similarity resolver.
+
+    Inert (returns ``None``) when the indexed provider is ``hash``, the
+    vector snapshot is unavailable, or the query vector is missing; the
+    quota in ``split_results_and_anchors`` then admits nothing. The
+    resolver scores chunk ids by the same normalized dot product the
+    semantic stage uses, against the published vector snapshot only.
+    """
+    if (
+        config.embedding.provider == "hash"
+        or vector_snapshot is None
+        or query_vector is None
+    ):
+        return None
+
+    def resolver(chunk_ids: list[str]) -> dict[str, float]:
+        wanted = set(chunk_ids)
+        if not wanted:
+            return {}
+        similarities: dict[str, float] = {}
+        for item in vector_snapshot.search(
+            query_vector, len(vector_snapshot.ids), set()
+        ):
+            if item.chunk_id in wanted:
+                similarities[item.chunk_id] = item.score
+        return similarities
+
+    return resolver
 
 def normalize_score(scores: list[float]) -> list[float]:
     return ranking.normalize_score(scores)
