@@ -329,6 +329,8 @@ def test_context_merge_bounds_same_file_growth_without_dropping_evidence() -> No
 
 
 def test_relation_policy_values_are_exact() -> None:
+    assert relation_policy.RELATION_FINAL_SLOTS == 2
+    assert relation_policy.RELATION_SLOT_SCAN_DEPTH == 50
     assert relation_policy.MAX_EXPANSION_DEPTH == 3
     assert relation_policy.MAX_EXPANSION_CANDIDATES == 1000
     assert relation_policy._MIN_RELATION_CONFIDENCE == 0.5
@@ -508,3 +510,121 @@ def test_followup_keyword_filter_keeps_cjk_and_domain_words() -> None:
     assert selection.filter_followup_keywords(
         ["审批", "workspace", "None", "import", "工作台"]
     ) == ["审批", "workspace", "工作台"]
+
+
+def _slot_item(
+    path: str,
+    *,
+    priority: int = 2,
+    graph: bool = False,
+    resolved: bool = False,
+    score: float = 0.5,
+) -> core_types._ExpandedResult:
+    parts: dict[str, float] = {"lexical": score}
+    if graph:
+        parts["graph_imports_match"] = 0.3
+    if resolved:
+        parts["resolved_relation"] = 1.0
+    return core_types._ExpandedResult(
+        chunk_ids=[path],
+        file_path=Path(path),
+        start_line=1,
+        end_line=5,
+        content="content",
+        score=score,
+        score_parts=parts,
+        reasons=["lexical match"],
+        followup_keywords=[],
+        rank_tier=2,
+        rerank_score=score,
+        evidence_class="original_direct",
+        evidence_priority=priority,
+    )
+
+
+def test_relation_slots_swap_bottom_ranks_for_supported_overflow() -> None:
+    selected = [_slot_item(f"src/direct{i}.py") for i in range(6)]
+    overflow = [
+        _slot_item("src/rel_a.py", graph=True, resolved=True),
+        _slot_item("src/plain.py"),
+        _slot_item("src/rel_b.py", graph=True, resolved=True),
+        _slot_item("src/rel_c.py", graph=True, resolved=True),
+    ]
+
+    final, swapped_out, count = selection._apply_relation_slots(
+        list(selected), list(overflow)
+    )
+
+    assert count == 2
+    final_paths = [str(item.file_path) for item in final]
+    assert final_paths == [
+        "src/direct0.py",
+        "src/direct1.py",
+        "src/direct2.py",
+        "src/direct3.py",
+        "src/rel_a.py",
+        "src/rel_b.py",
+    ]
+    assert [str(item.file_path) for item in swapped_out] == [
+        "src/direct5.py",
+        "src/direct4.py",
+    ]
+
+
+def test_relation_slots_never_evict_protected_direct() -> None:
+    selected = [
+        _slot_item("src/a.py"),
+        _slot_item("src/b.py", priority=0),
+        _slot_item("src/c.py", priority=0),
+    ]
+    overflow = [
+        _slot_item("src/rel_a.py", graph=True, resolved=True),
+        _slot_item("src/rel_b.py", graph=True, resolved=True),
+    ]
+
+    final, swapped_out, count = selection._apply_relation_slots(
+        list(selected), list(overflow)
+    )
+
+    assert count == 1
+    assert [str(item.file_path) for item in swapped_out] == ["src/a.py"]
+    assert {str(item.file_path) for item in final} == {
+        "src/b.py",
+        "src/c.py",
+        "src/rel_a.py",
+    }
+
+
+def test_relation_slots_require_resolved_relation_provenance() -> None:
+    selected = [_slot_item(f"src/direct{i}.py") for i in range(3)]
+    overflow = [
+        _slot_item("src/contaminated.py", graph=True, resolved=False),
+    ]
+
+    final, swapped_out, count = selection._apply_relation_slots(
+        list(selected), list(overflow)
+    )
+
+    assert count == 0
+    assert swapped_out == []
+    assert [str(item.file_path) for item in final] == [
+        "src/direct0.py",
+        "src/direct1.py",
+        "src/direct2.py",
+    ]
+
+
+def test_relation_slots_are_deterministic() -> None:
+    selected = [_slot_item(f"src/direct{i}.py") for i in range(5)]
+    overflow = [
+        _slot_item("src/rel_a.py", graph=True, resolved=True),
+        _slot_item("src/rel_b.py", graph=True, resolved=True),
+    ]
+
+    first = selection._apply_relation_slots(list(selected), list(overflow))
+    second = selection._apply_relation_slots(list(selected), list(overflow))
+
+    assert [str(i.file_path) for i in first[0]] == [
+        str(i.file_path) for i in second[0]
+    ]
+    assert first[2] == second[2] == 2

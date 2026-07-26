@@ -127,6 +127,7 @@ def _trace() -> RetrievalTrace:
                     ("duplicate_anchor", 0),
                     ("result_limit", 0),
                     ("anchor_limit", 0),
+                    ("relation_slot_selected", 0),
                 ),
             ),
         ),

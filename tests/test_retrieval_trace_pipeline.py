@@ -465,6 +465,7 @@ def test_final_selection_stage_explains_limits_and_anchor_duplicates(
         ("duplicate_anchor", 1),
         ("result_limit", 1),
         ("anchor_limit", 0),
+        ("relation_slot_selected", 0),
     )
     assert sum(dict(final_stage.decision_counts).values()) == final_stage.input_count
     assert [item.file_path for item in traced.trace.final_selections] == [
@@ -545,6 +546,7 @@ def test_merged_final_selection_keeps_origins_best_ranks_and_clamp() -> None:
             ("duplicate_anchor", 0),
             ("result_limit", 0),
             ("anchor_limit", 0),
+            ("relation_slot_selected", 0),
         ),
     )
     candidates = {
@@ -969,6 +971,7 @@ def test_trace_adapters_never_read_content_or_private_context_content() -> None:
             ("duplicate_anchor", 0),
             ("result_limit", 0),
             ("anchor_limit", 0),
+            ("relation_slot_selected", 0),
         ),
     )
 

@@ -243,6 +243,7 @@ _TRACE_DECISION_KEYS = (
     "duplicate_anchor",
     "result_limit",
     "anchor_limit",
+    "relation_slot_selected",
 )
 _TRACE_STAGE_KEYS = {
     "name",

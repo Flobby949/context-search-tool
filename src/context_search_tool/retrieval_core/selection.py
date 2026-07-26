@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, overload
 
@@ -27,6 +27,7 @@ _FinalSelectionKind = Literal["result", "evidence_anchor"]
 _FinalSelectionReason = Literal[
     "selected_within_result_limit",
     "selected_within_anchor_limit",
+    "selected_relation_slot",
 ]
 
 
@@ -50,7 +51,54 @@ _FINAL_TRACE_DECISION_KEYS = (
     "duplicate_anchor",
     "result_limit",
     "anchor_limit",
+    "relation_slot_selected",
 )
+
+
+def _relation_slot_supported(item: core_types._ExpandedResult) -> bool:
+    parts = item.score_parts
+    return "resolved_relation" in parts and any(
+        key in parts for key in relation_policy.GRAPH_SCORE_KEYS
+    )
+
+
+def _apply_relation_slots(
+    selected: list[core_types._ExpandedResult],
+    overflow: list[core_types._ExpandedResult],
+) -> tuple[
+    list[core_types._ExpandedResult],
+    list[core_types._ExpandedResult],
+    int,
+]:
+    """Reserve final slots for relation-supported overflow results.
+
+    ``selected`` is the ordinary path-diverse selection in ranked order;
+    ``overflow`` is the remaining path-deduplicated ranked tail, already
+    bounded by RELATION_SLOT_SCAN_DEPTH and stripped of anchor-kind items
+    by the caller. Protected direct results (evidence_priority == 0) are
+    never evicted. Takes append at the end in ranked order.
+    """
+    takes: list[core_types._ExpandedResult] = []
+    survivors = list(selected)
+    swapped_out: list[core_types._ExpandedResult] = []
+    for candidate in overflow:
+        if len(takes) >= relation_policy.RELATION_FINAL_SLOTS:
+            break
+        if not _relation_slot_supported(candidate):
+            continue
+        evict_index = next(
+            (
+                index
+                for index in range(len(survivors) - 1, -1, -1)
+                if survivors[index].evidence_priority != 0
+            ),
+            None,
+        )
+        if evict_index is None:
+            break
+        swapped_out.append(survivors.pop(evict_index))
+        takes.append(candidate)
+    return survivors + takes, swapped_out, len(takes)
 
 
 @overload
@@ -100,6 +148,7 @@ def split_results_and_anchors(
         else None
     )
     code_results: list[core_types._ExpandedResult] = []
+    slot_overflow: list[core_types._ExpandedResult] = []
     evidence_anchors: list[EvidenceAnchor] = []
     seen_result_paths: set[Path] = set()
     seen_anchor_keys: set[tuple[str, Path]] = set()
@@ -146,8 +195,42 @@ def split_results_and_anchors(
                     )
                 )
                 trace_counts["selected_result"] += 1
-        elif trace_counts is not None:
-            trace_counts["result_limit"] += 1
+        else:
+            if (
+                len(seen_result_paths)
+                <= relation_policy.RELATION_SLOT_SCAN_DEPTH
+            ):
+                slot_overflow.append(item)
+            if trace_counts is not None:
+                trace_counts["result_limit"] += 1
+
+    code_results, swapped_out, slot_count = _apply_relation_slots(
+        code_results, slot_overflow
+    )
+    if slot_count:
+        taken = code_results[-slot_count:]
+        code_results[-slot_count:] = [
+            replace(item, reasons=[*item.reasons, "relation slot"])
+            for item in taken
+        ]
+        if trace_selected is not None and trace_counts is not None:
+            trace_counts["relation_slot_selected"] = slot_count
+            swapped_ids = {id(item) for item in swapped_out}
+            trace_selected[:] = [
+                entry
+                for entry in trace_selected
+                if not (
+                    entry.kind == "result" and id(entry.item) in swapped_ids
+                )
+            ]
+            for item in code_results[-slot_count:]:
+                trace_selected.append(
+                    _FinalTraceInput(
+                        kind="result",
+                        reason="selected_relation_slot",
+                        item=item,
+                    )
+                )
 
     if trace_selected is not None and trace_counts is not None:
         return (

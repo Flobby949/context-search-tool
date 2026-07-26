@@ -8903,6 +8903,7 @@ def test_split_results_and_anchors_preserves_overloads_and_ordinary_allocations(
     assert get_args(final_trace_hints["reason"]) == (
         "selected_within_result_limit",
         "selected_within_anchor_limit",
+        "selected_relation_slot",
     )
 
     item = core_types._ExpandedResult(
@@ -8946,6 +8947,7 @@ def test_split_results_and_anchors_preserves_overloads_and_ordinary_allocations(
                 ("duplicate_anchor", 0),
                 ("result_limit", 0),
                 ("anchor_limit", 0),
+                ("relation_slot_selected", 0),
             ),
         ),
     )
@@ -9021,6 +9023,7 @@ def test_split_results_and_anchors_spends_slots_on_distinct_result_paths() -> No
         ("duplicate_anchor", 0),
         ("result_limit", 1),
         ("anchor_limit", 0),
+        ("relation_slot_selected", 0),
     )
 
     available, available_anchors = selection.split_results_and_anchors(
