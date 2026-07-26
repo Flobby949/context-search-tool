@@ -257,3 +257,33 @@ def test_check_rejects_v1_captures(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="capture schema"):
         runner.check(stale)
+
+
+def test_credit_requires_relation_slot_and_witness() -> None:
+    baseline = _synthetic_capture(improved=False)
+
+    credited = _synthetic_capture(improved=True)
+    for case in credited["cases"].values():
+        for entry in case["selected"]:
+            if entry["graph_origin"]:
+                entry["relation_slot"] = True
+    report = runner.compare(baseline, credited)
+    assert report["gates"]["gate2_credited_gain_at_least_5pct"] is True
+    assert len(report["credited_cases"]) >= 4
+
+    # Gained through drift (no relation_slot): reported, never credited.
+    drift = _synthetic_capture(improved=True)
+    report = runner.compare(baseline, drift)
+    assert report["newly_satisfied"]
+    assert all(not row["credited"] for row in report["newly_satisfied"])
+    assert report["gates"]["gate2_credited_gain_at_least_5pct"] is False
+
+    # relation_slot without a persisted witness: uncredited.
+    unwitnessed = _synthetic_capture(improved=True)
+    for case in unwitnessed["cases"].values():
+        for entry in case["selected"]:
+            if entry["graph_origin"]:
+                entry["relation_slot"] = True
+                entry["relation_witness"] = None
+    report = runner.compare(baseline, unwitnessed)
+    assert all(not row["credited"] for row in report["newly_satisfied"])

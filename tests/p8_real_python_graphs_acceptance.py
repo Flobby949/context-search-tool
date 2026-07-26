@@ -385,7 +385,7 @@ def compare(baseline: dict, candidate: dict, output_path: Path | None = None) ->
         )
         credited = bool(
             entry
-            and entry["graph_origin"]
+            and entry.get("relation_slot")
             and entry["relation_witness"]
         )
         if base_rank > 12 and cand_rank <= 12:
