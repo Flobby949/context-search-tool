@@ -629,10 +629,12 @@ def test_java_ast_imports_are_leaf_only_and_production_registration_is_active() 
         "context_search_tool.frontend_graph",
         "context_search_tool.java_plugin",
         "context_search_tool.mybatis_xml",
+        "context_search_tool.python_graph",
     }
     assert len(returns) == 1
     assert ast.unparse(returns[0].value) == (
-        "[JavaPlugin(), FrontendGraphProducer(), MyBatisGraphProducer()]"
+        "[JavaPlugin(), FrontendGraphProducer(), "
+        "MyBatisGraphProducer(), PythonGraphProducer()]"
     )
 
 

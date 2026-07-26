@@ -150,6 +150,7 @@ def test_real_mapper_role_hint_is_ready_only_and_stays_private(
 
     store.set_metadata("signal_schema_version", "4")
     store.set_metadata("graph_resolution_state", "ready")
+    store.set_metadata("graph_producer_version", "1")
     assert (
         _result_at(query_repository(repo, query, DEFAULT_CONFIG), accepted_path)
         ._context_role_hint

@@ -50,5 +50,11 @@ def default_plugins() -> list[GraphLanguagePlugin]:
     from context_search_tool.java_plugin import JavaPlugin
     from context_search_tool.frontend_graph import FrontendGraphProducer
     from context_search_tool.mybatis_xml import MyBatisGraphProducer
+    from context_search_tool.python_graph import PythonGraphProducer
 
-    return [JavaPlugin(), FrontendGraphProducer(), MyBatisGraphProducer()]
+    return [
+        JavaPlugin(),
+        FrontendGraphProducer(),
+        MyBatisGraphProducer(),
+        PythonGraphProducer(),
+    ]

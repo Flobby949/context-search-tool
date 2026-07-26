@@ -8,12 +8,14 @@ from context_search_tool.graph_contract import RESOLUTION_STATES
 
 TARGET_SIGNAL_SCHEMA_VERSION = 5
 TARGET_GRAPH_RESOLUTION_VERSION = 1
+TARGET_GRAPH_PRODUCER_VERSION = 1
 TARGET_OPERATIONAL_SCHEMA_VERSION = 1
 
 SIGNAL_SCHEMA_VERSION_KEY = "signal_schema_version"
 OPERATIONAL_SCHEMA_VERSION_KEY = "operational_schema_version"
 GRAPH_RESOLUTION_STATE_KEY = "graph_resolution_state"
 GRAPH_RESOLUTION_VERSION_KEY = "graph_resolution_version"
+GRAPH_PRODUCER_VERSION_KEY = "graph_producer_version"
 GRAPH_STALE_REASON_KEY = "graph_stale_reason"
 FULL_REINDEX_REQUIRED_KEY = "full_reindex_required"
 PROJECT_UNIT_TOPOLOGY_FINGERPRINT_KEY = "project_unit_topology_fingerprint"
@@ -153,14 +155,34 @@ def read_graph_capability(metadata: MetadataReader) -> GraphCapability:
         )
         structured = False
     else:
+        raw_producer = metadata.get_metadata(GRAPH_PRODUCER_VERSION_KEY)
+        if raw_producer is None or raw_producer == "" or raw_producer == "0":
+            producer_version = 0
+        else:
+            try:
+                producer_version = int(raw_producer)
+            except (TypeError, ValueError) as error:
+                raise IncompatibleSignalSchemaError(raw_producer) from error
+            if (
+                producer_version < 0
+                or producer_version > TARGET_GRAPH_PRODUCER_VERSION
+            ):
+                raise IncompatibleSignalSchemaError(raw_producer)
         status = (
             "ready"
             if raw_state == "ready"
             and raw_resolution_version == str(TARGET_GRAPH_RESOLUTION_VERSION)
+            and producer_version == TARGET_GRAPH_PRODUCER_VERSION
             and not full_reindex_required
             else "stale"
         )
         structured = True
+        if (
+            status == "stale"
+            and producer_version != TARGET_GRAPH_PRODUCER_VERSION
+            and not stale_reason
+        ):
+            stale_reason = "producer_contract_changed"
 
     evidence_allowed = status in {"legacy", "ready"}
     return GraphCapability(

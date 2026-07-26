@@ -967,6 +967,7 @@ def test_java_graph_fallback_is_marker_only_and_never_calls_legacy() -> None:
 def test_default_plugins_instantiate_the_runtime_graph_producers() -> None:
     from context_search_tool.frontend_graph import FrontendGraphProducer
     from context_search_tool.mybatis_xml import MyBatisGraphProducer
+    from context_search_tool.python_graph import PythonGraphProducer
     from context_search_tool.plugins import default_plugins
 
     plugins = default_plugins()
@@ -975,6 +976,7 @@ def test_default_plugins_instantiate_the_runtime_graph_producers() -> None:
         JavaPlugin,
         FrontendGraphProducer,
         MyBatisGraphProducer,
+        PythonGraphProducer,
     ]
 
 

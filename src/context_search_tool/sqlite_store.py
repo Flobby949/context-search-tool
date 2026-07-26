@@ -26,6 +26,7 @@ from context_search_tool.graph_contract import (
 )
 from context_search_tool.graph_lifecycle import (
     FULL_REINDEX_REQUIRED_KEY,
+    GRAPH_PRODUCER_VERSION_KEY,
     GRAPH_RESOLUTION_STATE_KEY,
     GRAPH_RESOLUTION_VERSION_KEY,
     GRAPH_STALE_REASON_KEY,
@@ -39,6 +40,7 @@ from context_search_tool.graph_lifecycle import (
     IncompatibleSignalSchemaError,
     IndexBusyError,
     OperationalIntegrityError,
+    TARGET_GRAPH_PRODUCER_VERSION,
     TARGET_OPERATIONAL_SCHEMA_VERSION,
     TARGET_GRAPH_RESOLUTION_VERSION,
     TARGET_SIGNAL_SCHEMA_VERSION,
@@ -803,6 +805,12 @@ class SQLiteStore:
                 str(TARGET_GRAPH_RESOLUTION_VERSION),
                 now,
             )
+            _set_metadata_row(
+                connection,
+                GRAPH_PRODUCER_VERSION_KEY,
+                str(TARGET_GRAPH_PRODUCER_VERSION),
+                now,
+            )
             _set_metadata_row(connection, GRAPH_STALE_REASON_KEY, "", now)
             _set_metadata_row(connection, FULL_REINDEX_REQUIRED_KEY, "0", now)
             _set_metadata_row(connection, "indexed_at", str(binding.indexed_at_epoch_s), now)
@@ -1076,6 +1084,10 @@ class SQLiteStore:
                     GRAPH_RESOLUTION_VERSION_KEY,
                     str(TARGET_GRAPH_RESOLUTION_VERSION),
                 ),
+                (
+                    GRAPH_PRODUCER_VERSION_KEY,
+                    str(TARGET_GRAPH_PRODUCER_VERSION),
+                ),
                 (GRAPH_RESOLUTION_STATE_KEY, "stale"),
                 (GRAPH_STALE_REASON_KEY, reason),
                 (FULL_REINDEX_REQUIRED_KEY, "1"),
@@ -1143,6 +1155,12 @@ class SQLiteStore:
                 connection,
                 GRAPH_RESOLUTION_VERSION_KEY,
                 str(TARGET_GRAPH_RESOLUTION_VERSION),
+                now,
+            )
+            _set_metadata_row(
+                connection,
+                GRAPH_PRODUCER_VERSION_KEY,
+                str(TARGET_GRAPH_PRODUCER_VERSION),
                 now,
             )
             _set_metadata_row(
@@ -1375,6 +1393,12 @@ class SQLiteStore:
                 connection,
                 GRAPH_RESOLUTION_VERSION_KEY,
                 str(TARGET_GRAPH_RESOLUTION_VERSION),
+                now,
+            )
+            _set_metadata_row(
+                connection,
+                GRAPH_PRODUCER_VERSION_KEY,
+                str(TARGET_GRAPH_PRODUCER_VERSION),
                 now,
             )
             _set_metadata_row(

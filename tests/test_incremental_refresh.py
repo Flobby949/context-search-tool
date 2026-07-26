@@ -1880,3 +1880,94 @@ def test_quick_refresh_100_step_scaled_churn_preserves_exact_ready_state(
     assert max(sampled_generations) == 1
     store = SQLiteStore(repo / ".context-search" / "index.sqlite")
     assert store.tombstone_count() <= 5_000
+
+
+def test_pre_p8_ready_index_activates_python_producer_exactly_once(
+    tmp_path: Path,
+) -> None:
+    from context_search_tool.graph_lifecycle import (
+        GRAPH_PRODUCER_VERSION_KEY,
+        read_graph_capability,
+    )
+    from context_search_tool.python_graph import PythonGraphProducer
+
+    repo = tmp_path / "repo"
+    (repo / "app").mkdir(parents=True)
+    (repo / "app" / "api.py").write_text(
+        "from app.service import build\n\n\ndef handler():\n    return build()\n",
+        encoding="utf-8",
+    )
+    (repo / "app" / "service.py").write_text(
+        "def build():\n    return 1\n", encoding="utf-8"
+    )
+
+    def _index():
+        return build_v5_index_snapshot(
+            repo,
+            DEFAULT_CONFIG,
+            graph_plugins=[PythonGraphProducer()],
+            scanner=scan_workspace_v5,
+        )
+
+    _index()
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+
+    def _python_rows() -> tuple[int, int]:
+        with sqlite3.connect(store.db_path) as connection:
+            signals = connection.execute(
+                "SELECT COUNT(*) FROM code_signals"
+                " WHERE producer = 'python_ast' AND deleted_at IS NULL"
+            ).fetchone()[0]
+            relations = connection.execute(
+                "SELECT COUNT(*) FROM code_relations"
+                " WHERE producer = 'python_ast' AND resolution != 'obsolete'"
+            ).fetchone()[0]
+        return signals, relations
+
+    signals, relations = _python_rows()
+    assert signals >= 2 and relations >= 1
+    assert store.get_metadata(GRAPH_PRODUCER_VERSION_KEY) == "1"
+
+    # Simulate a pre-P8 ready-v5 index: strip the producer version.
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "DELETE FROM index_metadata WHERE key = ?",
+            (GRAPH_PRODUCER_VERSION_KEY,),
+        )
+    capability = read_graph_capability(store)
+    assert capability.status == "stale"
+    assert capability.stale_reason == "producer_contract_changed"
+
+    # One authoritative run re-parses and restores ready + version 1.
+    summary = _index()
+    assert summary.files_indexed >= 1
+    assert store.get_metadata(GRAPH_PRODUCER_VERSION_KEY) == "1"
+    assert read_graph_capability(store).status == "ready"
+    signals_after, relations_after = _python_rows()
+    assert (signals_after, relations_after) == (signals, relations)
+
+    # The next authoritative run is a no-op for parsing.
+    noop = _index()
+    assert noop.files_indexed == 0
+    assert read_graph_capability(store).status == "ready"
+
+    # A source change reparses; deletion removes its facts.
+    (repo / "app" / "service.py").write_text(
+        "def build():\n    return 2\n\n\ndef extra():\n    return 3\n",
+        encoding="utf-8",
+    )
+    changed = _index()
+    assert changed.files_indexed == 1
+    changed_signals, _ = _python_rows()
+    assert changed_signals == signals + 1
+
+    (repo / "app" / "service.py").unlink()
+    _index()
+    with sqlite3.connect(store.db_path) as connection:
+        remaining = connection.execute(
+            "SELECT COUNT(*) FROM code_signals"
+            " WHERE producer = 'python_ast' AND deleted_at IS NULL"
+            " AND file_path = 'app/service.py'"
+        ).fetchone()[0]
+    assert remaining == 0
+    assert read_graph_capability(store).status == "ready"

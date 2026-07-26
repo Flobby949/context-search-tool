@@ -81,10 +81,22 @@ def _task6_refresh_entry():
                 "signal_schema_version": "5",
                 "graph_resolution_state": "ready",
                 "graph_resolution_version": "1",
+                "graph_producer_version": "1",
             },
             "ready",
             True,
             True,
+        ),
+        (
+            # Pre-P8 ready index without a producer version goes stale once.
+            {
+                "signal_schema_version": "5",
+                "graph_resolution_state": "ready",
+                "graph_resolution_version": "1",
+            },
+            "stale",
+            True,
+            False,
         ),
         (
             {"signal_schema_version": "5", "graph_resolution_state": "ready"},
@@ -1238,3 +1250,59 @@ def test_quick_refresh_source_rename_replaces_path_bound_state_atomically(
     assert old_signals == 0
     assert new_signals > 0
     assert old_relations == 0
+
+
+def test_graph_producer_version_contract_constants() -> None:
+    from context_search_tool import graph_lifecycle as lifecycle
+
+    assert lifecycle.TARGET_GRAPH_PRODUCER_VERSION == 1
+    assert lifecycle.GRAPH_PRODUCER_VERSION_KEY == "graph_producer_version"
+
+
+def test_graph_producer_version_read_rules() -> None:
+    ready_base = {
+        "signal_schema_version": "5",
+        "graph_resolution_state": "ready",
+        "graph_resolution_version": "1",
+    }
+
+    for missing_value in (None, "0"):
+        metadata = dict(ready_base)
+        if missing_value is not None:
+            metadata["graph_producer_version"] = missing_value
+        capability = read_graph_capability(_Metadata(metadata))
+        assert capability.status == "stale"
+        assert capability.stale_reason == "producer_contract_changed"
+        assert capability.signal_evidence_allowed is False
+        assert capability.relation_evidence_allowed is False
+
+    current = read_graph_capability(
+        _Metadata({**ready_base, "graph_producer_version": "1"})
+    )
+    assert current.status == "ready"
+    assert current.signal_evidence_allowed is True
+
+    for bad in ("-1", "x", "2"):
+        with pytest.raises(IncompatibleSignalSchemaError):
+            read_graph_capability(
+                _Metadata({**ready_base, "graph_producer_version": bad})
+            )
+
+
+def test_graph_producer_version_only_gates_current_schema() -> None:
+    legacy = read_graph_capability(
+        _Metadata({"signal_schema_version": "4"})
+    )
+    assert legacy.status == "legacy"
+
+    stale = read_graph_capability(
+        _Metadata(
+            {
+                "signal_schema_version": "5",
+                "graph_resolution_state": "stale",
+                "graph_stale_reason": "full_reindex",
+            }
+        )
+    )
+    assert stale.status == "stale"
+    assert stale.stale_reason == "full_reindex"
