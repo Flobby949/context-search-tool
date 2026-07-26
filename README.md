@@ -18,7 +18,8 @@ Context Search Tool 是一个本地代码检索 CLI。它会在目标项目根�
 - 受控探索：显式 `explore` 模式在一次初始检索后最多执行两个确定性、planner-off 的落地探针，并返回最终 ContextPack v2 与无源码内容的 ExplorationTrace v2；普通 `query`、`context`、`trace` 仍是单轮。
 - 索引检查：查看索引文件状态、统计信息、解释某一行属于哪个 chunk。
 - 配置文件：支持 include/exclude、文件大小限制、检索 top-k、上下文行数和 embedding provider。
-- 当前限制：P5 专用图覆盖 Java/Spring/MyBatis、Vue/React/TypeScript 静态关系和既定测试约定；Go/Gin、Rust/Axum、Spring AI `@Tool` 注册链路及增量图刷新仍需要后续阶段增强。
+- Python 静态结构（P8 部分合入）：stdlib AST 提取 Python 声明符号（class/function/method）、仓库内静态模块导入关系与测试关联，经既有 v5 解析器与关系扩展参与检索和 explain；歧义/外部/动态导入 fail-closed。P8 检索质量里程碑按配对验收门未达成（证据与处置见 `docs/superpowers/plans/2026-07-26-p8-python-static-structure-retrieval.md` 实施记录），后续选择策略评审前不宣称该里程碑。
+- 当前限制：P5/P8 专用图覆盖 Java/Spring/MyBatis、Vue/React/TypeScript 静态关系、Python 声明/导入图和既定测试约定；Go/Gin、Rust/Axum、Spring AI `@Tool` 注册链路及增量图刷新仍需要后续阶段增强。
 
 ## 安装
 
