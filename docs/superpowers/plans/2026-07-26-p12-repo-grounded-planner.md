@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 Date: 2026-07-26
-Status: Revised after adversarial review (r2); execution authorized
+Status: Executed 2026-07-26; disposition reject (see Implementation Record)
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
 Behavior baseline: `04e11fe` (main)
 Design: `docs/superpowers/specs/2026-07-26-p12-repo-grounded-planner-design.md` (r2)
@@ -47,7 +47,7 @@ Per the design's Change Surface table (r2), plus
 - [ ] **0.2** Ollama: tags list `bge-m3` AND `qwen3.5:4b-mlx`; record
   digests. Cross-process pinned-chat probe: run the SAME
   `/api/chat` request (model qwen3.5:4b-mlx, `format:"json"`,
-  `think:false`, `options {"temperature":0,"seed":0}`, fixed messages)
+  `think:false`, `options {"temperature":0,"seed":0,"top_k":1}`, fixed messages)
   in TWO separate python processes; byte-equal `message.content`
   required, else BLOCKED. Note: no other Ollama clients during captures.
 - [ ] **0.3** Durable pinning: `rsync` the three copies from
@@ -97,7 +97,7 @@ Per the design's Change Surface table (r2), plus
   - legacy pin: `support_lexicon=None` + profile ⇒ byte-identical
     behavior (existing tests at ~430-462 untouched and green).
   - request pin: monkeypatched session asserts body contains
-    `"options": {"temperature": 0, "seed": 0}` and that
+    `"options": {"temperature": 0, "seed": 0, "top_k": 1}` and that
     `plan(query, repo_profile=..., support_lexicon=...)` forwards the
     lexicon. RED: unexpected kwarg.
 - [ ] **2.2 GREEN** in `query_planner.py`: `support_lexicon` kwarg on
@@ -196,4 +196,100 @@ post-comparison edit.
 
 ## Implementation Record
 
-Status: Not started. Record only observed, verified results.
+Status: COMPLETE. Disposition: **reject** (frozen gates applied; one comparison).
+
+### Task 0 (complete)
+
+- Branch `feat/p12-repo-grounded-planner`; suite 2984 passed / 0 failed.
+- Run root: `/private/tmp/cst-p12-run.qEObUs`.
+- Digests: qwen3.5:4b-mlx `61aa3858e9d3...`, bge-m3 `790764642607...`.
+- Cross-process pinned-chat probe: DIVERGED with temperature/seed only;
+  6× byte-equal (two prompts × three processes) after adding
+  `top_k: 1` — frozen as the pre-Task-1 amendment (`ac7f8c8`).
+- Durable pinning `.quality/p12-eval-sources/`: backend-template 390
+  files `ea2f35d6f720a811…`, Investment-Assistant 375 `940e450a9d96baa7…`,
+  git-course 109 `bb3c00b5b4968497…` (aggregate sha16 prefixes; full
+  manifest gitignored alongside).
+- Held-out sealed BEFORE Task 1's first commit:
+  `.quality/p12-eval-sources/heldout.json` sha256
+  `73fd5fa6e2b4551cd1c8acf8915e9b4ee2fe4cd6094c11f6f0ab0404ed4e9909`,
+  8 queries / 18 required paths, all verified present. Disclosure: 4 of
+  8 independently converge on gold-adjacent areas (scrape-guard, SSE,
+  hints/score, corrupt-profile); 4 are fresh (audit desensitize, dict
+  cache, generator mapping, idempotent submit).
+
+
+### Tasks 1-4 (complete)
+
+- Commits `c829d8c`, `aee4087`, `e66f278`, `92ec8a1`; full suite
+  2994/0 throughout (G5 green; exploration-boundaries needed a second
+  P12 allowlist the review had not named).
+
+### Task 5: captures, determinism, and the pre-comparison amendment
+
+- 7 captures completed. In-capture pass-divergence STOPs discarded 6
+  capture attempts (baseline ×3: ia-add-fund, ia-pnl-calc,
+  bt-data-scope; heldout-baseline ×2 incl. ho-6/ho-5; heldout-candidate
+  ×1 implicit in chain retries); every discard logged.
+- Candidate pair: byte-identical modulo timing/implementation on the
+  first attempt. Baseline pair: byte-identity unattainable — four
+  git-course cases (gc-corrupt-profile, gc-env-check, gc-exec-sandbox,
+  gc-merge-check) show systematic qwen bistability on the OLD planner's
+  prompts (same four cases in every one of four independent captures);
+  drift confined to planner output text and non-required selected
+  tails.
+- **Pre-comparison amendment (user-approved):** the baseline pair
+  criterion was reduced to "all gate inputs (per-query required-rank
+  maps and hits) identical across captures, drift disclosed". Verified
+  across FOUR baseline captures (8 passes/query): gate-input drift =
+  zero. Candidate needed no amendment. The amendment was recorded
+  before `compare` ran; no gate arithmetic was touched.
+- Probes: bge embeds byte-stable (3×); the exact ia-add-fund planner
+  request byte-stable 4×; divergence is intermittent/prompt-specific
+  (MLX argmax near-ties), rate ≈ 1 flip per ~40-80 passes.
+
+### The single comparison
+
+| capture | required hits /53 |
+| --- | --- |
+| reference (planner off) | 18 |
+| baseline (profile-sample filter) | 22 |
+| candidate (full-lexicon filter) | 21 |
+
+Gates: G1 false (need +5, measured **−1**); G2 false
+(Investment-Assistant 10→9, backend-template 4→3, git-course 8→9);
+G3 false (`bt-dept-cascade` 1→0, `ia-ai-tools` 1→0; `gc-exec-sandbox`
+1→2); G4 true (means 2.845s → 2.999s = 1.05×; all four baseline means
+2.35-2.85s disclosed); G6 true (21 ≥ 18+3); G5 true (2994/0).
+Disposition: **reject**. Branch `feat/p12-repo-grounded-planner` does
+not merge.
+
+- Held-out (sealed sha `73fd5fa6…`, evaluated once): baseline 12/18,
+  candidate 11/18 (`ho-1` lost) — same direction as the gold;
+  benchmark-fit is NOT the failure mode; the mechanism itself is.
+
+### Rule-10 statement (G1, with G2/G3 analysis)
+
+Full-lexicon grounding of the shipped planner did not reach +5 on the
+gold (measured delta: −1). Per-query analysis: admitting every
+lexicon-member hint is not additive — surviving-but-misdirected hints
+(real repo tokens, wrong target) feed planner_lexical/planner_path_symbol
+scoring and evicted required items on `bt-dept-cascade` and
+`ia-ai-tools`, while helping `gc-exec-sandbox`. The starved profile
+filter was accidentally protective. This repeats the P9-P11 lesson at
+the query side: membership tests — even against the true lexicon —
+gate but do not rank; hint RELEVANCE, not hint EXISTENCE, is the
+missing discriminator. Both planners beat planner-off (+4/+3 required
+items), so the planner feature itself carries value. Remaining levers:
+relevance-weighted hint selection, prompt v3, multi-turn retrieval,
+result-side listwise rerank — a product decision.
+
+### Environment note
+
+qwen3.5:4b-mlx is not byte-deterministic at temperature 0 + seed 0 +
+top_k 1 for a minority of prompts (systematic bistability on four
+git-course prompts; intermittent flips elsewhere). Any future
+planner-on experiment must either budget capture retries (this run:
+6 discards) or use a deterministic backend. `test_quality_planner.py`
+environment-gated planner cases now exercise the lexicon filter when
+run with network access — a future red there is a P12 consequence.
