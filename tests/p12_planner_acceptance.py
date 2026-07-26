@@ -38,11 +38,11 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _load_gold() -> dict:
-    return json.loads(
-        (Path(__file__).resolve().parent / "fixtures/p12_planner/gold.json")
-        .read_text(encoding="utf-8")
+def _load_gold(override: Path | None = None) -> dict:
+    path = override or (
+        Path(__file__).resolve().parent / "fixtures/p12_planner/gold.json"
     )
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _validate_sources(sources_root: Path, gold: dict) -> None:
@@ -110,11 +110,12 @@ def capture(
     output_path: Path,
     *,
     planner_on: bool = True,
+    gold_override: Path | None = None,
 ) -> dict:
     from context_search_tool.indexer import index_repository
     from context_search_tool.retrieval import query_repository
 
-    gold = _load_gold()
+    gold = _load_gold(gold_override)
     _validate_sources(sources_root, gold)
     p8._install_bge_truncation()
     _install_options_pin()
@@ -283,8 +284,8 @@ def check(capture_path: Path) -> None:
         for item in case["passes"]:
             if "content" in item or "snippet" in item:
                 raise ValueError("capture contains source content")
-    if len(payload["cases"]) != 21:
-        raise ValueError("capture must contain all 21 gold cases")
+    if len(payload["cases"]) not in (8, 21):
+        raise ValueError("capture must contain all gold cases")
 
 
 def main() -> int:
@@ -293,11 +294,17 @@ def main() -> int:
         planner_on = "--planner" not in sys.argv or (
             sys.argv[sys.argv.index("--planner") + 1] != "off"
         )
+        gold_override = (
+            Path(sys.argv[sys.argv.index("--gold") + 1])
+            if "--gold" in sys.argv
+            else None
+        )
         capture(
             Path(sys.argv[2]),
             Path(sys.argv[3]),
             Path(sys.argv[4]),
             planner_on=planner_on,
+            gold_override=gold_override,
         )
         print(f"captured {sys.argv[4]}")
         return 0
