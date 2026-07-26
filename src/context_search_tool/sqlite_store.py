@@ -2346,6 +2346,7 @@ class SQLiteStore:
         start = time.perf_counter()
         matches: list[RetrievalCandidate] = []
 
+        scanned_rows = 0
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -2353,26 +2354,27 @@ class SQLiteStore:
                 FROM chunks
                 WHERE deleted_at IS NULL
                 """
-            ).fetchall()
-
-        for row in rows:
-            haystack = f"{row['file_path']}\n{row['content']}"
-            matched = _matched_direct_text_probes(haystack, normalized)
-            if not matched:
-                continue
-            hit_count = float(len(matched))
-            score = _direct_text_score(matched, normalized)
-            matches.append(
-                RetrievalCandidate(
-                    chunk_id=row["chunk_id"],
-                    score=score,
-                    source="direct_text",
-                    score_parts={
-                        "direct_text": score,
-                        "direct_text_hits": hit_count,
-                    },
-                )
             )
+
+            for row in rows:
+                scanned_rows += 1
+                haystack = f"{row['file_path']}\n{row['content']}"
+                matched = _matched_direct_text_probes(haystack, normalized)
+                if not matched:
+                    continue
+                hit_count = float(len(matched))
+                score = _direct_text_score(matched, normalized)
+                matches.append(
+                    RetrievalCandidate(
+                        chunk_id=row["chunk_id"],
+                        score=score,
+                        source="direct_text",
+                        score_parts={
+                            "direct_text": score,
+                            "direct_text_hits": hit_count,
+                        },
+                    )
+                )
 
         matches.sort(
             key=lambda item: (
@@ -2388,7 +2390,7 @@ class SQLiteStore:
                 "direct_text_search slow: %.1fms for %s probes, %s chunks",
                 elapsed_ms,
                 len(normalized),
-                len(rows),
+                scanned_rows,
             )
 
         return matches[:limit]

@@ -1,4 +1,5 @@
 import sqlite3
+import tracemalloc
 from pathlib import Path
 
 from context_search_tool import sqlite_store as sqlite_store_module
@@ -658,6 +659,49 @@ def test_direct_text_probe_deduplication_and_limit() -> None:
     limited = _dedupe_search_probes(many_probes)
     assert len(limited) == 30
     assert "当前审批人查询接口" in limited
+
+
+def test_direct_text_search_peak_memory_does_not_hold_the_whole_corpus(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+
+    chunk_count = 400
+    body = "filler line for corpus bulk\n" * 300
+    for index in range(chunk_count):
+        file_path = Path(f"module{index % 10}/file{index}.py")
+        store.replace_chunks(
+            file_path,
+            [
+                DocumentChunk(
+                    chunk_id=f"chunk-{index}",
+                    file_path=file_path,
+                    start_line=1,
+                    end_line=300,
+                    content=f"# unique marker {index:04d}\n{body}",
+                    chunk_type="text",
+                    symbols=[],
+                    lexical_tokens=[],
+                    embedding_id=f"chunk-{index}",
+                    deleted_at=None,
+                    metadata={},
+                )
+            ],
+        )
+
+    corpus_bytes = chunk_count * len(body.encode("utf-8"))
+
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        results = store.direct_text_search(["unique marker 0007"], limit=5)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert [result.chunk_id for result in results] == ["chunk-7"]
+    assert peak < corpus_bytes // 4
 
 
 def test_direct_text_search_reads_each_active_chunk_once(
