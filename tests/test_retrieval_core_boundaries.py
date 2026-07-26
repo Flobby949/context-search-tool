@@ -313,6 +313,9 @@ def _is_p4_public_facade_reference(reference: dict[str, object]) -> bool:
         or path == "tests/test_p5_protected_direct.py"
         or path == "tests/test_quality_p5.py"
         or path == "scripts/p6_benchmark.py"
+        or path.startswith("tests/test_p8_")
+        or path == "tests/p8_real_python_graphs_acceptance.py"
+        or path == "tests/generate_p8_python_graph_manifest.py"
     )
 
 
