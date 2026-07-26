@@ -231,4 +231,56 @@ env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/src:$PWD/tests" \
 
 ## Implementation Record
 
-Status: Not started. Record only observed, verified results.
+Status: Tasks 0-4 executed 2026-07-26; disposition **reject**;
+activation reverted (Tasks 1-2 retained); mechanism family declared
+EXHAUSTED per the pre-committed rule.
+
+```text
+entry: main 8886af7, clean, 2965 passed; inert membership verified
+  equal to baseline.json; gold manifest verified.
+
+Task 1 (fixture-shape co-occurrence): PROVEN with zero product change.
+  Mechanism: lengthening the query dilutes wire.py's token coverage
+  below the strong-original-direct threshold (0.2 corroboration bound,
+  ranking._has_strong_original_direct_evidence), leaving it an
+  unprotected weak-direct candidate; the existing merge_candidates path
+  then combines token_coverage with resolved_relation/
+  graph_imports_match on one candidate. Confirms the design premise and
+  the protected-skip diagnosis.
+
+Task 2: six-key _DIRECT_AFFINITY_KEYS landed with unit coverage
+  (semantic-only ineligible; +token_coverage eligible).
+
+Task 3: activation with the six-key gate left every protected fixture
+  at zero quota activity - characterization, quality suites, and all
+  counter pins green on the full suite. STOP conditions never fired.
+
+Task 4 (the single A/B, captures deterministic twice):
+  quota admissions: 34, listed in the capture; ZERO gold targets among
+  them - admissions are token-affine co-imported noise exactly of the
+  shape the r2 review predicted (market_light_service via
+  "market"/"service", stock_repo via "stock", decision_signal_summary
+  via "decision", text/genai clients via path tokens).
+  newly satisfied: none; credited: none.
+  lost required (the pre-committed P9 triple, by name):
+    daily-portfolio-risk src/services/decision_signal_service.py,
+    daily-prefetch-tests tests/test_data_fetcher_prefetch_stock_names.py,
+    redink-image-flow backend/utils/image_compressor.py.
+  combined recall 0.860 -> 0.807 (-0.053). Gates 1-5 FAIL, 6-11 pass.
+  disposition: reject. No post-comparison edits were made; the flag
+  revert restores the inert machinery (full suite 2972 passed).
+
+EXHAUSTION DECLARATION (per design ship-gate rule): the
+selection-quota mechanism family - membership rules over the ranked
+overflow keyed on relation support plus per-candidate evidence
+predicates - is exhausted after three controlled failures (P9
+unconditional, P9a any-direct-evidence, P10 token-affinity). The
+consistent failure shape across all three: within relation-supported
+overflow, rank and shallow per-candidate signals order co-imported
+noise ABOVE gold support files, and the displaced bottom ranks
+disproportionately contain weakly-matched required files. No further
+membership-rule variants may be proposed. The next mechanism class is
+overflow reranking: reading the content of relation-supported overflow
+candidates against the query (the capability the fast-context
+comparison showed is the actual discriminator).
+```
