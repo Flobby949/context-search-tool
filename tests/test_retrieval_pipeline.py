@@ -12220,16 +12220,15 @@ def test_direct_and_graph_evidence_co_occur_for_unprotected_targets(
     chunk is not a protected direct winner. No product change may be
     made to satisfy this test (design pre-committed rule 2)."""
     repo = _p9_quota_workflow(tmp_path)
-    monkeypatch.setattr(
-        selection.relation_policy, "RELATION_SLOTS_ENABLED", True
-    )
     seen: dict[str, dict[str, float]] = {}
     original = selection._apply_relation_slots
 
-    def recorder(selected, overflow):
+    def recorder(selected, overflow, *, similarity_resolver=None):
         for item in overflow:
             seen[str(item.file_path)] = dict(item.score_parts)
-        return original(selected, overflow)
+        return original(
+            selected, overflow, similarity_resolver=similarity_resolver
+        )
 
     monkeypatch.setattr(selection, "_apply_relation_slots", recorder)
     # The longer query dilutes wire.py's token coverage below the strong
