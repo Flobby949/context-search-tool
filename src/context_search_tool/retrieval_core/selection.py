@@ -4,6 +4,7 @@ import sqlite3
 from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
+from collections.abc import Callable
 from typing import Literal, overload
 
 from context_search_tool import sqlite_store
@@ -92,9 +93,27 @@ def _relation_slot_supported(item: core_types._ExpandedResult) -> bool:
     )
 
 
+def _result_similarity(
+    item: core_types._ExpandedResult,
+    similarities: dict[str, float],
+) -> float | None:
+    values = [
+        similarities[chunk_id]
+        for chunk_id in item.chunk_ids
+        if chunk_id in similarities
+    ]
+    if not values:
+        return None
+    return round(max(values), 6)
+
+
 def _apply_relation_slots(
     selected: list[core_types._ExpandedResult],
     overflow: list[core_types._ExpandedResult],
+    *,
+    similarity_resolver: (
+        Callable[[list[str]], dict[str, float]] | None
+    ) = None,
 ) -> tuple[
     list[core_types._ExpandedResult],
     list[core_types._ExpandedResult],
@@ -102,21 +121,53 @@ def _apply_relation_slots(
 ]:
     """Reserve final slots for relation-supported overflow results.
 
-    ``selected`` is the ordinary path-diverse selection in ranked order;
-    ``overflow`` is the remaining path-deduplicated ranked tail, already
-    bounded by RELATION_SLOT_SCAN_DEPTH and stripped of anchor-kind items
-    by the caller. Eviction scans from the bottom, never evicts the
-    rank-1 winner, and never evicts an already relation-supported
-    selection. Takes append at the end in ranked order.
+    P11 admission: a resolver over the indexed vector snapshot supplies
+    query similarities; an eligible candidate is admitted (best
+    similarity first, ties by ranked order, up to RELATION_FINAL_SLOTS)
+    only when its similarity strictly exceeds that of the member it
+    would evict, both rounded to 6 decimals. Without a resolver (hash
+    provider, missing snapshot) the quota is inert. Eviction scans from
+    the bottom, never evicts the rank-1 winner, and never evicts an
+    already relation-supported selection.
     """
-    takes: list[core_types._ExpandedResult] = []
+    if similarity_resolver is None:
+        return list(selected), [], 0
+    eligible = [
+        candidate
+        for candidate in overflow
+        if _relation_slot_supported(candidate)
+    ][: relation_policy.RERANK_OVERFLOW_CAP]
+    if not eligible:
+        return list(selected), [], 0
     survivors = list(selected)
+    evictable_ids = [
+        chunk_id
+        for index in range(1, len(survivors))
+        if not _relation_slot_supported(survivors[index])
+        for chunk_id in survivors[index].chunk_ids
+    ]
+    candidate_ids = [
+        chunk_id for candidate in eligible for chunk_id in candidate.chunk_ids
+    ]
+    similarities = similarity_resolver(candidate_ids + evictable_ids)
+
+    ordered = sorted(
+        (
+            (candidate, rank, _result_similarity(candidate, similarities))
+            for rank, candidate in enumerate(eligible)
+        ),
+        key=lambda entry: (
+            -(entry[2] if entry[2] is not None else float("-inf")),
+            entry[1],
+        ),
+    )
+    takes: list[core_types._ExpandedResult] = []
     swapped_out: list[core_types._ExpandedResult] = []
-    for candidate in overflow:
+    for candidate, _rank, candidate_similarity in ordered:
         if len(takes) >= relation_policy.RELATION_FINAL_SLOTS:
             break
-        if not _relation_slot_supported(candidate):
-            continue
+        if candidate_similarity is None:
+            break
         evict_index = next(
             (
                 index
@@ -126,6 +177,14 @@ def _apply_relation_slots(
             None,
         )
         if evict_index is None:
+            break
+        victim_similarity = _result_similarity(
+            survivors[evict_index], similarities
+        )
+        if (
+            victim_similarity is None
+            or candidate_similarity <= victim_similarity
+        ):
             break
         swapped_out.append(survivors.pop(evict_index))
         takes.append(candidate)
@@ -139,6 +198,9 @@ def split_results_and_anchors(
     final_top_k: int,
     anchor_top_k: int,
     collect_trace: Literal[False] = False,
+    similarity_resolver: (
+        Callable[[list[str]], dict[str, float]] | None
+    ) = None,
 ) -> tuple[list[core_types._ExpandedResult], list[EvidenceAnchor]]: ...
 
 
@@ -149,6 +211,9 @@ def split_results_and_anchors(
     final_top_k: int,
     anchor_top_k: int,
     collect_trace: Literal[True],
+    similarity_resolver: (
+        Callable[[list[str]], dict[str, float]] | None
+    ) = None,
 ) -> tuple[
     list[core_types._ExpandedResult],
     list[EvidenceAnchor],
@@ -162,6 +227,9 @@ def split_results_and_anchors(
     final_top_k: int,
     anchor_top_k: int,
     collect_trace: bool = False,
+    similarity_resolver: (
+        Callable[[list[str]], dict[str, float]] | None
+    ) = None,
 ) -> (
     tuple[list[core_types._ExpandedResult], list[EvidenceAnchor]]
     | tuple[
@@ -235,12 +303,11 @@ def split_results_and_anchors(
             if trace_counts is not None:
                 trace_counts["result_limit"] += 1
 
-    if relation_policy.RELATION_SLOTS_ENABLED:
-        code_results, swapped_out, slot_count = _apply_relation_slots(
-            code_results, slot_overflow
-        )
-    else:
-        swapped_out, slot_count = [], 0
+    code_results, swapped_out, slot_count = _apply_relation_slots(
+        code_results,
+        slot_overflow,
+        similarity_resolver=similarity_resolver,
+    )
     if slot_count:
         taken = code_results[-slot_count:]
         code_results[-slot_count:] = [

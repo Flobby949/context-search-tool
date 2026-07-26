@@ -27,7 +27,8 @@ import p8_python_graph_identity as identity
 from generate_p8_python_graph_manifest import build_manifest
 
 SENTINEL_RANK = 13
-CAPTURE_SCHEMA_VERSION = 2
+CAPTURE_SCHEMA_VERSION = 3
+KNOWN_EMBEDDINGS = ("hash", "bge")
 
 SOURCES = {
     "redink": {
@@ -146,22 +147,112 @@ def _import_witness(index_db: Path, selected_path: str) -> dict | None:
     }
 
 
+def _embedding_config(embedding: str):
+    from context_search_tool.config import (
+        DEFAULT_CONFIG,
+        EmbeddingConfig,
+        ToolConfig,
+    )
+
+    if embedding == "hash":
+        return DEFAULT_CONFIG
+    if embedding == "bge":
+        import dataclasses
+
+        return dataclasses.replace(
+            DEFAULT_CONFIG,
+            embedding=EmbeddingConfig(
+                provider="bge", model="bge-m3", dimensions=1024
+            ),
+        )
+    raise ValueError(f"unsupported embedding argument: {embedding}")
+
+
+_BGE_MAX_TEXT_CHARS = 4000
+
+
+def _install_bge_truncation() -> None:
+    """Capture infrastructure, applied identically to whichever tree the
+    PYTHONPATH selects: Ollama rejects a single text whose tokenization
+    exceeds bge-m3's 8192-token context (dense CJK crosses it near 7k
+    chars), so every text is deterministically truncated before
+    embedding. Never edits a source tree; queries are unaffected in
+    practice (far below the cap)."""
+    from context_search_tool.embeddings_bge import BGEEmbeddingProvider
+
+    if getattr(BGEEmbeddingProvider, "_p8_runner_truncation", False):
+        return
+    original = BGEEmbeddingProvider.embed_texts
+
+    def truncated(self, texts: list[str]) -> list:
+        return original(
+            self, [text[:_BGE_MAX_TEXT_CHARS] for text in texts]
+        )
+
+    BGEEmbeddingProvider.embed_texts = truncated
+    BGEEmbeddingProvider._p8_runner_truncation = True
+
+
+def _ollama_model_digest(model: str) -> str | None:
+    import requests
+
+    session = requests.Session()
+    session.trust_env = False
+    response = session.get("http://localhost:11434/api/tags", timeout=10.0)
+    response.raise_for_status()
+    for item in response.json().get("models", []):
+        if str(item.get("name", "")).startswith(model):
+            return str(item.get("digest"))
+    return None
+
+
+def _assert_indexed_identity(workspace: Path, config) -> None:
+    from context_search_tool.manifest import (
+        embedding_config_hash,
+        load_manifest,
+    )
+
+    stored = load_manifest(workspace)
+    expected = embedding_config_hash(config.embedding)
+    if stored.embedding_config_hash != expected:
+        raise ValueError(
+            "indexed embedding identity does not match the requested"
+            f" embedding config for {workspace.name}"
+        )
+
+
 def capture(
     implementation_root: Path,
     repos_dir: Path,
     output_path: Path,
     *,
     timing_reps: int = 2,
+    embedding: str = "hash",
 ) -> dict:
-    from context_search_tool.config import DEFAULT_CONFIG
     from context_search_tool.indexer import index_repository
     from context_search_tool.retrieval import query_repository
 
+    config = _embedding_config(embedding)
+    if embedding == "bge":
+        _install_bge_truncation()
+    digest = (
+        _ollama_model_digest(config.embedding.model)
+        if embedding == "bge"
+        else None
+    )
+    if embedding == "bge" and digest is None:
+        raise ValueError("bge capture requires a served bge-m3 model")
     manifest = _manifest_or_fail()
     capture_payload: dict = {
         "schema_version": CAPTURE_SCHEMA_VERSION,
         "implementation": implementation_identity(implementation_root),
         "manifest_sha256": manifest["manifest_sha256"],
+        "embedding_identity": {
+            "provider": config.embedding.provider,
+            "model": config.embedding.model,
+            "dimensions": config.embedding.dimensions,
+            "digest": digest,
+        },
         "repositories": {},
         "cases": {},
         "witnesses": {},
@@ -185,8 +276,9 @@ def capture(
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_root / relative, target)
         started = time.perf_counter()
-        index_repository(workspace, DEFAULT_CONFIG)
+        index_repository(workspace, config)
         index_seconds = time.perf_counter() - started
+        _assert_indexed_identity(workspace, config)
         workspaces[repo_key] = workspace
         index_db = workspace / ".context-search" / "index.sqlite"
         capture_payload["repositories"][repo_key] = {
@@ -206,7 +298,7 @@ def capture(
         case_latencies = []
         for _ in range(max(1, timing_reps)):
             started = time.perf_counter()
-            bundle = query_repository(workspace, case["query"], DEFAULT_CONFIG)
+            bundle = query_repository(workspace, case["query"], config)
             case_latencies.append(time.perf_counter() - started)
         latencies.append(min(case_latencies))
         selected = []
@@ -507,6 +599,9 @@ def check(capture_path: Path) -> None:
     payload = json.loads(rendered)
     if payload["schema_version"] != CAPTURE_SCHEMA_VERSION:
         raise ValueError("unsupported capture schema")
+    identity_provider = payload.get("embedding_identity", {}).get("provider")
+    if identity_provider not in KNOWN_EMBEDDINGS:
+        raise ValueError("unknown embedding identity")
     if _canonical(payload) != rendered:
         raise ValueError("capture is not canonically rendered")
     if "/Users/" in rendered or "/private/" in rendered or "/home/" in rendered:
@@ -526,7 +621,14 @@ def main() -> int:
         repos_dir = Path(sys.argv[3])
         output_path = Path(sys.argv[4])
         reps = int(sys.argv[5]) if len(sys.argv) > 5 else 2
-        capture(implementation_root, repos_dir, output_path, timing_reps=reps)
+        embedding = sys.argv[6] if len(sys.argv) > 6 else "hash"
+        capture(
+            implementation_root,
+            repos_dir,
+            output_path,
+            timing_reps=reps,
+            embedding=embedding,
+        )
         print(f"captured {output_path}")
         return 0
     if command == "compare":
@@ -540,7 +642,7 @@ def main() -> int:
         check(Path(sys.argv[2]))
         print("capture verified")
         return 0
-    print("usage: capture|compare|check ...")
+    print("usage: capture <impl_root> <repos_dir> <out> [reps] [embedding] | compare | check")
     return 1
 
 

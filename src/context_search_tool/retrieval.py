@@ -345,22 +345,28 @@ def _query_repository_impl(
         input_count=len(query_variants),
     )
     if graph_session is None:
-        semantic_candidates, query_variants, variant_retrieval_status = (
-            candidates.semantic_candidates(
-                index_dir,
-                query_variants,
-                config,
-                deleted_ids,
-            )
+        (
+            semantic_candidates,
+            query_variants,
+            variant_retrieval_status,
+            semantic_query_vector,
+        ) = candidates.semantic_candidates(
+            index_dir,
+            query_variants,
+            config,
+            deleted_ids,
         )
     else:
-        semantic_candidates, query_variants, variant_retrieval_status = (
-            candidates.semantic_candidates_from_snapshot(
-                vector_snapshot,
-                query_variants,
-                config,
-                deleted_ids,
-            )
+        (
+            semantic_candidates,
+            query_variants,
+            variant_retrieval_status,
+            semantic_query_vector,
+        ) = candidates.semantic_candidates_from_snapshot(
+            vector_snapshot,
+            query_variants,
+            config,
+            deleted_ids,
         )
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_candidate_stage(
@@ -680,6 +686,9 @@ def _query_repository_impl(
         "final_selection",
         input_count=len(expanded),
     )
+    similarity_resolver = relation_slot_similarities(
+        config, semantic_query_vector, vector_snapshot
+    )
     trace_decisions = None
     if trace_collector is None:
         visible_results, evidence_anchors = (
@@ -687,6 +696,7 @@ def _query_repository_impl(
                 expanded,
                 final_top_k=config.retrieval.final_top_k,
                 anchor_top_k=evidence_anchor_top_k(config.retrieval.final_top_k),
+                similarity_resolver=similarity_resolver,
             )
         )
     else:
@@ -696,6 +706,7 @@ def _query_repository_impl(
                 final_top_k=config.retrieval.final_top_k,
                 anchor_top_k=evidence_anchor_top_k(config.retrieval.final_top_k),
                 collect_trace=True,
+                similarity_resolver=similarity_resolver,
             )
         )
     stopped = tracing.stop_stage(trace_collector, token)
@@ -742,6 +753,25 @@ def evidence_anchor_top_k(max_results: int) -> int:
         return 0
     return max(1, min(5, max_results // 3))
 
+
+
+
+def relation_slot_similarities(
+    config: ToolConfig,
+    query_vector: list[float] | None,
+    vector_snapshot: candidates.NumpyVectorStore | None,
+):
+    """Build the P11 relation-slot similarity resolver.
+
+    P11 disposition: reject. The A/B on the frozen gold (bge-m3 indexed
+    vectors, both sides) admitted ten overflow items with zero credited
+    required gains and evicted one baseline required item, so the
+    resolver is unconditionally ``None`` and the relation quota in
+    ``split_results_and_anchors`` admits nothing under every provider.
+    The admission machinery and its tests remain for a reviewed
+    successor; see the P11 plan's implementation record.
+    """
+    return None
 
 def normalize_score(scores: list[float]) -> list[float]:
     return ranking.normalize_score(scores)

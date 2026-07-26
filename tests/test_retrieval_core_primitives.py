@@ -329,7 +329,6 @@ def test_context_merge_bounds_same_file_growth_without_dropping_evidence() -> No
 
 
 def test_relation_policy_values_are_exact() -> None:
-    assert relation_policy.RELATION_SLOTS_ENABLED is False
     assert selection._DIRECT_AFFINITY_KEYS == (
         "lexical",
         "path_symbol",
@@ -339,6 +338,7 @@ def test_relation_policy_values_are_exact() -> None:
         "token_coverage",
     )
     assert relation_policy.RELATION_FINAL_SLOTS == 2
+    assert relation_policy.RERANK_OVERFLOW_CAP == 16
     assert relation_policy.RELATION_SLOT_SCAN_DEPTH == 50
     assert relation_policy.MAX_EXPANSION_DEPTH == 3
     assert relation_policy.MAX_EXPANSION_CANDIDATES == 1000
@@ -555,6 +555,21 @@ def _slot_item(
     )
 
 
+def _stub_resolver(overrides: dict[str, float] | None = None):
+    """Grant overflow-shaped ids 0.9 and selection-shaped ids 0.1."""
+    def resolver(ids: list[str]) -> dict[str, float]:
+        sims: dict[str, float] = {}
+        for cid in ids:
+            if overrides is not None and cid in overrides:
+                sims[cid] = overrides[cid]
+            elif "src/direct" in cid or "winner" in cid:
+                sims[cid] = 0.1
+            else:
+                sims[cid] = 0.9
+        return sims
+    return resolver
+
+
 def test_relation_slots_swap_bottom_ranks_for_supported_overflow() -> None:
     selected = [_slot_item(f"src/direct{i}.py") for i in range(6)]
     overflow = [
@@ -565,7 +580,7 @@ def test_relation_slots_swap_bottom_ranks_for_supported_overflow() -> None:
     ]
 
     final, swapped_out, count = selection._apply_relation_slots(
-        list(selected), list(overflow)
+        list(selected), list(overflow), similarity_resolver=_stub_resolver()
     )
 
     assert count == 2
@@ -596,7 +611,7 @@ def test_relation_slots_never_evict_winner_or_relation_supported() -> None:
     ]
 
     final, swapped_out, count = selection._apply_relation_slots(
-        list(selected), list(overflow)
+        list(selected), list(overflow), similarity_resolver=_stub_resolver()
     )
 
     # Only src/direct.py is evictable: the rank-1 winner and the already
@@ -617,7 +632,7 @@ def test_relation_slots_require_resolved_relation_provenance() -> None:
     ]
 
     final, swapped_out, count = selection._apply_relation_slots(
-        list(selected), list(overflow)
+        list(selected), list(overflow), similarity_resolver=_stub_resolver()
     )
 
     assert count == 0
@@ -636,8 +651,12 @@ def test_relation_slots_are_deterministic() -> None:
         _slot_item("src/rel_b.py", graph=True, resolved=True),
     ]
 
-    first = selection._apply_relation_slots(list(selected), list(overflow))
-    second = selection._apply_relation_slots(list(selected), list(overflow))
+    first = selection._apply_relation_slots(
+        list(selected), list(overflow), similarity_resolver=_stub_resolver()
+    )
+    second = selection._apply_relation_slots(
+        list(selected), list(overflow), similarity_resolver=_stub_resolver()
+    )
 
     assert [str(i.file_path) for i in first[0]] == [
         str(i.file_path) for i in second[0]
@@ -656,7 +675,7 @@ def test_relation_slots_require_target_query_affinity() -> None:
     ]
 
     final, swapped_out, count = selection._apply_relation_slots(
-        list(selected), list(overflow)
+        list(selected), list(overflow), similarity_resolver=_stub_resolver()
     )
 
     assert count == 1
@@ -683,10 +702,126 @@ def test_relation_slots_ignore_semantic_only_affinity() -> None:
     )
 
     final, _swapped, count = selection._apply_relation_slots(
-        list(selected), [semantic_only, token_affine]
+        list(selected),
+        [semantic_only, token_affine],
+        similarity_resolver=_stub_resolver(),
     )
 
     assert count == 1
     final_paths = [str(item.file_path) for item in final]
     assert "src/token_affine.py" in final_paths
     assert "src/semantic_only.py" not in final_paths
+
+
+def test_relation_slots_are_inert_without_a_resolver() -> None:
+    selected = [_slot_item(f"src/direct{i}.py") for i in range(4)]
+    overflow = [
+        _slot_item("src/rel_a.py", graph=True, resolved=True),
+        _slot_item("src/rel_b.py", graph=True, resolved=True),
+    ]
+
+    final, swapped_out, count = selection._apply_relation_slots(
+        list(selected), list(overflow)
+    )
+
+    assert count == 0
+    assert swapped_out == []
+    assert [str(item.file_path) for item in final] == [
+        f"src/direct{i}.py" for i in range(4)
+    ]
+
+
+def test_relation_slots_require_strictly_beating_the_victim() -> None:
+    selected = [_slot_item(f"src/direct{i}.py") for i in range(3)]
+    overflow = [_slot_item("src/rel_a.py", graph=True, resolved=True)]
+
+    tie = selection._apply_relation_slots(
+        list(selected),
+        list(overflow),
+        similarity_resolver=_stub_resolver({"src/rel_a.py": 0.1}),
+    )
+    assert tie[2] == 0
+
+    # 6-decimal rounding: 0.1000004 rounds to 0.1 -> still a tie.
+    near_tie = selection._apply_relation_slots(
+        list(selected),
+        list(overflow),
+        similarity_resolver=_stub_resolver({"src/rel_a.py": 0.1000004}),
+    )
+    assert near_tie[2] == 0
+
+    above = selection._apply_relation_slots(
+        list(selected),
+        list(overflow),
+        similarity_resolver=_stub_resolver({"src/rel_a.py": 0.100001}),
+    )
+    assert above[2] == 1
+
+
+def test_relation_slots_skip_candidates_missing_from_the_resolver() -> None:
+    selected = [_slot_item(f"src/direct{i}.py") for i in range(3)]
+    overflow = [_slot_item("src/rel_a.py", graph=True, resolved=True)]
+
+    def partial(ids: list[str]) -> dict[str, float]:
+        return {cid: 0.1 for cid in ids if "rel_a" not in cid}
+
+    final, swapped_out, count = selection._apply_relation_slots(
+        list(selected), list(overflow), similarity_resolver=partial
+    )
+
+    assert count == 0
+    assert swapped_out == []
+
+
+def test_relation_slots_admit_best_similarity_first() -> None:
+    selected = [_slot_item(f"src/direct{i}.py") for i in range(5)]
+    overflow = [
+        _slot_item("src/rel_low.py", graph=True, resolved=True),
+        _slot_item("src/rel_high.py", graph=True, resolved=True),
+        _slot_item("src/rel_mid.py", graph=True, resolved=True),
+    ]
+
+    final, _swapped, count = selection._apply_relation_slots(
+        list(selected),
+        list(overflow),
+        similarity_resolver=_stub_resolver(
+            {
+                "src/rel_low.py": 0.3,
+                "src/rel_high.py": 0.9,
+                "src/rel_mid.py": 0.6,
+            }
+        ),
+    )
+
+    assert count == 2
+    assert [str(item.file_path) for item in final[-2:]] == [
+        "src/rel_high.py",
+        "src/rel_mid.py",
+    ]
+
+
+def test_relation_slots_resolve_exactly_candidates_and_victims() -> None:
+    selected = [
+        _slot_item("src/winner.py"),
+        _slot_item("src/rel_kept.py", graph=True, resolved=True),
+        _slot_item("src/direct1.py"),
+        _slot_item("src/direct2.py"),
+    ]
+    overflow = [
+        _slot_item("src/rel_a.py", graph=True, resolved=True),
+        _slot_item("src/plain.py"),
+    ]
+    queried: list[str] = []
+
+    def recording(ids: list[str]) -> dict[str, float]:
+        queried.extend(ids)
+        return _stub_resolver()(ids)
+
+    selection._apply_relation_slots(
+        list(selected), list(overflow), similarity_resolver=recording
+    )
+
+    # Eligible candidates plus evictable survivors only: the rank-1
+    # winner, the relation-supported selection, and the unsupported
+    # overflow item are never resolved.
+    assert set(queried) == {"src/rel_a.py", "src/direct1.py", "src/direct2.py"}

@@ -1191,7 +1191,7 @@ def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
     store = SQLiteStore(index_dir / "index.sqlite")
     original_tokens = ordering.dedupe_lowered(tokenizer.tokenize_query(query))
     deleted_ids = store.deleted_chunk_ids()
-    semantic_candidates, _, _ = candidates.semantic_candidates(
+    semantic_candidates, _, _, _ = candidates.semantic_candidates(
         index_dir,
         [QueryVariant("original", " ".join(query.split()), "original")],
         config,

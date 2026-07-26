@@ -25,7 +25,9 @@ def semantic_candidates(
     variants: list[QueryVariant],
     config: ToolConfig,
     deleted_ids: set[str],
-) -> tuple[list[RetrievalCandidate], list[QueryVariant], str]:
+) -> tuple[
+    list[RetrievalCandidate], list[QueryVariant], str, list[float] | None
+]:
     return _semantic_candidates_with_store(
         NumpyVectorStore(index_dir),
         variants,
@@ -39,9 +41,11 @@ def semantic_candidates_from_snapshot(
     variants: list[QueryVariant],
     config: ToolConfig,
     deleted_ids: set[str],
-) -> tuple[list[RetrievalCandidate], list[QueryVariant], str]:
+) -> tuple[
+    list[RetrievalCandidate], list[QueryVariant], str, list[float] | None
+]:
     if vector_store is None:
-        return [], variants[:1], "original_only"
+        return [], variants[:1], "original_only", None
     return _semantic_candidates_with_store(
         vector_store,
         variants,
@@ -55,7 +59,9 @@ def _semantic_candidates_with_store(
     variants: list[QueryVariant],
     config: ToolConfig,
     deleted_ids: set[str],
-) -> tuple[list[RetrievalCandidate], list[QueryVariant], str]:
+) -> tuple[
+    list[RetrievalCandidate], list[QueryVariant], str, list[float] | None
+]:
     provider = provider_from_config(config.embedding)
     try:
         vectors = provider.embed_texts([variant.text for variant in variants])
@@ -76,6 +82,14 @@ def _semantic_candidates_with_store(
             raise ValueError("embedding response count does not match original query")
         status = "embedding_fallback"
 
+    original_query_vector: list[float] | None = None
+    for variant, vector in zip(executed_variants, vectors):
+        if variant.source == "original":
+            original_query_vector = vector
+            break
+    if original_query_vector is None and vectors:
+        original_query_vector = vectors[0]
+
     candidates: list[RetrievalCandidate] = []
     for variant, vector in zip(executed_variants, vectors):
         source = "semantic" if variant.source == "original" else "planner_semantic"
@@ -93,7 +107,7 @@ def _semantic_candidates_with_store(
                     semantic_matches=[SemanticMatch(variant.variant_id, item.score)],
                 )
             )
-    return candidates, executed_variants, status
+    return candidates, executed_variants, status, original_query_vector
 
 
 def lexical_candidates(

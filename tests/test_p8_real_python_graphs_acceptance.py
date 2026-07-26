@@ -87,9 +87,15 @@ def _synthetic_capture(*, improved: bool) -> dict:
         contextual=[f"data_provider/f{i}.py" for i in range(10)],
     )
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "manifest_sha256": "m" * 64,
         "implementation": {"base_commit": "c" * 40, "dirty": False},
+        "embedding_identity": {
+            "provider": "hash",
+            "model": "hash-v1",
+            "dimensions": 384,
+            "digest": None,
+        },
         "repositories": {},
         "cases": cases,
         "witnesses": {},
@@ -290,3 +296,81 @@ def test_credit_requires_relation_slot_and_witness() -> None:
                 entry["relation_witness"] = None
     report = runner.compare(baseline, unwitnessed)
     assert all(not row["credited"] for row in report["newly_satisfied"])
+
+
+def test_check_rejects_v2_captures(tmp_path: Path) -> None:
+    payload = _synthetic_capture(improved=False)
+    del payload["cases"]["daily-case-11"]
+    payload["schema_version"] = 2
+    payload.pop("embedding_identity", None)
+    stale = tmp_path / "v2.json"
+    stale.write_text(runner._canonical(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="capture schema"):
+        runner.check(stale)
+
+
+def test_embedding_config_builds_bge_and_hash_identities() -> None:
+    hash_config = runner._embedding_config("hash")
+    assert hash_config.embedding.provider == "hash"
+
+    bge_config = runner._embedding_config("bge")
+    assert bge_config.embedding.provider == "bge"
+    assert bge_config.embedding.model == "bge-m3"
+    assert bge_config.embedding.dimensions == 1024
+
+    with pytest.raises(ValueError, match="embedding"):
+        runner._embedding_config("openai")
+
+
+def test_check_requires_a_known_embedding_identity(tmp_path: Path) -> None:
+    payload = _synthetic_capture(improved=False)
+    del payload["cases"]["daily-case-11"]
+    payload["embedding_identity"] = {"provider": "word2vec"}
+    bad = tmp_path / "unknown-provider.json"
+    bad.write_text(runner._canonical(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="embedding identity"):
+        runner.check(bad)
+
+
+def test_indexed_identity_assertion_rejects_mismatch(tmp_path: Path) -> None:
+    from context_search_tool.config import DEFAULT_CONFIG
+    from context_search_tool.indexer import index_repository
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    index_repository(workspace, DEFAULT_CONFIG)
+
+    # Matching identity passes silently.
+    runner._assert_indexed_identity(workspace, DEFAULT_CONFIG)
+
+    with pytest.raises(ValueError, match="indexed embedding identity"):
+        runner._assert_indexed_identity(
+            workspace, runner._embedding_config("bge")
+        )
+
+
+def test_bge_truncation_bounds_every_embedded_text() -> None:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from context_search_tool.config import EmbeddingConfig
+    from context_search_tool.embeddings_bge import BGEEmbeddingProvider
+
+    runner._install_bge_truncation()
+    runner._install_bge_truncation()  # idempotent
+
+    provider = BGEEmbeddingProvider(
+        EmbeddingConfig(provider="bge", model="bge-m3", dimensions=1024)
+    )
+    seen: list[int] = []
+
+    def fake_batch(texts: list[str]) -> list[object]:
+        seen.extend(len(text) for text in texts)
+        return [object()] * len(texts)
+
+    provider._embed_batch = fake_batch
+    provider.embed_texts(["x" * 50_000, "short"])
+
+    assert seen
+    assert max(seen) <= runner._BGE_MAX_TEXT_CHARS

@@ -221,7 +221,7 @@ def test_semantic_candidates_embeds_once_searches_each_variant_and_merges_proven
     monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
     monkeypatch.setattr(candidates, "NumpyVectorStore", lambda _index_dir: vector_store)
 
-    semantic, executed, status = candidates.semantic_candidates(
+    semantic, executed, status, _query_vector = candidates.semantic_candidates(
         tmp_path,
         variants,
         DEFAULT_CONFIG,
@@ -262,7 +262,7 @@ def test_semantic_candidates_retries_original_after_variant_batch_count_mismatch
     monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
     monkeypatch.setattr(candidates, "NumpyVectorStore", lambda _index_dir: vector_store)
 
-    semantic, executed, status = candidates.semantic_candidates(
+    semantic, executed, status, _query_vector = candidates.semantic_candidates(
         tmp_path,
         variants,
         DEFAULT_CONFIG,
@@ -294,7 +294,7 @@ def test_semantic_candidates_retries_original_once_after_variant_batch_failure(
     monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
     monkeypatch.setattr(candidates, "NumpyVectorStore", lambda _index_dir: vector_store)
 
-    semantic, executed, status = candidates.semantic_candidates(
+    semantic, executed, status, _query_vector = candidates.semantic_candidates(
         tmp_path,
         variants,
         DEFAULT_CONFIG,
@@ -1141,7 +1141,7 @@ def _candidate_pool_paths_before_rerank(repo: Path, query: str) -> set[str]:
     store = SQLiteStore(index_dir / "index.sqlite")
     original_tokens = ordering.dedupe_lowered(tokenizer.tokenize_query(query))
     deleted_ids = store.deleted_chunk_ids()
-    semantic_candidates, _, _ = candidates.semantic_candidates(
+    semantic_candidates, _, _, _ = candidates.semantic_candidates(
         index_dir,
         [QueryVariant("original", " ".join(query.split()), "original")],
         config,
@@ -12220,16 +12220,15 @@ def test_direct_and_graph_evidence_co_occur_for_unprotected_targets(
     chunk is not a protected direct winner. No product change may be
     made to satisfy this test (design pre-committed rule 2)."""
     repo = _p9_quota_workflow(tmp_path)
-    monkeypatch.setattr(
-        selection.relation_policy, "RELATION_SLOTS_ENABLED", True
-    )
     seen: dict[str, dict[str, float]] = {}
     original = selection._apply_relation_slots
 
-    def recorder(selected, overflow):
+    def recorder(selected, overflow, *, similarity_resolver=None):
         for item in overflow:
             seen[str(item.file_path)] = dict(item.score_parts)
-        return original(selected, overflow)
+        return original(
+            selected, overflow, similarity_resolver=similarity_resolver
+        )
 
     monkeypatch.setattr(selection, "_apply_relation_slots", recorder)
     # The longer query dilutes wire.py's token coverage below the strong
@@ -12244,3 +12243,42 @@ def test_direct_and_graph_evidence_co_occur_for_unprotected_targets(
     assert wire is not None
     assert wire.get("token_coverage", 0.0) > 0.0
     assert "resolved_relation" in wire and "graph_imports_match" in wire
+
+
+def test_stub_similarity_resolver_admits_graph_target_end_to_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P11 seam proof: when the resolver ranks the graph-only target
+    above the bottom direct survivors, the quota admits it with the
+    relation-slot reason — no provider call, no flag."""
+    repo = _p9_quota_workflow(tmp_path)
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+
+    def stub_similarities(*args, **kwargs):
+        def resolver(ids: list[str]) -> dict[str, float]:
+            chunks = store.chunks_for_ids(list(ids))
+            return {
+                cid: (
+                    0.9
+                    if str(chunks[cid].file_path) == "app/wire.py"
+                    else 0.1
+                )
+                for cid in ids
+                if cid in chunks
+            }
+
+        return resolver
+
+    monkeypatch.setattr(
+        "context_search_tool.retrieval.relation_slot_similarities",
+        stub_similarities,
+    )
+    bundle = query_repository(
+        repo, "handle_order api entry flow dispatch", DEFAULT_CONFIG
+    )
+
+    by_path = {str(result.file_path): result for result in bundle.results}
+    wire = by_path.get("app/wire.py")
+    assert wire is not None
+    assert "relation slot" in wire.reasons
