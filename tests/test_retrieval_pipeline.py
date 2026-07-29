@@ -1,3 +1,4 @@
+from dataclasses import replace
 import logging
 from pathlib import Path
 from typing import get_args, get_type_hints
@@ -7,6 +8,7 @@ import pytest
 
 from context_search_tool import (
     chunker,
+    indexer,
     query_planner,
     retrieval,
     sqlite_store,
@@ -24,6 +26,14 @@ from context_search_tool.context_pack import (
     resolve_context_pack_options,
 )
 from context_search_tool.indexer import index_repository
+from context_search_tool.graph_lifecycle import GraphIntegrityError
+from context_search_tool.java_graph import JavaGraphProducer
+from context_search_tool.manifest import (
+    ManifestV2,
+    load_manifest,
+    prepare_manifest_v2,
+    publish_manifest_v2,
+)
 from context_search_tool.models import (
     CodeRelation,
     CodeSignal,
@@ -40,6 +50,7 @@ from context_search_tool.models import (
 from context_search_tool.paths import index_dir_for
 from context_search_tool.retrieval import evidence_anchor_top_k, query_repository
 from context_search_tool.repo_profile import build_repo_profile
+from context_search_tool.scanner import scan_workspace_v5
 from context_search_tool.retrieval_core import (
     candidates,
     context_expansion,
@@ -51,7 +62,7 @@ from context_search_tool.retrieval_core import (
     types as core_types,
 )
 from context_search_tool.sqlite_store import SQLiteStore
-from context_search_tool.vector_store import VectorSearchResult
+from context_search_tool.vector_store import PreparedVectorGeneration, VectorSearchResult
 
 
 def _span_ranked_chunk(
@@ -188,6 +199,13 @@ class AttestedEmbeddingProvider:
         self.postflight_error = postflight_error
         self.embed_calls: list[list[str]] = []
 
+    def fingerprint(self) -> dict[str, object]:
+        return {
+            "provider": "bge",
+            "model": "bge-m3",
+            "dimensions": 2,
+        }
+
     def runtime_fingerprint(self) -> dict[str, object]:
         self.events.append("preflight")
         return {"embedding_identity": _P13_BGE_IDENTITY}
@@ -205,6 +223,78 @@ class AttestedEmbeddingProvider:
         if self.postflight_error is not None:
             raise FakeBGEError(self.postflight_error)
         return {"embedding_identity": _P13_BGE_IDENTITY}
+
+
+def _p13_rebind_bound_vector_identity(repo: Path, identity: str) -> None:
+    index_dir = index_dir_for(repo)
+    descriptor = candidates.NumpyVectorStore.inspect_published_descriptor(index_dir)
+    assert descriptor is not None
+    publisher = candidates.NumpyVectorStore.fresh(
+        index_dir,
+        dimensions=descriptor.descriptor.dimensions,
+    )
+    publisher.publish_generation(
+        PreparedVectorGeneration(
+            index_dir,
+            replace(descriptor.descriptor, embedding_identity=identity),
+        )
+    )
+    rebound = candidates.NumpyVectorStore.inspect_published_descriptor(index_dir)
+    assert rebound is not None
+
+    manifest = load_manifest(repo)
+    assert isinstance(manifest, ManifestV2)
+    prepared_manifest = prepare_manifest_v2(
+        replace(manifest, vector_descriptor_sha256=rebound.sha256)
+    )
+    publish_manifest_v2(repo, prepared_manifest)
+
+    store = SQLiteStore(index_dir / "index.sqlite")
+    operational = store.read_operational_snapshot()
+    assert operational is not None
+    topology = store.get_metadata("project_unit_topology_fingerprint")
+    assert topology is not None
+    store.commit_operational_ready_v1(
+        binding=replace(
+            operational.binding,
+            manifest_sha256=prepared_manifest.sha256,
+            vector_descriptor_sha256=rebound.sha256,
+        ),
+        topology_fingerprint=topology,
+        expected_embedding_ids=set(operational.active_embedding_ids),
+        expected_source_count=operational.source_count,
+        expected_chunk_count=operational.chunk_count,
+        external_validator=lambda: None,
+        graph_snapshot_unchanged=True,
+    )
+
+
+def _p13_stale_bound_bge_repo(
+    tmp_path: Path,
+    *,
+    identity: str,
+) -> tuple[Path, ToolConfig]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text(
+        "class App { String boundIdentityProbe; }\n",
+        encoding="utf-8",
+    )
+    config = _p13_bge_config()
+    build_provider = AttestedEmbeddingProvider([])
+    indexer.build_v5_index_snapshot(
+        repo,
+        config,
+        graph_plugins=[JavaGraphProducer()],
+        scanner=scan_workspace_v5,
+        embedding_provider=build_provider,
+    )
+    assert build_provider.events == ["preflight", "embed", "postflight"]
+    _p13_rebind_bound_vector_identity(repo, identity)
+    SQLiteStore(index_dir_for(repo) / "index.sqlite").mark_graph_stale(
+        "files_changed"
+    )
+    return repo, config
 
 
 class IdentityCapturingVectorStore(CapturingVectorStore):
@@ -488,6 +578,74 @@ def test_bge_query_rejects_malformed_loaded_identity_as_integrity_failure(
     assert events == ["preflight", "persisted_identity"]
     assert provider.embed_calls == []
     assert vector_store.calls == []
+
+
+def test_query_repository_rejects_malformed_bound_bge_identity_when_graph_is_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    repo, config = _p13_stale_bound_bge_repo(
+        tmp_path,
+        identity="bge-ollama-v1:malformed",
+    )
+    provider_calls: list[str] = []
+    search_calls: list[str] = []
+
+    def forbidden_provider(_config: EmbeddingConfig) -> object:
+        provider_calls.append("provider")
+        raise AssertionError("malformed BGE identity reached provider HTTP boundary")
+
+    def forbidden_search(*_args: object, **_kwargs: object) -> object:
+        search_calls.append("search")
+        raise AssertionError("malformed BGE identity reached vector search")
+
+    monkeypatch.setattr(candidates, "provider_from_config", forbidden_provider)
+    monkeypatch.setattr(candidates.NumpyVectorStore, "search", forbidden_search)
+
+    try:
+        bundle = query_repository(repo, "boundIdentityProbe", config)
+    except GraphIntegrityError as error:
+        assert str(error) == "vector_snapshot_mismatch"
+    else:
+        pytest.fail(
+            "malformed bound BGE identity returned "
+            f"status={bundle.variant_retrieval_status} "
+            f"results={len(bundle.results)} "
+            f"provider_calls={provider_calls!r} "
+            f"search_calls={search_calls!r}"
+        )
+
+    assert provider_calls == []
+    assert search_calls == []
+    assert "boundIdentityProbe" not in caplog.text
+
+
+def test_query_repository_preserves_legacy_bound_bge_reindex_migration_when_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, config = _p13_stale_bound_bge_repo(
+        tmp_path,
+        identity=_P13_BGE_CONFIG_HASH,
+    )
+    provider = AttestedEmbeddingProvider([])
+    search_calls: list[str] = []
+
+    def forbidden_search(*_args: object, **_kwargs: object) -> object:
+        search_calls.append("search")
+        raise AssertionError("legacy BGE migration reached vector search")
+
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(candidates.NumpyVectorStore, "search", forbidden_search)
+
+    with pytest.raises(ValueError, match=r"^bge_reindex_required$") as caught:
+        query_repository(repo, "boundIdentityProbe", config)
+
+    assert getattr(caught.value, "code", None) == "bge_reindex_required"
+    assert provider.events == ["preflight"]
+    assert provider.embed_calls == []
+    assert search_calls == []
 
 
 def test_hash_query_does_not_read_runtime_or_persisted_identity(

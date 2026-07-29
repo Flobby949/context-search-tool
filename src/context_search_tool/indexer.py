@@ -3572,23 +3572,25 @@ def read_v5_vector_snapshot(
     ):
         raise GraphIntegrityError("bge_reindex_required")
     embedding_identity = embedding_config_hash(config.embedding)
+    invalid_bge_identity = False
     try:
         if config.embedding.provider == "bge":
             descriptor = NumpyVectorStore.inspect_published_descriptor(
                 repo.resolve() / ".context-search"
             )
+            if descriptor is None:
+                raise GraphIntegrityError("vector_snapshot_mismatch")
+            manifest = load_manifest(repo)
+            if not isinstance(manifest, ManifestV2):
+                raise GraphIntegrityError("vector_snapshot_mismatch")
             if (
-                descriptor is None
-                or not isinstance(
-                    manifest := load_manifest(repo),
-                    ManifestV2,
-                )
-                or _descriptor_embedding_state(
+                _descriptor_embedding_state(
                     descriptor.descriptor.embedding_identity,
                     manifest,
                 )
                 == "invalid"
             ):
+                invalid_bge_identity = True
                 raise GraphIntegrityError("vector_snapshot_mismatch")
             embedding_identity = descriptor.descriptor.embedding_identity
         if graph_session.capability.status == "ready":
@@ -3618,6 +3620,8 @@ def read_v5_vector_snapshot(
             graph_session.register_close_callback(snapshot.close)
         return snapshot
     except (GraphIntegrityError, OSError, RuntimeError, ValueError) as error:
+        if invalid_bge_identity:
+            raise
         if graph_session.capability.status == "ready":
             raise GraphIntegrityError("vector_snapshot_mismatch") from error
         logger.warning("vector_snapshot_mismatch")

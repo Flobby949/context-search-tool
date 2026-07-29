@@ -20,7 +20,7 @@ HARNESS = ROOT / "tests" / "p13_bge_provider_measurement.py"
 PYTHON = Path(sys.executable)
 ENVELOPE_SCHEMA = "p13-bge-provider-measurement-v1"
 BASELINE_COMMIT = "122ed052284fa488943cb4464301a391bd2e7e24"
-CANDIDATE_COMMIT = "a7c35368061283a9fadaacf81b3b6a318ce996f3"
+SYNTHETIC_CANDIDATE_COMMIT = "c" * 40
 GOLD_SHA256 = (
     "459e6a56c0f7c3b033e34dafeba623b15e221d19ff59244d7fa29a47621f7767"
 )
@@ -277,7 +277,7 @@ def _discover_p13_evidence_layout() -> tuple[Path, Path, Path]:
     roots = []
     for side, expected_head in (
         ("baseline", BASELINE_COMMIT),
-        ("candidate", CANDIDATE_COMMIT),
+        ("candidate", _git_head(ROOT)),
     ):
         implementation_root = (
             run_root / side / "context-search-tool"
@@ -636,6 +636,8 @@ def _p1_catalog_queries() -> dict[tuple[str, str], str]:
 def _synthetic_p1_raw_report(
     profile: str,
     failed_cases: set[str],
+    *,
+    expected_candidate_commit: str,
 ) -> dict[str, object]:
     config_hash = P1_CONFIG_HASHES[profile]
     catalog_queries = _p1_catalog_queries()
@@ -706,7 +708,7 @@ def _synthetic_p1_raw_report(
         },
         "tool": {
             "name": "context-search-tool",
-            "git_commit": CANDIDATE_COMMIT,
+            "git_commit": expected_candidate_commit,
         },
         "fixture": {
             "path": "tests/fixtures/retrieval_quality/queries.json",
@@ -752,10 +754,17 @@ def _write_p1_evidence(
     evidence_root: Path,
     captures: list[dict[str, object]],
     *,
+    expected_candidate_commit: str,
     vector_failed: set[str] | None = None,
     hybrid_failed: set[str] | None = None,
 ) -> tuple[Path, dict[str, dict[str, object]]]:
     evidence_root.mkdir(parents=True, exist_ok=True)
+    assert captures
+    assert all(
+        capture["implementation"]["pre"]["base_commit"]
+        == expected_candidate_commit
+        for capture in captures
+    )
     failures = {
         "p1_vector_bge": (
             {"audit-status-literal"}
@@ -771,7 +780,11 @@ def _write_p1_evidence(
     profiles = {}
     normalized = {}
     for profile in ("p1_vector_bge", "p1_hybrid_bge"):
-        raw_report = _synthetic_p1_raw_report(profile, failures[profile])
+        raw_report = _synthetic_p1_raw_report(
+            profile,
+            failures[profile],
+            expected_candidate_commit=expected_candidate_commit,
+        )
         relative = Path("p1-raw") / f"{profile}.json"
         raw_path = evidence_root / relative
         raw_path.parent.mkdir(parents=True, exist_ok=True)
@@ -935,7 +948,7 @@ def _native_capture(provider: str) -> dict[str, object]:
     }
     return {
         "schema_version": 4,
-        "implementation": _implementation(CANDIDATE_COMMIT),
+        "implementation": _implementation(SYNTHETIC_CANDIDATE_COMMIT),
         "environment": {
             "python_version": "3.13.12",
             "sqlite_version": "3.51.2",
@@ -1035,7 +1048,9 @@ def _capture_envelope(
     requests_redink: int = 10,
     requests_daily: int = 20,
 ) -> dict[str, object]:
-    commit = BASELINE_COMMIT if legacy else CANDIDATE_COMMIT
+    commit = (
+        BASELINE_COMMIT if legacy else SYNTHETIC_CANDIDATE_COMMIT
+    )
     implementation = _implementation(commit)
     attestation = _attestation() if provider == "bge" else None
     capture = _legacy_capture() if legacy else _native_capture(provider)
@@ -1248,6 +1263,7 @@ def _public_comparison_case(
     list[dict[str, object]],
     list[dict[str, object]],
 ]:
+    expected_candidate_commit = _git_head(ROOT)
     if command == "paired":
         captures = _engineering_captures()
         for capture in captures:
@@ -1268,6 +1284,8 @@ def _public_comparison_case(
             str(baseline_root),
             "--candidate-root",
             str(ROOT),
+            "--expected-candidate-commit",
+            expected_candidate_commit,
             "--sources",
             str(tmp_path / "mocked-sources"),
             "--output",
@@ -1282,11 +1300,14 @@ def _public_comparison_case(
         p1_evidence, _profiles = _write_p1_evidence(
             output.parent / "p1-input",
             captures,
+            expected_candidate_commit=expected_candidate_commit,
         )
         argv = [
             "product-paired",
             "--candidate-root",
             str(ROOT),
+            "--expected-candidate-commit",
+            expected_candidate_commit,
             "--sources",
             str(tmp_path / "mocked-sources"),
             "--output",
@@ -1406,6 +1427,7 @@ def test_measurement_script_import_and_frozen_cli_are_safe(
             {
                 "--baseline-root",
                 "--candidate-root",
+                "--expected-candidate-commit",
                 "--sources",
                 "--output",
             },
@@ -1414,6 +1436,7 @@ def test_measurement_script_import_and_frozen_cli_are_safe(
             "product-paired",
             {
                 "--candidate-root",
+                "--expected-candidate-commit",
                 "--sources",
                 "--output",
                 "--p1-evidence",
@@ -1439,9 +1462,17 @@ def test_measurement_script_import_and_frozen_cli_are_safe(
     )
     assert baseline_root.is_dir()
     assert sources_root.is_dir()
+    expected_candidate_commit = _git_head(ROOT)
+    monkeypatch.setenv(
+        "P13_EXPECTED_CANDIDATE_COMMIT",
+        "f" * 40,
+    )
 
     paired_payloads = _engineering_captures()
     product_payloads = _product_captures()
+    for capture in (*paired_payloads, *product_payloads):
+        if capture["mode"] == "native":
+            _bind_candidate_identity(capture)
     planned_payloads: list[dict[str, object]] = []
     process_calls: list[
         tuple[tuple[object, ...], dict[str, object], dict[str, object]]
@@ -1454,6 +1485,7 @@ def test_measurement_script_import_and_frozen_cli_are_safe(
     p1_evidence, p1_profiles = _write_p1_evidence(
         tmp_path / "p1-evidence",
         product_payloads,
+        expected_candidate_commit=expected_candidate_commit,
     )
     p1_loader_calls: list[
         tuple[Path, list[dict[str, object]]]
@@ -1631,6 +1663,8 @@ def test_measurement_script_import_and_frozen_cli_are_safe(
                 str(baseline_root),
                 "--candidate-root",
                 str(ROOT),
+                "--expected-candidate-commit",
+                expected_candidate_commit,
                 "--sources",
                 str(sources_root),
                 "--output",
@@ -1648,6 +1682,8 @@ def test_measurement_script_import_and_frozen_cli_are_safe(
                 "product-paired",
                 "--candidate-root",
                 str(ROOT),
+                "--expected-candidate-commit",
+                expected_candidate_commit,
                 "--sources",
                 str(sources_root),
                 "--output",
@@ -1679,6 +1715,12 @@ def test_measurement_script_import_and_frozen_cli_are_safe(
     ):
         assert argv[0] == str(PYTHON)
         assert argv[1] == "-P"
+        mode = argv[argv.index("--mode") + 1]
+        if mode == "native":
+            expected_index = argv.index("--expected-candidate-commit") + 1
+            assert argv[expected_index] == expected_candidate_commit
+        else:
+            assert "--expected-candidate-commit" not in argv
         assert kwargs["env"]["PYTHONPATH"] == os.pathsep.join(
             (str(target_root / "src"), str(target_root / "tests"))
         )
@@ -1720,12 +1762,79 @@ def test_measurement_script_import_and_frozen_cli_are_safe(
         _assert_persisted_capture_evidence(report, tmp_path)
 
 
+@pytest.mark.parametrize("command", ("paired", "product-paired"))
+def test_public_cli_requires_explicit_candidate_commit_before_any_action(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+) -> None:
+    module = _load_harness()
+    expected_candidate_commit = _git_head(ROOT)
+    attempted_actions: list[str] = []
+
+    def forbidden_process(*args: object, **kwargs: object) -> object:
+        attempted_actions.append("process")
+        raise AssertionError(
+            "missing candidate commit reached process boundary"
+        )
+
+    class ForbiddenSession:
+        def __init__(self) -> None:
+            attempted_actions.append("ollama")
+            raise AssertionError(
+                "missing candidate commit reached Ollama boundary"
+            )
+
+    import requests
+
+    monkeypatch.setenv(
+        "P13_EXPECTED_CANDIDATE_COMMIT",
+        expected_candidate_commit,
+    )
+    monkeypatch.setattr(module.subprocess, "run", forbidden_process)
+    monkeypatch.setattr(requests, "Session", ForbiddenSession)
+    output = tmp_path / "must-not-exist.json"
+    if command == "paired":
+        argv = [
+            command,
+            "--baseline-root",
+            str(tmp_path / "baseline"),
+            "--candidate-root",
+            str(ROOT),
+            "--sources",
+            str(tmp_path / "sources"),
+            "--output",
+            str(output),
+        ]
+    else:
+        argv = [
+            command,
+            "--candidate-root",
+            str(ROOT),
+            "--sources",
+            str(tmp_path / "sources"),
+            "--output",
+            str(output),
+            "--p1-evidence",
+            str(tmp_path / "p1-evidence.json"),
+        ]
+
+    with pytest.raises(SystemExit) as caught:
+        module.main(argv)
+    assert caught.value.code == 2
+    assert "--expected-candidate-commit" in capsys.readouterr().err
+    assert attempted_actions == []
+    assert not output.exists()
+
+
 def test_paired_cli_rejects_pair_override_before_any_action(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     module = _load_harness()
+    expected_candidate_commit = _git_head(ROOT)
     attempted_actions: list[str] = []
 
     def forbidden_capture(*args: object, **kwargs: object) -> object:
@@ -1765,6 +1874,8 @@ def test_paired_cli_rejects_pair_override_before_any_action(
                 str(tmp_path / "baseline"),
                 "--candidate-root",
                 str(ROOT),
+                "--expected-candidate-commit",
+                expected_candidate_commit,
                 "--sources",
                 str(tmp_path / "mocked-sources"),
                 "--output",
@@ -1787,6 +1898,7 @@ def test_product_cli_requires_p1_evidence_before_any_action(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _load_harness()
+    expected_candidate_commit = _git_head(ROOT)
     attempted_actions: list[str] = []
 
     def forbidden_capture(*args: object, **kwargs: object) -> object:
@@ -1824,6 +1936,8 @@ def test_product_cli_requires_p1_evidence_before_any_action(
                 "product-paired",
                 "--candidate-root",
                 str(ROOT),
+                "--expected-candidate-commit",
+                expected_candidate_commit,
                 "--sources",
                 str(tmp_path / "mocked-sources"),
                 "--output",
@@ -1892,6 +2006,8 @@ def test_paired_cli_persists_every_capture_used_by_each_gate(
                 str(baseline_root),
                 "--candidate-root",
                 str(ROOT),
+                "--expected-candidate-commit",
+                _git_head(ROOT),
                 "--sources",
                 str(tmp_path / "mocked-sources"),
                 "--output",
@@ -2041,6 +2157,8 @@ def test_paired_cli_rejects_malformed_gate_provenance(
                 str(baseline_root),
                 "--candidate-root",
                 str(ROOT),
+                "--expected-candidate-commit",
+                _git_head(ROOT),
                 "--sources",
                 str(tmp_path / "mocked-sources"),
                 "--output",
@@ -2400,6 +2518,7 @@ def test_product_cli_binds_p1_gate_to_supplied_evidence(
     expected_pass: bool,
 ) -> None:
     module = _load_harness()
+    expected_candidate_commit = _git_head(ROOT)
     captures = _product_captures()
     for capture in captures:
         _bind_candidate_identity(capture)
@@ -2414,6 +2533,7 @@ def test_product_cli_binds_p1_gate_to_supplied_evidence(
     p1_evidence, profiles = _write_p1_evidence(
         evidence_root,
         captures,
+        expected_candidate_commit=expected_candidate_commit,
         vector_failed=set(vector_failed),
     )
     p1_sha256 = _sha256(p1_evidence)
@@ -2425,6 +2545,8 @@ def test_product_cli_binds_p1_gate_to_supplied_evidence(
                 "product-paired",
                 "--candidate-root",
                 str(ROOT),
+                "--expected-candidate-commit",
+                expected_candidate_commit,
                 "--sources",
                 str(tmp_path / "mocked-sources"),
                 "--output",
@@ -2482,8 +2604,13 @@ def test_p1_loader_reads_raw_reports_and_recomputes_profiles(
     tmp_path: Path,
 ) -> None:
     module = _load_harness()
+    expected_candidate_commit = SYNTHETIC_CANDIDATE_COMMIT
     captures = _product_captures()
-    evidence, expected = _write_p1_evidence(tmp_path, captures)
+    evidence, expected = _write_p1_evidence(
+        tmp_path,
+        captures,
+        expected_candidate_commit=expected_candidate_commit,
+    )
     wrapper = json.loads(evidence.read_text(encoding="utf-8"))
     assert set(wrapper) == {
         "schema_version",
@@ -2513,6 +2640,7 @@ def test_p1_loader_reads_raw_reports_and_recomputes_profiles(
         ]
         raw_path = evidence.parent / profile["raw_report"]["path"]
         raw = json.loads(raw_path.read_text(encoding="utf-8"))
+        assert raw["tool"]["git_commit"] == expected_candidate_commit
         assert [
             (case["repo_key"], case["case_id"], case["query"])
             for case in raw["cases"]
@@ -2544,8 +2672,13 @@ def test_p1_loader_rejects_catalog_query_mismatch(
     tmp_path: Path,
 ) -> None:
     module = _load_harness()
+    expected_candidate_commit = SYNTHETIC_CANDIDATE_COMMIT
     captures = _product_captures()
-    evidence, _ = _write_p1_evidence(tmp_path, captures)
+    evidence, _ = _write_p1_evidence(
+        tmp_path,
+        captures,
+        expected_candidate_commit=expected_candidate_commit,
+    )
     wrapper = json.loads(evidence.read_text(encoding="utf-8"))
     original_wrapper = copy.deepcopy(wrapper)
     forged_query = "P13 forged non-catalog query"
@@ -2586,6 +2719,7 @@ def test_p1_loader_rejects_unbound_or_inconsistent_provenance(
     tmp_path: Path,
 ) -> None:
     module = _load_harness()
+    expected_candidate_commit = SYNTHETIC_CANDIDATE_COMMIT
     captures = _product_captures()
 
     for mutation in (
@@ -2608,6 +2742,7 @@ def test_p1_loader_rejects_unbound_or_inconsistent_provenance(
         "raw-sha",
         "raw-root-extra",
         "raw-tool",
+        "raw-tool-commit",
         "raw-tool-extra",
         "raw-command-extra",
         "raw-profile",
@@ -2620,7 +2755,11 @@ def test_p1_loader_rejects_unbound_or_inconsistent_provenance(
         "raw-aggregate",
         "raw-cases",
     ):
-        evidence, _ = _write_p1_evidence(tmp_path / mutation, captures)
+        evidence, _ = _write_p1_evidence(
+            tmp_path / mutation,
+            captures,
+            expected_candidate_commit=expected_candidate_commit,
+        )
         wrapper = json.loads(evidence.read_text(encoding="utf-8"))
         vector = wrapper["profiles"]["p1_vector_bge"]
         if mutation == "wrapper-extra":
@@ -2681,6 +2820,8 @@ def test_p1_loader_rejects_unbound_or_inconsistent_provenance(
                 raw["unexpected"] = True
             elif mutation == "raw-tool":
                 raw["tool"]["name"] = "forged-tool"
+            elif mutation == "raw-tool-commit":
+                raw["tool"]["git_commit"] = "f" * 40
             elif mutation == "raw-tool-extra":
                 raw["tool"]["unexpected"] = True
             elif mutation == "raw-command-extra":
@@ -2958,13 +3099,19 @@ def test_legacy_requires_exact_clean_baseline_and_frozen_runner(
             "git",
             "-C",
             str(baseline_root),
-            "checkout",
+            "-c",
+            "user.name=P13 Test",
+            "-c",
+            "user.email=p13@example.invalid",
+            "commit",
             "-q",
-            "--detach",
-            CANDIDATE_COMMIT,
+            "--allow-empty",
+            "-m",
+            "wrong baseline identity",
         ),
         check=True,
     )
+    assert _git_head(baseline_root) != BASELINE_COMMIT
     with pytest.raises(ValueError, match="clean detached baseline"):
         module.validate_capture_envelope(
             payload,
@@ -2972,8 +3119,12 @@ def test_legacy_requires_exact_clean_baseline_and_frozen_runner(
         )
 
     wrong_commit = copy.deepcopy(payload)
-    wrong_commit["implementation"]["pre"]["base_commit"] = CANDIDATE_COMMIT
-    wrong_commit["implementation"]["post"]["base_commit"] = CANDIDATE_COMMIT
+    wrong_commit["implementation"]["pre"]["base_commit"] = (
+        SYNTHETIC_CANDIDATE_COMMIT
+    )
+    wrong_commit["implementation"]["post"]["base_commit"] = (
+        SYNTHETIC_CANDIDATE_COMMIT
+    )
     dirty = copy.deepcopy(payload)
     dirty["implementation"]["pre"]["dirty"] = True
     dirty["implementation"]["post"]["dirty"] = True
@@ -2995,11 +3146,64 @@ def test_legacy_requires_exact_clean_baseline_and_frozen_runner(
     native = _strip_test_fields(
         _capture_envelope(side="candidate", sequence=1)
     )
+
+    def commit_contract_tree(
+        root: Path,
+        message: str,
+        *,
+        initialize: bool = False,
+    ) -> dict[str, object]:
+        if initialize:
+            subprocess.run(("git", "init", "-q", str(root)), check=True)
+        subprocess.run(
+            ("git", "-C", str(root), "add", "--", "src", "tests"),
+            check=True,
+        )
+        subprocess.run(
+            (
+                "git",
+                "-C",
+                str(root),
+                "-c",
+                "user.name=P13 Test",
+                "-c",
+                "user.email=p13@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                message,
+            ),
+            check=True,
+        )
+        return {
+            "base_commit": _git_head(root),
+            "tracked_diff_sha256": hashlib.sha256(b"").hexdigest(),
+            "untracked_files": {},
+            "dirty": False,
+        }
+
+    def bind_native_identity(
+        payload: dict[str, object],
+        identity: dict[str, object],
+    ) -> None:
+        payload["implementation"] = {
+            "pre": copy.deepcopy(identity),
+            "post": copy.deepcopy(identity),
+        }
+        payload["capture"]["implementation"] = copy.deepcopy(identity)
+
     pristine_root = tmp_path / "pristine"
     _copy_contract_root(ROOT, pristine_root)
+    pristine_identity = commit_contract_tree(
+        pristine_root,
+        "pristine candidate contract",
+        initialize=True,
+    )
+    bind_native_identity(native, pristine_identity)
     module.validate_capture_envelope(
         native,
         implementation_root=pristine_root,
+        expected_candidate_commit=pristine_identity["base_commit"],
     )
 
     drift_paths = {
@@ -3011,10 +3215,19 @@ def test_legacy_requires_exact_clean_baseline_and_frozen_runner(
     }
     for label, relative in drift_paths.items():
         drift_root = tmp_path / label
-        _copy_contract_root(ROOT, drift_root)
+        subprocess.run(
+            ("git", "clone", "-q", str(pristine_root), str(drift_root)),
+            check=True,
+        )
         target = drift_root / relative
         original = target.read_bytes()
         target.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
+        drift_identity = commit_contract_tree(
+            drift_root,
+            f"{label} drift",
+        )
+        drift_payload = copy.deepcopy(native)
+        bind_native_identity(drift_payload, drift_identity)
         with pytest.raises(
             ValueError,
             match=(
@@ -3024,8 +3237,9 @@ def test_legacy_requires_exact_clean_baseline_and_frozen_runner(
             ),
         ):
             module.validate_capture_envelope(
-                native,
+                drift_payload,
                 implementation_root=drift_root,
+                expected_candidate_commit=drift_identity["base_commit"],
             )
 
 
@@ -3137,8 +3351,51 @@ def test_native_envelope_recursively_rejects_private_payloads(
     assert str(exc_info.value) == "capture envelope violates privacy contract"
 
 
-def test_native_envelope_recomputes_candidate_implementation_identity() -> None:
+def test_native_envelope_requires_independent_clean_candidate_commit(
+    tmp_path: Path,
+) -> None:
     module = _load_harness()
+    implementation_root = tmp_path / "candidate"
+    _copy_contract_root(ROOT, implementation_root)
+    subprocess.run(
+        ("git", "init", "-q", str(implementation_root)),
+        check=True,
+    )
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(implementation_root),
+            "add",
+            "--",
+            "src",
+            "tests",
+        ),
+        check=True,
+    )
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(implementation_root),
+            "-c",
+            "user.name=P13 Test",
+            "-c",
+            "user.email=p13@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "candidate fixture",
+        ),
+        check=True,
+    )
+    expected_candidate_commit = _git_head(implementation_root)
+    implementation = {
+        "base_commit": expected_candidate_commit,
+        "tracked_diff_sha256": hashlib.sha256(b"").hexdigest(),
+        "untracked_files": {},
+        "dirty": False,
+    }
     payload = _strip_test_fields(
         _capture_envelope(
             side="hash",
@@ -3148,16 +3405,101 @@ def test_native_envelope_recomputes_candidate_implementation_identity() -> None:
             requests_daily=0,
         )
     )
-    _bind_candidate_identity(payload)
-    module.validate_capture_envelope(payload, implementation_root=ROOT)
+    payload["implementation"] = {
+        "pre": copy.deepcopy(implementation),
+        "post": copy.deepcopy(implementation),
+    }
+    payload["capture"]["implementation"] = copy.deepcopy(implementation)
+    module.validate_capture_envelope(
+        payload,
+        implementation_root=implementation_root,
+        expected_candidate_commit=expected_candidate_commit,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="expected candidate commit is required",
+    ):
+        module.validate_capture_envelope(
+            payload,
+            implementation_root=implementation_root,
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="native candidate commit mismatch",
+    ):
+        module.validate_capture_envelope(
+            payload,
+            implementation_root=implementation_root,
+            expected_candidate_commit="f" * 40,
+        )
 
     forged_commit = "f" * 40
     payload["implementation"]["pre"]["base_commit"] = forged_commit
     payload["implementation"]["post"]["base_commit"] = forged_commit
     payload["capture"]["implementation"]["base_commit"] = forged_commit
     with pytest.raises(ValueError) as exc_info:
-        module.validate_capture_envelope(payload, implementation_root=ROOT)
+        module.validate_capture_envelope(
+            payload,
+            implementation_root=implementation_root,
+            expected_candidate_commit=expected_candidate_commit,
+        )
     assert str(exc_info.value) == "native implementation identity mismatch"
+
+    payload["implementation"] = {
+        "pre": copy.deepcopy(implementation),
+        "post": copy.deepcopy(implementation),
+    }
+    payload["capture"]["implementation"] = copy.deepcopy(implementation)
+    harness_copy = implementation_root / "tests/p13_bge_provider_measurement.py"
+    harness_copy.write_bytes(harness_copy.read_bytes() + b"\n")
+    with pytest.raises(
+        ValueError,
+        match="native candidate must be clean",
+    ):
+        module.validate_capture_envelope(
+            payload,
+            implementation_root=implementation_root,
+            expected_candidate_commit=expected_candidate_commit,
+        )
+
+    child_output = tmp_path / "must-not-capture.json"
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (
+            str(implementation_root / "src"),
+            str(implementation_root / "tests"),
+        )
+    )
+    completed = subprocess.run(
+        (
+            str(PYTHON),
+            "-P",
+            str(HARNESS),
+            "_capture-child",
+            "--implementation-root",
+            str(implementation_root),
+            "--expected-candidate-commit",
+            expected_candidate_commit,
+            "--sources",
+            str(tmp_path / "missing-sources"),
+            "--output",
+            str(child_output),
+            "--mode",
+            "native",
+            "--provider",
+            "hash",
+        ),
+        cwd=implementation_root,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode != 0
+    assert "native candidate must be clean" in completed.stderr
+    assert not child_output.exists()
 
 
 def test_legacy_query_timing_is_exactly_once_and_transparent() -> None:
@@ -3831,7 +4173,7 @@ def test_product_comparison_requires_one_candidate_identity(
 ) -> None:
     module = _load_harness()
     captures = _product_captures()
-    second_identity = _implementation(CANDIDATE_COMMIT)
+    second_identity = _implementation(SYNTHETIC_CANDIDATE_COMMIT)
     second_identity["tracked_diff_sha256"] = "b" * 64
     second_identity["dirty"] = True
     for capture in captures[2:]:

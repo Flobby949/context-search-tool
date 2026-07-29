@@ -21,7 +21,6 @@ from typing import Any, Callable, Iterator
 
 ENVELOPE_SCHEMA = "p13-bge-provider-measurement-v1"
 BASELINE_COMMIT = "122ed052284fa488943cb4464301a391bd2e7e24"
-CANDIDATE_COMMIT = "a7c35368061283a9fadaacf81b3b6a318ce996f3"
 LEGACY_RUNNER_SHA256 = (
     "c768f3d5474ffe664654962fc22033af05bfaeeb4100b7afb0324b1d718a4809"
 )
@@ -105,6 +104,7 @@ OLLAMA_VERSION = "0.30.10"
 
 _ROOT = Path(__file__).resolve().parents[1]
 _HARNESS_PATH = Path(__file__).resolve()
+_GIT_OID_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ENVELOPE_KEYS = {
     "schema_version",
@@ -456,6 +456,34 @@ def _implementation_identity(root: Path) -> dict[str, object]:
         "untracked_files": untracked,
         "dirty": bool(diff) or bool(untracked),
     }
+
+
+def _require_expected_candidate_commit(value: object) -> str:
+    if not isinstance(value, str) or _GIT_OID_RE.fullmatch(value) is None:
+        raise ValueError("expected candidate commit is required")
+    return value
+
+
+def _verify_native_candidate(
+    implementation_root: Path,
+    expected_candidate_commit: object,
+) -> dict[str, object]:
+    expected = _require_expected_candidate_commit(
+        expected_candidate_commit
+    )
+    root = implementation_root.resolve()
+    actual = _implementation_identity(root)
+    if actual["base_commit"] != expected:
+        raise ValueError("native candidate commit mismatch")
+    dirty = _git(
+        root,
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+    )
+    if dirty:
+        raise ValueError("native candidate must be clean")
+    return actual
 
 
 def _validate_implementation(value: object) -> dict:
@@ -859,6 +887,7 @@ def _validate_protected_inputs(value: object) -> dict:
 def _verify_implementation_root(
     payload: dict,
     implementation_root: Path,
+    expected_candidate_commit: str | None,
 ) -> None:
     root = implementation_root.resolve()
     runner = payload["runner"]
@@ -883,16 +912,17 @@ def _verify_implementation_root(
             raise ValueError("legacy mode requires a clean detached baseline")
         return
 
-    if _git(root, "rev-parse", "--git-dir", check=False):
-        actual = _implementation_identity(root)
-        capture_implementation = payload["capture"].get("implementation")
-        if (
-            actual["base_commit"] != CANDIDATE_COMMIT
-            or payload["implementation"]["pre"] != actual
-            or payload["implementation"]["post"] != actual
-            or capture_implementation != actual
-        ):
-            raise ValueError("native implementation identity mismatch")
+    actual = _verify_native_candidate(
+        root,
+        expected_candidate_commit,
+    )
+    capture_implementation = payload["capture"].get("implementation")
+    if (
+        payload["implementation"]["pre"] != actual
+        or payload["implementation"]["post"] != actual
+        or capture_implementation != actual
+    ):
+        raise ValueError("native implementation identity mismatch")
 
     for relative, expected in _FROZEN_INPUTS.items():
         path = root / relative
@@ -907,6 +937,8 @@ def _verify_implementation_root(
 def validate_capture_envelope(
     payload: dict[str, object],
     implementation_root: Path | None = None,
+    *,
+    expected_candidate_commit: str | None = None,
 ) -> None:
     envelope = _require_keys(payload, _ENVELOPE_KEYS, "capture envelope")
     if _privacy_failure(envelope):
@@ -987,7 +1019,11 @@ def validate_capture_envelope(
             raise ValueError("native capture retained the legacy transform")
 
     if implementation_root is not None:
-        _verify_implementation_root(envelope, implementation_root)
+        _verify_implementation_root(
+            envelope,
+            implementation_root,
+            expected_candidate_commit,
+        )
 
 
 @contextmanager
@@ -1335,8 +1371,14 @@ def _capture_child(
     mode: str,
     provider: str,
     repetitions: int,
+    expected_candidate_commit: str | None = None,
 ) -> dict[str, object]:
     implementation_root = implementation_root.resolve()
+    if mode == "native":
+        _verify_native_candidate(
+            implementation_root,
+            expected_candidate_commit,
+        )
     package = importlib.import_module("context_search_tool")
     bge_module = importlib.import_module(
         "context_search_tool.embeddings_bge"
@@ -1422,7 +1464,11 @@ def _capture_child(
         "capture": capture,
         "protected_inputs": copy.deepcopy(_FROZEN_INPUTS),
     }
-    validate_capture_envelope(payload)
+    validate_capture_envelope(
+        payload,
+        implementation_root=implementation_root,
+        expected_candidate_commit=expected_candidate_commit,
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(_canonical(payload), encoding="utf-8")
     raw_output.unlink(missing_ok=True)
@@ -1437,6 +1483,7 @@ def _run_capture_process(
     provider: str,
     repetitions: int = _DEFAULT_TIMING_REPETITIONS,
     capture_path: Path | None = None,
+    expected_candidate_commit: str | None = None,
 ) -> dict[str, object]:
     if capture_path is None:
         with tempfile.TemporaryDirectory(
@@ -1449,8 +1496,14 @@ def _run_capture_process(
                 provider=provider,
                 repetitions=repetitions,
                 capture_path=Path(raw_dir) / "capture-envelope.json",
+                expected_candidate_commit=expected_candidate_commit,
             )
 
+    if mode == "native":
+        _verify_native_candidate(
+            implementation_root,
+            expected_candidate_commit,
+        )
     capture_path.parent.mkdir(parents=True, exist_ok=True)
     pre_attestation = None
     if provider == "bge":
@@ -1463,14 +1516,25 @@ def _run_capture_process(
             str(implementation_root / "tests"),
         )
     )
-    completed = subprocess.run(
+    command = [
+        sys.executable,
+        "-P",
+        str(_HARNESS_PATH),
+        "_capture-child",
+        "--implementation-root",
+        str(implementation_root),
+    ]
+    if mode == "native":
+        command.extend(
+            (
+                "--expected-candidate-commit",
+                _require_expected_candidate_commit(
+                    expected_candidate_commit
+                ),
+            )
+        )
+    command.extend(
         (
-            sys.executable,
-            "-P",
-            str(_HARNESS_PATH),
-            "_capture-child",
-            "--implementation-root",
-            str(implementation_root),
             "--sources",
             str(sources),
             "--output",
@@ -1481,7 +1545,10 @@ def _run_capture_process(
             provider,
             "--repetitions",
             str(repetitions),
-        ),
+        )
+    )
+    completed = subprocess.run(
+        tuple(command),
         cwd=implementation_root,
         env=environment,
         text=True,
@@ -1517,6 +1584,9 @@ def _run_capture_process(
     validate_capture_envelope(
         payload,
         implementation_root=implementation_root,
+        expected_candidate_commit=(
+            expected_candidate_commit if mode == "native" else None
+        ),
     )
     capture_path.write_text(_canonical(payload), encoding="utf-8")
     return payload
@@ -2820,6 +2890,14 @@ def _positive_integer(raw: str) -> int:
     return value
 
 
+def _candidate_commit(raw: str) -> str:
+    if _GIT_OID_RE.fullmatch(raw) is None:
+        raise argparse.ArgumentTypeError(
+            "expected candidate commit must be a lowercase full Git OID"
+        )
+    return raw
+
+
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run frozen P13 paired measurements."
@@ -2832,6 +2910,11 @@ def _argument_parser() -> argparse.ArgumentParser:
     )
     paired.add_argument("--baseline-root", type=Path, required=True)
     paired.add_argument("--candidate-root", type=Path, required=True)
+    paired.add_argument(
+        "--expected-candidate-commit",
+        type=_candidate_commit,
+        required=True,
+    )
     paired.add_argument("--sources", type=Path, required=True)
     paired.add_argument("--output", type=Path, required=True)
 
@@ -2840,12 +2923,21 @@ def _argument_parser() -> argparse.ArgumentParser:
         help="compare candidate hash and BGE providers",
     )
     product.add_argument("--candidate-root", type=Path, required=True)
+    product.add_argument(
+        "--expected-candidate-commit",
+        type=_candidate_commit,
+        required=True,
+    )
     product.add_argument("--sources", type=Path, required=True)
     product.add_argument("--output", type=Path, required=True)
     product.add_argument("--p1-evidence", type=Path, required=True)
 
     child = commands.add_parser("_capture-child")
     child.add_argument("--implementation-root", type=Path, required=True)
+    child.add_argument(
+        "--expected-candidate-commit",
+        type=_candidate_commit,
+    )
     child.add_argument("--sources", type=Path, required=True)
     child.add_argument("--output", type=Path, required=True)
     child.add_argument(
@@ -2876,9 +2968,15 @@ def main(argv: list[str] | None = None) -> int:
             mode=arguments.mode,
             provider=arguments.provider,
             repetitions=arguments.repetitions,
+            expected_candidate_commit=arguments.expected_candidate_commit,
         )
         sys.stdout.write(_canonical(payload))
         return 0
+
+    _verify_native_candidate(
+        arguments.candidate_root,
+        arguments.expected_candidate_commit,
+    )
 
     if arguments.command == "paired":
         captures: list[dict[str, object]] = []
@@ -2929,6 +3027,11 @@ def main(argv: list[str] | None = None) -> int:
                     mode=mode,
                     provider="bge",
                     capture_path=capture_path,
+                    expected_candidate_commit=(
+                        arguments.expected_candidate_commit
+                        if mode == "native"
+                        else None
+                    ),
                 )
             )
         records = _capture_records(
@@ -2960,6 +3063,7 @@ def main(argv: list[str] | None = None) -> int:
             mode="native",
             provider=provider,
             capture_path=capture_path,
+            expected_candidate_commit=arguments.expected_candidate_commit,
         )
         for provider, capture_path in zip(
             providers,

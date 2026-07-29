@@ -127,15 +127,32 @@ def _embedding_descriptor_identity(
         return embedding_config_hash(config)
 
     if provider is None:
-        raise ValueError("BGE embedding descriptor identity requires runtime attestation")
+        raise ValueError("BGE runtime embedding identity is invalid")
     runtime_fingerprint = getattr(provider, "runtime_fingerprint", None)
     if not callable(runtime_fingerprint):
-        raise ValueError("BGE embedding provider does not support runtime attestation")
+        raise ValueError("BGE runtime embedding identity is invalid")
     attestation = runtime_fingerprint()
     if not isinstance(attestation, Mapping):
-        raise ValueError("BGE runtime attestation is invalid")
+        raise ValueError("BGE runtime embedding identity is invalid")
     embedding_identity = attestation.get("embedding_identity")
-    if not isinstance(embedding_identity, str) or not embedding_identity:
+    if not isinstance(embedding_identity, str):
+        raise ValueError("BGE runtime embedding identity is invalid")
+    parts = embedding_identity.split(":")
+    if len(parts) != 5:
+        raise ValueError("BGE runtime embedding identity is invalid")
+    prefix, config_hash, digest, version_hash, transform = parts
+    lower_hex = "0123456789abcdef"
+    if not all(
+        (
+            prefix == "bge-ollama-v1",
+            config_hash == embedding_config_hash(config),
+            len(digest) == 64
+            and all(character in lower_hex for character in digest),
+            len(version_hash) == 64
+            and all(character in lower_hex for character in version_hash),
+            transform == "bge-input-v1",
+        )
+    ):
         raise ValueError("BGE runtime embedding identity is invalid")
     return embedding_identity
 

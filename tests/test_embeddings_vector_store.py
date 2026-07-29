@@ -11,8 +11,9 @@ import numpy as np
 import pytest
 
 from context_search_tool import embeddings as embeddings_module
+from context_search_tool import indexer as indexer_module
 from context_search_tool import vector_store as vector_store_module
-from context_search_tool.config import DEFAULT_CONFIG, EmbeddingConfig
+from context_search_tool.config import DEFAULT_CONFIG, EmbeddingConfig, ToolConfig
 from context_search_tool.embeddings import (
     HashEmbeddingProvider,
     OpenAICompatibleEmbeddingProvider,
@@ -28,6 +29,40 @@ _BGE_DESCRIPTOR_IDENTITY = (
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
     "bge-input-v1"
+)
+_BGE_WRONG_CONFIG_IDENTITY = (
+    "bge-ollama-v1:"
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff:"
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"
+    "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
+    "bge-input-v1"
+)
+_BGE_MISSING_TRANSFORM_IDENTITY = (
+    "bge-ollama-v1:"
+    "a31c280ece569f71b682328fbeb5c2fef9c85cca0e42acf7425724d134fd80d8:"
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"
+    "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503"
+)
+_BGE_INVALID_DIGEST_IDENTITY = (
+    "bge-ollama-v1:"
+    "a31c280ece569f71b682328fbeb5c2fef9c85cca0e42acf7425724d134fd80d8:"
+    "not-a-model-digest:"
+    "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
+    "bge-input-v1"
+)
+_BGE_INVALID_VERSION_IDENTITY = (
+    "bge-ollama-v1:"
+    "a31c280ece569f71b682328fbeb5c2fef9c85cca0e42acf7425724d134fd80d8:"
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"
+    "not-an-ollama-version-hash:"
+    "bge-input-v1"
+)
+_BGE_WRONG_TRANSFORM_IDENTITY = (
+    "bge-ollama-v1:"
+    "a31c280ece569f71b682328fbeb5c2fef9c85cca0e42acf7425724d134fd80d8:"
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"
+    "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
+    "bge-input-v2"
 )
 
 
@@ -121,6 +156,119 @@ def test_embedding_descriptor_identity_requires_same_attested_bge_provider(
     for invalid_provider in invalid_providers:
         with pytest.raises(ValueError):
             helper(config, provider=invalid_provider)
+
+
+@pytest.mark.parametrize(
+    "invalid_identity",
+    [
+        pytest.param(_BGE_WRONG_CONFIG_IDENTITY, id="wrong-config-hash"),
+        pytest.param(_BGE_MISSING_TRANSFORM_IDENTITY, id="malformed-parts"),
+        pytest.param(_BGE_INVALID_DIGEST_IDENTITY, id="invalid-digest"),
+        pytest.param(_BGE_INVALID_VERSION_IDENTITY, id="invalid-version-hash"),
+        pytest.param(_BGE_WRONG_TRANSFORM_IDENTITY, id="wrong-transform"),
+    ],
+)
+def test_authoritative_bge_identity_attestation_fails_closed_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_identity: str,
+) -> None:
+    class _AttestedProvider:
+        def __init__(self, identity: str) -> None:
+            self.identity = identity
+            self.events: list[str] = []
+            self.embed_calls = 0
+
+        def fingerprint(self) -> dict[str, object]:
+            return {
+                "provider": "bge",
+                "model": "bge-m3",
+                "dimensions": 3,
+                "backend": "ollama",
+            }
+
+        def runtime_fingerprint(self) -> dict[str, object]:
+            self.events.append("preflight")
+            return {"embedding_identity": self.identity}
+
+        def embed_texts(self, texts: list[str]) -> list[np.ndarray]:
+            self.events.append("embed")
+            self.embed_calls += 1
+            return [
+                np.asarray([1.0, 0.0, 0.0], dtype=np.float32)
+                for _text in texts
+            ]
+
+        def assert_runtime_unchanged(self) -> dict[str, object]:
+            self.events.append("postflight")
+            return {"embedding_identity": self.identity}
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "module.py").write_text(
+        "def indexed_symbol():\n    return 1\n",
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        embedding=EmbeddingConfig(
+            provider="bge",
+            model="bge-m3",
+            dimensions=3,
+        )
+    )
+    valid_provider = _AttestedProvider(_BGE_DESCRIPTOR_IDENTITY)
+    monkeypatch.setattr(
+        indexer_module,
+        "provider_from_config",
+        lambda _config: valid_provider,
+    )
+
+    index_repository(repo, config)
+
+    index_dir = repo / ".context-search"
+    manifest_path = index_dir / "manifest.json"
+    descriptor_path = index_dir / "vector_snapshot.json"
+    before_manifest = manifest_path.read_bytes()
+    assert (
+        json.loads(before_manifest)["embedding_config_hash"]
+        == "a31c280ece569f71b682328fbeb5c2fef9c85cca0e42acf7425724d134fd80d8"
+    )
+    before_descriptor = descriptor_path.read_bytes()
+    store = SQLiteStore(index_dir / "index.sqlite")
+    before_operational = store.read_operational_snapshot()
+    assert before_operational is not None
+    assert before_operational.graph_status == "ready"
+    with store.graph_read_session() as session:
+        before_snapshot = read_v5_vector_snapshot(repo, config, session)
+        assert before_snapshot is not None
+        before_ids = before_snapshot.ids
+        before_snapshot.close()
+
+    invalid_provider = _AttestedProvider(invalid_identity)
+    monkeypatch.setattr(
+        indexer_module,
+        "provider_from_config",
+        lambda _config: invalid_provider,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"^BGE runtime embedding identity is invalid$",
+    ):
+        index_repository(repo, config)
+
+    assert invalid_provider.events == ["preflight"]
+    assert invalid_provider.embed_calls == 0
+    assert manifest_path.read_bytes() == before_manifest
+    assert descriptor_path.read_bytes() == before_descriptor
+    after_operational = store.read_operational_snapshot()
+    assert after_operational == before_operational
+    with store.graph_read_session() as session:
+        after_snapshot = read_v5_vector_snapshot(repo, config, session)
+        assert after_snapshot is not None
+        assert after_snapshot.ids == before_ids
+        assert after_snapshot.embedding_identity == _BGE_DESCRIPTOR_IDENTITY
+        after_snapshot.close()
 
 
 def test_hash_embedding_provider_is_deterministic_and_normalized() -> None:
