@@ -794,46 +794,38 @@ supported opt-in, no recommendation**. This is neither `reject` nor
 
 ### Decision and candidate
 
-The reopened candidate passed every correctness, privacy, identity,
-atomicity, offline, and engineering-performance gate. Native Ollama BGE
-is therefore eligible for delivery as an explicit opt-in provider. The
+The delivered main implementation passed every correctness, privacy,
+identity, atomicity, offline, and engineering-performance gate. Native
+Ollama BGE is therefore supported as an explicit opt-in provider. The
 independent hash/BGE product comparison passed seven of eight
 recommendation gates. Its sole failed gate was per-repository index cost:
-daily was `119.181533 / 2.3047625 = 51.71098236803142` and RedInk was
-`7.322234 / 0.145709 = 50.25244837312726`, both above the frozen `50.0`
-threshold. BGE is not recommended over hash and the default does not
-change.
+daily was
+`122.1016075 / 2.3921405 = 51.042824407680065`, above the frozen `50.0`
+threshold; RedInk was
+`7.325094 / 0.1713095 = 42.7594149769861`, which passed. Because both
+repositories must pass, BGE is not recommended over hash and the default
+does not change.
 
-The implementation and captures were sealed in a clean detached
-candidate at
-`c7074267ff2cc2e4a1ab3d17b4ee10ea8f4ffd4b`. Documentation-only edits
-followed after measurement. No evidence file is part of the candidate,
+The authoritative execution used clean physical `main` and a clean
+detached delivery replica at
+`3b81d72ef8c438da4049875d3e68ef6ec1a133c7`, both with tree
+`4a189adc7ef6eba724047021e3f3764c5175df67`. Their identities and clean
+state matched before and after execution, prior to the documentation-only
+edits that recorded the result. No evidence file is part of the delivery,
 and this record does not itself stage, push, or create a PR.
-
-The reopening used these local candidate commits:
-
-| commit | subject |
-| --- | --- |
-| `6767f831c372f0f852e7e7e46c7fbaa0facbd974` | validate the P13 BGE provider candidate |
-| `0cfdd2092a6bc8223caa6f8e72eb5a5e91c013d2` | close acceptance gaps |
-| `a6b7e4ebd0fcf1043b2c52a66a642b468f978851` | adopt the explicitly authorized `bge-input-v2` transform |
-| `6dc6c55f196c6c7ee4113417600bcbc18c346aee` | validate the protected P1 case count |
-| `183e856737a5405c5b520d6bb6eee12cdac57c53` | align the P1 gap schema |
-| `c7074267ff2cc2e4a1ab3d17b4ee10ea8f4ffd4b` | harden the generation-symlink swap test |
 
 The production scope remained the six planned files. The test/harness
 scope remained the eleven planned files plus the two explicitly
 authorized boundary overlays. The P13 design specification, frozen
 sources, gold, catalog, pins, CLI, MCP, manifest schema, ranking,
 chunking, planner, and graph behavior were not changed by the final
-candidate.
+delivery.
 
-A review found that the generation-symlink swap test did not
-deterministically require the race injection. The test was strengthened
-test-first to require both the injected swap and the fail-closed result;
-the finding required no production-code change. The authoritative
-offline and live evidence below was generated after that repair, and a
-fresh verifier reported zero findings.
+A final verifier reported zero unresolved findings against the authoritative
+offline and live roots. Earlier environment attempts affected by a stale
+evidence pointer, ancestor working directory, resolved launcher paths, or an
+over-strict import preflight are invalid partial pre-product evidence and are
+excluded from the authoritative results below.
 
 ### Implemented runtime contract
 
@@ -870,14 +862,18 @@ pytest 9.0.3. The authoritative
 All 2,993 baseline node IDs were retained, all historical outcomes and
 skip reasons were unchanged, marker drift was zero, and the five frozen
 P6 `sysctl` nodes passed. The focused P13/read-only/boundary selection
-passed `838/838`, including
+passed `838/838` with `2` terminal deselections, including
 `test_bge_generation_inventory_symlink_swap_fails_closed`; the
 characterization selection passed `36/36`. Hash
 descriptor/config/manifest behavior, membership, traces, no-op counters,
 protected inputs, and allowlist checks passed. The offline summary is
-`/tmp/context-search-p13-reopen.pyadNs/post-review-fix-offline.pVXOz9/summary.json`
+`/tmp/context-search-p13-main-final-run.YCY121/evidence/final-offline-authoritative/summary.json`
 (SHA-256
-`da4d36417e686c661fad9f835bb82a7ad771b83a49c5376fc27dffce85c24d79`).
+`98bb0bfe93aae799b46c8a10048ccd9734847b704456eadf8153c7e76fbc54ee`).
+The offline evidence manifest has SHA-256
+`1da91c49637f7e96c5c3a7b635c67f584387b3760d2fbe55029f392d10249f5e`.
+The baseline and delivery hash artifacts were byte-identical at SHA-256
+`f0445affe9f29a338894f73bbbdc6fb219e2a46e4e84de89cecaf0457e8b0508`.
 
 ### Live correctness
 
@@ -889,11 +885,19 @@ singleton/batch cosine was `0.9999998807907104` against the
 found no source, query, credential, or absolute-workspace disclosure.
 
 The raw correctness record is
-`/tmp/context-search-p13-reopen.pyadNs/post-review-fix-live.QI0HXW/correctness/public-correctness.json`
+`/tmp/context-search-p13-main-final-run.YCY121/evidence/final-live-authoritative/correctness/public-correctness.json`
 (SHA-256
-`4eaa42be8f7e8750bfc67623fe14bbde7a3deedd339b52a31922f5b95718eaf4`);
+`35aa8b8d15d721f2ed8c26dd429f2fa1ff699149a842005a9298f3dfe45eec75`);
 the live integration JUnit is `provider-integration.xml` (SHA-256
-`a9e7b1cdb09980f4ff2cf3d060d6cf54fb111847beab4e57008f89fac164c5e9`).
+`6fe3566c1c3927ed09bf112161f970be71e9798e718389d67c7d47a49e32aa54`).
+The preflight freeze has SHA-256
+`08ceed5f8b4cfaf31dc825cf0e4938ee10aa44b41bb0400caef922f94a97c833`;
+the authoritative live summary at
+`/tmp/context-search-p13-main-final-run.YCY121/evidence/final-live-authoritative/summary.json`
+has SHA-256
+`c09210b1c7f0200f6c9a92dadb132e49581471a5c566618675bdb7dd2cbc35e5`;
+and the live evidence manifest has SHA-256
+`60fbd61f7ee35d5d7e1f2e03682047a5659123a5293e4e8b5c1982fec2e841cf`.
 
 ### Engineering gates
 
@@ -902,22 +906,22 @@ index and query values are seconds.
 
 | gate | numerator / denominator | ratio | threshold | result |
 | --- | --- | ---: | ---: | --- |
-| baseline daily index stability | `324.7448 / 305.4824` | `0.06305567849408034` spread | `≤ 0.10` | PASS |
-| baseline RedInk index stability | `16.9211 / 16.8326` | `0.005257654788921595` spread | `≤ 0.10` | PASS |
-| baseline query-p95 stability | `0.995252791 / 0.974722125` | `0.021063096315783403` spread | `≤ 0.15` | PASS |
-| candidate/baseline daily index | `110.463861 / 305.6228` | `0.3614385477785034` | `≤ 1.10` | PASS |
-| candidate/baseline RedInk index | `6.809867 / 16.8574` | `0.40396899877798476` | `≤ 1.10` | PASS |
-| candidate/baseline total index | `117.3078 / 322.48019999999997` | `0.3637674499085526` | `≤ 1.10` | PASS |
-| candidate/baseline query p95 | `0.986885584 / 0.983023334` | `1.0039289504800302` | `≤ 1.15` | PASS |
+| baseline daily index stability | `334.9067 / 329.7892` | `0.015517488140909474` spread | `≤ 0.10` | PASS |
+| baseline RedInk index stability | `18.2429 / 17.216` | `0.05964800185873598` spread | `≤ 0.10` | PASS |
+| baseline query-p95 stability | `1.023799 / 1.014161417` | `0.009503006955745796` spread | `≤ 0.15` | PASS |
+| candidate/baseline daily index | `125.437593 / 334.611` | `0.37487587975290715` | `≤ 1.10` | PASS |
+| candidate/baseline RedInk index | `7.851179 / 18.194` | `0.43152572276574697` | `≤ 1.10` | PASS |
+| candidate/baseline total index | `133.26474100000001 / 352.805` | `0.37772917333938016` | `≤ 1.10` | PASS |
+| candidate/baseline query p95 | `1.0082055 / 1.018875666` | `0.9895275092378152` | `≤ 1.15` | PASS |
 | daily requests | `239 / 1462` | `0.16347469220246238` | `≤ 1.0` | PASS |
 | RedInk requests | `33 / 89` | `0.3707865168539326` | `≤ 1.0` | PASS |
 | total requests | `272 / 1551` | `0.17537072856221791` | `< 1.0` | PASS |
 | same-side non-timing mismatches | `0 / 0` | `null` | `0` | PASS |
 
-The gate record is
-`/tmp/context-search-p13-reopen.pyadNs/post-review-fix-live.QI0HXW/engineering-gates.json`
-(SHA-256
-`ca8745ad8525bfab6a1dc605b227b5b6283fcae474eff8fabd2f2268eaa6051c`).
+An independent recomputation matched all reported ratios. The gate record is
+`/tmp/context-search-p13-main-final-run.YCY121/evidence/final-live-authoritative/engineering-gates.json`
+and has SHA-256
+`d83679d2dbf61fb07d24120ef244e79a77cbb59b0b69f1963046eaf9614044dc`.
 
 ### Product and P1 recommendation gates
 
@@ -932,8 +936,8 @@ Both mandatory continuity profiles retained the historical result:
 | newly satisfied required | `1 / 1` | `1.0` | `≥ 1` | PASS |
 | noise non-increasing | `0.7083333333333334 / 0.7129629629629629` | `0.9935064935064937` | `≤ 1.0` | PASS |
 | P1 continuity | `6 / 6` per profile | `1.0` | `≥ 1.0` | PASS |
-| BGE/hash query p95 | `0.9885436875 / 0.7563607914999999` | `1.3069737334474194` | `≤ 1.50` | PASS |
-| per-repository index | daily `119.181533 / 2.3047625`; RedInk `7.322234 / 0.145709` | daily `51.71098236803142`; RedInk `50.25244837312726` | both `≤ 50` | **FAIL** |
+| BGE/hash query p95 | `1.0157435415 / 0.807222146` | `1.2583197159955024` | `≤ 1.50` | PASS |
+| per-repository index | daily `122.1016075 / 2.3921405`; RedInk `7.325094 / 0.1713095` | daily `51.042824407680065`; RedInk `42.7594149769861` | both `≤ 50` | **FAIL** |
 | same-provider non-timing mismatches | `0 / 0` | `null` | `0` | PASS |
 
 The newly satisfied required path was
@@ -941,17 +945,19 @@ The newly satisfied required path was
 within each provider after excluding declared timing/implementation
 fields.
 
-The P1 continuity wrapper has SHA-256
-`4008e1aff57e0bb9e27199d14b0b677e83ed85fd7145a39f0b3c2b488a88ebf6`;
-the vector and hybrid raw reports have SHA-256
-`e4a2644e983a3092fcf6c0c4ab2f1d0627689baf4be3bdb1bece725d993abee7`
-and
-`ad731bb1c7d3581c9aaa13fcfc9314edbd6e90b106a161ef6c6daf64ab954854`.
-The resulting
-`/tmp/context-search-p13-reopen.pyadNs/post-review-fix-live.QI0HXW/product-comparison.json`
+The P1 continuity wrapper at
+`/tmp/context-search-p13-main-final-run.YCY121/evidence/final-live-authoritative/p1/p1-continuity.json`
 has SHA-256
-`fd06743f4d63dacc6aaf588754bdc8b2a555d54f816f48a82d4a93c311c5bd6a`.
-The closed 37-file evidence manifest has SHA-256
-`e79a64d0ead1c4059e32b093999b09485b63b073c994f41ca7031488612e4f4a`.
+`2cc387b7eff643262a9ab417d214a23457ea08c626e8a1cb829222d1e8375cc5`;
+the vector and hybrid raw reports have SHA-256
+`15f66a8cb89cf24c717507eeb1eab678344c1b742dae34877814de0d6973144a`
+and
+`07722aed23d30de1c2779db2bfcad411fe57f926ea0c465323223024502863d4`.
+The resulting
+`/tmp/context-search-p13-main-final-run.YCY121/evidence/final-live-authoritative/product-comparison.json`
+has SHA-256
+`9162167b4d27a68d5aa8a92c969260ba0e94f572f40aa87961d3cd06ccd7883d`.
+The closed live evidence manifest has SHA-256
+`60fbd61f7ee35d5d7e1f2e03682047a5659123a5293e4e8b5c1982fec2e841cf`.
 It is an executed recommendation FAIL, not a service `BLOCKED` result
 and not an engineering rejection.
