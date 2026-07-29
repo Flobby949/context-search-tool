@@ -2265,7 +2265,10 @@ def _p1_expected_planner(profile: str) -> dict[str, object]:
     }
 
 
-def _p1_catalog_queries() -> dict[tuple[str, str], str]:
+def _p1_catalog_queries() -> tuple[
+    dict[tuple[str, str], str],
+    int,
+]:
     record = P1_QUALITY_INPUTS["fixture_catalog_gold"]
     path = (_ROOT / record["path"]).resolve(strict=True)
     try:
@@ -2277,9 +2280,11 @@ def _p1_catalog_queries() -> dict[tuple[str, str], str]:
     catalog = json.loads(path.read_text(encoding="utf-8"))
     selected: list[tuple[str, str]] = []
     queries: dict[tuple[str, str], str] = {}
+    expected_fixture_case_count = 0
     required_profiles = {"p1_vector_bge", "p1_hybrid_bge"}
     try:
         for repository in catalog["repos"]:
+            expected_fixture_case_count += len(repository["queries"])
             for case in repository["queries"]:
                 if required_profiles <= set(case.get("profiles", ())):
                     key = (repository["repo_key"], case["id"])
@@ -2297,7 +2302,7 @@ def _p1_catalog_queries() -> dict[tuple[str, str], str]:
         )
     ):
         raise ValueError("P1 catalog query mismatch")
-    return queries
+    return queries, expected_fixture_case_count
 
 
 def _p1_bge_attestation(
@@ -2486,6 +2491,7 @@ def _validate_p1_raw_report(
     profile: str,
     implementation: dict[str, object],
     catalog_queries: dict[tuple[str, str], str],
+    expected_fixture_case_count: int,
 ) -> tuple[list[dict[str, object]], list[str]]:
     report = _require_keys(
         value,
@@ -2534,7 +2540,7 @@ def _validate_p1_raw_report(
             + P1_QUALITY_INPUTS["fixture_catalog_gold"]["sha256"]
         ),
         "schema_version": 1,
-        "fixture_case_count": 44,
+        "fixture_case_count": expected_fixture_case_count,
         "run_case_count": 7,
     }:
         raise ValueError("P1 raw fixture provenance mismatch")
@@ -2674,7 +2680,7 @@ def load_p1_evidence(
         set(_P1_PROFILES),
         "P1 evidence profiles",
     )
-    catalog_queries = _p1_catalog_queries()
+    catalog_queries, expected_fixture_case_count = _p1_catalog_queries()
 
     normalized: dict[str, object] = {}
     profile_queries: list[list[str]] = []
@@ -2703,6 +2709,7 @@ def load_p1_evidence(
             profile_name,
             implementation,
             catalog_queries,
+            expected_fixture_case_count,
         )
         profile_queries.append(queries)
 

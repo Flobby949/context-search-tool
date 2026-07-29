@@ -104,6 +104,23 @@ P1_CASES = (
     ("embedding_ab", "blacklist-management-cross-language"),
     ("embedding_ab", "order-service-symbol"),
 )
+P1_CATALOG_REPOSITORY_QUERY_COUNTS = (
+    5,
+    4,
+    7,
+    6,
+    3,
+    3,
+    1,
+    1,
+    3,
+    5,
+    3,
+    2,
+    6,
+    4,
+)
+P1_FIXTURE_CASE_COUNT = 53
 P1_CONFIG_HASHES = {
     "p1_vector_bge": (
         "sha256:b218204f3f064665e0aec7b4a9247c7949e8625e9e47f477a692e4fcb44cd6a4"
@@ -618,7 +635,7 @@ def _p1_planner(profile: str) -> dict[str, object]:
     }
 
 
-def _p1_catalog_queries() -> dict[tuple[str, str], str]:
+def _protected_p1_catalog() -> dict[str, object]:
     catalog_path = (
         ROOT / P1_QUALITY_INPUTS["fixture_catalog_gold"]["path"]
     )
@@ -626,6 +643,19 @@ def _p1_catalog_queries() -> dict[tuple[str, str], str]:
         P1_QUALITY_INPUTS["fixture_catalog_gold"]["sha256"]
     )
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    repository_query_counts = tuple(
+        len(repository["queries"]) for repository in catalog["repos"]
+    )
+    assert (
+        repository_query_counts
+        == P1_CATALOG_REPOSITORY_QUERY_COUNTS
+    )
+    assert sum(repository_query_counts) == P1_FIXTURE_CASE_COUNT
+    return catalog
+
+
+def _p1_catalog_queries() -> dict[tuple[str, str], str]:
+    catalog = _protected_p1_catalog()
     selected = []
     queries = {}
     required_profiles = {"p1_vector_bge", "p1_hybrid_bge"}
@@ -724,8 +754,11 @@ def _synthetic_p1_raw_report(
                 "ac7a9789098d088a22b8ddc78fed3128695cbb257923de8686c41fbcfa5824c5"
             ),
             "schema_version": 1,
-            "fixture_case_count": 44,
-            "run_case_count": 7,
+            "fixture_case_count": sum(
+                len(repository["queries"])
+                for repository in _protected_p1_catalog()["repos"]
+            ),
+            "run_case_count": len(P1_CASES),
         },
         "profile": profile,
         "config": {
@@ -2631,6 +2664,9 @@ def test_p1_loader_reads_raw_reports_and_recomputes_profiles(
         "p1_hybrid_bge",
     }
     catalog_queries = _p1_catalog_queries()
+    assert P1_FIXTURE_CASE_COUNT == 53
+    assert len(P1_CASES) == 7
+    assert P1_FIXTURE_CASE_COUNT != len(P1_CASES)
     for profile in wrapper["profiles"].values():
         assert set(profile) == {
             "profile",
@@ -2648,6 +2684,10 @@ def test_p1_loader_reads_raw_reports_and_recomputes_profiles(
         raw_path = evidence.parent / profile["raw_report"]["path"]
         raw = json.loads(raw_path.read_text(encoding="utf-8"))
         assert raw["tool"]["git_commit"] == expected_candidate_commit
+        assert raw["fixture"]["fixture_case_count"] == (
+            P1_FIXTURE_CASE_COUNT
+        )
+        assert raw["fixture"]["run_case_count"] == len(P1_CASES)
         assert [
             (case["repo_key"], case["case_id"], case["query"])
             for case in raw["cases"]
@@ -2673,6 +2713,36 @@ def test_p1_loader_reads_raw_reports_and_recomputes_profiles(
         tmp_path / "product-comparison.json",
     )
     assert report["disposition"] == "pass"
+
+
+@pytest.mark.parametrize("forged_count", (52, 54))
+def test_p1_loader_rejects_forged_total_catalog_case_count(
+    tmp_path: Path,
+    forged_count: int,
+) -> None:
+    module = _load_harness()
+    captures = _product_captures()
+    evidence, _ = _write_p1_evidence(
+        tmp_path,
+        captures,
+        expected_candidate_commit=SYNTHETIC_CANDIDATE_COMMIT,
+    )
+    wrapper = json.loads(evidence.read_text(encoding="utf-8"))
+    vector = wrapper["profiles"]["p1_vector_bge"]
+    raw_path = evidence.parent / vector["raw_report"]["path"]
+    raw = json.loads(raw_path.read_text(encoding="utf-8"))
+    assert raw["fixture"]["fixture_case_count"] == 53
+    assert raw["fixture"]["run_case_count"] == 7
+    raw["fixture"]["fixture_case_count"] = forged_count
+    raw_path.write_text(_canonical(raw), encoding="utf-8")
+    vector["raw_report"]["sha256"] = _sha256(raw_path)
+    evidence.write_text(_canonical(wrapper), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="P1 raw fixture provenance mismatch",
+    ):
+        module.load_p1_evidence(evidence, captures)
 
 
 def test_p1_loader_rejects_catalog_query_mismatch(
