@@ -2397,7 +2397,8 @@ def _p1_raw_case_projection(
         or not all(isinstance(tag, str) for tag in case["tags"])
         or case["gate"] != "required"
         or case["attempted"] is not True
-        or case["known_gap_reason"] is not None
+        or not isinstance(case["known_gap_reason"], str)
+        or case["known_gap_reason"] != ""
         or not isinstance(case["expanded_tokens"], list)
         or not all(
             isinstance(token, str)

@@ -689,7 +689,7 @@ def _synthetic_p1_raw_report(
                 "tags": [],
                 "gate": "required",
                 "attempted": True,
-                "known_gap_reason": None,
+                "known_gap_reason": "",
                 "expanded_tokens": [],
                 "planner": {
                     "status": (
@@ -2688,6 +2688,14 @@ def test_p1_loader_reads_raw_reports_and_recomputes_profiles(
             P1_FIXTURE_CASE_COUNT
         )
         assert raw["fixture"]["run_case_count"] == len(P1_CASES)
+        assert all(
+            "known_gap_reason" in case
+            and isinstance(case["known_gap_reason"], str)
+            and case["known_gap_reason"] == ""
+            for case in raw["cases"]
+        )
+        assert raw["aggregate"]["known_gaps"] == 0
+        assert raw["aggregate"]["errors"] == 0
         assert [
             (case["repo_key"], case["case_id"], case["query"])
             for case in raw["cases"]
@@ -2713,6 +2721,73 @@ def test_p1_loader_reads_raw_reports_and_recomputes_profiles(
         tmp_path / "product-comparison.json",
     )
     assert report["disposition"] == "pass"
+
+
+def test_p1_loader_requires_known_gap_reason_in_closed_raw_case(
+    tmp_path: Path,
+) -> None:
+    module = _load_harness()
+    captures = _product_captures()
+    evidence, _ = _write_p1_evidence(
+        tmp_path,
+        captures,
+        expected_candidate_commit=SYNTHETIC_CANDIDATE_COMMIT,
+    )
+    wrapper = json.loads(evidence.read_text(encoding="utf-8"))
+    vector = wrapper["profiles"]["p1_vector_bge"]
+    raw_path = evidence.parent / vector["raw_report"]["path"]
+    raw = json.loads(raw_path.read_text(encoding="utf-8"))
+    assert raw["cases"][0]["known_gap_reason"] == ""
+    raw["cases"][0].pop("known_gap_reason")
+    raw_path.write_text(_canonical(raw), encoding="utf-8")
+    vector["raw_report"]["sha256"] = _sha256(raw_path)
+    evidence.write_text(_canonical(wrapper), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="P1 raw case mapping is not closed",
+    ):
+        module.load_p1_evidence(evidence, captures)
+
+
+@pytest.mark.parametrize(
+    "invalid_reason",
+    (
+        pytest.param(None, id="null"),
+        pytest.param(False, id="false"),
+        pytest.param(0, id="zero"),
+        pytest.param([], id="list"),
+        pytest.param({}, id="mapping"),
+        pytest.param("forged known gap", id="non-empty"),
+        pytest.param(" ", id="whitespace"),
+    ),
+)
+def test_p1_loader_rejects_noncanonical_known_gap_reason(
+    tmp_path: Path,
+    invalid_reason: object,
+) -> None:
+    module = _load_harness()
+    captures = _product_captures()
+    evidence, _ = _write_p1_evidence(
+        tmp_path,
+        captures,
+        expected_candidate_commit=SYNTHETIC_CANDIDATE_COMMIT,
+    )
+    wrapper = json.loads(evidence.read_text(encoding="utf-8"))
+    for profile in wrapper["profiles"].values():
+        raw_path = evidence.parent / profile["raw_report"]["path"]
+        raw = json.loads(raw_path.read_text(encoding="utf-8"))
+        assert all(
+            case["known_gap_reason"] == "" for case in raw["cases"]
+        )
+        for case in raw["cases"]:
+            case["known_gap_reason"] = invalid_reason
+        raw_path.write_text(_canonical(raw), encoding="utf-8")
+        profile["raw_report"]["sha256"] = _sha256(raw_path)
+    evidence.write_text(_canonical(wrapper), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="P1 raw case is invalid"):
+        module.load_p1_evidence(evidence, captures)
 
 
 @pytest.mark.parametrize("forged_count", (52, 54))
