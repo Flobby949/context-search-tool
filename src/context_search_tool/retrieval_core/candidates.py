@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 from context_search_tool import sqlite_store, tokenizer
 from context_search_tool.config import ToolConfig
-from context_search_tool.embeddings import provider_from_config
+from context_search_tool.embeddings import (
+    _embedding_descriptor_identity,
+    provider_from_config,
+)
+from context_search_tool.manifest import embedding_config_hash
 from context_search_tool.models import (
     QueryVariant,
     RetrievalCandidate,
@@ -18,6 +23,14 @@ from context_search_tool.vector_store import NumpyVectorStore
 _CJK_SEQUENCE_RE = re.compile(r"[㐀-鿿]{2,}")
 _DIRECT_FRAGMENT_RE = re.compile(r"[A-Za-z0-9_./:@-]{3,}")
 _DIRECT_TEXT_TOP_K_MULTIPLIER = 3
+_BGE_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_BGE_TRANSFORM_RE = re.compile(r"bge-input-v[1-9][0-9]*\Z")
+
+
+class _BGEQueryError(ValueError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
 
 
 def semantic_candidates(
@@ -63,6 +76,21 @@ def _semantic_candidates_with_store(
     list[RetrievalCandidate], list[QueryVariant], str, list[float] | None
 ]:
     provider = provider_from_config(config.embedding)
+    bge_runtime_identity: str | None = None
+    if config.embedding.provider == "bge":
+        bge_runtime_identity = _embedding_descriptor_identity(
+            config.embedding,
+            provider,
+        )
+        persisted_identity = vector_store.embedding_identity
+        config_hash = embedding_config_hash(config.embedding)
+        if persisted_identity is None or persisted_identity == config_hash:
+            raise _BGEQueryError("bge_reindex_required")
+        if not _valid_bge_runtime_identity(persisted_identity, config_hash):
+            raise ValueError("BGE vector embedding identity is invalid")
+        if persisted_identity != bge_runtime_identity:
+            raise _BGEQueryError("bge_runtime_mismatch")
+
     try:
         vectors = provider.embed_texts([variant.text for variant in variants])
         if len(vectors) != len(variants):
@@ -81,6 +109,17 @@ def _semantic_candidates_with_store(
         if len(vectors) != 1:
             raise ValueError("embedding response count does not match original query")
         status = "embedding_fallback"
+
+    if bge_runtime_identity is not None:
+        postflight = getattr(provider, "assert_runtime_unchanged", None)
+        if not callable(postflight):
+            raise ValueError("BGE embedding provider cannot verify runtime identity")
+        attestation = postflight()
+        if (
+            not isinstance(attestation, Mapping)
+            or attestation.get("embedding_identity") != bge_runtime_identity
+        ):
+            raise _BGEQueryError("bge_runtime_mismatch")
 
     original_query_vector: list[float] | None = None
     for variant, vector in zip(executed_variants, vectors):
@@ -108,6 +147,24 @@ def _semantic_candidates_with_store(
                 )
             )
     return candidates, executed_variants, status, original_query_vector
+
+
+def _valid_bge_runtime_identity(identity: object, config_hash: str) -> bool:
+    if not isinstance(identity, str):
+        return False
+    parts = identity.split(":")
+    if len(parts) != 5:
+        return False
+    prefix, persisted_config_hash, digest, version_sha256, transform = parts
+    return all(
+        (
+            prefix == "bge-ollama-v1",
+            persisted_config_hash == config_hash,
+            _BGE_SHA256_RE.fullmatch(digest) is not None,
+            _BGE_SHA256_RE.fullmatch(version_sha256) is not None,
+            _BGE_TRANSFORM_RE.fullmatch(transform) is not None,
+        )
+    )
 
 
 def lexical_candidates(

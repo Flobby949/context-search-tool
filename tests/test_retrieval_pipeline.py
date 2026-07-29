@@ -145,6 +145,95 @@ class CapturingVectorStore:
         return self.results_by_vector[key]
 
 
+_P13_BGE_CONFIG_HASH = (
+    "48d799d9af656ebfd3669ef9939d88d9871a010014c91a1e59a4ffe6753bf148"
+)
+_P13_BGE_DIGEST = (
+    "7907640000000000000000000000000000000000000000000000000000006bab"
+)
+_P13_BGE_VERSION_SHA256 = (
+    "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503"
+)
+_P13_BGE_IDENTITY = (
+    f"bge-ollama-v1:{_P13_BGE_CONFIG_HASH}:{_P13_BGE_DIGEST}:"
+    f"{_P13_BGE_VERSION_SHA256}:bge-input-v1"
+)
+
+
+def _p13_bge_config() -> ToolConfig:
+    return ToolConfig(
+        embedding=EmbeddingConfig(
+            provider="bge",
+            model="bge-m3",
+            dimensions=2,
+            base_url="http://127.0.0.1:11434",
+        )
+    )
+
+
+class FakeBGEError(ValueError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+class AttestedEmbeddingProvider:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        postflight_error: str | None = None,
+    ) -> None:
+        self.events = events
+        self.postflight_error = postflight_error
+        self.embed_calls: list[list[str]] = []
+
+    def runtime_fingerprint(self) -> dict[str, object]:
+        self.events.append("preflight")
+        return {"embedding_identity": _P13_BGE_IDENTITY}
+
+    def embed_texts(self, texts: list[str]) -> list[np.ndarray]:
+        self.events.append("embed")
+        self.embed_calls.append(list(texts))
+        return [
+            np.asarray([1.0, 0.0], dtype=np.float32)
+            for _text in texts
+        ]
+
+    def assert_runtime_unchanged(self) -> dict[str, object]:
+        self.events.append("postflight")
+        if self.postflight_error is not None:
+            raise FakeBGEError(self.postflight_error)
+        return {"embedding_identity": _P13_BGE_IDENTITY}
+
+
+class IdentityCapturingVectorStore(CapturingVectorStore):
+    def __init__(
+        self,
+        results_by_vector: dict[tuple[float, ...], list[VectorSearchResult]],
+        *,
+        embedding_identity: str | None,
+        events: list[str],
+    ) -> None:
+        super().__init__(results_by_vector)
+        self._persisted_embedding_identity = embedding_identity
+        self.events = events
+
+    @property
+    def embedding_identity(self) -> str | None:
+        self.events.append("persisted_identity")
+        return self._persisted_embedding_identity
+
+    def search(
+        self,
+        query_vector: np.ndarray,
+        top_k: int,
+        deleted_ids: set[str],
+    ) -> list[VectorSearchResult]:
+        self.events.append("search")
+        return super().search(query_vector, top_k, deleted_ids)
+
+
 def _controlled_semantic_repo(
     tmp_path: Path,
 ) -> tuple[Path, ToolConfig, dict[str, str]]:
@@ -199,6 +288,274 @@ def _controlled_semantic_repo(
     )
     _persist_legacy_snapshot(vector_store, store)
     return repo, config, ids
+
+
+def test_bge_query_attests_compares_embeds_postflights_then_searches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    provider = AttestedEmbeddingProvider(events)
+    vector_store = IdentityCapturingVectorStore(
+        {(1.0, 0.0): [VectorSearchResult("exact-hit", 0.75)]},
+        embedding_identity=_P13_BGE_IDENTITY,
+        events=events,
+    )
+    variants = [QueryVariant("original", "QUERY_SENTINEL_P13", "original")]
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
+
+    semantic, executed, status, query_vector = (
+        candidates.semantic_candidates_from_snapshot(
+            vector_store,
+            variants,
+            _p13_bge_config(),
+            set(),
+        )
+    )
+
+    assert events == [
+        "preflight",
+        "persisted_identity",
+        "embed",
+        "postflight",
+        "search",
+    ]
+    assert provider.embed_calls == [["QUERY_SENTINEL_P13"]]
+    assert [item.chunk_id for item in semantic] == ["exact-hit"]
+    assert executed == variants
+    assert status == "original_only"
+    assert np.array_equal(query_vector, np.asarray([1.0, 0.0], dtype=np.float32))
+
+
+@pytest.mark.parametrize(
+    "persisted_identity",
+    [
+        None,
+        _P13_BGE_CONFIG_HASH,
+    ],
+    ids=["missing", "legacy-config-hash"],
+)
+def test_bge_query_rejects_missing_or_legacy_identity_before_embedding_or_search(
+    persisted_identity: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    events: list[str] = []
+    provider = AttestedEmbeddingProvider(events)
+    vector_store = IdentityCapturingVectorStore(
+        {(1.0, 0.0): [VectorSearchResult("forbidden-hit", 0.75)]},
+        embedding_identity=persisted_identity,
+        events=events,
+    )
+    variants = [
+        QueryVariant("original", "RAW_QUERY_SENTINEL_P13", "original"),
+        QueryVariant("planner:0", "rewrite", "planner"),
+    ]
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
+
+    with pytest.raises(ValueError, match=r"^bge_reindex_required$") as caught:
+        candidates.semantic_candidates_from_snapshot(
+            vector_store,
+            variants,
+            _p13_bge_config(),
+            set(),
+        )
+
+    assert events == ["preflight", "persisted_identity"]
+    assert provider.embed_calls == []
+    assert vector_store.calls == []
+    assert getattr(caught.value, "code", None) == "bge_reindex_required"
+    assert "RAW_QUERY_SENTINEL_P13" not in str(caught.value)
+    assert "RAW_QUERY_SENTINEL_P13" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "persisted_identity",
+    [
+        (
+            f"bge-ollama-v1:{_P13_BGE_CONFIG_HASH}:"
+            f"{'8' * 64}:{_P13_BGE_VERSION_SHA256}:bge-input-v1"
+        ),
+        (
+            f"bge-ollama-v1:{_P13_BGE_CONFIG_HASH}:{_P13_BGE_DIGEST}:"
+            f"{'9' * 64}:bge-input-v1"
+        ),
+        (
+            f"bge-ollama-v1:{_P13_BGE_CONFIG_HASH}:{_P13_BGE_DIGEST}:"
+            f"{_P13_BGE_VERSION_SHA256}:bge-input-v2"
+        ),
+    ],
+    ids=["digest", "version", "transform"],
+)
+def test_bge_query_rejects_persisted_runtime_mismatch_before_embedding_or_search(
+    persisted_identity: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    provider = AttestedEmbeddingProvider(events)
+    vector_store = IdentityCapturingVectorStore(
+        {(1.0, 0.0): [VectorSearchResult("forbidden-hit", 0.75)]},
+        embedding_identity=persisted_identity,
+        events=events,
+    )
+    variants = [
+        QueryVariant("original", "RAW_QUERY_SENTINEL_P13", "original"),
+        QueryVariant("planner:0", "rewrite", "planner"),
+    ]
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
+
+    with pytest.raises(ValueError, match=r"^bge_runtime_mismatch$") as caught:
+        candidates.semantic_candidates_from_snapshot(
+            vector_store,
+            variants,
+            _p13_bge_config(),
+            set(),
+        )
+
+    assert events == ["preflight", "persisted_identity"]
+    assert provider.embed_calls == []
+    assert vector_store.calls == []
+    assert getattr(caught.value, "code", None) == "bge_runtime_mismatch"
+    assert "RAW_QUERY_SENTINEL_P13" not in str(caught.value)
+
+
+def test_bge_query_postflight_drift_fails_before_first_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    provider = AttestedEmbeddingProvider(
+        events,
+        postflight_error="bge_runtime_mismatch",
+    )
+    vector_store = IdentityCapturingVectorStore(
+        {(1.0, 0.0): [VectorSearchResult("forbidden-hit", 0.75)]},
+        embedding_identity=_P13_BGE_IDENTITY,
+        events=events,
+    )
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
+
+    with pytest.raises(ValueError, match=r"^bge_runtime_mismatch$") as caught:
+        candidates.semantic_candidates_from_snapshot(
+            vector_store,
+            [
+                QueryVariant(
+                    "original",
+                    "RAW_QUERY_SENTINEL_P13",
+                    "original",
+                ),
+                QueryVariant("planner:0", "rewrite", "planner"),
+            ],
+            _p13_bge_config(),
+            set(),
+        )
+
+    assert events == [
+        "preflight",
+        "persisted_identity",
+        "embed",
+        "postflight",
+    ]
+    assert provider.embed_calls == [
+        ["RAW_QUERY_SENTINEL_P13", "rewrite"]
+    ]
+    assert vector_store.calls == []
+    assert getattr(caught.value, "code", None) == "bge_runtime_mismatch"
+
+
+def test_bge_query_rejects_malformed_loaded_identity_as_integrity_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    provider = AttestedEmbeddingProvider(events)
+    vector_store = IdentityCapturingVectorStore(
+        {(1.0, 0.0): [VectorSearchResult("forbidden-hit", 0.75)]},
+        embedding_identity="bge-ollama-v1:malformed",
+        events=events,
+    )
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
+
+    with pytest.raises(ValueError) as caught:
+        candidates.semantic_candidates_from_snapshot(
+            vector_store,
+            [QueryVariant("original", "RAW_QUERY_SENTINEL_P13", "original")],
+            _p13_bge_config(),
+            set(),
+        )
+
+    assert str(caught.value) not in {
+        "bge_reindex_required",
+        "bge_runtime_mismatch",
+    }
+    assert events == ["preflight", "persisted_identity"]
+    assert provider.embed_calls == []
+    assert vector_store.calls == []
+
+
+def test_hash_query_does_not_read_runtime_or_persisted_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class HashProvider(CapturingEmbeddingProvider):
+        def runtime_fingerprint(self) -> dict[str, object]:
+            raise AssertionError("hash query read runtime identity")
+
+        def assert_runtime_unchanged(self) -> dict[str, object]:
+            raise AssertionError("hash query performed postflight")
+
+    class HashVectorStore(CapturingVectorStore):
+        @property
+        def embedding_identity(self) -> str:
+            raise AssertionError("hash query read persisted identity")
+
+    provider = HashProvider([[1.0, 0.0]])
+    vector_store = HashVectorStore(
+        {(1.0, 0.0): [VectorSearchResult("hash-hit", 0.75)]}
+    )
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
+
+    semantic, executed, status, _query_vector = (
+        candidates.semantic_candidates_from_snapshot(
+            vector_store,
+            [QueryVariant("original", "query", "original")],
+            ToolConfig(
+                embedding=EmbeddingConfig(
+                    provider="hash",
+                    model="hash-v1",
+                    dimensions=2,
+                )
+            ),
+            set(),
+        )
+    )
+
+    assert [item.chunk_id for item in semantic] == ["hash-hit"]
+    assert executed == [QueryVariant("original", "query", "original")]
+    assert status == "original_only"
+
+
+def test_hash_query_preserves_ordinary_missing_stale_snapshot_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden_provider(_config: EmbeddingConfig) -> object:
+        raise AssertionError("ordinary stale fallback instantiated an embedder")
+
+    monkeypatch.setattr(candidates, "provider_from_config", forbidden_provider)
+    variants = [
+        QueryVariant("original", "query", "original"),
+        QueryVariant("planner:0", "rewrite", "planner"),
+    ]
+
+    semantic, executed, status, query_vector = (
+        candidates.semantic_candidates_from_snapshot(
+            None,
+            variants,
+            DEFAULT_CONFIG,
+            set(),
+        )
+    )
+
+    assert semantic == []
+    assert executed == variants[:1]
+    assert status == "original_only"
+    assert query_vector is None
 
 
 def test_semantic_candidates_embeds_once_searches_each_variant_and_merges_provenance(

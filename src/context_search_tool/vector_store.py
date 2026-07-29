@@ -97,6 +97,7 @@ class NumpyVectorStore:
         self._ids: list[str] = []
         self._vectors = np.empty((0, 0), dtype=np.float32)
         self._normalization: Literal["none", "l2"] = "none"
+        self._embedding_identity: str | None = None
         self._load()
 
     @classmethod
@@ -113,6 +114,7 @@ class NumpyVectorStore:
         store._ids = []
         store._vectors = np.empty((0, dimensions), dtype=np.float32)
         store._normalization = "none"
+        store._embedding_identity = None
         return store
 
     @classmethod
@@ -149,6 +151,7 @@ class NumpyVectorStore:
         store._ids = ids
         store._vectors = vectors
         store._normalization = descriptor.normalization or "none"
+        store._embedding_identity = descriptor.embedding_identity
         return descriptor, store
 
     @classmethod
@@ -184,6 +187,7 @@ class NumpyVectorStore:
         store._ids = ids
         store._vectors = vectors
         store._normalization = descriptor.normalization or "none"
+        store._embedding_identity = descriptor.embedding_identity
         return store
 
     @classmethod
@@ -834,6 +838,10 @@ class NumpyVectorStore:
     @property
     def normalization(self) -> Literal["none", "l2"]:
         return self._normalization
+
+    @property
+    def embedding_identity(self) -> str | None:
+        return self._embedding_identity
 
     def close(self) -> None:
         vectors: object | None = self._vectors

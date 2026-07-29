@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -27,8 +30,74 @@ import p8_python_graph_identity as identity
 from generate_p8_python_graph_manifest import build_manifest
 
 SENTINEL_RANK = 13
-CAPTURE_SCHEMA_VERSION = 3
+CAPTURE_SCHEMA_VERSION = 4
 KNOWN_EMBEDDINGS = ("hash", "bge")
+_CAPTURE_ROOT_KEYS = {
+    "schema_version",
+    "implementation",
+    "environment",
+    "manifest_sha256",
+    "embedding_identity",
+    "repositories",
+    "cases",
+    "witnesses",
+    "embedding_requests",
+    "timing",
+}
+_IMPLEMENTATION_KEYS = {
+    "base_commit",
+    "tracked_diff_sha256",
+    "untracked_files",
+    "dirty",
+}
+_ENVIRONMENT_KEYS = {"python_version", "sqlite_version", "numpy_version"}
+_IDENTITY_KEYS = {
+    "provider",
+    "configured_model",
+    "dimensions",
+    "static_config_identity",
+    "descriptor_identity",
+    "canonical_model",
+    "model_digest",
+    "ollama_version",
+    "input_transform_id",
+    "pre_attestation",
+    "post_attestation",
+}
+_ATTESTATION_KEYS = {
+    "configured_model",
+    "canonical_model",
+    "model_digest",
+    "ollama_version",
+    "base_url",
+    "dimensions",
+    "input_transform_id",
+    "embedding_identity",
+}
+_REPOSITORY_KEYS = {"selected_files", "structure", "index_sqlite_bytes"}
+_CASE_KEYS = {
+    "repo",
+    "selected",
+    "required",
+    "contextual",
+    "unique_selected_paths",
+}
+_SELECTED_KEYS = {
+    "rank",
+    "path",
+    "graph_origin",
+    "relation_slot",
+    "relation_witness",
+}
+_REQUIRED_KEYS = {"path", "role", "rank", "state"}
+_REQUEST_KEYS = {"redink", "daily", "total"}
+_TIMING_KEYS = {
+    "index_seconds",
+    "query_case_min_seconds",
+    "query_p50_seconds",
+    "query_p95_seconds",
+}
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 SOURCES = {
     "redink": {
@@ -168,42 +237,39 @@ def _embedding_config(embedding: str):
     raise ValueError(f"unsupported embedding argument: {embedding}")
 
 
-_BGE_MAX_TEXT_CHARS = 4000
+def _nearest_rank(values: list[float], percentile: float) -> float:
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(percentile * len(ordered)) - 1)]
 
 
-def _install_bge_truncation() -> None:
-    """Capture infrastructure, applied identically to whichever tree the
-    PYTHONPATH selects: Ollama rejects a single text whose tokenization
-    exceeds bge-m3's 8192-token context (dense CJK crosses it near 7k
-    chars), so every text is deterministically truncated before
-    embedding. Never edits a source tree; queries are unaffected in
-    practice (far below the cap)."""
+@contextmanager
+def _count_embedding_requests(
+    *,
+    enabled: bool,
+    current_repository: dict[str, str | None],
+    counts: dict[str, int],
+):
+    if not enabled:
+        yield
+        return
+
     from context_search_tool.embeddings_bge import BGEEmbeddingProvider
 
-    if getattr(BGEEmbeddingProvider, "_p8_runner_truncation", False):
-        return
-    original = BGEEmbeddingProvider.embed_texts
+    original = BGEEmbeddingProvider._embed_batch
 
-    def truncated(self, texts: list[str]) -> list:
-        return original(
-            self, [text[:_BGE_MAX_TEXT_CHARS] for text in texts]
-        )
+    def counted(self, texts, *args, **kwargs):
+        repository = current_repository["value"]
+        if repository not in ("redink", "daily"):
+            raise ValueError("BGE embedding request has no repository attribution")
+        counts[repository] += 1
+        counts["total"] += 1
+        return original(self, texts, *args, **kwargs)
 
-    BGEEmbeddingProvider.embed_texts = truncated
-    BGEEmbeddingProvider._p8_runner_truncation = True
-
-
-def _ollama_model_digest(model: str) -> str | None:
-    import requests
-
-    session = requests.Session()
-    session.trust_env = False
-    response = session.get("http://localhost:11434/api/tags", timeout=10.0)
-    response.raise_for_status()
-    for item in response.json().get("models", []):
-        if str(item.get("name", "")).startswith(model):
-            return str(item.get("digest"))
-    return None
+    BGEEmbeddingProvider._embed_batch = counted
+    try:
+        yield
+    finally:
+        BGEEmbeddingProvider._embed_batch = original
 
 
 def _assert_indexed_identity(workspace: Path, config) -> None:
@@ -229,164 +295,265 @@ def capture(
     timing_reps: int = 2,
     embedding: str = "hash",
 ) -> dict:
+    import numpy as np
+
+    from context_search_tool.embeddings import provider_from_config
     from context_search_tool.indexer import index_repository
+    from context_search_tool.manifest import embedding_config_hash
     from context_search_tool.retrieval import query_repository
+    from context_search_tool.vector_store import NumpyVectorStore
 
     config = _embedding_config(embedding)
-    if embedding == "bge":
-        _install_bge_truncation()
-    digest = (
-        _ollama_model_digest(config.embedding.model)
-        if embedding == "bge"
+    static_identity = embedding_config_hash(config.embedding)
+    attestation_provider = (
+        provider_from_config(config.embedding) if embedding == "bge" else None
+    )
+    pre_attestation = (
+        attestation_provider.runtime_fingerprint()
+        if attestation_provider is not None
         else None
     )
-    if embedding == "bge" and digest is None:
-        raise ValueError("bge capture requires a served bge-m3 model")
     manifest = _manifest_or_fail()
+    request_counts = {"redink": 0, "daily": 0, "total": 0}
+    current_repository: dict[str, str | None] = {"value": None}
     capture_payload: dict = {
         "schema_version": CAPTURE_SCHEMA_VERSION,
         "implementation": implementation_identity(implementation_root),
-        "manifest_sha256": manifest["manifest_sha256"],
-        "embedding_identity": {
-            "provider": config.embedding.provider,
-            "model": config.embedding.model,
-            "dimensions": config.embedding.dimensions,
-            "digest": digest,
+        "environment": {
+            "python_version": sys.version.split()[0],
+            "sqlite_version": sqlite3.sqlite_version,
+            "numpy_version": np.__version__,
         },
+        "manifest_sha256": manifest["manifest_sha256"],
+        "embedding_identity": None,
         "repositories": {},
         "cases": {},
         "witnesses": {},
-        "timing": {},
+        "embedding_requests": request_counts,
+        "timing": {
+            "index_seconds": {},
+            "query_case_min_seconds": {},
+            "query_p50_seconds": None,
+            "query_p95_seconds": None,
+        },
     }
 
     workspaces: dict[str, Path] = {}
     scratch = Path(tempfile.mkdtemp(prefix="cst-p8-capture-"))
-    for repo_key, spec in SOURCES.items():
-        source_root = repos_dir / spec["dir_name"]
-        files = identity.validate_protected_source(
-            source_root,
-            patterns=spec["patterns"],
-            expected_count=spec["expected_count"],
-            expected_inventory_sha256=spec["inventory_sha256"],
-            expected_content_sha256=spec["content_sha256"],
-        )
-        workspace = scratch / spec["dir_name"]
-        for relative in files:
-            target = workspace / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_root / relative, target)
-        started = time.perf_counter()
-        index_repository(workspace, config)
-        index_seconds = time.perf_counter() - started
-        _assert_indexed_identity(workspace, config)
-        workspaces[repo_key] = workspace
-        index_db = workspace / ".context-search" / "index.sqlite"
-        capture_payload["repositories"][repo_key] = {
-            "selected_files": len(files),
-            "structure": _structural_counts(index_db),
-            "index_sqlite_bytes": index_db.stat().st_size,
-        }
-        capture_payload["timing"][f"index_seconds_{repo_key}"] = round(
-            index_seconds, 4
-        )
-
-    latencies: list[float] = []
-    for case in manifest["cases"]:
-        workspace = workspaces[case["repo"]]
-        index_db = workspace / ".context-search" / "index.sqlite"
-        bundle = None
-        case_latencies = []
-        for _ in range(max(1, timing_reps)):
-            started = time.perf_counter()
-            bundle = query_repository(workspace, case["query"], config)
-            case_latencies.append(time.perf_counter() - started)
-        latencies.append(min(case_latencies))
-        selected = []
-        seen_paths: set[str] = set()
-        for rank, result in enumerate(bundle.results, start=1):
-            path = str(result.file_path)
-            entry = {
-                "rank": rank,
-                "path": path,
-                "graph_origin": "graph_imports_match" in result.score_parts,
-                "relation_slot": "relation slot" in result.reasons,
-                "relation_witness": None,
-            }
-            if entry["graph_origin"]:
-                entry["relation_witness"] = _import_witness(index_db, path)
-            selected.append(entry)
-            seen_paths.add(path)
-        required_rows = []
-        for item in case["required"]:
-            rank = next(
-                (
-                    entry["rank"]
-                    for entry in selected
-                    if entry["path"] == item["path"]
-                ),
-                None,
-            )
-            required_rows.append(
-                {
-                    "path": item["path"],
-                    "role": item["role"],
-                    "rank": rank,
-                    "state": "selected" if rank else "not_selected",
+    descriptor_identities: set[str] = set()
+    try:
+        with _count_embedding_requests(
+            enabled=embedding == "bge",
+            current_repository=current_repository,
+            counts=request_counts,
+        ):
+            for repo_key, spec in SOURCES.items():
+                current_repository["value"] = repo_key
+                source_root = repos_dir / spec["dir_name"]
+                files = identity.validate_protected_source(
+                    source_root,
+                    patterns=spec["patterns"],
+                    expected_count=spec["expected_count"],
+                    expected_inventory_sha256=spec["inventory_sha256"],
+                    expected_content_sha256=spec["content_sha256"],
+                )
+                workspace = scratch / spec["dir_name"]
+                for relative in files:
+                    target = workspace / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_root / relative, target)
+                started = time.perf_counter()
+                index_repository(workspace, config)
+                index_seconds = time.perf_counter() - started
+                _assert_indexed_identity(workspace, config)
+                descriptor = NumpyVectorStore.inspect_published_descriptor(
+                    workspace / ".context-search"
+                )
+                if descriptor is None:
+                    raise ValueError("capture vector descriptor is missing")
+                descriptor_identities.add(
+                    descriptor.descriptor.embedding_identity
+                )
+                workspaces[repo_key] = workspace
+                index_db = workspace / ".context-search" / "index.sqlite"
+                capture_payload["repositories"][repo_key] = {
+                    "selected_files": len(files),
+                    "structure": _structural_counts(index_db),
+                    "index_sqlite_bytes": index_db.stat().st_size,
                 }
-            )
-        capture_payload["cases"][case["id"]] = {
-            "repo": case["repo"],
-            "selected": selected,
-            "required": required_rows,
-            "contextual": case["contextual"],
-            "unique_selected_paths": len(seen_paths),
+                capture_payload["timing"]["index_seconds"][repo_key] = round(
+                    index_seconds, 6
+                )
+
+            latencies: list[float] = []
+            for case in manifest["cases"]:
+                current_repository["value"] = case["repo"]
+                workspace = workspaces[case["repo"]]
+                index_db = workspace / ".context-search" / "index.sqlite"
+                bundle = None
+                case_latencies = []
+                for _ in range(max(1, timing_reps)):
+                    started = time.perf_counter()
+                    bundle = query_repository(workspace, case["query"], config)
+                    case_latencies.append(time.perf_counter() - started)
+                case_minimum = round(min(case_latencies), 9)
+                latencies.append(case_minimum)
+                capture_payload["timing"]["query_case_min_seconds"][
+                    case["id"]
+                ] = case_minimum
+                selected = []
+                seen_paths: set[str] = set()
+                for rank, result in enumerate(bundle.results, start=1):
+                    path = str(result.file_path)
+                    entry = {
+                        "rank": rank,
+                        "path": path,
+                        "graph_origin": (
+                            "graph_imports_match" in result.score_parts
+                        ),
+                        "relation_slot": "relation slot" in result.reasons,
+                        "relation_witness": None,
+                    }
+                    if entry["graph_origin"]:
+                        entry["relation_witness"] = _import_witness(
+                            index_db, path
+                        )
+                    selected.append(entry)
+                    seen_paths.add(path)
+                required_rows = []
+                for item in case["required"]:
+                    rank = next(
+                        (
+                            entry["rank"]
+                            for entry in selected
+                            if entry["path"] == item["path"]
+                        ),
+                        None,
+                    )
+                    required_rows.append(
+                        {
+                            "path": item["path"],
+                            "role": item["role"],
+                            "rank": rank,
+                            "state": "selected" if rank else "not_selected",
+                        }
+                    )
+                capture_payload["cases"][case["id"]] = {
+                    "repo": case["repo"],
+                    "selected": selected,
+                    "required": required_rows,
+                    "contextual": case["contextual"],
+                    "unique_selected_paths": len(seen_paths),
+                }
+
+            for witness in manifest["witnesses"]:
+                case = next(
+                    item
+                    for item in manifest["cases"]
+                    if item["id"] == witness["case"]
+                )
+                current_repository["value"] = case["repo"]
+                workspace = workspaces[case["repo"]]
+                record: dict = {
+                    "mode": witness["mode"],
+                    "case": witness["case"],
+                }
+                if witness["mode"] == "context_pack":
+                    from context_search_tool.mcp_tools import (
+                        context_search_context_tool,
+                    )
+
+                    payload = context_search_context_tool(
+                        str(workspace), case["query"]
+                    )
+                    items = payload.get("context_pack", {}).get("items", [])
+                    item_paths = {item.get("file_path") for item in items}
+                    record["covered_required"] = sorted(
+                        item["path"]
+                        for item in case["required"]
+                        if item["path"] in item_paths
+                    )
+                    record["item_count"] = len(items)
+                else:
+                    from context_search_tool.mcp_tools import (
+                        context_search_explore_tool,
+                    )
+
+                    payload = context_search_explore_tool(
+                        str(workspace), case["query"]
+                    )
+                    pack = payload.get("context_pack", {})
+                    trace = payload.get("trace", {})
+                    item_paths = {
+                        item.get("file_path")
+                        for item in pack.get("items", [])
+                    }
+                    record["covered_required"] = sorted(
+                        item["path"]
+                        for item in case["required"]
+                        if item["path"] in item_paths
+                    )
+                    record["retrieval_calls"] = trace.get(
+                        "retrieval_call_count"
+                    )
+                    record["final_unique_paths"] = len(item_paths)
+                capture_payload["witnesses"][
+                    witness["case"] + ":" + witness["mode"]
+                ] = record
+    finally:
+        current_repository["value"] = None
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    if len(descriptor_identities) != 1:
+        raise ValueError("capture vector descriptor identity mismatch")
+    descriptor_identity = descriptor_identities.pop()
+    if embedding == "hash":
+        if descriptor_identity != static_identity:
+            raise ValueError("hash capture descriptor identity mismatch")
+        capture_payload["embedding_identity"] = {
+            "provider": "hash",
+            "configured_model": config.embedding.model,
+            "dimensions": config.embedding.dimensions,
+            "static_config_identity": static_identity,
+            "descriptor_identity": descriptor_identity,
+            "canonical_model": None,
+            "model_digest": None,
+            "ollama_version": None,
+            "input_transform_id": None,
+            "pre_attestation": None,
+            "post_attestation": None,
+        }
+    else:
+        post_attestation = attestation_provider.assert_runtime_unchanged()
+        if (
+            pre_attestation != post_attestation
+            or descriptor_identity
+            != pre_attestation.get("embedding_identity")
+        ):
+            raise ValueError("BGE capture runtime identity mismatch")
+        capture_payload["embedding_identity"] = {
+            "provider": "bge",
+            "configured_model": config.embedding.model,
+            "dimensions": config.embedding.dimensions,
+            "static_config_identity": static_identity,
+            "descriptor_identity": descriptor_identity,
+            "canonical_model": pre_attestation["canonical_model"],
+            "model_digest": pre_attestation["model_digest"],
+            "ollama_version": pre_attestation["ollama_version"],
+            "input_transform_id": pre_attestation["input_transform_id"],
+            "pre_attestation": pre_attestation,
+            "post_attestation": post_attestation,
         }
 
-    for witness in manifest["witnesses"]:
-        case = next(
-            item for item in manifest["cases"] if item["id"] == witness["case"]
-        )
-        workspace = workspaces[case["repo"]]
-        record: dict = {"mode": witness["mode"], "case": witness["case"]}
-        if witness["mode"] == "context_pack":
-            from context_search_tool.mcp_tools import context_search_context_tool
-
-            payload = context_search_context_tool(str(workspace), case["query"])
-            items = payload.get("context_pack", {}).get("items", [])
-            item_paths = {item.get("file_path") for item in items}
-            record["covered_required"] = sorted(
-                item["path"]
-                for item in case["required"]
-                if item["path"] in item_paths
-            )
-            record["item_count"] = len(items)
-        else:
-            from context_search_tool.mcp_tools import context_search_explore_tool
-
-            payload = context_search_explore_tool(str(workspace), case["query"])
-            pack = payload.get("context_pack", {})
-            trace = payload.get("trace", {})
-            item_paths = {
-                item.get("file_path") for item in pack.get("items", [])
-            }
-            record["covered_required"] = sorted(
-                item["path"]
-                for item in case["required"]
-                if item["path"] in item_paths
-            )
-            record["retrieval_calls"] = trace.get("retrieval_call_count")
-            record["final_unique_paths"] = len(item_paths)
-        capture_payload["witnesses"][witness["case"] + ":" + witness["mode"]] = (
-            record
-        )
-
-    capture_payload["timing"]["query_latency_mean_seconds"] = round(
-        sum(latencies) / len(latencies), 5
+    capture_payload["timing"]["query_p50_seconds"] = _nearest_rank(
+        latencies, 0.50
+    )
+    capture_payload["timing"]["query_p95_seconds"] = _nearest_rank(
+        latencies, 0.95
     )
     rendered = _canonical(capture_payload)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(rendered, encoding="utf-8")
-    shutil.rmtree(scratch, ignore_errors=True)
     return capture_payload
 
 
@@ -594,24 +761,329 @@ def compare(baseline: dict, candidate: dict, output_path: Path | None = None) ->
     return report
 
 
+def _require_keys(value: object, expected: set[str], label: str) -> dict:
+    if not isinstance(value, dict) or set(value) != expected:
+        raise ValueError(f"{label} mapping is not closed")
+    return value
+
+
+def _require_sha256(value: object, label: str) -> str:
+    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+        raise ValueError(f"{label} is not a SHA-256 value")
+    return value
+
+
+def _require_number(value: object, label: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or float(value) < 0.0
+    ):
+        raise ValueError(f"{label} is not a finite non-negative number")
+    return float(value)
+
+
+def _privacy_failure(value: object) -> str | None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if lowered in {"content", "snippet"}:
+                return "source content"
+            if lowered in {"query", "credential", "body"}:
+                return "private field"
+            failure = _privacy_failure(item)
+            if failure is not None:
+                return failure
+        return None
+    if isinstance(value, list):
+        for item in value:
+            failure = _privacy_failure(item)
+            if failure is not None:
+                return failure
+        return None
+    if not isinstance(value, str):
+        return None
+    if (
+        value.startswith(("/", "\\\\"))
+        or re.match(r"^[A-Za-z]:[\\/]", value)
+    ):
+        return "absolute path"
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/@]+@", value):
+        return "credential"
+    if "P13_RAW_" in value or "P13_CREDENTIAL_" in value:
+        return "private sentinel"
+    return None
+
+
+def _validate_implementation(value: object) -> None:
+    implementation = _require_keys(
+        value, _IMPLEMENTATION_KEYS, "implementation"
+    )
+    _require_sha256(
+        implementation["tracked_diff_sha256"],
+        "implementation tracked diff",
+    )
+    if (
+        not isinstance(implementation["base_commit"], str)
+        or not implementation["base_commit"]
+        or not isinstance(implementation["dirty"], bool)
+        or not isinstance(implementation["untracked_files"], dict)
+    ):
+        raise ValueError("implementation identity is invalid")
+    for path, sha256 in implementation["untracked_files"].items():
+        if not isinstance(path, str) or Path(path).is_absolute() or ".." in Path(path).parts:
+            raise ValueError("implementation identity is invalid")
+        _require_sha256(sha256, "untracked file")
+
+
+def _validate_attestation(value: object) -> dict:
+    attestation = _require_keys(value, _ATTESTATION_KEYS, "attestation")
+    for field in (
+        "configured_model",
+        "canonical_model",
+        "model_digest",
+        "ollama_version",
+        "base_url",
+        "input_transform_id",
+        "embedding_identity",
+    ):
+        if not isinstance(attestation[field], str) or not attestation[field]:
+            raise ValueError("BGE attestation is invalid")
+    if (
+        isinstance(attestation["dimensions"], bool)
+        or not isinstance(attestation["dimensions"], int)
+        or attestation["dimensions"] <= 0
+    ):
+        raise ValueError("BGE attestation is invalid")
+    _require_sha256(attestation["model_digest"], "BGE model digest")
+    return attestation
+
+
+def _validate_embedding_identity(
+    value: object,
+    requests: dict,
+) -> None:
+    embedding = _require_keys(value, _IDENTITY_KEYS, "embedding identity")
+    provider = embedding["provider"]
+    if provider not in KNOWN_EMBEDDINGS:
+        raise ValueError("unknown embedding identity")
+    if (
+        not isinstance(embedding["configured_model"], str)
+        or not embedding["configured_model"]
+        or isinstance(embedding["dimensions"], bool)
+        or not isinstance(embedding["dimensions"], int)
+        or embedding["dimensions"] <= 0
+    ):
+        raise ValueError("embedding identity is invalid")
+    static_identity = _require_sha256(
+        embedding["static_config_identity"],
+        "static embedding identity",
+    )
+    descriptor_identity = embedding["descriptor_identity"]
+    if not isinstance(descriptor_identity, str) or not descriptor_identity:
+        raise ValueError("embedding descriptor identity is invalid")
+
+    if provider == "hash":
+        if (
+            descriptor_identity != static_identity
+            or any(
+                embedding[field] is not None
+                for field in (
+                    "canonical_model",
+                    "model_digest",
+                    "ollama_version",
+                    "input_transform_id",
+                    "pre_attestation",
+                    "post_attestation",
+                )
+            )
+            or any(requests[repo] != 0 for repo in _REQUEST_KEYS)
+        ):
+            raise ValueError("hash embedding identity is invalid")
+        return
+
+    if any(requests[repo] <= 0 for repo in ("redink", "daily")):
+        raise ValueError("BGE embedding request counts are invalid")
+    pre = _validate_attestation(embedding["pre_attestation"])
+    post = _validate_attestation(embedding["post_attestation"])
+    if pre != post:
+        raise ValueError("BGE runtime attestation changed")
+    for field in (
+        "configured_model",
+        "canonical_model",
+        "model_digest",
+        "ollama_version",
+        "input_transform_id",
+    ):
+        if embedding[field] != pre[field]:
+            raise ValueError("BGE embedding identity mismatch")
+    if (
+        embedding["configured_model"] != "bge-m3"
+        or embedding["canonical_model"] != "bge-m3:latest"
+    ):
+        raise ValueError("BGE embedding model identity mismatch")
+    if (
+        embedding["dimensions"] != pre["dimensions"]
+        or descriptor_identity != pre["embedding_identity"]
+    ):
+        raise ValueError("BGE embedding identity mismatch")
+    expected_descriptor = (
+        f"bge-ollama-v1:{static_identity}:{embedding['model_digest']}:"
+        f"{hashlib.sha256(embedding['ollama_version'].encode('utf-8')).hexdigest()}:"
+        f"{embedding['input_transform_id']}"
+    )
+    if (
+        descriptor_identity != expected_descriptor
+        or embedding["input_transform_id"] != "bge-input-v1"
+    ):
+        raise ValueError("BGE embedding descriptor identity mismatch")
+
+
+def _validate_case(case: object) -> None:
+    row = _require_keys(case, _CASE_KEYS, "case")
+    if row["repo"] not in ("redink", "daily"):
+        raise ValueError("case repository is invalid")
+    if not isinstance(row["contextual"], list) or not all(
+        isinstance(path, str) for path in row["contextual"]
+    ):
+        raise ValueError("case contextual paths are invalid")
+    if (
+        isinstance(row["unique_selected_paths"], bool)
+        or not isinstance(row["unique_selected_paths"], int)
+        or row["unique_selected_paths"] < 0
+    ):
+        raise ValueError("case selected path count is invalid")
+    if not isinstance(row["selected"], list):
+        raise ValueError("case selections are invalid")
+    for selected in row["selected"]:
+        entry = _require_keys(selected, _SELECTED_KEYS, "selected entry")
+        if (
+            isinstance(entry["rank"], bool)
+            or not isinstance(entry["rank"], int)
+            or entry["rank"] <= 0
+            or not isinstance(entry["path"], str)
+            or not isinstance(entry["graph_origin"], bool)
+            or not isinstance(entry["relation_slot"], bool)
+        ):
+            raise ValueError("selected entry is invalid")
+        witness = entry["relation_witness"]
+        if witness is not None:
+            witness = _require_keys(
+                witness, {"relation_id", "target_path"}, "relation witness"
+            )
+            if not all(isinstance(item, str) for item in witness.values()):
+                raise ValueError("relation witness is invalid")
+    if not isinstance(row["required"], list):
+        raise ValueError("case required items are invalid")
+    for required in row["required"]:
+        item = _require_keys(required, _REQUIRED_KEYS, "required item")
+        rank = item["rank"]
+        if (
+            not isinstance(item["path"], str)
+            or not isinstance(item["role"], str)
+            or item["state"] not in ("selected", "not_selected")
+            or (
+                rank is not None
+                and (
+                    isinstance(rank, bool)
+                    or not isinstance(rank, int)
+                    or rank <= 0
+                )
+            )
+            or (rank is None) != (item["state"] == "not_selected")
+        ):
+            raise ValueError("required item is invalid")
+
+
 def check(capture_path: Path) -> None:
     rendered = capture_path.read_text(encoding="utf-8")
     payload = json.loads(rendered)
-    if payload["schema_version"] != CAPTURE_SCHEMA_VERSION:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != CAPTURE_SCHEMA_VERSION
+    ):
         raise ValueError("unsupported capture schema")
-    identity_provider = payload.get("embedding_identity", {}).get("provider")
-    if identity_provider not in KNOWN_EMBEDDINGS:
-        raise ValueError("unknown embedding identity")
     if _canonical(payload) != rendered:
         raise ValueError("capture is not canonically rendered")
-    if "/Users/" in rendered or "/private/" in rendered or "/home/" in rendered:
-        raise ValueError("capture contains an absolute path")
-    for case in payload["cases"].values():
-        for entry in case["selected"]:
-            if "content" in entry or "snippet" in entry:
-                raise ValueError("capture contains source content")
-    if len(payload["cases"]) != 18:
+    privacy_failure = _privacy_failure(payload)
+    if privacy_failure is not None:
+        raise ValueError(f"capture privacy violation: {privacy_failure}")
+    root = _require_keys(payload, _CAPTURE_ROOT_KEYS, "capture")
+    identity_provider = root.get("embedding_identity", {}).get("provider")
+    if identity_provider not in KNOWN_EMBEDDINGS:
+        raise ValueError("unknown embedding identity")
+    if len(root["cases"]) != 18:
         raise ValueError("capture must contain all 18 gold cases")
+
+    _validate_implementation(root["implementation"])
+    environment = _require_keys(
+        root["environment"], _ENVIRONMENT_KEYS, "environment"
+    )
+    if not all(
+        isinstance(environment[field], str) and environment[field]
+        for field in _ENVIRONMENT_KEYS
+    ):
+        raise ValueError("capture environment is invalid")
+    if root["manifest_sha256"] != _manifest_or_fail()["manifest_sha256"]:
+        raise ValueError("frozen gold manifest changed")
+
+    repositories = _require_keys(
+        root["repositories"], {"redink", "daily"}, "repositories"
+    )
+    for repository in repositories.values():
+        row = _require_keys(repository, _REPOSITORY_KEYS, "repository")
+        if (
+            isinstance(row["selected_files"], bool)
+            or not isinstance(row["selected_files"], int)
+            or row["selected_files"] < 0
+            or not isinstance(row["structure"], dict)
+            or isinstance(row["index_sqlite_bytes"], bool)
+            or not isinstance(row["index_sqlite_bytes"], int)
+            or row["index_sqlite_bytes"] < 0
+        ):
+            raise ValueError("repository capture is invalid")
+
+    cases = root["cases"]
+    if not isinstance(cases, dict):
+        raise ValueError("capture cases are invalid")
+    for case in cases.values():
+        _validate_case(case)
+    if not isinstance(root["witnesses"], dict):
+        raise ValueError("capture witnesses are invalid")
+
+    requests = _require_keys(
+        root["embedding_requests"], _REQUEST_KEYS, "embedding requests"
+    )
+    if any(
+        isinstance(requests[key], bool)
+        or not isinstance(requests[key], int)
+        or requests[key] < 0
+        for key in _REQUEST_KEYS
+    ) or requests["total"] != requests["redink"] + requests["daily"]:
+        raise ValueError("embedding request counts are invalid")
+    _validate_embedding_identity(root["embedding_identity"], requests)
+
+    timing = _require_keys(root["timing"], _TIMING_KEYS, "timing")
+    index_seconds = _require_keys(
+        timing["index_seconds"], {"redink", "daily"}, "index timing"
+    )
+    for repo, seconds in index_seconds.items():
+        _require_number(seconds, f"{repo} index timing")
+    case_minima = timing["query_case_min_seconds"]
+    if not isinstance(case_minima, dict) or set(case_minima) != set(cases):
+        raise ValueError("query timing cases do not match capture cases")
+    minima = [
+        _require_number(case_minima[case_id], "query case timing")
+        for case_id in sorted(case_minima)
+    ]
+    if (
+        _require_number(timing["query_p50_seconds"], "query p50")
+        != _nearest_rank(minima, 0.50)
+        or _require_number(timing["query_p95_seconds"], "query p95")
+        != _nearest_rank(minima, 0.95)
+    ):
+        raise ValueError("query timing percentiles are invalid")
 
 
 def main() -> int:

@@ -3,17 +3,27 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
+import sqlite3
+import stat
+import tempfile
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from context_search_tool.chunker import chunk_text
 from context_search_tool.config import ToolConfig, load_config, read_config, render_config
-from context_search_tool.embeddings import EmbeddingProvider, provider_from_config
+from context_search_tool.embeddings import (
+    EmbeddingProvider,
+    _embedding_descriptor_identity,
+    provider_from_config,
+)
 from context_search_tool.graph_contract import (
     MAX_PRODUCER_RELATIONS_PER_FILE,
     MAX_SIGNALS_PER_FILE,
@@ -42,6 +52,7 @@ from context_search_tool.index_lock import exclusive_index_lock
 from context_search_tool.index_health import (
     EmbeddingIdentity,
     IndexHealthReport,
+    _descriptor_embedding_state,
     configured_embedding_identity,
     indexed_embedding_identity,
     preflight_public_operation,
@@ -126,6 +137,7 @@ from context_search_tool.test_association import regenerate_test_associations
 
 
 logger = logging.getLogger(__name__)
+_SQLiteError = sqlite3.Error
 
 
 class IncompatibleIndexError(RuntimeError):
@@ -153,6 +165,22 @@ _QUICK_RETRY_LIMIT = 32
 _AUTHORITATIVE_EMBEDDING_BATCH_SIZE = 512
 _AUTHORITATIVE_EMBEDDING_BATCH_BYTES = 4 * 1024 * 1024
 _AUTHORITATIVE_PERSISTENCE_BATCH_SIZE = MAX_V5_FILE_WRITE_BATCH_SIZE
+_EGRESS_OUTCOME_ORDER = {
+    "not_attempted": 0,
+    "possible": 1,
+    "performed": 2,
+}
+_BGE_FAILURE_CODES = frozenset(
+    {
+        "bge_unavailable",
+        "bge_model_unavailable",
+        "bge_context_limit",
+        "bge_request_rejected",
+        "bge_response_invalid",
+        "bge_runtime_mismatch",
+        "bge_reindex_required",
+    }
+)
 _QUICK_ALLOWED_STALE_REASONS = frozenset(
     {"files_changed", "path_inventory_changed", "topology_changed", "stale_on_entry"}
 )
@@ -313,13 +341,32 @@ class _EgressTracker:
     network_capable: bool
     outcome: str = "not_attempted"
 
+    def _advance(self, outcome: str) -> None:
+        if (
+            self.network_capable
+            and outcome in _EGRESS_OUTCOME_ORDER
+            and _EGRESS_OUTCOME_ORDER[outcome]
+            > _EGRESS_OUTCOME_ORDER[self.outcome]
+        ):
+            self.outcome = outcome
+
     def request_started(self) -> None:
-        if self.network_capable:
-            self.outcome = "possible"
+        self._advance("possible")
 
     def response_received(self) -> None:
-        if self.network_capable:
-            self.outcome = "performed"
+        self._advance("performed")
+
+    def merge_provider(self, provider: EmbeddingProvider | None) -> None:
+        if provider is None:
+            return
+        try:
+            outcome = getattr(provider, "_network_egress_outcome")
+        except AttributeError:
+            return
+        except Exception:
+            self._advance("possible")
+            return
+        self._advance(outcome if isinstance(outcome, str) else "possible")
 
 
 @dataclass(frozen=True)
@@ -388,6 +435,38 @@ class PreparedIndexSnapshot:
     summary: IndexSummary
 
 
+@dataclass(frozen=True)
+class _BGEGenerationArtifact:
+    name: str
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+    mode: int
+    owner: int
+
+
+@dataclass
+class _BGEReadyRollback:
+    temporary_directory: tempfile.TemporaryDirectory[str]
+    sqlite_backup_path: Path
+    manifest_payload: bytes
+    manifest_mode: int
+    manifest_sha256: str
+    descriptor_payload: bytes
+    descriptor_mode: int
+    descriptor_sha256: str
+    vector_generation: str
+    vector_embedding_identity: str
+    vector_dimensions: int
+    binding: OperationalReadyBinding
+    ids: tuple[str, ...]
+    pinned_query: tuple[tuple[str, float], ...]
+    journal_mode: str
+    generation_artifacts: frozenset[_BGEGenerationArtifact]
+
+
 def index_repository(
     repo: Path,
     config: ToolConfig | None = None,
@@ -435,6 +514,7 @@ def refresh_repository(
         return preflight_failure
 
     tracker = _EgressTracker(network_capable=True)
+    effective_provider = embedding_provider
     try:
         with exclusive_index_lock(resolved / ".context-search"):
             SQLiteStore(
@@ -446,17 +526,33 @@ def refresh_repository(
                 else (config_loader or read_config)(resolved)
             )
             tracker.network_capable = effective_config.embedding.provider != "hash"
-            return _refresh_repository_locked(
-                repo=resolved,
-                config=effective_config,
-                graph_plugins=ordered_graph_plugins(
-                    graph_plugins if graph_plugins is not None else default_plugins()
-                ),
-                inventory_observer=inventory_observer or observe_workspace,
-                observed_reader=observed_reader or read_observed_file,
-                embedding_provider=embedding_provider,
-                fault_hook=fault_hook,
-                tracker=tracker,
+            if (
+                effective_config.embedding.provider == "bge"
+                and effective_provider is None
+            ):
+                effective_provider = provider_from_config(
+                    effective_config.embedding
+                )
+            try:
+                result = _refresh_repository_locked(
+                    repo=resolved,
+                    config=effective_config,
+                    graph_plugins=ordered_graph_plugins(
+                        graph_plugins
+                        if graph_plugins is not None
+                        else default_plugins()
+                    ),
+                    inventory_observer=inventory_observer or observe_workspace,
+                    observed_reader=observed_reader or read_observed_file,
+                    embedding_provider=effective_provider,
+                    fault_hook=fault_hook,
+                    tracker=tracker,
+                )
+            finally:
+                tracker.merge_provider(effective_provider)
+            return replace(
+                result,
+                network_egress_performed=tracker.outcome == "performed",
             )
     except IndexBusyError:
         return _refresh_failure("index_busy")
@@ -474,8 +570,12 @@ def refresh_repository(
         return _refresh_failure("workspace_changed", tracker.outcome)
     except _AuthoritativeRefreshRequired:
         return _refresh_failure("authoritative_index_required", tracker.outcome)
-    except Exception:
-        return _refresh_failure("refresh_failed", tracker.outcome)
+    except Exception as error:
+        code = getattr(error, "code", None)
+        return _refresh_failure(
+            code if code in _BGE_FAILURE_CODES else "refresh_failed",
+            tracker.outcome,
+        )
 
 
 def build_v5_index_snapshot(
@@ -534,7 +634,7 @@ def build_v5_index_snapshot(
             manifest_integrity_failed=manifest_integrity_failed,
             fault_hook=fault_hook,
         )
-        _persist_prepared_index(
+        _persist_prepared_index_with_bge_rollback(
             repo=repo,
             store=store,
             prepared=prepared,
@@ -611,20 +711,42 @@ def _refresh_repository_locked(
     pages_before, freelist_before = store.storage_page_metrics()
     tombstones_before = store.tombstone_count()
     effective_index_hash = index_config_hash(config)
-    embedding_identity = embedding_config_hash(config.embedding)
+    embedding_config_identity = embedding_config_hash(config.embedding)
+    vector_embedding_identity = embedding_config_identity
     indexed_before = indexed_embedding_identity(baseline.manifest)
     configured = configured_embedding_identity(config)
+    provider = embedding_provider
+    bge_runtime_changed = False
+    if baseline.manifest.embedding_config_hash != embedding_config_identity:
+        raise _AuthoritativeRefreshRequired()
+    if config.embedding.provider == "bge":
+        if provider is None:
+            provider = provider_from_config(config.embedding)
+        _validate_embedding_provider(provider, config)
+        vector_embedding_identity = _embedding_descriptor_identity(
+            config.embedding,
+            provider,
+        )
+        persisted_state = _descriptor_embedding_state(
+            baseline.descriptor.descriptor.embedding_identity,
+            baseline.manifest,
+        )
+        if persisted_state == "invalid":
+            raise _AuthoritativeRefreshRequired()
+        bge_runtime_changed = (
+            baseline.descriptor.descriptor.embedding_identity
+            != vector_embedding_identity
+        )
 
     observation_started = time.time_ns() // 1_000_000
     opening = inventory_observer(repo, config)
     _fault(fault_hook, "opening_inventory_complete")
     if not opening.complete:
         raise InventoryIncompleteError()
-    if baseline.manifest.embedding_config_hash != embedding_identity:
-        raise _AuthoritativeRefreshRequired()
 
     quiet = (
         baseline.graph_status == "ready"
+        and not bge_runtime_changed
         and _quick_inventory_matches_snapshot(
             opening,
             baseline.operational,
@@ -776,6 +898,8 @@ def _refresh_repository_locked(
     nonempty_active = {
         path for path in active_paths if eligible[path].size > 0
     }
+    if bge_runtime_changed:
+        depend(nonempty_active, "embedding_config_changed")
     if topology_changed:
         depend(nonempty_active, "project_topology_changed")
     if path_inventory_changed:
@@ -860,7 +984,9 @@ def _refresh_repository_locked(
     prepared_by_path = {
         item.source_file.path: item for item in prepared_files
     }
-    vector_rebuild_paths = set(content_paths)
+    vector_rebuild_paths = (
+        set(nonempty_active) if bge_runtime_changed else set(content_paths)
+    )
     removed_embedding_ids = store.active_embedding_ids_for_files(
         vector_rebuild_paths | deleted_paths
     )
@@ -874,13 +1000,19 @@ def _refresh_repository_locked(
     expected_vector_ids.update(
         chunk.embedding_id or chunk.chunk_id for chunk in embedding_chunks
     )
-    vector_changed = bool(removed_embedding_ids or embedding_chunks)
+    vector_changed = bge_runtime_changed or bool(
+        removed_embedding_ids or embedding_chunks
+    )
     frozen_vectors: FrozenVectorGeneration | None = None
     if vector_changed:
         try:
             loaded_descriptor, vector_store = NumpyVectorStore.load_published_snapshot(
                 index_dir,
-                expected_embedding_identity=embedding_identity,
+                expected_embedding_identity=(
+                    baseline.descriptor.descriptor.embedding_identity
+                    if config.embedding.provider == "bge"
+                    else embedding_config_identity
+                ),
             )
         except (OSError, RuntimeError, ValueError) as error:
             raise _AuthoritativeRefreshRequired() from error
@@ -892,7 +1024,7 @@ def _refresh_repository_locked(
             raise _AuthoritativeRefreshRequired()
         vector_store.remove_many(sorted(removed_embedding_ids))
         if embedding_chunks:
-            provider = embedding_provider or provider_from_config(config.embedding)
+            provider = provider or provider_from_config(config.embedding)
             _validate_embedding_provider(provider, config)
             tracker.request_started()
             vectors = provider.embed_texts(
@@ -907,13 +1039,18 @@ def _refresh_repository_locked(
                     for chunk, vector in zip(embedding_chunks, vectors)
                 ]
             )
+            if config.embedding.provider == "bge":
+                _assert_bge_runtime_unchanged(
+                    provider,
+                    vector_embedding_identity,
+                )
         _fault(fault_hook, "embedding_complete")
         vector_store.sort_by_id()
         if vector_store.ids != tuple(sorted(expected_vector_ids)):
             raise GraphIntegrityError("prepared vector ID set mismatch")
         frozen_vectors = vector_store.freeze_generation_v2(
             generation=uuid.uuid4().hex,
-            embedding_identity=embedding_identity,
+            embedding_identity=vector_embedding_identity,
             normalization="l2",
         )
         prepared_vectors = PreparedVectorGeneration(
@@ -1049,7 +1186,7 @@ def _refresh_repository_locked(
     if descriptor.vectors_bytes is None or descriptor.ids_bytes is None:
         raise _AuthoritativeRefreshRequired()
     manifest = ManifestV2(
-        embedding_config_hash=embedding_identity,
+        embedding_config_hash=embedding_config_identity,
         embedding_provider=config.embedding.provider,
         embedding_model=config.embedding.model,
         embedding_dimensions=config.embedding.dimensions,
@@ -1120,7 +1257,7 @@ def _refresh_repository_locked(
             chunks_indexed=len(embedding_chunks),
         ),
     )
-    persistence = _persist_prepared_index(
+    persistence = _persist_prepared_index_with_bge_rollback(
         repo=repo,
         store=store,
         prepared=prepared,
@@ -1204,11 +1341,11 @@ def _load_quick_baseline(repo: Path, store: SQLiteStore) -> _QuickBaseline:
             or descriptor.descriptor.dimensions != manifest.embedding_dimensions
             or descriptor.descriptor.row_count
             != len(operational.active_embedding_ids)
-            or descriptor.descriptor.embedding_identity
-            not in {
-                manifest.embedding_config_hash,
-                f"{manifest.embedding_model}:{manifest.embedding_dimensions}",
-            }
+            or _descriptor_embedding_state(
+                descriptor.descriptor.embedding_identity,
+                manifest,
+            )
+            == "invalid"
             or not project_scope_metadata_is_current(store)
             or store.get_metadata(FILE_WRITE_IN_PROGRESS_KEY) not in {None, ""}
         ):
@@ -1703,7 +1840,17 @@ def _prepare_authoritative_index(
         except (OperationalIntegrityError, ValueError):
             operational_integrity_failed = True
 
-    embedding_identity = embedding_config_hash(config.embedding)
+    embedding_config_identity = embedding_config_hash(config.embedding)
+    vector_embedding_identity = embedding_config_identity
+    provider = embedding_provider
+    if config.embedding.provider == "bge":
+        if provider is None:
+            provider = provider_from_config(config.embedding)
+        _validate_embedding_provider(provider, config)
+        vector_embedding_identity = _embedding_descriptor_identity(
+            config.embedding,
+            provider,
+        )
     effective_index_hash = index_config_hash(config)
     existing_ids = (
         (
@@ -1715,20 +1862,49 @@ def _prepare_authoritative_index(
         else set()
     )
     vector_snapshot_valid = False
+    bge_runtime_changed = False
     current_vector_store: NumpyVectorStore | None = None
     current_descriptor: PublishedVectorDescriptor | None = None
     if stored_version == TARGET_SIGNAL_SCHEMA_VERSION and not entry_full_reindex:
         try:
-            descriptor, current_vector_store = (
-                NumpyVectorStore.load_published_snapshot(
-                    repo / ".context-search",
-                    expected_embedding_identity=embedding_identity,
-                )
-            )
             current_descriptor = NumpyVectorStore.inspect_published_descriptor(
                 repo / ".context-search"
             )
-            if descriptor is None or current_descriptor is None:
+            if current_descriptor is None:
+                raise ValueError("published vector descriptor is missing")
+            persisted_vector_identity = (
+                current_descriptor.descriptor.embedding_identity
+            )
+            if config.embedding.provider == "bge":
+                manifest = (
+                    loaded_manifest.manifest
+                    if loaded_manifest is not None
+                    else None
+                )
+                if isinstance(manifest, ManifestV2):
+                    if (
+                        _descriptor_embedding_state(
+                            persisted_vector_identity,
+                            manifest,
+                        )
+                        == "invalid"
+                    ):
+                        raise ValueError("BGE vector embedding identity is invalid")
+                elif persisted_vector_identity != embedding_config_identity:
+                    raise ValueError("BGE vector embedding identity is invalid")
+                expected_vector_identity = persisted_vector_identity
+                bge_runtime_changed = (
+                    persisted_vector_identity != vector_embedding_identity
+                )
+            else:
+                expected_vector_identity = embedding_config_identity
+            descriptor, current_vector_store = (
+                NumpyVectorStore.load_published_snapshot(
+                    repo / ".context-search",
+                    expected_embedding_identity=expected_vector_identity,
+                )
+            )
+            if descriptor is None:
                 raise ValueError("published vector descriptor is missing")
             if descriptor != current_descriptor.descriptor:
                 raise ValueError("vector descriptor changed during validation")
@@ -1741,6 +1917,8 @@ def _prepare_authoritative_index(
             vector_snapshot_valid = False
             current_vector_store = None
             current_descriptor = None
+            if config.embedding.provider == "bge":
+                bge_runtime_changed = True
 
     binding_integrity_failed = _bound_v2_identity_failed(
         loaded_manifest,
@@ -1893,6 +2071,7 @@ def _prepare_authoritative_index(
         stored_version < TARGET_SIGNAL_SCHEMA_VERSION
         or entry_full_reindex
         or not vector_snapshot_valid
+        or bge_runtime_changed
         or graph_integrity_failed
         or manifest_integrity_failed
         or operational_integrity_failed
@@ -2009,7 +2188,7 @@ def _prepare_authoritative_index(
         for chunk in prepared_by_path[path].chunks
     )
     if embedding_chunks:
-        provider = embedding_provider or provider_from_config(config.embedding)
+        provider = provider or provider_from_config(config.embedding)
         _validate_embedding_provider(provider, config)
 
         def embedded_batches() -> Iterable[list[tuple[str, Any]]]:
@@ -2058,6 +2237,11 @@ def _prepare_authoritative_index(
                 item for batch in embedded_batches() for item in batch
             ]
             vector_store.upsert_many(embedded_items)
+        if config.embedding.provider == "bge":
+            _assert_bge_runtime_unchanged(
+                provider,
+                vector_embedding_identity,
+            )
     _fault(preparation_fault_hook, "embedding_complete")
     expected_vector_ids.update(
         chunk.embedding_id or chunk.chunk_id for chunk in embedding_chunks
@@ -2086,7 +2270,7 @@ def _prepare_authoritative_index(
     elif not vector_changed and current_descriptor is not None:
         prepared_vectors = NumpyVectorStore.prepare_existing_generation_v2(
             repo / ".context-search",
-            expected_embedding_identity=embedding_identity,
+            expected_embedding_identity=vector_embedding_identity,
             expected_ids=expected_vector_ids,
         )
         descriptor_snapshot = NumpyVectorStore.prepared_descriptor_snapshot(
@@ -2097,7 +2281,7 @@ def _prepare_authoritative_index(
     else:
         frozen_vectors = vector_store.freeze_generation_v2(
             generation=uuid.uuid4().hex,
-            embedding_identity=embedding_identity,
+            embedding_identity=vector_embedding_identity,
             normalization="l2",
         )
         prepared_vectors = PreparedVectorGeneration(
@@ -2177,7 +2361,7 @@ def _prepare_authoritative_index(
     if descriptor.vectors_bytes is None or descriptor.ids_bytes is None:
         raise GraphIntegrityError("prepared vector descriptor is not v2")
     manifest = ManifestV2(
-        embedding_config_hash=embedding_identity,
+        embedding_config_hash=embedding_config_identity,
         embedding_provider=config.embedding.provider,
         embedding_model=config.embedding.model,
         embedding_dimensions=config.embedding.dimensions,
@@ -2458,6 +2642,622 @@ def _operational_control_observations(
     )
 
 
+def _persist_prepared_index_with_bge_rollback(
+    *,
+    repo: Path,
+    store: SQLiteStore,
+    prepared: PreparedIndexSnapshot,
+    fault_hook: Callable[[str], None] | None,
+) -> _PersistenceWork:
+    rollback = _capture_bge_ready_rollback(
+        repo=repo,
+        store=store,
+        prepared=prepared,
+    )
+    try:
+        return _persist_prepared_index(
+            repo=repo,
+            store=store,
+            prepared=prepared,
+            fault_hook=fault_hook,
+        )
+    except BaseException:
+        if rollback is None or _prepared_ready_tuple_is_committed(
+            repo=repo,
+            store=store,
+            prepared=prepared,
+        ):
+            raise
+        try:
+            _restore_bge_ready_rollback(
+                repo=repo,
+                store=store,
+                rollback=rollback,
+            )
+        except BaseException:
+            try:
+                store.mark_graph_stale(
+                    "bge_reindex_required",
+                    full_reindex_required=True,
+                )
+            except BaseException:
+                pass
+            raise RuntimeError("bge_ready_restore_failed") from None
+        raise
+    finally:
+        if rollback is not None:
+            rollback.temporary_directory.cleanup()
+
+
+def _capture_bge_ready_rollback(
+    *,
+    repo: Path,
+    store: SQLiteStore,
+    prepared: PreparedIndexSnapshot,
+) -> _BGEReadyRollback | None:
+    if prepared.effective_config.embedding.provider != "bge":
+        return None
+    operational = store.read_operational_snapshot()
+    if operational is None or operational.graph_status != "ready":
+        return None
+
+    index_dir = repo / ".context-search"
+    manifest_path = index_dir / "manifest.json"
+    descriptor_path = index_dir / "vector_snapshot.json"
+    generation_artifacts = _snapshot_bge_generation_artifacts(index_dir)
+    manifest_payload, manifest_mode = _read_rollback_artifact(manifest_path)
+    descriptor_payload, descriptor_mode = _read_rollback_artifact(
+        descriptor_path
+    )
+    manifest_sha256 = hashlib.sha256(manifest_payload).hexdigest()
+    descriptor_sha256 = hashlib.sha256(descriptor_payload).hexdigest()
+    descriptor = NumpyVectorStore.inspect_published_descriptor(index_dir)
+    if (
+        descriptor is None
+        or manifest_sha256 != operational.binding.manifest_sha256
+        or descriptor_sha256 != operational.binding.vector_descriptor_sha256
+        or descriptor.sha256 != descriptor_sha256
+        or descriptor.descriptor.generation
+        != operational.binding.vector_generation
+        or descriptor.descriptor.vectors_bytes
+        != operational.binding.vector_bytes
+        or descriptor.descriptor.ids_bytes
+        != operational.binding.vector_ids_bytes
+    ):
+        return None
+    vectors = NumpyVectorStore.load_bound_ready_snapshot(
+        index_dir,
+        expected_descriptor_sha256=descriptor_sha256,
+        expected_generation=descriptor.descriptor.generation,
+        expected_vectors_bytes=operational.binding.vector_bytes,
+        expected_ids_bytes=operational.binding.vector_ids_bytes,
+        expected_row_count=len(operational.active_embedding_ids),
+        expected_dimensions=prepared.effective_config.embedding.dimensions,
+        expected_embedding_identity=descriptor.descriptor.embedding_identity,
+    )
+    try:
+        ids = tuple(sorted(operational.active_embedding_ids))
+        if vectors.ids != ids:
+            return None
+        query = np.zeros(
+            prepared.effective_config.embedding.dimensions,
+            dtype=np.float32,
+        )
+        if query.size:
+            query[0] = 1.0
+        pinned_query = tuple(
+            (item.chunk_id, round(item.score, 7))
+            for item in vectors.search(query, 20, set())
+        )
+    finally:
+        vectors.close()
+
+    temporary_directory = tempfile.TemporaryDirectory(
+        prefix="context-search-bge-ready-"
+    )
+    sqlite_backup_path = (
+        Path(temporary_directory.name) / "index.sqlite.backup"
+    )
+    source = None
+    destination = None
+    try:
+        try:
+            source = sqlite3.connect(str(store.db_path), isolation_level=None)
+            destination = sqlite3.connect(
+                str(sqlite_backup_path),
+                isolation_level=None,
+            )
+            source.backup(destination)
+        finally:
+            try:
+                if destination is not None:
+                    destination.close()
+            finally:
+                if source is not None:
+                    source.close()
+    except BaseException:
+        temporary_directory.cleanup()
+        raise
+    if _snapshot_bge_generation_artifacts(index_dir) != generation_artifacts:
+        temporary_directory.cleanup()
+        raise ValueError("BGE vector artifact inventory changed")
+
+    return _BGEReadyRollback(
+        temporary_directory=temporary_directory,
+        sqlite_backup_path=sqlite_backup_path,
+        manifest_payload=manifest_payload,
+        manifest_mode=manifest_mode,
+        manifest_sha256=manifest_sha256,
+        descriptor_payload=descriptor_payload,
+        descriptor_mode=descriptor_mode,
+        descriptor_sha256=descriptor_sha256,
+        vector_generation=descriptor.descriptor.generation,
+        vector_embedding_identity=descriptor.descriptor.embedding_identity,
+        vector_dimensions=descriptor.descriptor.dimensions,
+        binding=operational.binding,
+        ids=ids,
+        pinned_query=pinned_query,
+        journal_mode=store.journal_mode(),
+        generation_artifacts=generation_artifacts,
+    )
+
+
+def _read_rollback_artifact(path: Path) -> tuple[bytes, int]:
+    directory_fd = _open_bge_index_directory(path.parent)
+    artifact_fd: int | None = None
+    try:
+        directory_before = os.fstat(directory_fd)
+        try:
+            named_before = os.stat(
+                path.name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            artifact_fd = os.open(
+                path.name,
+                _bge_read_flags(),
+                dir_fd=directory_fd,
+            )
+            before = os.fstat(artifact_fd)
+        except OSError:
+            raise ValueError("unsafe ready artifact") from None
+        _validate_bge_regular_artifact(before, "unsafe ready artifact")
+        if _bge_stat_identity(named_before) != _bge_stat_identity(before):
+            raise ValueError("ready artifact changed before read")
+
+        chunks: list[bytes] = []
+        remaining = before.st_size + 1
+        while remaining:
+            chunk = os.read(artifact_fd, min(remaining, 64 * 1024))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+
+        try:
+            after = os.fstat(artifact_fd)
+            named_after = os.stat(
+                path.name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except OSError:
+            raise ValueError("ready artifact changed during read") from None
+        if (
+            _bge_stat_identity(before) != _bge_stat_identity(after)
+            or _bge_stat_identity(after) != _bge_stat_identity(named_after)
+            or len(payload) != before.st_size
+        ):
+            raise ValueError("ready artifact changed during read")
+        _assert_bge_directory_unchanged(
+            path.parent,
+            directory_fd,
+            directory_before,
+        )
+        return payload, stat.S_IMODE(before.st_mode)
+    finally:
+        try:
+            if artifact_fd is not None:
+                os.close(artifact_fd)
+        finally:
+            os.close(directory_fd)
+
+
+def _bge_read_flags(*, directory: bool = False) -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if directory and hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    return flags
+
+
+def _open_bge_index_directory(index_dir: Path) -> int:
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            index_dir,
+            _bge_read_flags(directory=True),
+        )
+        opened = os.fstat(descriptor)
+        named = os.stat(index_dir, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or not stat.S_ISDIR(named.st_mode)
+            or _bge_stat_identity(opened) != _bge_stat_identity(named)
+            or (hasattr(os, "getuid") and opened.st_uid != os.getuid())
+            or stat.S_IMODE(opened.st_mode) & 0o022
+        ):
+            raise ValueError("unsafe BGE index directory")
+        return descriptor
+    except OSError:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise ValueError("unsafe BGE index directory") from None
+    except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
+
+
+def _assert_bge_directory_unchanged(
+    index_dir: Path,
+    directory_fd: int,
+    before: os.stat_result,
+) -> None:
+    try:
+        after = os.fstat(directory_fd)
+        named_after = os.stat(index_dir, follow_symlinks=False)
+    except OSError:
+        raise ValueError("BGE index directory changed") from None
+    if (
+        _bge_stat_identity(before) != _bge_stat_identity(after)
+        or _bge_stat_identity(after) != _bge_stat_identity(named_after)
+    ):
+        raise ValueError("BGE index directory changed")
+
+
+def _validate_bge_regular_artifact(
+    metadata: os.stat_result,
+    message: str,
+) -> None:
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or (hasattr(os, "getuid") and metadata.st_uid != os.getuid())
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+    ):
+        raise ValueError(message)
+
+
+def _bge_stat_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+        metadata.st_mode,
+        metadata.st_uid,
+    )
+
+
+def _prepared_ready_tuple_is_committed(
+    *,
+    repo: Path,
+    store: SQLiteStore,
+    prepared: PreparedIndexSnapshot,
+) -> bool:
+    try:
+        operational = store.read_operational_snapshot()
+        descriptor = NumpyVectorStore.inspect_published_descriptor(
+            repo / ".context-search"
+        )
+        manifest = load_manifest_snapshot(repo)
+    except (OSError, RuntimeError, ValueError, _SQLiteError):
+        return False
+    expected = prepared.prepared_manifest
+    return bool(
+        operational is not None
+        and operational.graph_status == "ready"
+        and descriptor == prepared.vector_descriptor_snapshot
+        and manifest.manifest == expected.manifest
+        and manifest.payload == expected.payload
+        and manifest.sha256 == expected.sha256
+        and manifest.byte_size == expected.byte_size
+        and operational.binding.manifest_sha256 == expected.sha256
+        and operational.binding.manifest_generation
+        == expected.manifest.manifest_generation
+        and operational.binding.vector_descriptor_sha256
+        == prepared.vector_descriptor_snapshot.sha256
+        and operational.binding.vector_generation
+        == prepared.vector_descriptor_snapshot.descriptor.generation
+    )
+
+
+def _restore_bge_ready_rollback(
+    *,
+    repo: Path,
+    store: SQLiteStore,
+    rollback: _BGEReadyRollback,
+) -> None:
+    source = None
+    destination = None
+    try:
+        source = sqlite3.connect(
+            str(rollback.sqlite_backup_path),
+            isolation_level=None,
+        )
+        destination = sqlite3.connect(str(store.db_path), isolation_level=None)
+        source.backup(destination)
+    finally:
+        try:
+            if destination is not None:
+                destination.close()
+        finally:
+            if source is not None:
+                source.close()
+
+    index_dir = repo / ".context-search"
+    _restore_rollback_artifact(
+        index_dir / "vector_snapshot.json",
+        rollback.descriptor_payload,
+        rollback.descriptor_mode,
+    )
+    _restore_rollback_artifact(
+        index_dir / "manifest.json",
+        rollback.manifest_payload,
+        rollback.manifest_mode,
+    )
+    _remove_new_generation_artifacts(
+        index_dir,
+        rollback.generation_artifacts,
+    )
+    _verify_bge_ready_rollback(
+        repo=repo,
+        store=store,
+        rollback=rollback,
+    )
+
+
+def _restore_rollback_artifact(
+    path: Path,
+    payload: bytes,
+    mode: int,
+) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.restore-",
+        dir=path.parent,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as file:
+            file.write(payload)
+            file.flush()
+            os.fchmod(file.fileno(), mode)
+            os.fsync(file.fileno())
+        os.replace(temporary_path, path)
+        _fsync_index_directory(path.parent)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
+def _remove_new_generation_artifacts(
+    index_dir: Path,
+    preserved: frozenset[_BGEGenerationArtifact],
+) -> None:
+    directory_fd = _open_bge_index_directory(index_dir)
+    try:
+        current = _snapshot_bge_generation_artifacts_from_fd(
+            index_dir,
+            directory_fd,
+        )
+        preserved_by_name = {artifact.name: artifact for artifact in preserved}
+        current_by_name = {artifact.name: artifact for artifact in current}
+        if any(
+            current_by_name.get(name) != artifact
+            for name, artifact in preserved_by_name.items()
+        ):
+            raise RuntimeError("bge_ready_restore_failed")
+
+        new_names = sorted(current_by_name.keys() - preserved_by_name.keys())
+        for name in new_names:
+            artifact = _read_bge_generation_artifact(directory_fd, name)
+            if artifact != current_by_name[name]:
+                raise RuntimeError("bge_ready_restore_failed")
+            os.unlink(name, dir_fd=directory_fd)
+        if new_names:
+            os.fsync(directory_fd)
+        if (
+            _snapshot_bge_generation_artifacts_from_fd(
+                index_dir,
+                directory_fd,
+            )
+            != preserved
+        ):
+            raise RuntimeError("bge_ready_restore_failed")
+    finally:
+        os.close(directory_fd)
+
+
+def _snapshot_bge_generation_artifacts(
+    index_dir: Path,
+) -> frozenset[_BGEGenerationArtifact]:
+    directory_fd = _open_bge_index_directory(index_dir)
+    try:
+        return _snapshot_bge_generation_artifacts_from_fd(
+            index_dir,
+            directory_fd,
+        )
+    finally:
+        os.close(directory_fd)
+
+
+def _snapshot_bge_generation_artifacts_from_fd(
+    index_dir: Path,
+    directory_fd: int,
+) -> frozenset[_BGEGenerationArtifact]:
+    try:
+        directory_before = os.fstat(directory_fd)
+        names_before = tuple(sorted(os.listdir(directory_fd)))
+        artifacts = frozenset(
+            _read_bge_generation_artifact(directory_fd, name)
+            for name in names_before
+            if _is_bge_generation_artifact_name(name)
+        )
+        names_after = tuple(sorted(os.listdir(directory_fd)))
+        directory_after = os.fstat(directory_fd)
+    except OSError:
+        raise ValueError("unsafe BGE vector artifact inventory") from None
+    if (
+        names_after != names_before
+        or _bge_stat_identity(directory_after)
+        != _bge_stat_identity(directory_before)
+    ):
+        raise ValueError("BGE vector artifact inventory changed")
+    _assert_bge_directory_unchanged(
+        index_dir,
+        directory_fd,
+        directory_before,
+    )
+    return artifacts
+
+
+def _read_bge_generation_artifact(
+    directory_fd: int,
+    name: str,
+) -> _BGEGenerationArtifact:
+    if not _is_bge_generation_artifact_name(name):
+        raise ValueError("unsafe BGE vector artifact")
+    artifact_fd: int | None = None
+    try:
+        try:
+            named_before = os.stat(
+                name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            artifact_fd = os.open(
+                name,
+                _bge_read_flags(),
+                dir_fd=directory_fd,
+            )
+            before = os.fstat(artifact_fd)
+            after = os.fstat(artifact_fd)
+            named_after = os.stat(
+                name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except OSError:
+            raise ValueError("unsafe BGE vector artifact") from None
+        _validate_bge_regular_artifact(
+            before,
+            "unsafe BGE vector artifact",
+        )
+        if (
+            _bge_stat_identity(named_before) != _bge_stat_identity(before)
+            or _bge_stat_identity(before) != _bge_stat_identity(after)
+            or _bge_stat_identity(after) != _bge_stat_identity(named_after)
+        ):
+            raise ValueError("BGE vector artifact changed")
+        return _BGEGenerationArtifact(
+            name=name,
+            device=before.st_dev,
+            inode=before.st_ino,
+            size=before.st_size,
+            mtime_ns=before.st_mtime_ns,
+            ctime_ns=before.st_ctime_ns,
+            mode=before.st_mode,
+            owner=before.st_uid,
+        )
+    finally:
+        if artifact_fd is not None:
+            os.close(artifact_fd)
+
+
+def _is_bge_generation_artifact_name(name: str) -> bool:
+    return re.fullmatch(
+        r"(?:"
+        r"vectors\.[A-Za-z0-9][A-Za-z0-9_-]*\.npy"
+        r"|vector_ids\.[A-Za-z0-9][A-Za-z0-9_-]*\.json"
+        r")",
+        name,
+    ) is not None
+
+
+def _fsync_index_directory(index_dir: Path) -> None:
+    descriptor = _open_bge_index_directory(index_dir)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _verify_bge_ready_rollback(
+    *,
+    repo: Path,
+    store: SQLiteStore,
+    rollback: _BGEReadyRollback,
+) -> None:
+    index_dir = repo / ".context-search"
+    manifest_payload, manifest_mode = _read_rollback_artifact(
+        index_dir / "manifest.json"
+    )
+    descriptor_payload, descriptor_mode = _read_rollback_artifact(
+        index_dir / "vector_snapshot.json"
+    )
+    operational = store.read_operational_snapshot()
+    if (
+        manifest_payload != rollback.manifest_payload
+        or manifest_mode != rollback.manifest_mode
+        or hashlib.sha256(manifest_payload).hexdigest()
+        != rollback.manifest_sha256
+        or descriptor_payload != rollback.descriptor_payload
+        or descriptor_mode != rollback.descriptor_mode
+        or hashlib.sha256(descriptor_payload).hexdigest()
+        != rollback.descriptor_sha256
+        or operational is None
+        or operational.graph_status != "ready"
+        or operational.binding != rollback.binding
+        or tuple(sorted(operational.active_embedding_ids)) != rollback.ids
+        or store.journal_mode() != rollback.journal_mode
+        or _snapshot_bge_generation_artifacts(index_dir)
+        != rollback.generation_artifacts
+    ):
+        raise RuntimeError("bge_ready_restore_failed")
+    vectors = NumpyVectorStore.load_bound_ready_snapshot(
+        index_dir,
+        expected_descriptor_sha256=rollback.descriptor_sha256,
+        expected_generation=rollback.vector_generation,
+        expected_vectors_bytes=rollback.binding.vector_bytes,
+        expected_ids_bytes=rollback.binding.vector_ids_bytes,
+        expected_row_count=len(rollback.ids),
+        expected_dimensions=rollback.vector_dimensions,
+        expected_embedding_identity=rollback.vector_embedding_identity,
+    )
+    try:
+        query = np.zeros(rollback.vector_dimensions, dtype=np.float32)
+        if query.size:
+            query[0] = 1.0
+        pinned_query = tuple(
+            (item.chunk_id, round(item.score, 7))
+            for item in vectors.search(query, 20, set())
+        )
+        if vectors.ids != rollback.ids or pinned_query != rollback.pinned_query:
+            raise RuntimeError("bge_ready_restore_failed")
+        if (
+            _snapshot_bge_generation_artifacts(index_dir)
+            != rollback.generation_artifacts
+        ):
+            raise RuntimeError("bge_ready_restore_failed")
+    finally:
+        vectors.close()
+
+
 def _persist_prepared_index(
     *,
     repo: Path,
@@ -2729,7 +3529,9 @@ def _prepared_external_validator(
         verified = NumpyVectorStore.verify_published_snapshot(
             repo / ".context-search",
             expected_ids=set(prepared.expected_vector_ids),
-            expected_embedding_identity=prepared.prepared_manifest.manifest.embedding_config_hash,
+            expected_embedding_identity=(
+                prepared.vector_descriptor_snapshot.descriptor.embedding_identity
+            ),
         )
         if verified.ids != prepared.expected_vector_ids:
             raise GraphIntegrityError("vector ID snapshot mismatch")
@@ -2764,8 +3566,31 @@ def read_v5_vector_snapshot(
 ) -> NumpyVectorStore | None:
     if not graph_session.capability.structured:
         return None
+    if (
+        graph_session.capability.status == "stale"
+        and graph_session.capability.stale_reason == "bge_reindex_required"
+    ):
+        raise GraphIntegrityError("bge_reindex_required")
     embedding_identity = embedding_config_hash(config.embedding)
     try:
+        if config.embedding.provider == "bge":
+            descriptor = NumpyVectorStore.inspect_published_descriptor(
+                repo.resolve() / ".context-search"
+            )
+            if (
+                descriptor is None
+                or not isinstance(
+                    manifest := load_manifest(repo),
+                    ManifestV2,
+                )
+                or _descriptor_embedding_state(
+                    descriptor.descriptor.embedding_identity,
+                    manifest,
+                )
+                == "invalid"
+            ):
+                raise GraphIntegrityError("vector_snapshot_mismatch")
+            embedding_identity = descriptor.descriptor.embedding_identity
         if graph_session.capability.status == "ready":
             binding = graph_session.ready_vector_binding()
             snapshot = NumpyVectorStore.load_bound_ready_snapshot(
@@ -3104,6 +3929,23 @@ def _validate_embedding_provider(
         raise ValueError("embedding provider identity mismatch")
 
 
+def _assert_bge_runtime_unchanged(
+    provider: EmbeddingProvider,
+    expected_embedding_identity: str,
+) -> Mapping[str, object]:
+    postflight = getattr(provider, "assert_runtime_unchanged", None)
+    if not callable(postflight):
+        raise ValueError("BGE embedding provider cannot verify runtime identity")
+    attestation = postflight()
+    if (
+        not isinstance(attestation, Mapping)
+        or attestation.get("embedding_identity")
+        != expected_embedding_identity
+    ):
+        raise ValueError("bge_runtime_mismatch")
+    return attestation
+
+
 def _validate_published_vectors(
     index_dir: Path,
     *,
@@ -3162,7 +4004,8 @@ def _load_validated_v5_vector_tuple(
         raise GraphIntegrityError("config snapshot mismatch")
     manifest = load_manifest(repo)
     if (
-        manifest.embedding_config_hash != expected_embedding_identity
+        manifest.embedding_config_hash
+        != embedding_config_hash(config.embedding)
         or manifest.embedding_provider != config.embedding.provider
         or manifest.embedding_model != config.embedding.model
         or manifest.embedding_dimensions != config.embedding.dimensions

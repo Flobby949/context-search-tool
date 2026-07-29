@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-from dataclasses import replace
+import re
+from dataclasses import dataclass, replace
 from pathlib import Path
 import sqlite3
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -17,11 +20,19 @@ from context_search_tool.graph_lifecycle import (
     FULL_REINDEX_REQUIRED_KEY,
     GRAPH_RESOLUTION_STATE_KEY,
     OPERATIONAL_SCHEMA_VERSION_KEY,
+    read_graph_capability,
 )
 from context_search_tool.graph_plugins import MaterializedGraph, ParsedGraphFacts
 from context_search_tool.index_lock import exclusive_index_lock
 from context_search_tool.indexer import build_v5_index_snapshot, index_repository
-from context_search_tool.manifest import Manifest, ManifestV2, load_manifest, write_manifest
+from context_search_tool.manifest import (
+    Manifest,
+    ManifestV2,
+    load_manifest,
+    prepare_manifest_v2,
+    publish_manifest_v2,
+    write_manifest,
+)
 from context_search_tool.scanner import (
     ObservedFileRead,
     observe_workspace,
@@ -29,7 +40,10 @@ from context_search_tool.scanner import (
     scan_workspace_v5,
 )
 from context_search_tool.sqlite_store import FILE_WRITE_IN_PROGRESS_KEY, SQLiteStore
-from context_search_tool.vector_store import NumpyVectorStore
+from context_search_tool.vector_store import (
+    NumpyVectorStore,
+    PreparedVectorGeneration,
+)
 
 
 class _RecordingPlugin:
@@ -71,6 +85,503 @@ class _RecordingRemoteProvider:
         if self.failure is not None:
             raise self.failure
         return [np.asarray([1.0, 0.0, 0.0], dtype=np.float32) for _ in texts]
+
+
+_BGE_CONFIG_HASH = "ed32afa6f3bfefa7375a51eb47cc65d565d8a5a067d51bda6cb9ac926705b929"
+_BGE_DIGEST = "1111111111111111111111111111111111111111111111111111111111111111"
+_BGE_DRIFT_DIGEST = (
+    "2222222222222222222222222222222222222222222222222222222222222222"
+)
+_BGE_VERSION = "0.30.10"
+_BGE_VERSION_SHA256 = (
+    "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503"
+)
+_BGE_IDENTITY = (
+    "bge-ollama-v1:"
+    "ed32afa6f3bfefa7375a51eb47cc65d565d8a5a067d51bda6cb9ac926705b929:"
+    "1111111111111111111111111111111111111111111111111111111111111111:"
+    "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
+    "bge-input-v1"
+)
+_BGE_DIGEST_DRIFT_IDENTITY = (
+    "bge-ollama-v1:"
+    "ed32afa6f3bfefa7375a51eb47cc65d565d8a5a067d51bda6cb9ac926705b929:"
+    "2222222222222222222222222222222222222222222222222222222222222222:"
+    "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
+    "bge-input-v1"
+)
+_WAL_WITNESS = "WAL_LOGICAL_WITNESS_P13"
+_WAL_WITNESS_KEY = "p13_wal_logical_witness"
+
+
+def _bge_config():
+    return replace(
+        DEFAULT_CONFIG,
+        embedding=EmbeddingConfig(
+            provider="bge",
+            model="bge-m3",
+            dimensions=3,
+            base_url="http://localhost:11434",
+        ),
+    )
+
+
+class _FakeBGEFailure(ValueError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+class _AttestedBGEProvider:
+    def __init__(
+        self,
+        config: Any,
+        *,
+        identity: str | None = None,
+        digest: str = _BGE_DIGEST,
+        failure: str | None = None,
+    ) -> None:
+        self.config = config
+        self.identity = identity or _BGE_IDENTITY
+        self.digest = digest
+        self.failure = failure
+        self.events: list[str] = []
+        self.embedded_texts: list[str] = []
+        self.successful_embed_responses = 0
+        self._egress = "not_attempted"
+
+    def fingerprint(self) -> dict[str, object]:
+        return {
+            "provider": self.config.embedding.provider,
+            "model": self.config.embedding.model,
+            "dimensions": self.config.embedding.dimensions,
+            "backend": "ollama",
+        }
+
+    def runtime_fingerprint(self) -> dict[str, object]:
+        self.events.append("preflight")
+        self._egress = "possible"
+        if self.failure == "preflight_possible":
+            raise _FakeBGEFailure("bge_unavailable")
+        self._egress = "performed"
+        if self.failure == "preflight_performed":
+            raise _FakeBGEFailure("bge_unavailable")
+        return self._runtime_mapping()
+
+    def embed_texts(self, texts: list[str]) -> list[np.ndarray]:
+        self.events.append("embed")
+        self.embedded_texts.extend(texts)
+        self._egress = "possible"
+        if self.failure == "first_batch":
+            raise _FakeBGEFailure("bge_unavailable")
+        if self.failure == "middle_batch":
+            assert len(texts) >= 2
+            self.successful_embed_responses = 1
+            self._egress = "performed"
+            raise _FakeBGEFailure("bge_unavailable")
+        if self.failure == "response_invalid":
+            self._egress = "performed"
+            raise _FakeBGEFailure("bge_response_invalid")
+        self._egress = "performed"
+        self.successful_embed_responses += 1
+        vectors: list[np.ndarray] = []
+        for text in texts:
+            digest = hashlib.sha256(text.encode("utf-8")).digest()
+            vector = np.asarray(
+                [float(digest[index]) + 1.0 for index in range(3)],
+                dtype=np.float32,
+            )
+            vectors.append(vector / np.linalg.norm(vector))
+        return vectors
+
+    def assert_runtime_unchanged(self) -> dict[str, object]:
+        self.events.append("postflight")
+        self._egress = "performed"
+        if self.failure == "postflight":
+            raise _FakeBGEFailure("bge_runtime_mismatch")
+        return self._runtime_mapping()
+
+    def _runtime_mapping(self) -> dict[str, object]:
+        return {
+            "configured_model": self.config.embedding.model,
+            "canonical_model": "bge-m3:latest",
+            "model_digest": self.digest,
+            "ollama_version": _BGE_VERSION,
+            "base_url": self.config.embedding.base_url,
+            "dimensions": self.config.embedding.dimensions,
+            "input_transform_id": "bge-input-v1",
+            "embedding_identity": self.identity,
+        }
+
+    @property
+    def _network_egress_outcome(self) -> str:
+        return self._egress
+
+
+def _build_bge(
+    repo: Path,
+    provider: _AttestedBGEProvider,
+    *,
+    fault_hook=None,
+):
+    return build_v5_index_snapshot(
+        repo,
+        provider.config,
+        graph_plugins=[_RecordingPlugin([])],
+        scanner=scan_workspace_v5,
+        embedding_provider=provider,
+        fault_hook=fault_hook,
+    )
+
+
+class _InjectedFault(RuntimeError):
+    def __init__(self, stage: str) -> None:
+        self.stage = stage
+        super().__init__(f"injected fault at {stage}")
+
+
+class _RestoreBoundaryFailure(OSError):
+    pass
+
+
+class _SQLiteConnectBoundaryFailure(RuntimeError):
+    pass
+
+
+class _VectorStoreBoundaryFailure(RuntimeError):
+    pass
+
+
+class _TrackingSQLiteConnection:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        backup_failure: RuntimeError | None = None,
+    ) -> None:
+        self._connection = connection
+        self._backup_failure = backup_failure
+        self.close_calls = 0
+
+    def backup(self, destination: Any) -> None:
+        if self._backup_failure is not None:
+            raise self._backup_failure
+        target = (
+            destination._connection
+            if isinstance(destination, _TrackingSQLiteConnection)
+            else destination
+        )
+        self._connection.backup(target)
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self._connection.close()
+
+    def force_close(self) -> None:
+        self._connection.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+
+class _CloseTrackingVectorStore:
+    def __init__(
+        self,
+        store: NumpyVectorStore,
+        *,
+        ids: tuple[str, ...] | None = None,
+        search_failure: RuntimeError | None = None,
+    ) -> None:
+        self._store = store
+        self._ids = ids
+        self._search_failure = search_failure
+        self.close_calls = 0
+        vectors: object | None = store._vectors
+        seen: set[int] = set()
+        while vectors is not None and id(vectors) not in seen:
+            seen.add(id(vectors))
+            if isinstance(vectors, np.memmap):
+                self.mapping = vectors._mmap
+                break
+            vectors = getattr(vectors, "base", None)
+        else:
+            raise AssertionError("loaded rollback vector store is not mmap-backed")
+        assert self.mapping is not None
+        assert self.mapping.closed is False
+
+    @property
+    def ids(self) -> tuple[str, ...]:
+        return self._ids if self._ids is not None else self._store.ids
+
+    def search(self, *args: Any, **kwargs: Any):
+        if self._search_failure is not None:
+            raise self._search_failure
+        return self._store.search(*args, **kwargs)
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self._store.close()
+
+    def force_close(self) -> None:
+        if not self.mapping.closed:
+            self._store.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._store, name)
+
+
+def _traceback_contains(traceback: Any, expected: Any) -> bool:
+    current = traceback
+    while current is not None:
+        if current is expected:
+            return True
+        current = current.tb_next
+    return False
+
+
+@dataclass(frozen=True)
+class _BGEReadyTuple:
+    manifest_payload: bytes
+    manifest_sha256: str
+    manifest_mode: int
+    manifest_source_content_fingerprint: str
+    manifest_source_observation_fingerprint: str
+    descriptor_payload: bytes
+    descriptor_sha256: str
+    descriptor_mode: int
+    descriptor_generation: str
+    descriptor_identity: str
+    operation_mode: str
+    graph_status: str
+    binding: Any
+    ids: tuple[str, ...]
+    pinned_query: tuple[tuple[str, float], ...]
+    journal_mode: str
+    wal_logical_witness: str | None
+    generation_artifacts: tuple[str, ...]
+
+
+_GENERATION_ARTIFACT_PATTERNS = (
+    re.compile(r"vectors\.([A-Za-z0-9][A-Za-z0-9_-]*)\.npy"),
+    re.compile(r"vector_ids\.([A-Za-z0-9][A-Za-z0-9_-]*)\.json"),
+)
+
+
+def _generation_artifacts(index_dir: Path) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            path.name
+            for path in index_dir.iterdir()
+            if path.is_file()
+            and any(
+                pattern.fullmatch(path.name)
+                for pattern in _GENERATION_ARTIFACT_PATTERNS
+            )
+        )
+    )
+
+
+def _vector_prefixed_artifacts(index_dir: Path) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            path.name
+            for path in index_dir.iterdir()
+            if path.is_file()
+            and (
+                path.name.lstrip(".").startswith("vectors.")
+                or path.name.lstrip(".").startswith("vector_ids.")
+            )
+        )
+    )
+
+
+def _force_attested_ready_fixture(repo: Path) -> None:
+    index_dir = repo / ".context-search"
+    descriptor = NumpyVectorStore.inspect_published_descriptor(index_dir)
+    assert descriptor is not None
+    publisher = NumpyVectorStore.fresh(
+        index_dir,
+        dimensions=descriptor.descriptor.dimensions,
+    )
+    publisher.publish_generation(
+        PreparedVectorGeneration(
+            index_dir,
+            replace(
+                descriptor.descriptor,
+                embedding_identity=_BGE_IDENTITY,
+            ),
+        )
+    )
+    rebound = NumpyVectorStore.inspect_published_descriptor(index_dir)
+    assert rebound is not None
+    assert rebound.descriptor.embedding_identity == _BGE_IDENTITY
+
+    manifest = load_manifest(repo)
+    assert isinstance(manifest, ManifestV2)
+    prepared_manifest = prepare_manifest_v2(
+        replace(
+            manifest,
+            vector_descriptor_sha256=rebound.sha256,
+        )
+    )
+    publish_manifest_v2(repo, prepared_manifest)
+
+    store = SQLiteStore(index_dir / "index.sqlite")
+    operational = store.read_operational_snapshot()
+    assert operational is not None
+    topology = store.get_metadata("project_unit_topology_fingerprint")
+    assert topology is not None
+    store.commit_operational_ready_v1(
+        binding=replace(
+            operational.binding,
+            manifest_sha256=prepared_manifest.sha256,
+            vector_descriptor_sha256=rebound.sha256,
+        ),
+        topology_fingerprint=topology,
+        expected_embedding_ids=set(operational.active_embedding_ids),
+        expected_source_count=operational.source_count,
+        expected_chunk_count=operational.chunk_count,
+        external_validator=lambda: None,
+        graph_snapshot_unchanged=True,
+    )
+
+
+def _bge_ready_state(repo: Path) -> _BGEReadyTuple:
+    index_dir = repo / ".context-search"
+    manifest_path = index_dir / "manifest.json"
+    descriptor_path = index_dir / "vector_snapshot.json"
+    manifest_payload = manifest_path.read_bytes()
+    descriptor_payload = descriptor_path.read_bytes()
+    manifest_sha256 = hashlib.sha256(manifest_payload).hexdigest()
+    descriptor_sha256 = hashlib.sha256(descriptor_payload).hexdigest()
+    manifest = load_manifest(repo)
+    descriptor = NumpyVectorStore.inspect_published_descriptor(index_dir)
+    assert isinstance(manifest, ManifestV2)
+    assert descriptor is not None
+    assert manifest.embedding_config_hash == _BGE_CONFIG_HASH
+    assert descriptor.sha256 == descriptor_sha256
+    identity_parts = descriptor.descriptor.embedding_identity.split(":")
+    assert len(identity_parts) == 5
+    assert identity_parts[0] == "bge-ollama-v1"
+    assert identity_parts[1] == _BGE_CONFIG_HASH
+    assert identity_parts[3] == _BGE_VERSION_SHA256
+    assert identity_parts[4] == "bge-input-v1"
+    assert descriptor.descriptor.embedding_identity == _BGE_IDENTITY
+    operational = SQLiteStore(
+        index_dir / "index.sqlite"
+    ).read_operational_snapshot()
+    assert operational is not None
+    assert operational.graph_status == "ready"
+    assert operational.binding.manifest_sha256 == manifest_sha256
+    assert operational.binding.vector_descriptor_sha256 == descriptor_sha256
+    assert operational.binding.vector_generation == descriptor.descriptor.generation
+    assert (
+        operational.binding.source_content_fingerprint
+        == manifest.source_content_fingerprint
+    )
+    assert (
+        operational.binding.source_observation_fingerprint
+        == manifest.source_observation_fingerprint
+    )
+    assert operational.binding.operation_mode == manifest.operation_mode
+    assert descriptor.descriptor.vectors_bytes is not None
+    assert descriptor.descriptor.ids_bytes is not None
+    vectors = NumpyVectorStore.load_bound_ready_snapshot(
+        index_dir,
+        expected_descriptor_sha256=descriptor_sha256,
+        expected_generation=descriptor.descriptor.generation,
+        expected_vectors_bytes=descriptor.descriptor.vectors_bytes,
+        expected_ids_bytes=descriptor.descriptor.ids_bytes,
+        expected_row_count=descriptor.descriptor.row_count,
+        expected_dimensions=descriptor.descriptor.dimensions,
+        expected_embedding_identity=descriptor.descriptor.embedding_identity,
+    )
+    assert vectors.ids == tuple(sorted(operational.active_embedding_ids))
+    query = np.asarray([1.0, 0.0, 0.0], dtype=np.float32)
+    pinned = tuple(
+        (item.chunk_id, round(item.score, 7))
+        for item in vectors.search(query, 20, set())
+    )
+    assert pinned
+    with sqlite3.connect(index_dir / "index.sqlite") as connection:
+        journal_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0])
+    return _BGEReadyTuple(
+        manifest_payload=manifest_payload,
+        manifest_sha256=manifest_sha256,
+        manifest_mode=manifest_path.stat().st_mode & 0o777,
+        manifest_source_content_fingerprint=manifest.source_content_fingerprint,
+        manifest_source_observation_fingerprint=(
+            manifest.source_observation_fingerprint
+        ),
+        descriptor_payload=descriptor_payload,
+        descriptor_sha256=descriptor_sha256,
+        descriptor_mode=descriptor_path.stat().st_mode & 0o777,
+        descriptor_generation=descriptor.descriptor.generation,
+        descriptor_identity=descriptor.descriptor.embedding_identity,
+        operation_mode=manifest.operation_mode,
+        graph_status=operational.graph_status,
+        binding=operational.binding,
+        ids=vectors.ids,
+        pinned_query=pinned,
+        journal_mode=journal_mode,
+        wal_logical_witness=SQLiteStore(
+            index_dir / "index.sqlite"
+        ).get_metadata(_WAL_WITNESS_KEY),
+        generation_artifacts=_generation_artifacts(index_dir),
+    )
+
+
+def _assert_wal_logical_witness(repo: Path) -> None:
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    assert store.get_metadata(_WAL_WITNESS_KEY) == _WAL_WITNESS
+
+
+def _prepare_wal_ready_tuple(
+    repo: Path,
+    config: Any,
+) -> tuple[sqlite3.Connection, _BGEReadyTuple]:
+    alpha = repo / "Alpha.java"
+    beta = repo / "Beta.java"
+    alpha.write_text("class Alpha { int initialAlpha; }\n", encoding="utf-8")
+    beta.write_text("class Beta { int initialBeta; }\n", encoding="utf-8")
+    _build_bge(repo, _AttestedBGEProvider(config))
+    _force_attested_ready_fixture(repo)
+    database = repo / ".context-search" / "index.sqlite"
+    keeper = sqlite3.connect(database, isolation_level=None)
+    assert keeper.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    keeper.execute("PRAGMA wal_autocheckpoint=0")
+    keeper.execute("BEGIN")
+    keeper.execute(
+        "SELECT value FROM index_metadata WHERE key = ?",
+        (GRAPH_RESOLUTION_STATE_KEY,),
+    ).fetchone()
+    writer = sqlite3.connect(database, isolation_level=None)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute(
+            """
+            INSERT INTO index_metadata (key, value, updated_at)
+            VALUES (?, ?, 0)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (_WAL_WITNESS_KEY, _WAL_WITNESS),
+        )
+        writer.execute("COMMIT")
+    finally:
+        writer.close()
+    wal_path = database.with_name("index.sqlite-wal")
+    assert wal_path.exists()
+    assert _WAL_WITNESS.encode("utf-8") in wal_path.read_bytes()
+    assert _WAL_WITNESS.encode("utf-8") not in database.read_bytes()
+    ready = _bge_ready_state(repo)
+    assert ready.journal_mode == "wal"
+    assert ready.wal_logical_witness == _WAL_WITNESS
+    _assert_wal_logical_witness(repo)
+    return keeper, ready
 
 
 def _remote_config():
@@ -1971,3 +2482,1074 @@ def test_pre_p8_ready_index_activates_python_producer_exactly_once(
         ).fetchone()[0]
     assert remaining == 0
     assert read_graph_capability(store).status == "ready"
+
+
+def test_bge_quiet_refresh_attests_without_embedding_and_reports_egress(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text(
+        "class App { int quietIdentity; }\n",
+        encoding="utf-8",
+    )
+    config = _bge_config()
+    _build_bge(repo, _AttestedBGEProvider(config))
+    _force_attested_ready_fixture(repo)
+    before = _bge_ready_state(repo)
+    provider = _AttestedBGEProvider(config)
+
+    result = _refresh(repo, config, embedding_provider=provider)
+
+    assert result.ok is True
+    assert result.network_egress_performed is True
+    assert provider.events == ["preflight"]
+    assert provider.embedded_texts == []
+    assert _bge_ready_state(repo) == before
+
+
+def test_bge_quick_refresh_zero_row_digest_drift_publishes_new_identity(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = _bge_config()
+    _build_bge(repo, _AttestedBGEProvider(config))
+    _force_attested_ready_fixture(repo)
+    index_dir = repo / ".context-search"
+    before = NumpyVectorStore.inspect_published_descriptor(index_dir)
+    assert before is not None
+    assert before.descriptor.row_count == 0
+    assert before.descriptor.dimensions == 3
+    assert before.descriptor.embedding_identity == _BGE_IDENTITY
+    provider = _AttestedBGEProvider(
+        config,
+        identity=_BGE_DIGEST_DRIFT_IDENTITY,
+        digest=_BGE_DRIFT_DIGEST,
+    )
+
+    result = _refresh(repo, config, embedding_provider=provider)
+
+    assert result.ok is True
+    assert result.network_egress_performed is True
+    assert provider.events == ["preflight"]
+    assert provider.embedded_texts == []
+    assert result.summary.chunks.embedded == 0
+    assert result.summary.work.vector.descriptor_action == "published"
+    after = NumpyVectorStore.inspect_published_descriptor(index_dir)
+    assert after is not None
+    assert after.descriptor.generation != before.descriptor.generation
+    assert after.descriptor.row_count == 0
+    assert after.descriptor.dimensions == 3
+    assert after.descriptor.embedding_identity == _BGE_DIGEST_DRIFT_IDENTITY
+    assert (index_dir / after.descriptor.vectors_file).is_file()
+    assert (index_dir / after.descriptor.ids_file).is_file()
+
+    manifest = load_manifest(repo)
+    operational = SQLiteStore(
+        index_dir / "index.sqlite"
+    ).read_operational_snapshot()
+    assert isinstance(manifest, ManifestV2)
+    assert operational is not None
+    assert manifest.embedding_config_hash == _BGE_CONFIG_HASH
+    assert manifest.vector_descriptor_sha256 == after.sha256
+    assert operational.graph_status == "ready"
+    assert operational.binding.vector_descriptor_sha256 == after.sha256
+    assert (
+        operational.binding.vector_generation
+        == after.descriptor.generation
+    )
+    loaded_descriptor, loaded = NumpyVectorStore.load_published_snapshot(
+        index_dir,
+        expected_embedding_identity=_BGE_DIGEST_DRIFT_IDENTITY,
+    )
+    assert loaded_descriptor == after.descriptor
+    assert loaded.ids == ()
+    assert loaded.embedding_identity == _BGE_DIGEST_DRIFT_IDENTITY
+
+
+def test_bge_changed_refresh_uses_one_provider_for_pre_embed_postflight(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int before; }\n", encoding="utf-8")
+    config = _bge_config()
+    _build_bge(repo, _AttestedBGEProvider(config))
+    _force_attested_ready_fixture(repo)
+    source.write_text("class App { int after; }\n", encoding="utf-8")
+    provider = _AttestedBGEProvider(config)
+
+    result = _refresh(repo, config, embedding_provider=provider)
+
+    assert result.ok is True
+    assert result.network_egress_performed is True
+    assert provider.events == ["preflight", "embed", "postflight"]
+    descriptor = NumpyVectorStore.inspect_published_descriptor(
+        repo / ".context-search"
+    )
+    assert descriptor is not None
+    assert descriptor.descriptor.embedding_identity == _BGE_IDENTITY
+    assert result.summary.chunks.embedded == len(provider.embedded_texts) == 1
+
+
+@pytest.mark.parametrize("source_changed", [False, True])
+def test_bge_runtime_drift_refreshes_every_vector_without_mixing_identities(
+    tmp_path: Path,
+    source_changed: bool,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int original; }\n", encoding="utf-8")
+    config = _bge_config()
+    _build_bge(repo, _AttestedBGEProvider(config))
+    _force_attested_ready_fixture(repo)
+    before = NumpyVectorStore.inspect_published_descriptor(
+        repo / ".context-search"
+    )
+    assert before is not None
+    if source_changed:
+        source.write_text("class App { int changed; }\n", encoding="utf-8")
+    provider = _AttestedBGEProvider(
+        config,
+        identity=_BGE_DIGEST_DRIFT_IDENTITY,
+        digest=_BGE_DRIFT_DIGEST,
+    )
+
+    result = _refresh(repo, config, embedding_provider=provider)
+
+    assert result.ok is True
+    assert provider.events == ["preflight", "embed", "postflight"]
+    after = NumpyVectorStore.inspect_published_descriptor(
+        repo / ".context-search"
+    )
+    operational = SQLiteStore(
+        repo / ".context-search" / "index.sqlite"
+    ).read_operational_snapshot()
+    assert after is not None
+    assert operational is not None
+    assert after.descriptor.generation != before.descriptor.generation
+    assert after.descriptor.embedding_identity == _BGE_DIGEST_DRIFT_IDENTITY
+    assert after.descriptor.row_count == len(operational.active_embedding_ids)
+    assert len(provider.embedded_texts) == after.descriptor.row_count
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code", "expected_egress", "change_source"),
+    [
+        ("preflight_possible", "bge_unavailable", "possible", False),
+        ("preflight_performed", "bge_unavailable", "performed", False),
+        ("postflight", "bge_runtime_mismatch", "performed", True),
+    ],
+)
+def test_bge_refresh_failure_reports_provider_egress_and_preserves_ready(
+    tmp_path: Path,
+    failure: str,
+    expected_code: str,
+    expected_egress: str,
+    change_source: bool,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int before; }\n", encoding="utf-8")
+    config = _bge_config()
+    _build_bge(repo, _AttestedBGEProvider(config))
+    _force_attested_ready_fixture(repo)
+    before = _bge_ready_state(repo)
+    if change_source:
+        source.write_text("class App { int after; }\n", encoding="utf-8")
+    provider = _AttestedBGEProvider(config, failure=failure)
+
+    result = _refresh(repo, config, embedding_provider=provider)
+
+    assert result.ok is False
+    assert result.code == expected_code
+    assert result.network_egress_outcome == expected_egress
+    expected_events = (
+        ["preflight", "embed", "postflight"]
+        if failure == "postflight"
+        else ["preflight"]
+    )
+    assert provider.events == expected_events
+    assert _bge_ready_state(repo) == before
+
+
+def test_bge_vectors_rename_rollback_preserves_non_generation_decoys(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int before; }\n", encoding="utf-8")
+    config = _bge_config()
+    _build_bge(repo, _AttestedBGEProvider(config))
+    _force_attested_ready_fixture(repo)
+    before = _bge_ready_state(repo)
+    index_dir = repo / ".context-search"
+    legal_before = _generation_artifacts(index_dir)
+    source.write_text("class App { int after; }\n", encoding="utf-8")
+    provider = _AttestedBGEProvider(config)
+    fault_events: list[str] = []
+    legal_delta_at_fault: tuple[str, ...] = ()
+    decoy_state: dict[Path, tuple[bytes, int, int]] = {}
+
+    def fail_with_decoys(stage: str) -> None:
+        nonlocal legal_delta_at_fault
+        fault_events.append(stage)
+        if stage != "vectors_rename":
+            return
+        legal_delta_at_fault = tuple(
+            sorted(set(_generation_artifacts(index_dir)) - set(legal_before))
+        )
+        for name, payload, mode in (
+            ("vectors.user-notes.txt", b"preserve vector notes\n", 0o640),
+            ("vector_ids.user-notes.txt", b"preserve id notes\n", 0o600),
+            (".vectors.user_notes.npy", b"preserve dot vector\n", 0o640),
+            (".vector_ids.user_notes.json", b"preserve dot ids\n", 0o600),
+        ):
+            path = index_dir / name
+            path.write_bytes(payload)
+            path.chmod(mode)
+            metadata = path.stat()
+            decoy_state[path] = (
+                path.read_bytes(),
+                metadata.st_mode & 0o777,
+                metadata.st_ino,
+            )
+        raise _InjectedFault(stage)
+
+    result = _refresh(
+        repo,
+        config,
+        embedding_provider=provider,
+        fault_hook=fail_with_decoys,
+    )
+
+    assert result.ok is False
+    assert result.code == "refresh_failed"
+    assert result.network_egress_outcome == "performed"
+    assert provider.events == ["preflight", "embed", "postflight"]
+    assert fault_events.count("vectors_rename") == 1
+    assert len(legal_delta_at_fault) == 1
+    assert _GENERATION_ARTIFACT_PATTERNS[0].fullmatch(
+        legal_delta_at_fault[0]
+    )
+    assert _generation_artifacts(index_dir) == legal_before
+    assert _bge_ready_state(repo) == before
+    assert tuple(path.name for path in decoy_state) == (
+        "vectors.user-notes.txt",
+        "vector_ids.user-notes.txt",
+        ".vectors.user_notes.npy",
+        ".vector_ids.user_notes.json",
+    )
+    for path, expected in decoy_state.items():
+        assert path.exists(), f"rollback deleted non-generation decoy {path.name}"
+        metadata = path.stat()
+        assert (
+            path.read_bytes(),
+            metadata.st_mode & 0o777,
+            metadata.st_ino,
+        ) == expected
+
+
+@pytest.mark.parametrize(
+    "artifact_name",
+    ["manifest.json", "vector_snapshot.json"],
+)
+def test_bge_rollback_snapshot_read_swap_never_accepts_external_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_name: str,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int before; }\n", encoding="utf-8")
+    config = _bge_config()
+    _build_bge(repo, _AttestedBGEProvider(config))
+    _force_attested_ready_fixture(repo)
+    before = _bge_ready_state(repo)
+    source.write_text("class App { int after; }\n", encoding="utf-8")
+    index_dir = repo / ".context-search"
+    artifact = index_dir / artifact_name
+    original_payload = artifact.read_bytes()
+    external_sentinel = tmp_path / f"{artifact_name}.external-sentinel"
+    sentinel_payload = bytes([original_payload[0] ^ 0xFF]) + original_payload[1:]
+    external_sentinel.write_bytes(sentinel_payload)
+    parked = index_dir / f".{artifact_name}.p13-parked"
+    provider = _AttestedBGEProvider(config)
+    real_postflight = provider.assert_runtime_unchanged
+    real_path_open = Path.open
+    real_os_open = indexer_module.os.open
+    armed = False
+    swap_injected = False
+
+    def arm_after_postflight() -> dict[str, object]:
+        nonlocal armed
+        result = real_postflight()
+        armed = True
+        return result
+
+    def should_swap(path: Any) -> bool:
+        try:
+            return (
+                armed
+                and not swap_injected
+                and Path(os.fsdecode(path)).name == artifact_name
+            )
+        except TypeError:
+            return False
+
+    def open_with_adversarial_swap(open_target: Any):
+        nonlocal swap_injected
+        os.replace(artifact, parked)
+        os.symlink(external_sentinel, artifact)
+        swap_injected = True
+        try:
+            return open_target()
+        finally:
+            artifact.unlink()
+            os.replace(parked, artifact)
+
+    def swap_before_path_open(path: Path, *args: Any, **kwargs: Any):
+        if not should_swap(path):
+            return real_path_open(path, *args, **kwargs)
+        return open_with_adversarial_swap(
+            lambda: real_path_open(path, *args, **kwargs)
+        )
+
+    def swap_before_os_open(
+        path: Any,
+        flags: int,
+        *args: Any,
+        **kwargs: Any,
+    ):
+        if not should_swap(path):
+            return real_os_open(path, flags, *args, **kwargs)
+        return open_with_adversarial_swap(
+            lambda: real_os_open(path, flags, *args, **kwargs)
+        )
+
+    monkeypatch.setattr(
+        provider,
+        "assert_runtime_unchanged",
+        arm_after_postflight,
+    )
+    monkeypatch.setattr(Path, "open", swap_before_path_open)
+    monkeypatch.setattr(indexer_module.os, "open", swap_before_os_open)
+    caught: OSError | RuntimeError | ValueError | None = None
+    try:
+        _build_bge(repo, provider)
+    except (OSError, RuntimeError, ValueError) as error:
+        caught = error
+    finally:
+        armed = False
+        if artifact.is_symlink():
+            artifact.unlink()
+        if parked.exists():
+            os.replace(parked, artifact)
+
+    assert swap_injected is True
+    assert caught is not None
+    assert _bge_ready_state(repo) == before
+    assert str(external_sentinel) not in str(caught)
+    assert (index_dir / "manifest.json").read_bytes() != sentinel_payload
+    assert (index_dir / "vector_snapshot.json").read_bytes() != sentinel_payload
+
+
+def test_bge_generation_inventory_symlink_swap_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int before; }\n", encoding="utf-8")
+    config = _bge_config()
+    _build_bge(repo, _AttestedBGEProvider(config))
+    _force_attested_ready_fixture(repo)
+    before = _bge_ready_state(repo)
+    source.write_text("class App { int after; }\n", encoding="utf-8")
+    index_dir = repo / ".context-search"
+    descriptor = NumpyVectorStore.inspect_published_descriptor(index_dir)
+    assert descriptor is not None
+    artifact = index_dir / descriptor.descriptor.vectors_file
+    external_sentinel = tmp_path / "generation.external-sentinel"
+    external_sentinel.write_bytes(b"outside generation inventory\n")
+    parked = index_dir / f".{artifact.name}.p13-parked"
+    provider = _AttestedBGEProvider(config)
+    real_postflight = provider.assert_runtime_unchanged
+    real_lstat = os.lstat
+    armed = False
+    swap_active = False
+    swap_injected = False
+
+    def arm_after_postflight() -> dict[str, object]:
+        nonlocal armed
+        result = real_postflight()
+        armed = True
+        return result
+
+    def swap_between_lstats(path: Any, *args: Any, **kwargs: Any):
+        nonlocal swap_active, swap_injected
+        candidate = Path(os.fsdecode(path))
+        if (
+            not armed
+            or candidate != artifact
+            or (swap_injected and not swap_active)
+        ):
+            return real_lstat(path, *args, **kwargs)
+        if not swap_active:
+            original = real_lstat(path, *args, **kwargs)
+            os.replace(artifact, parked)
+            os.symlink(external_sentinel, artifact)
+            swap_active = True
+            swap_injected = True
+            return original
+        artifact.unlink()
+        os.replace(parked, artifact)
+        swap_active = False
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        provider,
+        "assert_runtime_unchanged",
+        arm_after_postflight,
+    )
+    monkeypatch.setattr(os, "lstat", swap_between_lstats)
+    caught: OSError | RuntimeError | ValueError | None = None
+    try:
+        _build_bge(repo, provider)
+    except (OSError, RuntimeError, ValueError) as error:
+        caught = error
+    finally:
+        if parked.exists():
+            if artifact.exists() or artifact.is_symlink():
+                artifact.unlink()
+            os.replace(parked, artifact)
+            swap_active = False
+
+    assert swap_injected is False or caught is not None
+    if caught is not None:
+        assert _bge_ready_state(repo) == before
+        assert str(external_sentinel) not in str(caught)
+    else:
+        assert swap_injected is False
+
+
+def test_bge_capture_destination_connect_failure_closes_source_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int before; }\n", encoding="utf-8")
+    config = _bge_config()
+    _build_bge(repo, _AttestedBGEProvider(config))
+    _force_attested_ready_fixture(repo)
+    before = _bge_ready_state(repo)
+    source.write_text("class App { int after; }\n", encoding="utf-8")
+    real_connect = sqlite3.connect
+    sentinel = _SQLiteConnectBoundaryFailure(
+        "injected capture destination connect failure"
+    )
+    injected_tracebacks: list[Any] = []
+    tracked: list[_TrackingSQLiteConnection] = []
+    connect_calls = 0
+
+    def connect(*args: Any, **kwargs: Any):
+        nonlocal connect_calls
+        connect_calls += 1
+        if connect_calls == 1:
+            connection = _TrackingSQLiteConnection(real_connect(*args, **kwargs))
+            tracked.append(connection)
+            return connection
+        if connect_calls == 2:
+            try:
+                raise sentinel
+            except _SQLiteConnectBoundaryFailure as error:
+                injected_tracebacks.append(error.__traceback__)
+                raise
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(
+        indexer_module,
+        "sqlite3",
+        SimpleNamespace(connect=connect),
+    )
+    caught: RuntimeError | None = None
+    try:
+        _build_bge(repo, _AttestedBGEProvider(config))
+    except RuntimeError as error:
+        caught = error
+    observed_close_calls = [connection.close_calls for connection in tracked]
+    for connection in tracked:
+        connection.force_close()
+
+    assert caught is sentinel
+    assert connect_calls == 2
+    assert len(injected_tracebacks) == 1
+    assert _traceback_contains(caught.__traceback__, injected_tracebacks[0])
+    assert observed_close_calls == [1]
+    assert _bge_ready_state(repo) == before
+
+
+def test_bge_restore_destination_connect_failure_closes_source_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int before; }\n", encoding="utf-8")
+    config = _bge_config()
+    _build_bge(repo, _AttestedBGEProvider(config))
+    _force_attested_ready_fixture(repo)
+    source.write_text("class App { int after; }\n", encoding="utf-8")
+    real_connect = sqlite3.connect
+    sentinel = _SQLiteConnectBoundaryFailure(
+        "injected restore destination connect failure"
+    )
+    tracked: list[_TrackingSQLiteConnection] = []
+    restore_armed = False
+    restore_connect_calls = 0
+
+    def connect(*args: Any, **kwargs: Any):
+        nonlocal restore_connect_calls
+        if not restore_armed:
+            return real_connect(*args, **kwargs)
+        restore_connect_calls += 1
+        if restore_connect_calls == 1:
+            connection = _TrackingSQLiteConnection(real_connect(*args, **kwargs))
+            tracked.append(connection)
+            return connection
+        if restore_connect_calls == 2:
+            raise sentinel
+        return real_connect(*args, **kwargs)
+
+    def fail_after_capture(stage: str) -> None:
+        nonlocal restore_armed
+        if stage == "vectors_rename":
+            restore_armed = True
+            raise _InjectedFault(stage)
+
+    monkeypatch.setattr(
+        indexer_module,
+        "sqlite3",
+        SimpleNamespace(connect=connect),
+    )
+    caught: RuntimeError | AttributeError | None = None
+    try:
+        _build_bge(
+            repo,
+            _AttestedBGEProvider(config),
+            fault_hook=fail_after_capture,
+        )
+    except (RuntimeError, AttributeError) as error:
+        caught = error
+    observed_close_calls = [connection.close_calls for connection in tracked]
+    for connection in tracked:
+        connection.force_close()
+
+    assert caught is not None
+    assert not isinstance(caught, AttributeError)
+    assert str(repo) not in str(caught)
+    assert "class App" not in str(caught)
+    assert restore_connect_calls == 2
+    assert observed_close_calls == [1]
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "capture_success",
+        "verify_success",
+        "ids_mismatch",
+        "search_exception",
+        "backup_exception",
+    ],
+)
+def test_bge_rollback_mmap_store_is_closed_once_on_every_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int before; }\n", encoding="utf-8")
+    config = _bge_config()
+    _build_bge(repo, _AttestedBGEProvider(config))
+    _force_attested_ready_fixture(repo)
+    source.write_text("class App { int after; }\n", encoding="utf-8")
+    real_loader = NumpyVectorStore.load_bound_ready_snapshot
+    tracked: list[_CloseTrackingVectorStore] = []
+    boundary_failure = _VectorStoreBoundaryFailure(
+        f"injected {scenario} failure"
+    )
+
+    def load_tracking_store(
+        _class: type[NumpyVectorStore],
+        *args: Any,
+        **kwargs: Any,
+    ) -> _CloseTrackingVectorStore:
+        store = real_loader(*args, **kwargs)
+        tracker = _CloseTrackingVectorStore(
+            store,
+            ids=("mismatched-ready-id",)
+            if scenario == "ids_mismatch" and not tracked
+            else None,
+            search_failure=boundary_failure
+            if scenario == "search_exception" and not tracked
+            else None,
+        )
+        tracked.append(tracker)
+        return tracker
+
+    monkeypatch.setattr(
+        NumpyVectorStore,
+        "load_bound_ready_snapshot",
+        classmethod(load_tracking_store),
+    )
+    sqlite_connections: list[_TrackingSQLiteConnection] = []
+    if scenario == "backup_exception":
+        real_connect = sqlite3.connect
+        connect_calls = 0
+
+        def connect(*args: Any, **kwargs: Any):
+            nonlocal connect_calls
+            connect_calls += 1
+            if connect_calls == 1:
+                connection = _TrackingSQLiteConnection(
+                    real_connect(*args, **kwargs),
+                    backup_failure=boundary_failure,
+                )
+                sqlite_connections.append(connection)
+                return connection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr(
+            indexer_module,
+            "sqlite3",
+            SimpleNamespace(connect=connect),
+        )
+
+    def fail_before_ready(stage: str) -> None:
+        if scenario == "verify_success" and stage == "before_ready_commit":
+            raise _InjectedFault(stage)
+
+    caught: RuntimeError | None = None
+    try:
+        _build_bge(
+            repo,
+            _AttestedBGEProvider(config),
+            fault_hook=fail_before_ready if scenario == "verify_success" else None,
+        )
+    except RuntimeError as error:
+        caught = error
+    observed_close_calls = [store.close_calls for store in tracked]
+    observed_mapping_closed = [store.mapping.closed for store in tracked]
+    for store in tracked:
+        store.force_close()
+    for connection in sqlite_connections:
+        connection.force_close()
+
+    if scenario in {"capture_success", "ids_mismatch"}:
+        assert caught is None
+    elif scenario == "verify_success":
+        assert type(caught) is _InjectedFault
+        assert caught.stage == "before_ready_commit"
+    else:
+        assert caught is boundary_failure
+    expected_store_count = 2 if scenario == "verify_success" else 1
+    assert len(tracked) == expected_store_count
+    assert observed_close_calls == [1] * expected_store_count
+    assert observed_mapping_closed == [True] * expected_store_count
+
+
+@pytest.mark.parametrize(
+    ("provider_failure", "fault_stage", "expected_code"),
+    [
+        ("preflight_possible", None, "bge_unavailable"),
+        ("first_batch", None, "bge_unavailable"),
+        ("middle_batch", None, "bge_unavailable"),
+        ("response_invalid", None, "bge_response_invalid"),
+        ("postflight", None, "bge_runtime_mismatch"),
+        (None, "freeze_generation_v2", "freeze_generation_v2"),
+        (None, "vectors_rename", "vectors_rename"),
+        (None, "descriptor_rename", "descriptor_rename"),
+        (None, "manifest_v2_rename", "manifest_v2_rename"),
+        (None, "before_ready_commit", "before_ready_commit"),
+    ],
+)
+def test_bge_reindex_failure_matrix_restores_the_old_ready_tuple(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider_failure: str | None,
+    fault_stage: str | None,
+    expected_code: str,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = _bge_config()
+    keeper, before = _prepare_wal_ready_tuple(repo, config)
+    alpha = repo / "Alpha.java"
+    beta = repo / "Beta.java"
+    alpha.write_text("class Alpha { int afterAlpha; }\n", encoding="utf-8")
+    beta.write_text("class Beta { int afterBeta; }\n", encoding="utf-8")
+    provider = _AttestedBGEProvider(config, failure=provider_failure)
+    fault_events: list[str] = []
+
+    if fault_stage == "freeze_generation_v2":
+
+        def fail_freeze(*_args: Any, **_kwargs: Any):
+            fault_events.append("freeze_generation_v2")
+            raise _InjectedFault("freeze_generation_v2")
+
+        monkeypatch.setattr(
+            NumpyVectorStore,
+            "freeze_generation_v2",
+            fail_freeze,
+        )
+        hook = None
+    else:
+
+        def fail_stage(stage: str) -> None:
+            fault_events.append(stage)
+            if stage == fault_stage:
+                raise _InjectedFault(stage)
+
+        hook = fail_stage if fault_stage is not None else None
+
+    expected_type = _FakeBGEFailure if provider_failure is not None else _InjectedFault
+    try:
+        with pytest.raises(expected_type) as caught:
+            _build_bge(repo, provider, fault_hook=hook)
+
+        assert type(caught.value) is expected_type
+        if provider_failure is not None:
+            assert caught.value.code == expected_code
+            expected_events = {
+                "preflight_possible": ["preflight"],
+                "first_batch": ["preflight", "embed"],
+                "middle_batch": ["preflight", "embed"],
+                "response_invalid": ["preflight", "embed"],
+                "postflight": ["preflight", "embed", "postflight"],
+            }
+            assert provider.events == expected_events[provider_failure]
+        else:
+            assert caught.value.stage == expected_code
+            assert fault_events.count(expected_code) == 1
+
+        assert _vector_prefixed_artifacts(
+            repo / ".context-search"
+        ) == before.generation_artifacts
+        after = _bge_ready_state(repo)
+        assert after == before
+        _assert_wal_logical_witness(repo)
+        if provider_failure == "middle_batch":
+            assert provider.successful_embed_responses == 1
+    finally:
+        keeper.close()
+
+
+def test_bge_commit_state_probe_database_error_restores_original_fault_and_tuple(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = _bge_config()
+    keeper, before = _prepare_wal_ready_tuple(repo, config)
+    (repo / "Alpha.java").write_text(
+        "class Alpha { int afterProbeFailure; }\n",
+        encoding="utf-8",
+    )
+    (repo / "Beta.java").write_text(
+        "class Beta { int afterProbeFailure; }\n",
+        encoding="utf-8",
+    )
+    real_read_operational_snapshot = SQLiteStore.read_operational_snapshot
+    original_fault = _InjectedFault("before_ready_commit")
+    probe_failure = sqlite3.DatabaseError(
+        "injected commit-state probe failure"
+    )
+    probe_armed = False
+    probe_injections = 0
+
+    def fail_commit_state_probe(store: SQLiteStore):
+        nonlocal probe_armed, probe_injections
+        if probe_armed:
+            probe_armed = False
+            probe_injections += 1
+            raise probe_failure
+        return real_read_operational_snapshot(store)
+
+    def fail_before_ready_commit(stage: str) -> None:
+        nonlocal probe_armed
+        if stage == "before_ready_commit":
+            probe_armed = True
+            raise original_fault
+
+    monkeypatch.setattr(
+        SQLiteStore,
+        "read_operational_snapshot",
+        fail_commit_state_probe,
+    )
+    caught: sqlite3.DatabaseError | _InjectedFault | None = None
+    try:
+        try:
+            _build_bge(
+                repo,
+                _AttestedBGEProvider(config),
+                fault_hook=fail_before_ready_commit,
+            )
+        except (sqlite3.DatabaseError, _InjectedFault) as error:
+            caught = error
+
+        assert probe_injections == 1
+        assert caught is original_fault
+        assert type(caught) is _InjectedFault
+        assert caught.stage == "before_ready_commit"
+        assert _vector_prefixed_artifacts(
+            repo / ".context-search"
+        ) == before.generation_artifacts
+        after = _bge_ready_state(repo)
+        assert after == before
+        _assert_wal_logical_witness(repo)
+    finally:
+        keeper.close()
+
+
+def test_bge_after_ready_fault_keeps_the_new_committed_tuple(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int before; }\n", encoding="utf-8")
+    config = _bge_config()
+    _build_bge(repo, _AttestedBGEProvider(config))
+    _force_attested_ready_fixture(repo)
+    before = _bge_ready_state(repo)
+    source.write_text("class App { int after; }\n", encoding="utf-8")
+    fault_events: list[str] = []
+
+    def fail_after_ready(stage: str) -> None:
+        fault_events.append(stage)
+        if stage == "after_ready_commit":
+            raise _InjectedFault(stage)
+
+    with pytest.raises(_InjectedFault) as caught:
+        _build_bge(
+            repo,
+            _AttestedBGEProvider(config),
+            fault_hook=fail_after_ready,
+        )
+
+    assert type(caught.value) is _InjectedFault
+    assert caught.value.stage == "after_ready_commit"
+    assert fault_events.count("after_ready_commit") == 1
+    after = _bge_ready_state(repo)
+    assert after.graph_status == "ready"
+    assert after.manifest_sha256 != before.manifest_sha256
+    assert after.descriptor_sha256 != before.descriptor_sha256
+    assert after.descriptor_generation != before.descriptor_generation
+    assert (
+        after.manifest_source_content_fingerprint
+        != before.manifest_source_content_fingerprint
+    )
+    assert (
+        after.manifest_source_observation_fingerprint
+        != before.manifest_source_observation_fingerprint
+    )
+    assert after.binding.manifest_sha256 == after.manifest_sha256
+    assert after.binding.vector_descriptor_sha256 == after.descriptor_sha256
+    assert after.binding.vector_generation == after.descriptor_generation
+    assert (
+        after.binding.source_content_fingerprint
+        == after.manifest_source_content_fingerprint
+    )
+    assert (
+        after.binding.source_observation_fingerprint
+        == after.manifest_source_observation_fingerprint
+    )
+    assert (
+        f"vectors.{after.descriptor_generation}.npy"
+        in after.generation_artifacts
+    )
+    assert (
+        f"vector_ids.{after.descriptor_generation}.json"
+        in after.generation_artifacts
+    )
+
+
+def test_bge_restore_failure_fails_closed_instead_of_claiming_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from context_search_tool import index_health
+    from context_search_tool.config import render_config
+    from context_search_tool.retrieval import query_repository
+    from context_search_tool.retrieval_core import candidates
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = _bge_config()
+    keeper, before = _prepare_wal_ready_tuple(repo, config)
+    (repo / ".context-search" / "config.toml").write_text(
+        render_config(config),
+        encoding="utf-8",
+    )
+    (repo / "Alpha.java").write_text(
+        "class Alpha { int restoreFailure; }\n",
+        encoding="utf-8",
+    )
+    (repo / "Beta.java").write_text(
+        "class Beta { int restoreFailure; }\n",
+        encoding="utf-8",
+    )
+    index_dir = repo / ".context-search"
+    real_replace = os.replace
+    restore_armed = False
+    restore_attempted: list[str] = []
+    fault_events: list[str] = []
+
+    def fail_restore_replace(source_path, destination_path) -> None:
+        destination = Path(destination_path)
+        if restore_armed and destination.name in {
+            "manifest.json",
+            "vector_snapshot.json",
+        }:
+            restore_attempted.append(destination.name)
+            raise _RestoreBoundaryFailure("injected restore rename failure")
+        real_replace(source_path, destination_path)
+
+    monkeypatch.setattr(os, "replace", fail_restore_replace)
+
+    def make_restore_impossible(stage: str) -> None:
+        nonlocal restore_armed
+        fault_events.append(stage)
+        if stage == "before_ready_commit":
+            restore_armed = True
+            raise _InjectedFault(stage)
+
+    try:
+        with pytest.raises((RuntimeError, OSError, ValueError)) as caught:
+            _build_bge(
+                repo,
+                _AttestedBGEProvider(config),
+                fault_hook=make_restore_impossible,
+            )
+
+        assert not isinstance(caught.value, (AssertionError, AttributeError))
+        assert fault_events.count("before_ready_commit") == 1
+        assert restore_attempted
+        error_text = str(caught.value)
+        assert str(repo) not in error_text
+        assert "restoreFailure" not in error_text
+        assert _WAL_WITNESS not in error_text
+
+        operational = SQLiteStore(
+            index_dir / "index.sqlite"
+        ).read_operational_snapshot()
+        assert operational is not None
+        assert operational.graph_status != "ready"
+        descriptor = NumpyVectorStore.inspect_published_descriptor(index_dir)
+        if descriptor is not None:
+            published_as_ready = (
+                operational.graph_status == "ready"
+                and operational.binding.vector_descriptor_sha256
+                == descriptor.sha256
+                and operational.binding.vector_generation
+                == descriptor.descriptor.generation
+            )
+            assert published_as_ready is False
+            if descriptor.descriptor.generation != before.descriptor_generation:
+                assert operational.graph_status != "ready"
+
+        try:
+            report = index_health.inspect_repository_health(repo, mode="quick")
+        except (RuntimeError, OSError, ValueError) as status_error:
+            assert not isinstance(
+                status_error,
+                (AssertionError, AttributeError),
+            )
+            status_error_text = str(status_error)
+            assert str(repo) not in status_error_text
+            assert "restoreFailure" not in status_error_text
+            assert _WAL_WITNESS not in status_error_text
+        else:
+            assert report.queryable is False
+
+        query_provider = _AttestedBGEProvider(config)
+        monkeypatch.setattr(
+            candidates,
+            "provider_from_config",
+            lambda _config: query_provider,
+        )
+        with pytest.raises((RuntimeError, OSError, ValueError)) as query_error:
+            query_repository(repo, "WAL logical witness P13", config)
+        assert not isinstance(
+            query_error.value,
+            (AssertionError, AttributeError),
+        )
+        query_error_text = str(query_error.value)
+        assert str(repo) not in query_error_text
+        assert "restoreFailure" not in query_error_text
+        assert _WAL_WITNESS not in query_error_text
+    finally:
+        keeper.close()
+
+
+@pytest.mark.parametrize("provider_name", ["hash", "openai-compatible"])
+def test_before_ready_rollback_remains_bge_only(
+    tmp_path: Path,
+    provider_name: str,
+) -> None:
+    repo = tmp_path / provider_name
+    repo.mkdir()
+    source = repo / "App.java"
+    source.write_text("class App { int before; }\n", encoding="utf-8")
+    if provider_name == "hash":
+        config = DEFAULT_CONFIG
+        provider = None
+    else:
+        config = _remote_config()
+        provider = _RecordingRemoteProvider()
+    build_v5_index_snapshot(
+        repo,
+        config,
+        graph_plugins=[_RecordingPlugin([])],
+        scanner=scan_workspace_v5,
+        embedding_provider=provider,
+    )
+    before = _snapshot_bytes(repo)
+    source.write_text("class App { int after; }\n", encoding="utf-8")
+    fault_events: list[str] = []
+
+    def fail_before_ready(stage: str) -> None:
+        fault_events.append(stage)
+        if stage == "before_ready_commit":
+            raise _InjectedFault(stage)
+
+    with pytest.raises(_InjectedFault) as caught:
+        build_v5_index_snapshot(
+            repo,
+            config,
+            graph_plugins=[_RecordingPlugin([])],
+            scanner=scan_workspace_v5,
+            embedding_provider=provider,
+            fault_hook=fail_before_ready,
+        )
+
+    assert type(caught.value) is _InjectedFault
+    assert caught.value.stage == "before_ready_commit"
+    assert fault_events.count("before_ready_commit") == 1
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    assert store.get_metadata(GRAPH_RESOLUTION_STATE_KEY) == "stale"
+    assert _snapshot_bytes(repo) != before

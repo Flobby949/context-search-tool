@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from collections.abc import Mapping
 from typing import Protocol
 
 import numpy as np
@@ -114,6 +115,29 @@ def provider_from_config(config: EmbeddingConfig) -> EmbeddingProvider:
         from context_search_tool.embeddings_bge import BGEEmbeddingProvider
         return BGEEmbeddingProvider(config)
     raise ValueError(f"unsupported embedding provider: {config.provider}")
+
+
+def _embedding_descriptor_identity(
+    config: EmbeddingConfig,
+    provider: EmbeddingProvider | None = None,
+) -> str:
+    from context_search_tool.manifest import embedding_config_hash
+
+    if config.provider != "bge":
+        return embedding_config_hash(config)
+
+    if provider is None:
+        raise ValueError("BGE embedding descriptor identity requires runtime attestation")
+    runtime_fingerprint = getattr(provider, "runtime_fingerprint", None)
+    if not callable(runtime_fingerprint):
+        raise ValueError("BGE embedding provider does not support runtime attestation")
+    attestation = runtime_fingerprint()
+    if not isinstance(attestation, Mapping):
+        raise ValueError("BGE runtime attestation is invalid")
+    embedding_identity = attestation.get("embedding_identity")
+    if not isinstance(embedding_identity, str) or not embedding_identity:
+        raise ValueError("BGE runtime embedding identity is invalid")
+    return embedding_identity
 
 
 def _normalize_vector(vector: np.ndarray) -> np.ndarray:

@@ -11,12 +11,30 @@ from typing import Any
 
 import pytest
 
-from context_search_tool.config import DEFAULT_CONFIG
+from context_search_tool.config import (
+    DEFAULT_CONFIG,
+    EmbeddingConfig,
+    ToolConfig,
+    render_config,
+)
 from context_search_tool import scanner
 
 
 ROOT = Path(__file__).resolve().parents[1]
 HEALTH_FIXTURE = ROOT / "tests" / "fixtures" / "p6_contracts" / "index_health_v1.json"
+_P13_BGE_CONFIG_HASH = (
+    "48d799d9af656ebfd3669ef9939d88d9871a010014c91a1e59a4ffe6753bf148"
+)
+_P13_BGE_DIGEST = (
+    "7907640000000000000000000000000000000000000000000000000000006bab"
+)
+_P13_BGE_VERSION_SHA256 = (
+    "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503"
+)
+_P13_BGE_IDENTITY = (
+    f"bge-ollama-v1:{_P13_BGE_CONFIG_HASH}:{_P13_BGE_DIGEST}:"
+    f"{_P13_BGE_VERSION_SHA256}:bge-input-v1"
+)
 
 
 def _health_module() -> Any:
@@ -54,6 +72,131 @@ def _tree_snapshot(root: Path) -> dict[str, tuple[str, int, int, str | None]]:
                 hashlib.sha256(path.read_bytes()).hexdigest(),
             )
     return snapshot
+
+
+def _p13_bge_config() -> ToolConfig:
+    return ToolConfig(
+        embedding=EmbeddingConfig(
+            provider="bge",
+            model="bge-m3",
+            dimensions=2,
+            base_url="http://127.0.0.1:11434",
+        )
+    )
+
+
+def _write_bound_embedding_index(
+    repo: Path,
+    *,
+    config: ToolConfig,
+    descriptor_identity: str,
+) -> None:
+    from context_search_tool import manifest as manifest_module
+    from context_search_tool import sqlite_store as sqlite_module
+    from context_search_tool.manifest import (
+        embedding_config_hash,
+        index_config_hash,
+    )
+    from context_search_tool.vector_store import NumpyVectorStore
+
+    repo.mkdir()
+    index_dir = repo / ".context-search"
+    store = sqlite_module.SQLiteStore(index_dir / "index.sqlite")
+    store.initialize()
+    store.set_metadata("signal_schema_version", "4")
+    store.migrate_signal_schema_v5()
+    store.initialize_operational_schema_v1()
+    store.replace_operational_observations(
+        observation_generation=7,
+        source_observations=(),
+        scan_skips=(),
+    )
+
+    vectors = NumpyVectorStore.fresh(
+        index_dir,
+        dimensions=config.embedding.dimensions,
+    )
+    prepared_vectors = vectors.prepare_generation_v2(
+        generation="vectors-0007",
+        embedding_identity=descriptor_identity,
+        normalization="l2",
+    )
+    vectors.publish_generation(prepared_vectors)
+    descriptor = NumpyVectorStore.inspect_published_descriptor(index_dir)
+    assert descriptor is not None
+
+    config_hash = embedding_config_hash(config.embedding)
+    manifest = manifest_module.ManifestV2(
+        embedding_config_hash=config_hash,
+        embedding_provider=config.embedding.provider,
+        embedding_model=config.embedding.model,
+        embedding_dimensions=config.embedding.dimensions,
+        index_config_hash=index_config_hash(config),
+        source_content_fingerprint=sqlite_module.operational_content_fingerprint(()),
+        source_observation_fingerprint=(
+            sqlite_module.operational_observation_fingerprint((), ())
+        ),
+        observation_generation=7,
+        manifest_generation="manifest-0007",
+        vector_descriptor_schema_version=2,
+        vector_generation="vectors-0007",
+        vector_descriptor_sha256=descriptor.sha256,
+        vector_bytes=descriptor.descriptor.vectors_bytes,
+        vector_ids_bytes=descriptor.descriptor.ids_bytes,
+        indexed_at_epoch_s=1234,
+        operational_schema_version=1,
+        operation_mode="authoritative_index",
+        work_metrics=(),
+        total_files=0,
+        total_chunks=0,
+    )
+    prepared_manifest = manifest_module.prepare_manifest_v2(manifest)
+    manifest_module.publish_manifest_v2(repo, prepared_manifest)
+    binding = sqlite_module.OperationalReadyBinding(
+        index_config_hash=manifest.index_config_hash,
+        source_content_fingerprint=manifest.source_content_fingerprint,
+        source_observation_fingerprint=manifest.source_observation_fingerprint,
+        observation_generation=manifest.observation_generation,
+        manifest_schema_version=2,
+        manifest_generation=manifest.manifest_generation,
+        manifest_sha256=prepared_manifest.sha256,
+        vector_descriptor_schema_version=2,
+        vector_generation=manifest.vector_generation,
+        vector_descriptor_sha256=descriptor.sha256,
+        vector_bytes=manifest.vector_bytes,
+        vector_ids_bytes=manifest.vector_ids_bytes,
+        indexed_at_epoch_s=manifest.indexed_at_epoch_s,
+        operation_mode=manifest.operation_mode,
+        work_metrics=(),
+    )
+    store.commit_operational_ready_v1(
+        binding=binding,
+        topology_fingerprint="4" * 64,
+        expected_embedding_ids=set(),
+        expected_source_count=0,
+        expected_chunk_count=0,
+        external_validator=lambda: None,
+    )
+    (index_dir / "config.toml").write_text(
+        render_config(config),
+        encoding="utf-8",
+    )
+
+
+def _forbid_health_http(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    calls: list[str] = []
+
+    def forbidden_request(
+        _session: object,
+        method: str,
+        url: str,
+        **_kwargs: object,
+    ) -> object:
+        calls.append(f"{method} {url}")
+        raise AssertionError("index health performed HTTP")
+
+    monkeypatch.setattr("requests.sessions.Session.request", forbidden_request)
+    return calls
 
 
 def test_report_model_round_trips_every_frozen_golden_case() -> None:
@@ -457,6 +600,227 @@ def test_incomplete_inventory_is_stale_and_never_infers_deletions(
     assert rendered["refresh"]["reasons"] == ["inventory_incomplete"]
     assert rendered["refresh"]["recommended_action"] == "retry_inspection"
     assert rendered["observation"]["unscannable_subtree_count"] == 1
+
+
+def test_bge_exact_attested_identity_is_queryable_and_health_is_offline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _health_module()
+    config = _p13_bge_config()
+    from context_search_tool.manifest import embedding_config_hash
+
+    assert embedding_config_hash(config.embedding) == _P13_BGE_CONFIG_HASH
+    repo = tmp_path / "exact-bge"
+    _write_bound_embedding_index(
+        repo,
+        config=config,
+        descriptor_identity=_P13_BGE_IDENTITY,
+    )
+    http_calls = _forbid_health_http(monkeypatch)
+
+    rendered = module.serialize_index_health(
+        module.inspect_repository_health(repo, mode="quick")
+    )
+
+    assert rendered["health"] == "healthy_metadata"
+    assert rendered["queryable"] is True
+    assert rendered["embedding_config_match"] is True
+    assert rendered["integrity"]["status"] == "valid_quick"
+    assert rendered["integrity"]["vector"] == "valid_identity_and_size"
+    assert rendered["refresh"] == {
+        "required": False,
+        "kind": "none",
+        "reasons": [],
+        "recommended_action": "query",
+    }
+    assert http_calls == []
+
+
+def test_bge_legacy_config_hash_identity_requires_authoritative_upgrade_offline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _health_module()
+    config = _p13_bge_config()
+    repo = tmp_path / "legacy-bge"
+    _write_bound_embedding_index(
+        repo,
+        config=config,
+        descriptor_identity=_P13_BGE_CONFIG_HASH,
+    )
+    http_calls = _forbid_health_http(monkeypatch)
+
+    rendered = module.serialize_index_health(
+        module.inspect_repository_health(repo, mode="quick")
+    )
+
+    assert rendered["health"] == "stale"
+    assert rendered["freshness"]["status"] == "stale"
+    assert rendered["queryable"] is False
+    assert rendered["queryability_evidence"] == "none"
+    assert rendered["embedding_config_match"] is True
+    assert rendered["integrity"]["status"] == "valid_quick"
+    assert rendered["integrity"]["vector"] == "valid_identity_and_size"
+    assert rendered["refresh"] == {
+        "required": True,
+        "kind": "authoritative",
+        "reasons": ["embedding_identity_upgrade"],
+        "recommended_action": "index",
+    }
+    assert http_calls == []
+
+
+@pytest.mark.parametrize(
+    "descriptor_identity",
+    [
+        "bge-ollama-v1:malformed",
+        (
+            f"bge-ollama-v1:{'f' * 64}:{_P13_BGE_DIGEST}:"
+            f"{_P13_BGE_VERSION_SHA256}:bge-input-v1"
+        ),
+    ],
+    ids=["malformed", "config-hash-mismatch"],
+)
+def test_bge_malformed_or_mismatched_identity_is_integrity_failure_offline(
+    descriptor_identity: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _health_module()
+    repo = tmp_path / "invalid-bge"
+    _write_bound_embedding_index(
+        repo,
+        config=_p13_bge_config(),
+        descriptor_identity=descriptor_identity,
+    )
+    http_calls = _forbid_health_http(monkeypatch)
+
+    rendered = module.serialize_index_health(
+        module.inspect_repository_health(repo, mode="quick")
+    )
+
+    assert rendered["health"] == "corrupt"
+    assert rendered["queryable"] is False
+    assert rendered["embedding_config_match"] is True
+    assert rendered["integrity"]["status"] == "invalid"
+    assert rendered["integrity"]["vector"] == "invalid"
+    assert rendered["refresh"] == {
+        "required": True,
+        "kind": "authoritative",
+        "reasons": ["integrity_failed"],
+        "recommended_action": "index",
+    }
+    assert http_calls == []
+
+
+@pytest.mark.parametrize(
+    ("config", "identity_form"),
+    [
+        (
+            ToolConfig(
+                embedding=EmbeddingConfig(
+                    provider="hash",
+                    model="hash-v1",
+                    dimensions=2,
+                )
+            ),
+            "config_hash",
+        ),
+        (
+            ToolConfig(
+                embedding=EmbeddingConfig(
+                    provider="hash",
+                    model="hash-v1",
+                    dimensions=2,
+                )
+            ),
+            "model_dimensions",
+        ),
+        (
+            ToolConfig(
+                embedding=EmbeddingConfig(
+                    provider="openai-compatible",
+                    model="text-embedding-test",
+                    dimensions=2,
+                    base_url="http://127.0.0.1:9999",
+                )
+            ),
+            "config_hash",
+        ),
+        (
+            ToolConfig(
+                embedding=EmbeddingConfig(
+                    provider="openai-compatible",
+                    model="text-embedding-test",
+                    dimensions=2,
+                    base_url="http://127.0.0.1:9999",
+                )
+            ),
+            "model_dimensions",
+        ),
+    ],
+    ids=[
+        "hash-config-hash",
+        "hash-model-dimensions",
+        "openai-config-hash",
+        "openai-model-dimensions",
+    ],
+)
+def test_non_bge_health_keeps_legacy_identity_compatibility_and_payload(
+    config: ToolConfig,
+    identity_form: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _health_module()
+    from context_search_tool.manifest import embedding_config_hash
+
+    config_hash = embedding_config_hash(config.embedding)
+    descriptor_identity = (
+        config_hash
+        if identity_form == "config_hash"
+        else f"{config.embedding.model}:{config.embedding.dimensions}"
+    )
+    repo = tmp_path / "non-bge"
+    _write_bound_embedding_index(
+        repo,
+        config=config,
+        descriptor_identity=descriptor_identity,
+    )
+    http_calls = _forbid_health_http(monkeypatch)
+
+    rendered = module.serialize_index_health(
+        module.inspect_repository_health(repo, mode="quick")
+    )
+
+    network_capable = config.embedding.provider != "hash"
+    assert rendered["health"] == "healthy_metadata"
+    assert rendered["queryable"] is True
+    assert rendered["embedding_config_match"] is True
+    assert rendered["indexed_embedding"] == {
+        "status": "valid",
+        "provider": config.embedding.provider,
+        "model": config.embedding.model,
+        "dimensions": config.embedding.dimensions,
+        "config_hash": config_hash,
+        "network_egress_capable": network_capable,
+        "network_egress_evidence": (
+            "persisted_manifest" if network_capable else "built_in_hash"
+        ),
+    }
+    assert rendered["configured_embedding"] == {
+        "status": "valid",
+        "provider": config.embedding.provider,
+        "model": config.embedding.model,
+        "dimensions": config.embedding.dimensions,
+        "config_hash": config_hash,
+        "network_egress_capable": network_capable,
+        "network_egress_evidence": (
+            "configured_network_provider" if network_capable else "built_in_hash"
+        ),
+    }
+    assert http_calls == []
 
 
 def test_production_snapshot_adapter_binds_manifest_sqlite_and_vector_tuple(

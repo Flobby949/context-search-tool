@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -10,6 +11,59 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import p8_real_python_graphs_acceptance as runner
+
+
+_HASH_CONFIG_IDENTITY = (
+    "5ab1cee713aff995519814538508a44cece92c285a746094e1cab8b86c7745be"
+)
+_BGE_CONFIG_IDENTITY = (
+    "c1cc02373a3d92d32afefaf6fcfb1cb8ba8e6cdbdd3f0298484965b94ca0896b"
+)
+_BGE_DIGEST = (
+    "7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab"
+)
+_BGE_DESCRIPTOR_IDENTITY = (
+    "bge-ollama-v1:"
+    "c1cc02373a3d92d32afefaf6fcfb1cb8ba8e6cdbdd3f0298484965b94ca0896b:"
+    "7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab:"
+    "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
+    "bge-input-v1"
+)
+_CAPTURE_ROOT_KEYS = {
+    "schema_version",
+    "implementation",
+    "environment",
+    "manifest_sha256",
+    "embedding_identity",
+    "repositories",
+    "cases",
+    "witnesses",
+    "embedding_requests",
+    "timing",
+}
+_IDENTITY_KEYS = {
+    "provider",
+    "configured_model",
+    "dimensions",
+    "static_config_identity",
+    "descriptor_identity",
+    "canonical_model",
+    "model_digest",
+    "ollama_version",
+    "input_transform_id",
+    "pre_attestation",
+    "post_attestation",
+}
+_ATTESTATION_KEYS = {
+    "configured_model",
+    "canonical_model",
+    "model_digest",
+    "ollama_version",
+    "base_url",
+    "dimensions",
+    "input_transform_id",
+    "embedding_identity",
+}
 
 
 def _case(
@@ -87,20 +141,110 @@ def _synthetic_capture(*, improved: bool) -> dict:
         contextual=[f"data_provider/f{i}.py" for i in range(10)],
     )
     return {
-        "schema_version": 3,
-        "manifest_sha256": "m" * 64,
-        "implementation": {"base_commit": "c" * 40, "dirty": False},
+        "schema_version": 4,
+        "manifest_sha256": (
+            "459e6a56c0f7c3b033e34dafeba623b15e221d19ff59244d7fa29a47621f7767"
+        ),
+        "implementation": {
+            "base_commit": "a7c35368061283a9fadaacf81b3b6a318ce996f3",
+            "tracked_diff_sha256": "0" * 64,
+            "untracked_files": {},
+            "dirty": False,
+        },
+        "environment": {
+            "python_version": "3.13.12",
+            "sqlite_version": "3.51.2",
+            "numpy_version": "2.4.2",
+        },
         "embedding_identity": {
             "provider": "hash",
-            "model": "hash-v1",
+            "configured_model": "hash-v1",
             "dimensions": 384,
-            "digest": None,
+            "static_config_identity": _HASH_CONFIG_IDENTITY,
+            "descriptor_identity": _HASH_CONFIG_IDENTITY,
+            "canonical_model": None,
+            "model_digest": None,
+            "ollama_version": None,
+            "input_transform_id": None,
+            "pre_attestation": None,
+            "post_attestation": None,
         },
-        "repositories": {},
+        "repositories": {
+            "redink": {
+                "selected_files": 28,
+                "structure": {},
+                "index_sqlite_bytes": 1,
+            },
+            "daily": {
+                "selected_files": 203,
+                "structure": {},
+                "index_sqlite_bytes": 1,
+            },
+        },
         "cases": cases,
         "witnesses": {},
-        "timing": {"query_latency_mean_seconds": 0.01},
+        "embedding_requests": {"redink": 0, "daily": 0, "total": 0},
+        "timing": {
+            "index_seconds": {"redink": 0.1, "daily": 0.2},
+            "query_case_min_seconds": {
+                case_id: (index + 1) / 1000
+                for index, case_id in enumerate(sorted(cases))
+            },
+            "query_p50_seconds": 0.010,
+            "query_p95_seconds": 0.019,
+        },
     }
+
+
+def _real_shaped_capture(*, provider: str = "hash") -> dict:
+    payload = _synthetic_capture(improved=False)
+    del payload["cases"]["daily-case-11"]
+    payload["timing"]["query_case_min_seconds"] = {
+        case_id: (index + 1) / 1000
+        for index, case_id in enumerate(sorted(payload["cases"]))
+    }
+    payload["timing"]["query_p50_seconds"] = 0.009
+    payload["timing"]["query_p95_seconds"] = 0.018
+    if provider == "hash":
+        return payload
+    assert provider == "bge"
+    attestation = {
+        "configured_model": "bge-m3",
+        "canonical_model": "bge-m3:latest",
+        "model_digest": _BGE_DIGEST,
+        "ollama_version": "0.30.10",
+        "base_url": "http://localhost:11434",
+        "dimensions": 1024,
+        "input_transform_id": "bge-input-v1",
+        "embedding_identity": _BGE_DESCRIPTOR_IDENTITY,
+    }
+    payload["embedding_identity"] = {
+        "provider": "bge",
+        "configured_model": "bge-m3",
+        "dimensions": 1024,
+        "static_config_identity": _BGE_CONFIG_IDENTITY,
+        "descriptor_identity": _BGE_DESCRIPTOR_IDENTITY,
+        "canonical_model": "bge-m3:latest",
+        "model_digest": _BGE_DIGEST,
+        "ollama_version": "0.30.10",
+        "input_transform_id": "bge-input-v1",
+        "pre_attestation": copy.deepcopy(attestation),
+        "post_attestation": copy.deepcopy(attestation),
+    }
+    payload["embedding_requests"] = {"redink": 4, "daily": 9, "total": 13}
+    return payload
+
+
+def _canonical_json(payload: object) -> str:
+    return json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, indent=1
+    ) + "\n"
+
+
+def _write_capture(tmp_path: Path, name: str, payload: dict) -> Path:
+    path = tmp_path / name
+    path.write_text(_canonical_json(payload), encoding="utf-8")
+    return path
 
 
 def test_compare_rejects_gold_change_between_captures() -> None:
@@ -189,19 +333,22 @@ def test_check_rejects_absolute_paths_and_source_content(tmp_path: Path) -> None
     with pytest.raises(ValueError, match="18 gold cases"):
         runner.check(good)  # synthetic capture has 19 cases
 
-    real_shaped = copy.deepcopy(payload)
-    del real_shaped["cases"]["daily-case-11"]
+    real_shaped = _real_shaped_capture()
     ok = tmp_path / "ok.json"
     ok.write_text(runner._canonical(real_shaped), encoding="utf-8")
     runner.check(ok)
 
-    leaked = copy.deepcopy(real_shaped)
-    first = next(iter(leaked["cases"].values()))
-    first["selected"][0]["path"] = "/Users/someone/private/file.py"
-    bad = tmp_path / "bad.json"
-    bad.write_text(runner._canonical(leaked), encoding="utf-8")
-    with pytest.raises(ValueError, match="absolute path"):
-        runner.check(bad)
+    for index, absolute_path in enumerate(
+        ("/Users/someone/private/file.py", "/tmp/P13_PRIVATE.py")
+    ):
+        leaked = copy.deepcopy(real_shaped)
+        first = next(iter(leaked["cases"].values()))
+        first["selected"][0]["path"] = absolute_path
+        bad = tmp_path / f"absolute-{index}.json"
+        bad.write_text(runner._canonical(leaked), encoding="utf-8")
+        with pytest.raises(ValueError) as exc_info:
+            runner.check(bad)
+        assert str(exc_info.value) == "capture privacy violation: absolute path"
 
     contentful = copy.deepcopy(real_shaped)
     first = next(iter(contentful["cases"].values()))
@@ -217,6 +364,362 @@ def test_check_rejects_absolute_paths_and_source_content(tmp_path: Path) -> None
     )
     with pytest.raises(ValueError, match="canonically rendered"):
         runner.check(stale)
+
+
+def test_native_capture_schema_v4_is_exactly_closed(
+    tmp_path: Path,
+) -> None:
+    payload = _real_shaped_capture()
+    assert runner.CAPTURE_SCHEMA_VERSION == 4
+    assert set(payload) == _CAPTURE_ROOT_KEYS
+    assert set(payload["embedding_identity"]) == _IDENTITY_KEYS
+    runner.check(_write_capture(tmp_path, "valid-v4.json", payload))
+
+    mutations = []
+    extra_root = copy.deepcopy(payload)
+    extra_root["legacy"] = {}
+    mutations.append(extra_root)
+    extra_identity = copy.deepcopy(payload)
+    extra_identity["embedding_identity"]["backend"] = "ollama"
+    mutations.append(extra_identity)
+    extra_environment = copy.deepcopy(payload)
+    extra_environment["environment"]["machine"] = "private-host"
+    mutations.append(extra_environment)
+    extra_timing = copy.deepcopy(payload)
+    extra_timing["timing"]["query_latency_mean_seconds"] = 0.01
+    mutations.append(extra_timing)
+    extra_requests = copy.deepcopy(payload)
+    extra_requests["embedding_requests"]["unattributed"] = 0
+    mutations.append(extra_requests)
+
+    for index, mutation in enumerate(mutations):
+        with pytest.raises(ValueError):
+            runner.check(
+                _write_capture(tmp_path, f"open-mapping-{index}.json", mutation)
+            )
+
+
+def test_hash_v4_requires_static_descriptor_identity_and_zero_ollama(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _real_shaped_capture(provider="hash")
+    identity = payload["embedding_identity"]
+    assert identity == {
+        "provider": "hash",
+        "configured_model": "hash-v1",
+        "dimensions": 384,
+        "static_config_identity": _HASH_CONFIG_IDENTITY,
+        "descriptor_identity": _HASH_CONFIG_IDENTITY,
+        "canonical_model": None,
+        "model_digest": None,
+        "ollama_version": None,
+        "input_transform_id": None,
+        "pre_attestation": None,
+        "post_attestation": None,
+    }
+    assert payload["embedding_requests"] == {
+        "redink": 0,
+        "daily": 0,
+        "total": 0,
+    }
+    import requests
+
+    from context_search_tool.embeddings_bge import BGEEmbeddingProvider
+
+    repository_root = Path(__file__).resolve().parents[1]
+    evidence_files = [
+        ancestor / "protected-inputs.json"
+        for ancestor in (repository_root, *repository_root.parents)
+        if (ancestor / "protected-inputs.json").is_file()
+    ]
+    pointer = repository_root / ".quality" / "p13-run-root.txt"
+    if not evidence_files and pointer.is_file():
+        evidence_files.append(
+            Path(pointer.read_text(encoding="utf-8").strip())
+            / "protected-inputs.json"
+        )
+    assert len(evidence_files) == 1, "frozen P8 source evidence is unavailable"
+    protected = json.loads(evidence_files[0].read_text(encoding="utf-8"))
+    sources_root = Path(protected["p8_source_root"])
+    assert (sources_root / "RedInk").is_dir()
+    assert (sources_root / "daily_stock_analysis").is_dir()
+
+    ollama_calls = {
+        "session": 0,
+        "version_tags": 0,
+        "embed": 0,
+        "warmup": 0,
+    }
+
+    def forbidden(boundary: str):
+        def fail(*args: object, **kwargs: object) -> object:
+            ollama_calls[boundary] += 1
+            raise AssertionError(f"hash capture attempted Ollama {boundary}")
+
+        return fail
+
+    monkeypatch.setattr(requests, "Session", forbidden("session"))
+    monkeypatch.setattr(
+        BGEEmbeddingProvider,
+        "runtime_fingerprint",
+        forbidden("version_tags"),
+    )
+    monkeypatch.setattr(
+        BGEEmbeddingProvider,
+        "assert_runtime_unchanged",
+        forbidden("version_tags"),
+    )
+    monkeypatch.setattr(
+        BGEEmbeddingProvider,
+        "embed_texts",
+        forbidden("embed"),
+    )
+    if hasattr(runner, "_ollama_model_digest"):
+        monkeypatch.setattr(
+            runner,
+            "_ollama_model_digest",
+            forbidden("version_tags"),
+        )
+    for name, value in tuple(vars(runner).items()):
+        if "warm" in name.lower() and callable(value):
+            monkeypatch.setattr(runner, name, forbidden("warmup"))
+
+    output = tmp_path / "hash-capture-v4.json"
+    captured = runner.capture(
+        repository_root,
+        sources_root,
+        output,
+        timing_reps=1,
+        embedding="hash",
+    )
+    assert captured["schema_version"] == 4
+    assert json.loads(output.read_text(encoding="utf-8")) == captured
+    runner.check(output)
+    assert captured["embedding_identity"] == identity
+    assert captured["embedding_requests"] == {
+        "redink": 0,
+        "daily": 0,
+        "total": 0,
+    }
+    assert ollama_calls == {
+        "session": 0,
+        "version_tags": 0,
+        "embed": 0,
+        "warmup": 0,
+    }
+
+    runner.check(_write_capture(tmp_path, "hash-v4.json", payload))
+    for field, value in (
+        ("canonical_model", "bge-m3:latest"),
+        ("model_digest", _BGE_DIGEST),
+        ("ollama_version", "0.30.10"),
+        ("input_transform_id", "bge-input-v1"),
+        ("pre_attestation", {}),
+        ("post_attestation", {}),
+    ):
+        invalid = copy.deepcopy(payload)
+        invalid["embedding_identity"][field] = value
+        with pytest.raises(ValueError):
+            runner.check(
+                _write_capture(tmp_path, f"hash-{field}.json", invalid)
+            )
+
+    attempted = copy.deepcopy(payload)
+    attempted["embedding_requests"] = {"redink": 1, "daily": 0, "total": 1}
+    with pytest.raises(ValueError):
+        runner.check(_write_capture(tmp_path, "hash-egress.json", attempted))
+
+
+def test_bge_v4_requires_one_matching_attested_descriptor_identity(
+    tmp_path: Path,
+) -> None:
+    payload = _real_shaped_capture(provider="bge")
+    identity = payload["embedding_identity"]
+    assert set(identity) == _IDENTITY_KEYS
+    assert set(identity["pre_attestation"]) == _ATTESTATION_KEYS
+    assert identity["pre_attestation"] == identity["post_attestation"]
+    assert identity["descriptor_identity"] == _BGE_DESCRIPTOR_IDENTITY
+    assert identity["static_config_identity"] == _BGE_CONFIG_IDENTITY
+    assert identity["canonical_model"] == "bge-m3:latest"
+    assert identity["model_digest"] == _BGE_DIGEST
+    assert identity["ollama_version"] == "0.30.10"
+    assert identity["input_transform_id"] == "bge-input-v1"
+    runner.check(_write_capture(tmp_path, "bge-v4.json", payload))
+
+    mutations: list[dict] = []
+    for field in (
+        "static_config_identity",
+        "descriptor_identity",
+        "canonical_model",
+        "model_digest",
+        "ollama_version",
+        "input_transform_id",
+        "pre_attestation",
+        "post_attestation",
+    ):
+        missing = copy.deepcopy(payload)
+        missing["embedding_identity"].pop(field)
+        mutations.append(missing)
+    drifted = copy.deepcopy(payload)
+    drifted["embedding_identity"]["post_attestation"]["ollama_version"] = "0.30.11"
+    mutations.append(drifted)
+    mismatched = copy.deepcopy(payload)
+    mismatched["embedding_identity"]["pre_attestation"][
+        "embedding_identity"
+    ] = "bge-ollama-v1:wrong"
+    mutations.append(mismatched)
+    bad_total = copy.deepcopy(payload)
+    bad_total["embedding_requests"]["total"] = 12
+    mutations.append(bad_total)
+
+    for index, mutation in enumerate(mutations):
+        with pytest.raises(ValueError):
+            runner.check(
+                _write_capture(tmp_path, f"bge-invalid-{index}.json", mutation)
+            )
+
+
+def test_bge_v4_requires_at_least_one_recorded_embedding_request(
+    tmp_path: Path,
+) -> None:
+    payload = _real_shaped_capture(provider="bge")
+    assert payload["embedding_requests"] == {
+        "redink": 4,
+        "daily": 9,
+        "total": 13,
+    }
+    runner.check(_write_capture(tmp_path, "bge-with-requests.json", payload))
+    payload["embedding_requests"] = {"redink": 0, "daily": 0, "total": 0}
+
+    with pytest.raises(ValueError) as exc_info:
+        runner.check(_write_capture(tmp_path, "bge-no-requests.json", payload))
+    assert str(exc_info.value) == "BGE embedding request counts are invalid"
+
+
+@pytest.mark.parametrize(
+    ("field", "frozen_value", "forged_value"),
+    (
+        ("configured_model", "bge-m3", "forged-bge-model"),
+        ("canonical_model", "bge-m3:latest", "forged-bge-model:latest"),
+    ),
+    ids=("configured-model", "canonical-model"),
+)
+def test_bge_v4_rejects_frozen_model_drift_when_attestations_agree(
+    tmp_path: Path,
+    field: str,
+    frozen_value: str,
+    forged_value: str,
+) -> None:
+    payload = _real_shaped_capture(provider="bge")
+    identity = payload["embedding_identity"]
+    assert identity[field] == frozen_value
+    assert all(
+        identity[phase][field] == frozen_value
+        for phase in ("pre_attestation", "post_attestation")
+    )
+    runner.check(_write_capture(tmp_path, f"bge-frozen-{field}.json", payload))
+    identity[field] = forged_value
+    for phase in ("pre_attestation", "post_attestation"):
+        identity[phase][field] = forged_value
+
+    with pytest.raises(ValueError) as exc_info:
+        runner.check(
+            _write_capture(tmp_path, f"bge-forged-{field}.json", payload)
+        )
+    assert str(exc_info.value) == "BGE embedding model identity mismatch"
+
+
+def test_native_check_rejects_schema_v3_without_upgrading(
+    tmp_path: Path,
+) -> None:
+    payload = _real_shaped_capture()
+    payload["schema_version"] = 3
+    with pytest.raises(ValueError, match="capture schema"):
+        runner.check(_write_capture(tmp_path, "historical-v3.json", payload))
+
+
+def test_v4_timing_uses_18_case_minima_and_nearest_rank_percentiles(
+    tmp_path: Path,
+) -> None:
+    payload = _real_shaped_capture()
+    timing = payload["timing"]
+    assert set(timing) == {
+        "index_seconds",
+        "query_case_min_seconds",
+        "query_p50_seconds",
+        "query_p95_seconds",
+    }
+    assert len(timing["query_case_min_seconds"]) == 18
+    assert timing["query_p50_seconds"] == 0.009
+    assert timing["query_p95_seconds"] == 0.018
+    runner.check(_write_capture(tmp_path, "timing-v4.json", payload))
+
+    missing_case = copy.deepcopy(payload)
+    missing_case["timing"]["query_case_min_seconds"].pop(
+        next(iter(missing_case["cases"]))
+    )
+    wrong_p50 = copy.deepcopy(payload)
+    wrong_p50["timing"]["query_p50_seconds"] = 0.0095
+    wrong_p95 = copy.deepcopy(payload)
+    wrong_p95["timing"]["query_p95_seconds"] = 0.017
+    negative_index = copy.deepcopy(payload)
+    negative_index["timing"]["index_seconds"]["daily"] = -1.0
+    for index, invalid in enumerate(
+        (missing_case, wrong_p50, wrong_p95, negative_index)
+    ):
+        with pytest.raises(ValueError):
+            runner.check(
+                _write_capture(tmp_path, f"bad-timing-{index}.json", invalid)
+            )
+
+
+def test_v4_check_recursively_rejects_private_payloads(
+    tmp_path: Path,
+) -> None:
+    payload = _real_shaped_capture(provider="bge")
+    runner.check(_write_capture(tmp_path, "privacy-v4.json", payload))
+    private_mutations: list[dict] = []
+
+    source = copy.deepcopy(payload)
+    first_case = next(iter(source["cases"].values()))
+    first_case["selected"][0]["path"] = (
+        "relative/P13_RAW_SOURCE_SENTINEL.py"
+    )
+    private_mutations.append(source)
+
+    query = copy.deepcopy(payload)
+    raw_version = "P13_RAW_QUERY_SENTINEL"
+    version_sha = hashlib.sha256(raw_version.encode("utf-8")).hexdigest()
+    descriptor = (
+        f"bge-ollama-v1:{_BGE_CONFIG_IDENTITY}:{_BGE_DIGEST}:"
+        f"{version_sha}:bge-input-v1"
+    )
+    identity = query["embedding_identity"]
+    identity["ollama_version"] = raw_version
+    identity["descriptor_identity"] = descriptor
+    for phase in ("pre_attestation", "post_attestation"):
+        identity[phase]["ollama_version"] = raw_version
+        identity[phase]["embedding_identity"] = descriptor
+    private_mutations.append(query)
+
+    credential = copy.deepcopy(payload)
+    for phase in ("pre_attestation", "post_attestation"):
+        credential["embedding_identity"][phase]["base_url"] = (
+            "http://user:P13_CREDENTIAL_SENTINEL@localhost:11434"
+        )
+    private_mutations.append(credential)
+
+    absolute = copy.deepcopy(payload)
+    first_case = next(iter(absolute["cases"].values()))
+    first_case["selected"][0]["path"] = "/Users/person/private.py"
+    private_mutations.append(absolute)
+
+    for index, invalid in enumerate(private_mutations):
+        with pytest.raises(ValueError, match="capture privacy violation"):
+            runner.check(
+                _write_capture(tmp_path, f"private-{index}.json", invalid)
+            )
 
 
 def test_implementation_identity_tracks_dirty_state(tmp_path: Path) -> None:
@@ -255,8 +758,7 @@ def test_implementation_identity_tracks_dirty_state(tmp_path: Path) -> None:
 
 
 def test_check_rejects_v1_captures(tmp_path: Path) -> None:
-    payload = _synthetic_capture(improved=False)
-    del payload["cases"]["daily-case-11"]
+    payload = _real_shaped_capture()
     payload["schema_version"] = 1
     stale = tmp_path / "v1.json"
     stale.write_text(runner._canonical(payload), encoding="utf-8")
@@ -299,8 +801,7 @@ def test_credit_requires_relation_slot_and_witness() -> None:
 
 
 def test_check_rejects_v2_captures(tmp_path: Path) -> None:
-    payload = _synthetic_capture(improved=False)
-    del payload["cases"]["daily-case-11"]
+    payload = _real_shaped_capture()
     payload["schema_version"] = 2
     payload.pop("embedding_identity", None)
     stale = tmp_path / "v2.json"
@@ -324,9 +825,8 @@ def test_embedding_config_builds_bge_and_hash_identities() -> None:
 
 
 def test_check_requires_a_known_embedding_identity(tmp_path: Path) -> None:
-    payload = _synthetic_capture(improved=False)
-    del payload["cases"]["daily-case-11"]
-    payload["embedding_identity"] = {"provider": "word2vec"}
+    payload = _real_shaped_capture()
+    payload["embedding_identity"]["provider"] = "word2vec"
     bad = tmp_path / "unknown-provider.json"
     bad.write_text(runner._canonical(payload), encoding="utf-8")
 
@@ -352,25 +852,194 @@ def test_indexed_identity_assertion_rejects_mismatch(tmp_path: Path) -> None:
         )
 
 
-def test_bge_truncation_bounds_every_embedded_text() -> None:
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-    from context_search_tool.config import EmbeddingConfig
+def test_bge_truncation_bounds_every_embedded_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import requests
+
     from context_search_tool.embeddings_bge import BGEEmbeddingProvider
 
-    runner._install_bge_truncation()
-    runner._install_bge_truncation()  # idempotent
+    class Response:
+        status_code = 200
+        text = ""
 
-    provider = BGEEmbeddingProvider(
-        EmbeddingConfig(provider="bge", model="bge-m3", dimensions=1024)
+        def __init__(self, payload: object) -> None:
+            self.payload = payload
+
+        def json(self) -> object:
+            return self.payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class Session:
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+            self.trust_env = True
+
+        def get(self, url: str, **kwargs: object) -> Response:
+            if url.endswith("/api/version"):
+                return Response({"version": "0.30.10"})
+            assert url.endswith("/api/tags")
+            return Response(
+                {
+                    "models": [
+                        {
+                            "name": "bge-m3:latest",
+                            "model": "bge-m3:latest",
+                            "digest": _BGE_DIGEST,
+                            "details": {"embedding_length": 1024},
+                        }
+                    ]
+                }
+            )
+
+        def post(self, url: str, **kwargs: object) -> Response:
+            assert url.endswith("/api/embed")
+            request = kwargs["json"]
+            texts = tuple(request["input"])
+            http_embed_inputs.append(texts)
+            vectors = []
+            for text in texts:
+                vector = [0.0] * 1024
+                digest = hashlib.sha256(text.encode("utf-8")).digest()
+                vector[int.from_bytes(digest[:2], "big") % 1024] = 1.0
+                vectors.append(vector)
+            return Response({"embeddings": vectors})
+
+    repository_root = Path(__file__).resolve().parents[1]
+    evidence_files = [
+        ancestor / "protected-inputs.json"
+        for ancestor in (repository_root, *repository_root.parents)
+        if (ancestor / "protected-inputs.json").is_file()
+    ]
+    pointer = repository_root / ".quality" / "p13-run-root.txt"
+    if not evidence_files and pointer.is_file():
+        evidence_files.append(
+            Path(pointer.read_text(encoding="utf-8").strip())
+            / "protected-inputs.json"
+        )
+    assert len(evidence_files) == 1, "frozen P13 inputs are unavailable"
+    protected = json.loads(evidence_files[0].read_text(encoding="utf-8"))
+    legacy_runner = protected["acceptance_runner"]
+    assert legacy_runner == {
+        "path": "tests/p8_real_python_graphs_acceptance.py",
+        "sha256": (
+            "c768f3d5474ffe664654962fc22033af05bfaeeb4100b7afb0324b1d718a4809"
+        ),
+    }
+    candidate_runner_path = Path(runner.__file__).resolve()
+    assert candidate_runner_path == (
+        repository_root / legacy_runner["path"]
+    ).resolve()
+    baseline_root = evidence_files[0].parent / "baseline" / "context-search-tool"
+    assert runner._git(baseline_root, "rev-parse", "HEAD") == (
+        "122ed052284fa488943cb4464301a391bd2e7e24"
     )
-    seen: list[int] = []
+    assert hashlib.sha256(
+        (baseline_root / legacy_runner["path"]).read_bytes()
+    ).hexdigest() == legacy_runner["sha256"]
+    sources_root = Path(protected["p8_source_root"])
+    assert (sources_root / "RedInk").is_dir()
+    assert (sources_root / "daily_stock_analysis").is_dir()
+    for relative, expected in protected["protected_files"].items():
+        if relative == legacy_runner["path"]:
+            continue
+        assert hashlib.sha256(
+            (repository_root / relative).read_bytes()
+        ).hexdigest() == expected["sha256"]
+    for relative, expected in protected["p1_committed_fixtures"].items():
+        assert runner._git(
+            repository_root,
+            "rev-parse",
+            f"HEAD:{relative}",
+        ) == expected["tree_oid"]
 
-    def fake_batch(texts: list[str]) -> list[object]:
-        seen.extend(len(text) for text in texts)
-        return [object()] * len(texts)
+    original_embed_texts = BGEEmbeddingProvider.embed_texts
+    original_class_keys = set(vars(BGEEmbeddingProvider))
+    public_embed_calls: list[dict[str, object]] = []
+    http_embed_inputs: list[tuple[str, ...]] = []
 
-    provider._embed_batch = fake_batch
-    provider.embed_texts(["x" * 50_000, "short"])
+    def observe_embed_calls(frame, event: str, arg: object) -> None:
+        if event != "call":
+            return
+        provider = frame.f_locals.get("self")
+        if not isinstance(provider, BGEEmbeddingProvider):
+            return
+        current = BGEEmbeddingProvider.embed_texts
+        if frame.f_code is not getattr(current, "__code__", None):
+            return
+        public_embed_calls.append(
+            {
+                "inputs": tuple(frame.f_locals["texts"]),
+                "callable_is_original": current is original_embed_texts,
+                "added_class_attributes": sorted(
+                    set(vars(BGEEmbeddingProvider)) - original_class_keys
+                ),
+            }
+        )
 
-    assert seen
-    assert max(seen) <= runner._BGE_MAX_TEXT_CHARS
+    monkeypatch.setattr(requests, "Session", Session)
+    previous_profile = sys.getprofile()
+    try:
+        try:
+            sys.setprofile(observe_embed_calls)
+            output = tmp_path / "native-bge-capture.json"
+            captured = runner.capture(
+                repository_root,
+                sources_root,
+                output,
+                timing_reps=1,
+                embedding="bge",
+            )
+        finally:
+            sys.setprofile(previous_profile)
+
+        after_capture = (
+            BGEEmbeddingProvider.embed_texts is original_embed_texts,
+            set(vars(BGEEmbeddingProvider)) - original_class_keys,
+        )
+        assert captured["embedding_identity"]["provider"] == "bge"
+        assert json.loads(output.read_text(encoding="utf-8")) == captured
+        runner.check(output)
+        after_check = (
+            BGEEmbeddingProvider.embed_texts is original_embed_texts,
+            set(vars(BGEEmbeddingProvider)) - original_class_keys,
+        )
+
+        assert public_embed_calls
+        assert any(
+            len(text) > 4000
+            for call in public_embed_calls
+            for text in call["inputs"]
+        )
+        expected_http_inputs = []
+        for call in public_embed_calls:
+            prepared = [
+                (
+                    text
+                    if len(text) <= 4000
+                    else text[:3000] + "\n" + text[-999:]
+                )
+                for text in call["inputs"]
+            ]
+            expected_http_inputs.extend(
+                tuple(prepared[index : index + 8])
+                for index in range(0, len(prepared), 8)
+            )
+            assert call["callable_is_original"] is True
+            assert call["added_class_attributes"] == []
+        assert http_embed_inputs == expected_http_inputs
+        assert all(
+            len(text) <= 4000
+            for request in http_embed_inputs
+            for text in request
+        )
+        assert after_capture == (True, set())
+        assert after_check == (True, set())
+    finally:
+        sys.setprofile(previous_profile)
+        BGEEmbeddingProvider.embed_texts = original_embed_texts
+        for name in set(vars(BGEEmbeddingProvider)) - original_class_keys:
+            delattr(BGEEmbeddingProvider, name)

@@ -100,6 +100,11 @@ P9_RELATION_SLOT_PRODUCTION_CHANGES = {
     "src/context_search_tool/retrieval_trace/models.py",
 }
 
+P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES = {
+    "src/context_search_tool/embeddings.py",
+    "src/context_search_tool/embeddings_bge.py",
+}
+
 REVIEWED_PRODUCTION_CHANGES = (
     ALLOWED_PRODUCTION_CHANGES
     | P5_REVIEWED_PRODUCTION_CHANGES
@@ -107,6 +112,7 @@ REVIEWED_PRODUCTION_CHANGES = (
     | P6_TASK9_PRODUCTION_CHANGES
     | P8_PYTHON_GRAPH_PRODUCTION_CHANGES
     | P9_RELATION_SLOT_PRODUCTION_CHANGES
+    | P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES
 )
 
 
@@ -181,6 +187,13 @@ def test_protected_modules_have_no_exploration_import_edge() -> None:
         for path in protected_files
         if _imports_exploration(path)
     ] == []
+
+
+def test_p13_bge_provider_reviewed_production_overlay_is_exact() -> None:
+    assert P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES == {
+        "src/context_search_tool/embeddings.py",
+        "src/context_search_tool/embeddings_bge.py",
+    }
 
 
 def test_only_reviewed_production_change_roots_are_used() -> None:

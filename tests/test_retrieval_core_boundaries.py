@@ -225,6 +225,24 @@ P8_PYTHON_GRAPH_PRODUCTION_CHANGES = {
     "src/context_search_tool/retrieval_core/relation_policy.py",
 }
 
+P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES = {
+    "src/context_search_tool/embeddings.py",
+    "src/context_search_tool/embeddings_bge.py",
+}
+
+REVIEWED_PRODUCTION_CHANGES = (
+    P5_REVIEWED_PRODUCTION_CHANGES
+    | LIGHTWEIGHT_GRAPH_REVIEWED_PRODUCTION_CHANGES
+    | P6_TASK2_PRODUCTION_CHANGES
+    | P6_TASK3_PRODUCTION_CHANGES
+    | P6_TASK4_PRODUCTION_CHANGES
+    | P6_TASK9_PRODUCTION_CHANGES
+    | P7_FINAL_REVIEWED_PRODUCTION_CHANGES
+    | P8_PYTHON_GRAPH_PRODUCTION_CHANGES
+    | P9_RELATION_SLOT_PRODUCTION_CHANGES
+    | P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES
+)
+
 P4_IMPLEMENTATION_BASELINE = "b827707325d0ee4e9c6b2bcb3dee39955c263822"
 THIS_TEST_PATH = "tests/test_retrieval_core_boundaries.py"
 
@@ -940,6 +958,13 @@ def test_p7_final_reviewed_production_overlay_is_exact() -> None:
     }
 
 
+def test_p13_bge_provider_reviewed_production_overlay_is_exact() -> None:
+    assert P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES == {
+        "src/context_search_tool/embeddings.py",
+        "src/context_search_tool/embeddings_bge.py",
+    }
+
+
 def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
     changed = set(
         subprocess.run(
@@ -959,18 +984,7 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
     )
 
     assert EXPECTED_P4_PRODUCTION_DIFF <= changed
-    assert changed <= (
-        EXPECTED_P4_PRODUCTION_DIFF
-        | P5_REVIEWED_PRODUCTION_CHANGES
-        | LIGHTWEIGHT_GRAPH_REVIEWED_PRODUCTION_CHANGES
-        | P6_TASK2_PRODUCTION_CHANGES
-        | P6_TASK3_PRODUCTION_CHANGES
-        | P6_TASK4_PRODUCTION_CHANGES
-        | P6_TASK9_PRODUCTION_CHANGES
-        | P7_FINAL_REVIEWED_PRODUCTION_CHANGES
-        | P8_PYTHON_GRAPH_PRODUCTION_CHANGES
-        | P9_RELATION_SLOT_PRODUCTION_CHANGES
-    )
+    assert changed <= EXPECTED_P4_PRODUCTION_DIFF | REVIEWED_PRODUCTION_CHANGES
 
     source_status = subprocess.run(
         (
@@ -987,17 +1001,7 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
         text=True,
     ).stdout.splitlines()
     dirty_source_paths = {line[3:] for line in source_status}
-    assert dirty_source_paths <= (
-        P5_REVIEWED_PRODUCTION_CHANGES
-        | LIGHTWEIGHT_GRAPH_REVIEWED_PRODUCTION_CHANGES
-        | P6_TASK2_PRODUCTION_CHANGES
-        | P6_TASK3_PRODUCTION_CHANGES
-        | P6_TASK4_PRODUCTION_CHANGES
-        | P6_TASK9_PRODUCTION_CHANGES
-        | P7_FINAL_REVIEWED_PRODUCTION_CHANGES
-        | P8_PYTHON_GRAPH_PRODUCTION_CHANGES
-        | P9_RELATION_SLOT_PRODUCTION_CHANGES
-    )
+    assert dirty_source_paths <= REVIEWED_PRODUCTION_CHANGES
 
     subprocess.run(
         (

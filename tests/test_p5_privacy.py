@@ -14,8 +14,10 @@ from context_search_tool.context_pack import (
 )
 from context_search_tool.context_pack.roles import normalize_candidates
 from context_search_tool.embeddings import HashEmbeddingProvider
+from context_search_tool.embeddings_bge import BGEEmbeddingProvider
 from context_search_tool.formatters import query_payload, trace_payload
 from context_search_tool.indexer import index_repository
+from context_search_tool.manifest import ManifestV2, load_manifest
 from context_search_tool.mcp_tools import (
     _query_payload,
     context_search_context_tool,
@@ -38,7 +40,8 @@ from context_search_tool.retrieval_core import (
     types as core_types,
 )
 from context_search_tool.sqlite_store import SQLiteStore
-from context_search_tool.config import DEFAULT_CONFIG
+from context_search_tool.config import DEFAULT_CONFIG, EmbeddingConfig
+from context_search_tool.vector_store import NumpyVectorStore
 
 
 def test_mapper_role_hint_is_private_but_survives_normalization() -> None:
@@ -408,3 +411,163 @@ class OrderControllerTests {
         encoding="utf-8",
     )
     return repo
+
+
+_DENSE_BGE_CONFIG_HASH = (
+    "ed32afa6f3bfefa7375a51eb47cc65d565d8a5a067d51bda6cb9ac926705b929"
+)
+_DENSE_BGE_DIGEST = (
+    "1111111111111111111111111111111111111111111111111111111111111111"
+)
+_DENSE_BGE_IDENTITY = (
+    "bge-ollama-v1:"
+    "ed32afa6f3bfefa7375a51eb47cc65d565d8a5a067d51bda6cb9ac926705b929:"
+    "1111111111111111111111111111111111111111111111111111111111111111:"
+    "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
+    "bge-input-v1"
+)
+
+
+class _FixtureOllamaResponse:
+    status_code = 200
+    text = ""
+
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, object]:
+        return deepcopy(self.payload)
+
+
+class _FixtureOllamaSession:
+    def __init__(self) -> None:
+        self.headers: dict[str, str] = {}
+        self.gets: list[tuple[str, float]] = []
+        self.posts: list[dict[str, object]] = []
+
+    def get(self, url: str, *, timeout: float):
+        self.gets.append((url, timeout))
+        if url.endswith("/api/version"):
+            return _FixtureOllamaResponse({"version": "0.30.10"})
+        assert url.endswith("/api/tags")
+        return _FixtureOllamaResponse(
+            {
+                "models": [
+                    {
+                        "name": "bge-m3:latest",
+                        "digest": _DENSE_BGE_DIGEST,
+                    }
+                ]
+            }
+        )
+
+    def post(self, _url: str, *, json: dict[str, object], timeout: float):
+        assert timeout == 60.0
+        self.posts.append(deepcopy(json))
+        texts = json["input"]
+        assert isinstance(texts, list)
+        return _FixtureOllamaResponse(
+            {
+                "embeddings": [
+                    [1.0, 0.0, 0.0]
+                    for _ in texts
+                ]
+            }
+        )
+
+
+class _RawInputRecordingBGEProvider:
+    def __init__(self, config: EmbeddingConfig, session: _FixtureOllamaSession) -> None:
+        self.delegate = BGEEmbeddingProvider(config, session=session)
+        self.batches: list[list[str]] = []
+
+    def fingerprint(self) -> dict[str, object]:
+        return self.delegate.fingerprint()
+
+    def runtime_fingerprint(self) -> dict[str, object]:
+        return self.delegate.runtime_fingerprint()
+
+    def embed_texts(self, texts: list[str]):
+        self.batches.append(list(texts))
+        return self.delegate.embed_texts(texts)
+
+    def assert_runtime_unchanged(self) -> dict[str, object]:
+        return self.delegate.assert_runtime_unchanged()
+
+    @property
+    def _network_egress_outcome(self) -> str:
+        return self.delegate._network_egress_outcome
+
+
+def test_dense_cjk_public_index_and_query_use_provider_owned_transform(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "dense.py"
+    source.write_text(
+        "headMarker! " + ("界" * 3420) + " tailLexicalSentinel",
+        encoding="utf-8",
+    )
+    config = replace(
+        DEFAULT_CONFIG,
+        embedding=EmbeddingConfig(
+            provider="bge",
+            model="bge-m3",
+            dimensions=3,
+            base_url="http://localhost:11434",
+        ),
+    )
+    session = _FixtureOllamaSession()
+    providers: list[_RawInputRecordingBGEProvider] = []
+
+    def provider_factory(embedding_config: EmbeddingConfig):
+        provider = _RawInputRecordingBGEProvider(embedding_config, session)
+        providers.append(provider)
+        return provider
+
+    monkeypatch.setattr(indexer, "provider_from_config", provider_factory)
+    monkeypatch.setattr(candidates, "provider_from_config", provider_factory)
+
+    summary = index_repository(repo, config)
+
+    assert summary.files_indexed == 1
+    manifest = load_manifest(repo)
+    descriptor = NumpyVectorStore.inspect_published_descriptor(
+        repo / ".context-search"
+    )
+    assert isinstance(manifest, ManifestV2)
+    assert descriptor is not None
+    assert manifest.embedding_config_hash == _DENSE_BGE_CONFIG_HASH
+    assert descriptor.descriptor.embedding_identity == _DENSE_BGE_IDENTITY
+    runtime = providers[0].runtime_fingerprint()
+    assert runtime["ollama_version"] == "0.30.10"
+    assert runtime["embedding_identity"] == _DENSE_BGE_IDENTITY
+    assert len(providers) == 1
+    assert len(providers[0].batches) == 1
+    assert len(providers[0].batches[0]) == 1
+    raw_text = providers[0].batches[0][0]
+    assert len(raw_text) == 6924
+    request = next(
+        payload
+        for payload in session.posts
+        if isinstance(payload["input"], list)
+        and payload["input"][0].startswith("headMarker!")
+    )
+    assert set(request) == {"model", "input", "truncate"}
+    assert request["model"] == "bge-m3"
+    assert request["truncate"] is False
+    sent_text = request["input"][0]
+    assert len(sent_text) == 4000
+    assert sent_text == raw_text[:3000] + "\n" + raw_text[-999:]
+    assert "headMarker!" in sent_text
+    assert "tail lexical sentinel" in sent_text
+
+    bundle = query_repository(repo, "tail lexical sentinel", config)
+
+    assert bundle.results
+    assert any(result.file_path == Path("dense.py") for result in bundle.results)

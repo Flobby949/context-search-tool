@@ -151,6 +151,7 @@ REFRESH_REASON_ORDER = (
     "coverage_changed",
     "index_config_changed",
     "embedding_config_changed",
+    "embedding_identity_upgrade",
     "topology_changed",
     "graph_stale",
     "manifest_upgrade",
@@ -930,6 +931,7 @@ class CommittedIndexSnapshot:
     index_config_hash: str | None = None
     vector_generation_count: int = 1
     stability_token: CommittedSnapshotStabilityToken | None = None
+    embedding_identity_upgrade: bool = False
 
 
 @dataclass(frozen=True)
@@ -996,7 +998,7 @@ def _committed_v2_snapshot(
         loaded_manifest.sha256,
         operational,
     )
-    vector_valid = _vector_matches_bound_snapshot(
+    vector_valid, embedding_identity_upgrade = _vector_matches_bound_snapshot(
         manifest,
         operational,
         descriptor_snapshot,
@@ -1035,7 +1037,10 @@ def _committed_v2_snapshot(
         graph_status=operational.graph_status,
         graph_stale_reason=operational.graph_stale_reason,
         queryable=(
-            operational.graph_status == "ready" and manifest_valid and vector_valid
+            operational.graph_status == "ready"
+            and manifest_valid
+            and vector_valid
+            and not embedding_identity_upgrade
         ),
         indexed_at_epoch_s=operational.binding.indexed_at_epoch_s,
         indexed_files=tuple(
@@ -1065,6 +1070,7 @@ def _committed_v2_snapshot(
         index_config_hash=operational.binding.index_config_hash,
         vector_generation_count=vector_generation_count,
         stability_token=stability_token,
+        embedding_identity_upgrade=embedding_identity_upgrade,
     )
 
 
@@ -1181,12 +1187,16 @@ def _vector_matches_bound_snapshot(
     manifest: ManifestV2,
     operational: OperationalSnapshot,
     snapshot: PublishedVectorDescriptor | None,
-) -> bool:
+) -> tuple[bool, bool]:
     if snapshot is None:
-        return False
+        return False, False
     descriptor = snapshot.descriptor
     binding = operational.binding
-    return all(
+    identity_state = _descriptor_embedding_state(
+        descriptor.embedding_identity,
+        manifest,
+    )
+    valid = all(
         (
             descriptor.schema_version == binding.vector_descriptor_schema_version,
             descriptor.generation == binding.vector_generation,
@@ -1198,16 +1208,46 @@ def _vector_matches_bound_snapshot(
             snapshot.sha256 == manifest.vector_descriptor_sha256,
             descriptor.row_count == len(operational.active_embedding_ids),
             descriptor.dimensions == manifest.embedding_dimensions,
-            _descriptor_embedding_matches(descriptor.embedding_identity, manifest),
+            identity_state != "invalid",
         )
     )
+    return valid, valid and identity_state == "upgrade"
 
 
-def _descriptor_embedding_matches(identity: str, manifest: ManifestV2) -> bool:
-    return identity in {
-        manifest.embedding_config_hash,
-        f"{manifest.embedding_model}:{manifest.embedding_dimensions}",
-    }
+def _descriptor_embedding_state(identity: str, manifest: ManifestV2) -> str:
+    if manifest.embedding_provider != "bge":
+        return (
+            "exact"
+            if identity
+            in {
+                manifest.embedding_config_hash,
+                f"{manifest.embedding_model}:{manifest.embedding_dimensions}",
+            }
+            else "invalid"
+        )
+    if identity == manifest.embedding_config_hash:
+        return "upgrade"
+    parts = identity.split(":")
+    if len(parts) != 5:
+        return "invalid"
+    prefix, config_hash, digest, version_sha256, transform = parts
+    if all(
+        (
+            prefix == "bge-ollama-v1",
+            config_hash == manifest.embedding_config_hash,
+            _is_lower_sha256(digest),
+            _is_lower_sha256(version_sha256),
+            transform == "bge-input-v1",
+        )
+    ):
+        return "exact"
+    return "invalid"
+
+
+def _is_lower_sha256(value: str) -> bool:
+    return len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
 
 
 def _indexed_file_observation(
@@ -2266,6 +2306,7 @@ def _observed_report(
         and not verification_interrupted
     )
     legacy = opening_snapshot.manifest_version == 1
+    embedding_identity_upgrade = opening_snapshot.embedding_identity_upgrade
     graph_stale = opening_snapshot.graph_status in {"stale", "unfinished"}
     index_config_changed = (
         opening_snapshot.index_config_hash is not None
@@ -2284,7 +2325,7 @@ def _observed_report(
         integrity_status = "valid_verified" if mode == "verified" else "valid_quick"
     if confirmed_corrupt:
         freshness_status = "unknown"
-    elif graph_stale or has_delta:
+    elif graph_stale or has_delta or embedding_identity_upgrade:
         freshness_status = "stale"
     elif interrupted or not complete_inventory or legacy:
         freshness_status = "unknown"
@@ -2339,6 +2380,8 @@ def _observed_report(
     )
     if embedding_match is False:
         refresh_reasons.append("embedding_config_changed")
+    if embedding_identity_upgrade:
+        refresh_reasons.append("embedding_identity_upgrade")
     if not complete_inventory:
         refresh_reasons.append("inventory_incomplete")
 
@@ -2355,6 +2398,7 @@ def _observed_report(
         in {
             "index_config_changed",
             "embedding_config_changed",
+            "embedding_identity_upgrade",
             "manifest_upgrade",
             "integrity_failed",
         }

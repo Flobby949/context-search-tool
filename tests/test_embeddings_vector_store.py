@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
+from context_search_tool import embeddings as embeddings_module
 from context_search_tool import vector_store as vector_store_module
 from context_search_tool.config import DEFAULT_CONFIG, EmbeddingConfig
 from context_search_tool.embeddings import (
@@ -19,6 +20,107 @@ from context_search_tool.embeddings import (
 from context_search_tool.indexer import index_repository, read_v5_vector_snapshot
 from context_search_tool.sqlite_store import GraphReadSession, SQLiteStore
 from context_search_tool.vector_store import NumpyVectorStore
+
+
+_BGE_DESCRIPTOR_IDENTITY = (
+    "bge-ollama-v1:"
+    "a31c280ece569f71b682328fbeb5c2fef9c85cca0e42acf7425724d134fd80d8:"
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"
+    "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
+    "bge-input-v1"
+)
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        (
+            EmbeddingConfig(provider="hash", model="hash-v1", dimensions=16),
+            "aa79bacdcd318505ad4c5b4281c6261a589da08aa4e93502dfe18f855c4de188",
+        ),
+        (
+            EmbeddingConfig(
+                provider="openai-compatible",
+                model="fixture",
+                dimensions=3,
+                base_url="https://example.test/v1",
+            ),
+            "26818127e633e62dd8368d4aa9026e67afd49ffdaf80ef9a7a45f6ad06bcaad8",
+        ),
+    ],
+    ids=("hash", "openai-compatible"),
+)
+def test_embedding_descriptor_identity_keeps_non_bge_static_and_offline(
+    config: EmbeddingConfig,
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper = getattr(embeddings_module, "_embedding_descriptor_identity", None)
+    assert callable(helper), "P13 embedding descriptor identity helper is absent"
+
+    class _ForbiddenProvider:
+        def fingerprint(self) -> dict[str, object]:
+            raise AssertionError("static identity inspected an unused provider")
+
+        def runtime_fingerprint(self) -> dict[str, object]:
+            raise AssertionError("static identity performed runtime attestation")
+
+        def embed_texts(self, texts: list[str]) -> list[np.ndarray]:
+            raise AssertionError("static identity embedded text")
+
+    def forbidden_factory(_config: EmbeddingConfig) -> object:
+        raise AssertionError("static identity constructed an embedding provider")
+
+    monkeypatch.setattr(embeddings_module, "provider_from_config", forbidden_factory)
+
+    assert helper(config, provider=_ForbiddenProvider()) == expected
+
+
+def test_embedding_descriptor_identity_requires_same_attested_bge_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper = getattr(embeddings_module, "_embedding_descriptor_identity", None)
+    assert callable(helper), "P13 embedding descriptor identity helper is absent"
+    config = EmbeddingConfig(provider="bge", model="bge-m3", dimensions=3)
+    calls: list[str] = []
+
+    class _AttestedProvider:
+        def runtime_fingerprint(self) -> dict[str, object]:
+            calls.append("runtime_fingerprint")
+            return {"embedding_identity": _BGE_DESCRIPTOR_IDENTITY}
+
+    class _MissingRuntimeProvider:
+        pass
+
+    class _InvalidRuntimeProvider:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+        def runtime_fingerprint(self) -> object:
+            return self.value
+
+    def forbidden_factory(_config: EmbeddingConfig) -> object:
+        raise AssertionError("BGE identity replaced the caller-owned provider")
+
+    monkeypatch.setattr(embeddings_module, "provider_from_config", forbidden_factory)
+    provider = _AttestedProvider()
+
+    assert helper(config, provider=provider) == _BGE_DESCRIPTOR_IDENTITY
+    assert calls == ["runtime_fingerprint"]
+
+    invalid_providers = (
+        None,
+        _MissingRuntimeProvider(),
+        _InvalidRuntimeProvider(None),
+        _InvalidRuntimeProvider(
+            {"descriptor_identity": _BGE_DESCRIPTOR_IDENTITY}
+        ),
+        _InvalidRuntimeProvider({"embedding_identity": ""}),
+        _InvalidRuntimeProvider({"embedding_identity": 1}),
+    )
+    for invalid_provider in invalid_providers:
+        with pytest.raises(ValueError):
+            helper(config, provider=invalid_provider)
 
 
 def test_hash_embedding_provider_is_deterministic_and_normalized() -> None:
@@ -493,6 +595,78 @@ def test_immutable_vector_generations_publish_only_one_validated_descriptor(
     assert (tmp_path / "vector_ids.g1.json").is_file()
     assert (tmp_path / "vectors.g2.npy").is_file()
     assert (tmp_path / "vector_ids.g2.json").is_file()
+
+
+def test_published_vector_loads_retain_exact_embedding_identity(
+    tmp_path: Path,
+) -> None:
+    legacy = NumpyVectorStore(tmp_path / "legacy")
+    fresh = NumpyVectorStore.fresh(tmp_path, dimensions=2)
+
+    assert legacy.embedding_identity is None
+    assert fresh.embedding_identity is None
+
+    fresh.upsert_many([("a", np.asarray([1.0, 0.0], dtype=np.float32))])
+    prepared = fresh.prepare_generation_v2(
+        generation="runtime-bound",
+        embedding_identity=_BGE_DESCRIPTOR_IDENTITY,
+        normalization="l2",
+    )
+    fresh.publish_generation(prepared)
+
+    descriptor, loaded_snapshot = NumpyVectorStore.load_published_snapshot(
+        tmp_path,
+        expected_embedding_identity=_BGE_DESCRIPTOR_IDENTITY,
+    )
+    loaded = NumpyVectorStore.load_published(
+        tmp_path,
+        expected_embedding_identity=_BGE_DESCRIPTOR_IDENTITY,
+    )
+
+    assert descriptor is not None
+    assert descriptor.embedding_identity == _BGE_DESCRIPTOR_IDENTITY
+    assert loaded_snapshot.embedding_identity == _BGE_DESCRIPTOR_IDENTITY
+    assert loaded.embedding_identity == _BGE_DESCRIPTOR_IDENTITY
+    with pytest.raises(AttributeError):
+        loaded.embedding_identity = "replacement"  # type: ignore[misc]
+
+    loaded_snapshot.close()
+    assert loaded_snapshot.embedding_identity == _BGE_DESCRIPTOR_IDENTITY
+    reopened = NumpyVectorStore.load_published(tmp_path)
+    assert reopened.embedding_identity == _BGE_DESCRIPTOR_IDENTITY
+
+
+def test_bound_ready_vector_load_retains_exact_embedding_identity(
+    tmp_path: Path,
+) -> None:
+    store = NumpyVectorStore.fresh(tmp_path, dimensions=2)
+    store.upsert_many([("a", np.asarray([1.0, 0.0], dtype=np.float32))])
+    prepared = store.prepare_generation_v2(
+        generation="bound-runtime",
+        embedding_identity=_BGE_DESCRIPTOR_IDENTITY,
+        normalization="l2",
+    )
+    store.publish_generation(prepared)
+    snapshot = NumpyVectorStore.inspect_published_descriptor(tmp_path)
+    assert snapshot is not None
+    descriptor = snapshot.descriptor
+    assert descriptor.vectors_bytes is not None
+    assert descriptor.ids_bytes is not None
+
+    loaded = NumpyVectorStore.load_bound_ready_snapshot(
+        tmp_path,
+        expected_descriptor_sha256=snapshot.sha256,
+        expected_generation=descriptor.generation,
+        expected_vectors_bytes=descriptor.vectors_bytes,
+        expected_ids_bytes=descriptor.ids_bytes,
+        expected_row_count=descriptor.row_count,
+        expected_dimensions=descriptor.dimensions,
+        expected_embedding_identity=_BGE_DESCRIPTOR_IDENTITY,
+    )
+
+    assert loaded.embedding_identity == _BGE_DESCRIPTOR_IDENTITY
+    loaded.close()
+    assert loaded.embedding_identity == _BGE_DESCRIPTOR_IDENTITY
 
 
 def test_published_snapshot_binds_one_descriptor_to_one_generation(
