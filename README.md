@@ -488,12 +488,14 @@ or query bodies, credentials, or absolute repository paths in provider
 errors or logs. “Local Ollama” describes the default endpoint, not a
 guarantee that data stays on the same machine when `base_url` is changed.
 
-In the frozen P13 engineering comparison, hardened/legacy-BGE index-time
-ratios were `0.3574` (daily), `0.4009` (RedInk), and `0.3599` overall;
-query-p95 ratio was `1.0006`, and embedding requests fell from `1551` to
-`272`. The hash/BGE product comparison passed seven of eight recommendation
-gates, but daily BGE/hash index time was
-`117.8001265 / 2.3141835 = 50.903537467966565`, above the `50.0` limit.
+In the frozen post-review P13 engineering comparison,
+hardened/legacy-BGE index-time ratios were `0.3614` (daily), `0.4040`
+(RedInk), and `0.3638` overall; query-p95 ratio was `1.0039`, and embedding
+requests fell from `1551` to `272`. The hash/BGE product comparison passed
+seven of eight recommendation gates, but its per-repository index gate
+failed: daily was
+`119.181533 / 2.3047625 = 51.71098236803142` and RedInk was
+`7.322234 / 0.145709 = 50.25244837312726`, both above the `50.0` limit.
 Therefore this provider is available for explicit evaluation and use, but
 P13 does not recommend it over the default hash provider.
 

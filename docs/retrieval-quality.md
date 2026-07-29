@@ -743,14 +743,15 @@ no recommendation**. This is neither `reject` nor `BLOCKED`, and the default
 remains `hash`.
 
 The fixed CPython 3.13.12 / SQLite 3.51.2 / NumPy 2.4.2 / pytest 9.0.3
-offline closure produced `3,240 passed`, `5 skipped`, and `6 deselected`,
-with zero failures, errors, xfail, or xpass. All baseline nodes and historical
-outcomes were preserved. Characterization, hash equivalence, protected
-inputs, marker accounting, and scope checks passed. The machine-readable
-summary is
-`/tmp/context-search-p13-reopen.pyadNs/offline-gapfix/summary.json`
+post-review offline closure produced `3,240 passed`, `5 skipped`, and
+`6 deselected`, with zero failures, errors, xfail, or xpass. The focused
+selection passed `838/838`, including the strengthened generation-symlink
+swap node, and characterization passed `36/36`. All 2,993 baseline nodes,
+historical outcomes, and markers were preserved; hash equivalence, protected
+inputs, and scope checks also passed. The machine-readable summary is
+`/tmp/context-search-p13-reopen.pyadNs/post-review-fix-offline.pVXOz9/summary.json`
 (SHA-256
-`666a3fa2d775d9cc552f8933125d7a13f24dcf27b984cf9f88e0b134953fd161`).
+`da4d36417e686c661fad9f835bb82a7ad771b83a49c5376fc27dffce85c24d79`).
 
 Live correctness passed the public index/query path for English, Chinese,
 mixed-language, 4,000-code-point, and 6,924-code-point dense-CJK inputs.
@@ -759,17 +760,17 @@ Singleton/batch equivalence measured minimum cosine
 remained fixed at Ollama `0.30.10`, canonical model `bge-m3:latest`, digest
 `7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab`,
 and transform `bge-input-v2`. The raw record SHA-256 is
-`51c9ced1c5da7c41300bd45d1a2da891562cfe8722237f75461f3e22de10f006`;
+`4eaa42be8f7e8750bfc67623fe14bbde7a3deedd339b52a31922f5b95718eaf4`;
 the integration JUnit SHA-256 is
-`0067db7f1465f7c05fe18347ea4d84836188b5fc0fc18e4e535bbc69caa27fd0`.
+`a9e7b1cdb09980f4ff2cf3d060d6cf54fb111847beab4e57008f89fac164c5e9`.
 
 All eleven engineering gates passed. Candidate/legacy-BGE index ratios were
-`0.3573655572921406` for daily, `0.40093009318558387` for RedInk, and
-`0.359874457997721` in aggregate, all below `1.10`. Query p95 was
-`1.026219583 / 1.025606834 = 1.0005974501921076`, below `1.15`.
+`0.3614385477785034` for daily, `0.40396899877798476` for RedInk, and
+`0.3637674499085526` in aggregate, all below `1.10`. Query p95 was
+`0.986885584 / 0.983023334 = 1.0039289504800302`, below `1.15`.
 Embedding requests fell from `1462` to `239` on daily, `89` to `33` on
 RedInk, and `1551` to `272` overall. The eleven-gate JSON SHA-256 is
-`8c1b4ccc81df310f263d9d55eca9f029b8cb04351428d7b1e47d1b77c7881beb`.
+`ca8745ad8525bfab6a1dc605b227b5b6283fcae474eff8fabd2f2268eaa6051c`.
 
 The independent product comparison passed seven of eight recommendation
 gates:
@@ -779,26 +780,35 @@ gates:
 | Recall@12 | BGE `0.8771929824561403`; hash `0.8596491228070176` | non-decreasing | PASS |
 | required items | zero lost; one new (`src/services/portfolio_service.py`) | zero lost, at least one new | PASS |
 | noise ratio | BGE `0.7083333333333334`; hash `0.7129629629629629` | non-increasing | PASS |
-| query p95 | `1.020152042 / 0.7995243335 = 1.2759487100713738` | `≤ 1.50` | PASS |
-| RedInk index | `7.0718735 / 0.1494375 = 47.32328565453785` | `≤ 50` | PASS |
-| daily index | `117.8001265 / 2.3141835 = 50.903537467966565` | `≤ 50` | **FAIL** |
+| query p95 | `0.9885436875 / 0.7563607914999999 = 1.3069737334474194` | `≤ 1.50` | PASS |
+| per-repository index | daily `119.181533 / 2.3047625 = 51.71098236803142`; RedInk `7.322234 / 0.145709 = 50.25244837312726` | both `≤ 50` | **FAIL** |
 | P1 continuity | both mandatory profiles retain 6/7 | historical 6/7 | PASS |
 | repeated captures | zero non-timing mismatches | zero | PASS |
 
 The only P1 miss remained `audit-status-literal` for both
-`p1_vector_bge` and `p1_hybrid_bge`. Because the daily index-cost ratio
-missed the frozen limit, the results support opt-in use but do not support a
-recommendation or default change.
+`p1_vector_bge` and `p1_hybrid_bge`. Because both per-repository index-cost
+ratios missed the frozen limit, the results support opt-in use but do not
+support a recommendation or default change.
 
-The first product comparator invocation was `BLOCKED` by its evidence-root
-call layout after all four captures were already complete. Two read-only
-audits approved one frozen-harness post-capture recovery over the same
-SHA-pinned inputs. There was no recapture, code/harness change, threshold or
-gold change, or manual comparison JSON; a fresh verifier reported zero
-findings. The final
-`/tmp/context-search-p13-reopen.pyadNs/live-final2/product-comparison.json`
-has SHA-256
-`bcb73020fbc6ceb0401d393525aa44aba4cdbf90500f3240341882ab6db0a1d2`.
+The P1 wrapper has SHA-256
+`4008e1aff57e0bb9e27199d14b0b677e83ed85fd7145a39f0b3c2b488a88ebf6`;
+its vector and hybrid raw reports have SHA-256
+`e4a2644e983a3092fcf6c0c4ab2f1d0627689baf4be3bdb1bece725d993abee7`
+and
+`ad731bb1c7d3581c9aaa13fcfc9314edbd6e90b106a161ef6c6daf64ab954854`.
+The final product comparison is
+`/tmp/context-search-p13-reopen.pyadNs/post-review-fix-live.QI0HXW/product-comparison.json`
+(SHA-256
+`fd06743f4d63dacc6aaf588754bdc8b2a555d54f816f48a82d4a93c311c5bd6a`).
+Its evidence manifest has SHA-256
+`e79a64d0ead1c4059e32b093999b09485b63b073c994f41ca7031488612e4f4a`.
+
+A review found that the generation-symlink swap test did not require its
+race injection to occur. The test was strengthened test-first to require the
+injected swap and the fail-closed outcome; no production behavior changed.
+All evidence cited above was generated afterward from clean candidate
+`c7074267ff2cc2e4a1ab3d17b4ee10ea8f4ffd4b`, and a fresh verifier reported
+zero findings.
 
 To rerun live correctness, engineering comparison, or product comparison,
 first freeze the Ollama version/model digest and use clean detached
@@ -814,7 +824,7 @@ env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/src:$PWD/tests" \
   --baseline-root "$P13_BASELINE_ROOT" \
   --candidate-root "$PWD" \
   --expected-candidate-commit \
-    183e856737a5405c5b520d6bb6eee12cdac57c53 \
+    c7074267ff2cc2e4a1ab3d17b4ee10ea8f4ffd4b \
   --sources "$P8_SOURCES_ROOT" \
   --output "$P13_EVIDENCE_ROOT/engineering-gates.json"
 
@@ -822,7 +832,7 @@ env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/src:$PWD/tests" \
   python -P tests/p13_bge_provider_measurement.py product-paired \
   --candidate-root "$PWD" \
   --expected-candidate-commit \
-    183e856737a5405c5b520d6bb6eee12cdac57c53 \
+    c7074267ff2cc2e4a1ab3d17b4ee10ea8f4ffd4b \
   --sources "$P8_SOURCES_ROOT" \
   --p1-evidence "$P13_EVIDENCE_ROOT/p1/p1-continuity.json" \
   --output "$P13_EVIDENCE_ROOT/product-comparison.json"
