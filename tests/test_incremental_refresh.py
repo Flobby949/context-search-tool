@@ -2984,7 +2984,7 @@ def test_bge_generation_inventory_symlink_swap_fails_closed(
     parked = index_dir / f".{artifact.name}.p13-parked"
     provider = _AttestedBGEProvider(config)
     real_postflight = provider.assert_runtime_unchanged
-    real_lstat = os.lstat
+    real_stat = indexer_module.os.stat
     armed = False
     swap_active = False
     swap_injected = False
@@ -2995,17 +2995,32 @@ def test_bge_generation_inventory_symlink_swap_fails_closed(
         armed = True
         return result
 
-    def swap_between_lstats(path: Any, *args: Any, **kwargs: Any):
+    def swap_between_stats(
+        path: Any,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ):
         nonlocal swap_active, swap_injected
-        candidate = Path(os.fsdecode(path))
+        candidate = os.fsdecode(path)
         if (
             not armed
-            or candidate != artifact
+            or candidate != artifact.name
+            or dir_fd is None
+            or follow_symlinks is not False
             or (swap_injected and not swap_active)
         ):
-            return real_lstat(path, *args, **kwargs)
+            return real_stat(
+                path,
+                dir_fd=dir_fd,
+                follow_symlinks=follow_symlinks,
+            )
         if not swap_active:
-            original = real_lstat(path, *args, **kwargs)
+            original = real_stat(
+                path,
+                dir_fd=dir_fd,
+                follow_symlinks=follow_symlinks,
+            )
             os.replace(artifact, parked)
             os.symlink(external_sentinel, artifact)
             swap_active = True
@@ -3014,14 +3029,18 @@ def test_bge_generation_inventory_symlink_swap_fails_closed(
         artifact.unlink()
         os.replace(parked, artifact)
         swap_active = False
-        return real_lstat(path, *args, **kwargs)
+        return real_stat(
+            path,
+            dir_fd=dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
 
     monkeypatch.setattr(
         provider,
         "assert_runtime_unchanged",
         arm_after_postflight,
     )
-    monkeypatch.setattr(os, "lstat", swap_between_lstats)
+    monkeypatch.setattr(indexer_module.os, "stat", swap_between_stats)
     caught: OSError | RuntimeError | ValueError | None = None
     try:
         _build_bge(repo, provider)
@@ -3034,12 +3053,10 @@ def test_bge_generation_inventory_symlink_swap_fails_closed(
             os.replace(parked, artifact)
             swap_active = False
 
-    assert swap_injected is False or caught is not None
-    if caught is not None:
-        assert _bge_ready_state(repo) == before
-        assert str(external_sentinel) not in str(caught)
-    else:
-        assert swap_injected is False
+    assert swap_injected is True
+    assert caught is not None
+    assert _bge_ready_state(repo) == before
+    assert str(external_sentinel) not in str(caught)
 
 
 def test_bge_capture_destination_connect_failure_closes_source_once(

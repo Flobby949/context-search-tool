@@ -738,44 +738,100 @@ Query terms and examples remain excluded unless their explicit flags are used.
 
 ## P13 BGE Provider Hardening Disposition
 
-P13 ended in **engineering FAIL → `reject`**, not `BLOCKED`. The mandatory
-fixed-runtime non-slow suite produced `3,200 passed`, `5 skipped`,
-`6 deselected`, and `8 failed`. All eight failures reproduced one at a time
-in the candidate, while the same frozen nodes passed one at a time at
-`122ed052284fa488943cb4464301a391bd2e7e24`.
+P13 ended in **engineering PASS + recommendation FAIL → supported opt-in,
+no recommendation**. This is neither `reject` nor `BLOCKED`, and the default
+remains `hash`.
 
-Two historical boundary tests reject the P13-required changes to
-`embeddings.py` and `embeddings_bge.py`, but those boundary tests are outside
-the frozen eleven-file P13 test/harness map. Six historical P6 tests require
-a clean production tree, while this run prohibited commits and required HEAD
-to remain `a7c35368061283a9fadaacf81b3b6a318ce996f3`. Updating the boundary or
-P6 contracts, committing the candidate, or hiding its diff/status would all
-violate a frozen decision. These deterministic offline failures are not a
-live-service precondition, so they cannot be reported as `BLOCKED`.
+The fixed CPython 3.13.12 / SQLite 3.51.2 / NumPy 2.4.2 / pytest 9.0.3
+offline closure produced `3,240 passed`, `5 skipped`, and `6 deselected`,
+with zero failures, errors, xfail, or xpass. All baseline nodes and historical
+outcomes were preserved. Characterization, hash equivalence, protected
+inputs, marker accounting, and scope checks passed. The machine-readable
+summary is
+`/tmp/context-search-p13-reopen.pyadNs/offline-gapfix/summary.json`
+(SHA-256
+`666a3fa2d775d9cc552f8933125d7a13f24dcf27b984cf9f88e0b134953fd161`).
 
-Focused provider/identity/index, query/health/privacy, capture/harness,
-characterization, hash-equivalence, protected-input, and allowlist checks
-otherwise passed. Those checks do not override the full-suite outcome
-regressions.
+Live correctness passed the public index/query path for English, Chinese,
+mixed-language, 4,000-code-point, and 6,924-code-point dense-CJK inputs.
+Singleton/batch equivalence measured minimum cosine
+`0.9999998807907104` and maximum component delta `0.0`. Runtime identity
+remained fixed at Ollama `0.30.10`, canonical model `bge-m3:latest`, digest
+`7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab`,
+and transform `bge-input-v2`. The raw record SHA-256 is
+`51c9ced1c5da7c41300bd45d1a2da891562cfe8722237f75461f3e22de10f006`;
+the integration JUnit SHA-256 is
+`0067db7f1465f7c05fe18347ea4d84836188b5fc0fc18e4e535bbc69caa27fd0`.
 
-Execution stopped before live correctness, singleton/batch equivalence,
-engineering captures, product-paired comparison, or mandatory P1 BGE
-continuity. Every associated request count, latency, ratio, recall, required
-item, noise, and P1 result is `not_run`, not zero or pass. No BGE performance
-or product-quality recommendation is supported.
+All eleven engineering gates passed. Candidate/legacy-BGE index ratios were
+`0.3573655572921406` for daily, `0.40093009318558387` for RedInk, and
+`0.359874457997721` in aggregate, all below `1.10`. Query p95 was
+`1.026219583 / 1.025606834 = 1.0005974501921076`, below `1.15`.
+Embedding requests fell from `1462` to `239` on daily, `89` to `33` on
+RedInk, and `1551` to `272` overall. The eleven-gate JSON SHA-256 is
+`8c1b4ccc81df310f263d9d55eca9f029b8cb04351428d7b1e47d1b77c7881beb`.
 
-The default remains `hash`. The existing BGE implementation and P8/P11
-runner workaround remain in place, and none of the rejected P13 production,
-test, or harness bundle is delivered. See the
+The independent product comparison passed seven of eight recommendation
+gates:
+
+| gate | measured result | threshold | result |
+| --- | --- | --- | --- |
+| Recall@12 | BGE `0.8771929824561403`; hash `0.8596491228070176` | non-decreasing | PASS |
+| required items | zero lost; one new (`src/services/portfolio_service.py`) | zero lost, at least one new | PASS |
+| noise ratio | BGE `0.7083333333333334`; hash `0.7129629629629629` | non-increasing | PASS |
+| query p95 | `1.020152042 / 0.7995243335 = 1.2759487100713738` | `≤ 1.50` | PASS |
+| RedInk index | `7.0718735 / 0.1494375 = 47.32328565453785` | `≤ 50` | PASS |
+| daily index | `117.8001265 / 2.3141835 = 50.903537467966565` | `≤ 50` | **FAIL** |
+| P1 continuity | both mandatory profiles retain 6/7 | historical 6/7 | PASS |
+| repeated captures | zero non-timing mismatches | zero | PASS |
+
+The only P1 miss remained `audit-status-literal` for both
+`p1_vector_bge` and `p1_hybrid_bge`. Because the daily index-cost ratio
+missed the frozen limit, the results support opt-in use but do not support a
+recommendation or default change.
+
+The first product comparator invocation was `BLOCKED` by its evidence-root
+call layout after all four captures were already complete. Two read-only
+audits approved one frozen-harness post-capture recovery over the same
+SHA-pinned inputs. There was no recapture, code/harness change, threshold or
+gold change, or manual comparison JSON; a fresh verifier reported zero
+findings. The final
+`/tmp/context-search-p13-reopen.pyadNs/live-final2/product-comparison.json`
+has SHA-256
+`bcb73020fbc6ceb0401d393525aa44aba4cdbf90500f3240341882ab6db0a1d2`.
+
+To rerun live correctness, engineering comparison, or product comparison,
+first freeze the Ollama version/model digest and use clean detached
+baseline/candidate trees. The tracked controller commands are:
+
+```bash
+env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/src" \
+  python -m pytest -q -p no:cacheprovider \
+  tests/test_embeddings_bge.py -m integration
+
+env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/src:$PWD/tests" \
+  python -P tests/p13_bge_provider_measurement.py paired \
+  --baseline-root "$P13_BASELINE_ROOT" \
+  --candidate-root "$PWD" \
+  --expected-candidate-commit \
+    183e856737a5405c5b520d6bb6eee12cdac57c53 \
+  --sources "$P8_SOURCES_ROOT" \
+  --output "$P13_EVIDENCE_ROOT/engineering-gates.json"
+
+env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/src:$PWD/tests" \
+  python -P tests/p13_bge_provider_measurement.py product-paired \
+  --candidate-root "$PWD" \
+  --expected-candidate-commit \
+    183e856737a5405c5b520d6bb6eee12cdac57c53 \
+  --sources "$P8_SOURCES_ROOT" \
+  --p1-evidence "$P13_EVIDENCE_ROOT/p1/p1-continuity.json" \
+  --output "$P13_EVIDENCE_ROOT/product-comparison.json"
+```
+
+Unavailable or drifting Ollama identity is `BLOCKED`; a completed gate that
+misses its frozen threshold is FAIL. See the
 [P13 implementation record](superpowers/plans/2026-07-27-p13-bge-provider-hardening.md#implementation-record)
-for the exact failures, evidence SHA-256 values, and rejected patch/archive
-inventory. The evidence root for this run is
-`/tmp/context-search-p13-evidence.ntPJ28`; its final machine-readable record
-is `offline-closure-final.json` with SHA-256
-`5a38d59667cf1c21311abea4841dc10858139060d875561a56e41bb1b93ec6a3`,
-and the independent disposition review is
-`offline-disposition-independent-review.txt` with SHA-256
-`295117fd569285ea7ee1165d681c17e416747f2389c691f7561024d97d75a2b0`.
+for full arithmetic and evidence provenance.
 
 ## Interpreting Results
 

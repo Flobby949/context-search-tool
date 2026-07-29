@@ -454,32 +454,48 @@ api_key_env = "EMBEDDING_API_KEY"
 
 ### BGE Provider (Local via Ollama)
 
-For local semantic embeddings without external API calls:
+P13 status: **supported opt-in, no recommendation**. The default remains
+`hash`; selecting BGE must be explicit.
 
 ```toml
 [embedding]
 provider = "bge"
 model = "bge-m3"
 dimensions = 1024
+base_url = "http://localhost:11434"
 ```
 
-BGE-M3 runs locally via Ollama service. Requires:
+The provider requires:
+
 - Ollama installed and running
-- BGE-M3 model: `ollama pull bge-m3`
+- exactly one `bge-m3:latest` model (`ollama pull bge-m3`)
 
-Advantages:
-- No API costs
-- Works offline
-- Strong multilingual support (English + Chinese)
-- 1024-dimensional embeddings
-- Fast inference via Ollama
+`base_url` defaults to `http://localhost:11434`. Configured `bge-m3`
+canonicalizes to `bge-m3:latest`; model matching is exact, not prefix-based.
+The provider binds the vector snapshot to the canonical model, model digest,
+raw Ollama version, dimensions, base URL, and `bge-input-v2` transform.
+Changing that runtime identity requires authoritative reindexing. Query and
+index calls fail closed on runtime drift; there is no retry or silent
+BGE-to-hash/lexical fallback.
 
-Disadvantages:
-- Requires Ollama service running
-- HTTP API overhead (minimal)
-- ~1.2GB model storage
+`bge-input-v2` leaves text of at most 2,000 Unicode code points unchanged.
+Longer text becomes `text[:1500] + "\n" + text[-499:]`. Requests contain at
+most eight inputs and set `truncate: false`.
 
-Best for: Semantic searches on business descriptions, cross-language queries, or when API access is unavailable.
+Ollama receives source chunks during indexing and query/probe text during
+retrieval over HTTP at the configured base URL. CST does not include source
+or query bodies, credentials, or absolute repository paths in provider
+errors or logs. “Local Ollama” describes the default endpoint, not a
+guarantee that data stays on the same machine when `base_url` is changed.
+
+In the frozen P13 engineering comparison, hardened/legacy-BGE index-time
+ratios were `0.3574` (daily), `0.4009` (RedInk), and `0.3599` overall;
+query-p95 ratio was `1.0006`, and embedding requests fell from `1551` to
+`272`. The hash/BGE product comparison passed seven of eight recommendation
+gates, but daily BGE/hash index time was
+`117.8001265 / 2.3141835 = 50.903537467966565`, above the `50.0` limit.
+Therefore this provider is available for explicit evaluation and use, but
+P13 does not recommend it over the default hash provider.
 
 ## 检索流程
 

@@ -786,149 +786,161 @@ bge:  provider=bge, model=bge-m3, dimensions=1024
 
 ## Implementation Record
 
-Status: COMPLETE — REJECTED.
+Status: COMPLETE.
 
-Final disposition: **engineering FAIL → `reject`**. This is not
-`BLOCKED`.
+Final disposition: **engineering PASS + recommendation FAIL →
+supported opt-in, no recommendation**. This is neither `reject` nor
+`BLOCKED`. The default remains `hash`.
 
-### Decision and delivery
+### Decision and candidate
 
-The mandatory fixed-runtime offline closure failed before Task 7. The
-candidate implementation is therefore not approved for delivery. The
-default remains `hash`; the pre-P13 BGE provider and the P8/P11
-acceptance-runner workaround remain in place. No README provider claim
-is added.
+The reopened candidate passed every correctness, privacy, identity,
+atomicity, offline, and engineering-performance gate. Native Ollama BGE
+is therefore eligible for delivery as an explicit opt-in provider. The
+independent hash/BGE product comparison passed seven of eight
+recommendation gates. Its sole failure was the daily repository index
+ratio, `117.8001265 / 2.3141835 = 50.903537467966565`, above the frozen
+`50.0` threshold. BGE is not recommended over hash and the default does
+not change.
 
-No commit, branch, stage, push, or PR was created. The candidate
-remained detached at
-`a7c35368061283a9fadaacf81b3b6a318ce996f3` with an empty staged index.
-Its rejected implementation bundle contains the six planned production
-paths, nine modified test/harness paths, and two new measurement files.
-Only this disposition record and `docs/retrieval-quality.md` are
-eligible for the final documentation handoff; candidate production,
-test, and harness changes are not.
+The implementation and captures were sealed in a clean detached
+candidate at
+`183e856737a5405c5b520d6bb6eee12cdac57c53`. Documentation-only edits
+followed after measurement. No evidence file is part of the candidate,
+and this record does not itself stage, push, or create a PR.
 
-### Candidate-only offline behavior
+The reopening used these local candidate commits:
 
-Focused verification found no independent defect in the intended
-provider, identity, index/refresh rollback, query/health/privacy, or
-capture/harness contracts. In that rejected candidate only:
+| commit | subject |
+| --- | --- |
+| `6767f831c372f0f852e7e7e46c7fbaa0facbd974` | validate the P13 BGE provider candidate |
+| `0cfdd2092a6bc8223caa6f8e72eb5a5e91c013d2` | close acceptance gaps |
+| `a6b7e4ebd0fcf1043b2c52a66a642b468f978851` | adopt the explicitly authorized `bge-input-v2` transform |
+| `6dc6c55f196c6c7ee4113417600bcbc18c346aee` | validate the protected P1 case count |
+| `183e856737a5405c5b520d6bb6eee12cdac57c53` | align the P1 gap schema |
 
-- `bge-input-v1` left inputs of at most 4,000 code points unchanged and
-  prepared longer inputs as `text[:3000] + "\n" + text[-999:]`;
-- a legacy config-hash-only BGE descriptor produced the sole migration
-  reason `embedding_identity_upgrade` and required authoritative
-  reindexing;
-- hash descriptor/config/manifest behavior, retrieval membership,
-  traces, and no-op counters remained equivalent to `122ed05`.
+The production scope remained the six planned files. The test/harness
+scope remained the eleven planned files plus the two explicitly
+authorized boundary overlays. The P13 design specification, frozen
+sources, gold, catalog, pins, CLI, MCP, manifest schema, ranking,
+chunking, planner, and graph behavior were not changed by the final
+candidate.
 
-These observations do not ship the candidate and do not establish live
-BGE correctness, performance, or product quality.
+### Implemented runtime contract
 
-### Fixed-runtime closure
+The final runtime identity is `bge-ollama-v1:<config-hash>:<digest>:`
+`<sha256(raw-version)>:bge-input-v2`. The user-authorized v2 revision
+supersedes the original v1 transform decision for this candidate:
+inputs of at most 2,000 Unicode code points are unchanged; longer
+inputs become `text[:1500] + "\n" + text[-499:]`. Prior v1 live evidence
+was invalidated and every offline/live/product gate was rerun.
+
+The provider attests exact model `bge-m3:latest`, digest
+`7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab`,
+raw Ollama version `0.30.10`, effective base URL, dimensions, transform,
+and descriptor identity. Runtime drift fails closed and requires
+authoritative reindexing. There is no retry or BGE-to-hash/lexical
+fallback. Legacy config-hash-only BGE identity remains a recoverable
+`embedding_identity_upgrade`; a well-formed v1 descriptor also requires
+authoritative reindexing before v2 use.
+
+### Fixed-runtime offline closure
 
 The fixed runtime was CPython 3.13.12, SQLite 3.51.2, NumPy 2.4.2, and
-pytest 9.0.3. The complete `-m "not slow"` result was:
+pytest 9.0.3. The authoritative
+`-m "not slow and not integration"` closure was:
 
 | result | count |
 | --- | ---: |
-| passed | 3,200 |
+| passed | 3,240 |
 | skipped | 5 |
 | deselected | 6 |
-| failed | 8 |
-| errors / xfail / xpass | 0 / 0 / 0 |
-| collected | 3,219 |
+| failed / errors / xfail / xpass | 0 / 0 / 0 / 0 |
+| collected | 3,251 |
 
-All baseline node IDs were retained and historical marker drift was
-zero, but eight historical outcomes regressed. Each of the eight nodes
-failed again in an isolated candidate rerun and passed in an isolated
-clean-`122ed05` rerun:
+All 2,993 baseline node IDs were retained, all historical outcomes and
+skip reasons were unchanged, marker drift was zero, and the five frozen
+P6 `sysctl` nodes passed. Characterization, hash
+descriptor/config/manifest behavior, membership, traces, no-op
+counters, protected inputs, and allowlist checks passed. The offline
+summary is
+`/tmp/context-search-p13-reopen.pyadNs/offline-gapfix/summary.json`
+(SHA-256
+`666a3fa2d775d9cc552f8933125d7a13f24dcf27b984cf9f88e0b134953fd161`).
 
-- two frozen boundary tests reject the required changes to
-  `src/context_search_tool/embeddings.py` and
-  `src/context_search_tool/embeddings_bge.py`; changing those boundary
-  tests would exceed the frozen eleven-file P13 test/harness map;
-- four P6 measurement-worker tests emit
-  `dirty_production_source=true`, which the frozen benchmark schema
-  requires to be `false`;
-- two P6 checkpoint tests reject the same required uncommitted
-  production diff before measurement.
+### Live correctness
 
-The P6 failures are not the five known `sysctl` nodes; all five of
-those passed in the candidate full run. A clean candidate would require
-a commit and HEAD change, while changing the boundary or P6 contracts
-would exceed the frozen file map. Hiding the diff or Git status is not
-a valid verification method. Under the no-commit, HEAD-must-remain-
-`a7c3536`, and fixed-allowlist decisions, there is no legal repair.
+The public index/query path passed English, Chinese, mixed-language,
+4,000-code-point, and 6,924-code-point dense-CJK cases. The minimum
+singleton/batch cosine was `0.9999998807907104` against the
+`0.999999` threshold; maximum component delta was `0.0` against
+`1e-5`. Runtime pre/post/final attestations matched and privacy probes
+found no source, query, credential, or absolute-workspace disclosure.
 
-The remaining offline gates passed:
+The raw correctness record is
+`live-final2/correctness/public-final2-correctness.json` (SHA-256
+`51c9ced1c5da7c41300bd45d1a2da891562cfe8722237f75461f3e22de10f006`);
+the live integration JUnit is `provider-integration.xml` (SHA-256
+`0067db7f1465f7c05fe18347ea4d84836188b5fc0fc18e4e535bbc69caa27fd0`).
 
-| gate | result |
-| --- | --- |
-| verifier A: provider / identity / index | PASS |
-| verifier B: query / health / privacy | PASS |
-| verifier C: capture / harness / characterization | PASS |
-| characterization and independent hash-equivalence probes | PASS |
-| protected source, gold, catalog, pin, and P1 fixture checks | PASS |
-| tracked + untracked allowlist and whitespace checks | PASS |
-| design, CLI, MCP, and manifest read-only integrity | PASS |
+### Engineering gates
 
-Those focused passes cannot override the failed full-suite and
-historical-outcome gates.
+All eleven gates passed. Values below are the frozen gate arithmetic;
+index and query values are seconds.
 
-### Live and recommendation gates
+| gate | numerator / denominator | ratio | threshold | result |
+| --- | --- | ---: | ---: | --- |
+| baseline daily index stability | `337.6999 / 308.1028` | `0.09606241812797545` spread | `≤ 0.10` | PASS |
+| baseline RedInk index stability | `17.5426 / 16.8393` | `0.04176539404844615` spread | `≤ 0.10` | PASS |
+| baseline query-p95 stability | `1.057602542 / 1.023425917` | `0.033394332146857275` spread | `≤ 0.15` | PASS |
+| candidate/baseline daily index | `111.147514 / 311.0191` | `0.3573655572921406` | `≤ 1.10` | PASS |
+| candidate/baseline RedInk index | `6.82375 / 17.0198` | `0.40093009318558387` | `≤ 1.10` | PASS |
+| candidate/baseline total index | `117.987864 / 327.8584` | `0.359874457997721` | `≤ 1.10` | PASS |
+| candidate/baseline query p95 | `1.026219583 / 1.025606834` | `1.0005974501921076` | `≤ 1.15` | PASS |
+| daily requests | `239 / 1462` | `0.16347469220246238` | `≤ 1.0` | PASS |
+| RedInk requests | `33 / 89` | `0.3707865168539326` | `≤ 1.0` | PASS |
+| total requests | `272 / 1551` | `0.17537072856221791` | `< 1.0` | PASS |
+| same-side non-timing mismatches | `0 / 0` | `null` | `0` | PASS |
 
-Task 6 did not close, so execution stopped before all live and product
-work:
+The gate record is
+`/tmp/context-search-p13-reopen.pyadNs/live-final2/engineering/engineering-gates.json`
+(SHA-256
+`8c1b4ccc81df310f263d9d55eca9f029b8cb04351428d7b1e47d1b77c7881beb`).
 
-| field | value |
-| --- | --- |
-| live correctness and singleton/batch equivalence | `not_run` |
-| old/current engineering captures | `not_run` |
-| request-count, index-time, and query-p95 arithmetic | `not_run` |
-| `engineering-gates.json` | `not_run` |
-| hash/BGE product captures and comparison | `not_run` |
-| Recall@12, required-item, noise, and cost arithmetic | `not_run` |
-| mandatory P1 BGE continuity profiles | `not_run` |
-| `product-comparison.json` | `not_run` |
+### Product and P1 recommendation gates
 
-There are no live numerators, denominators, ratios, or gate values to
-report; `not_run` must not be interpreted as zero or pass. No
-performance or product-quality recommendation is permitted.
+Both mandatory continuity profiles retained the historical result:
+`p1_vector_bge` and `p1_hybrid_bge` each passed 6/7, with
+`audit-status-literal` as the sole required miss.
 
-### Evidence and rejected bundle
+| product gate | numerator / denominator | ratio | threshold | result |
+| --- | --- | ---: | ---: | --- |
+| Recall@12 non-decreasing | `0.8771929824561403 / 0.8596491228070176` | `1.0204081632653061` | `≥ 1.0` | PASS |
+| zero required loss | `0 / 0` | `null` | `0` | PASS |
+| newly satisfied required | `1 / 1` | `1.0` | `≥ 1` | PASS |
+| noise non-increasing | `0.7083333333333334 / 0.7129629629629629` | `0.9935064935064937` | `≤ 1.0` | PASS |
+| P1 continuity | `6 / 6` per profile | `1.0` | `≥ 1.0` | PASS |
+| BGE/hash query p95 | `1.020152042 / 0.7995243335` | `1.2759487100713738` | `≤ 1.50` | PASS |
+| per-repository index | daily `117.8001265 / 2.3141835`; RedInk `7.0718735 / 0.1494375` | daily `50.903537467966565`; RedInk `47.32328565453785` | both `≤ 50` | **FAIL** |
+| same-provider non-timing mismatches | `0 / 0` | `null` | `0` | PASS |
 
-The absolute evidence root is
-`/tmp/context-search-p13-evidence.ntPJ28`. Paths below are relative to
-that root:
+The newly satisfied required path was
+`src/services/portfolio_service.py`. Product captures were exact-equal
+within each provider after excluding declared timing/implementation
+fields.
 
-| evidence | SHA-256 | purpose |
-| --- | --- | --- |
-| `offline-closure-final.txt` | `bdf537b995a078149de760dd6ff7b2f4e07669cd8851173d8493395658f4dab8` | human-readable full closure |
-| `offline-closure-final.json` | `5a38d59667cf1c21311abea4841dc10858139060d875561a56e41bb1b93ec6a3` | machine-readable gates, counts, and all isolated reruns |
-| `offline-closure-candidate-full.xml` | `7314c94893905f1a93eda31524fcbfd35a6b90454101fb6cdd1ffda429712241` | raw full-suite JUnit |
-| `offline-disposition-independent-review.txt` | `295117fd569285ea7ee1165d681c17e416747f2389c691f7561024d97d75a2b0` | independent FAIL-versus-BLOCKED ruling |
-| `offline-verifier-a-provider-identity-index.txt` | `630c64b03e3770559c7e43800a526554e96f1ec7bed4ebe80aec7bedd51c8a38` | focused verifier A |
-| `offline-verifier-b-query-health-privacy.txt` | `8305a9f8ca5f65aaff24977786a2fb950d729f9a06cb38652bb95c1b9d769d7f` | focused verifier B |
-| `offline-verifier-c-capture-characterization.txt` | `578ac738d2b370aa24a783540faa2f1cfe5f2ae68f2698995f01e4f415ec4c89` | focused verifier C |
-| `reject-candidate-bundle-manifest.json` | `a99e1edd914fa81a5eef621009373072c4b4641f174a1694641c44020a50942c` | rejected-bundle inventory and apply/hash checks |
+The four product captures and P1 artifacts were complete before the
+first comparator invocation. That invocation was `BLOCKED` only because
+the selected evidence-root call layout placed the frozen capture
+directory outside the comparator's closed provenance root. Two
+independent read-only audits approved one post-capture recovery through
+the frozen harness. The recovery used the same SHA-pinned captures and
+P1 files; it did not recapture, modify code/harness, alter thresholds or
+gold, or hand-calculate JSON. A fresh verifier reported zero findings.
 
-The rejected implementation artifacts, sealed before these
-disposition-only documentation edits, are:
-
-- `reject-candidate-tracked-a7c3536.patch`:
-  `e320757d44699c7e958a7d0de4e35675b718f5ed9ae078ca0f6f0494f7523a52`;
-- `reject-candidate-tracked-122ed05.patch`:
-  `cfeebf9a64b5f762bd7312d6bdef333abb636d8eba57e4b9b4ff22781c6c5de8`;
-- `reject-candidate-untracked.tar.gz`:
-  `e5a285631d8cc3ec678d46e9600eb16b3d687005d51e0cf9b87a6dadea773e58`;
-- untracked `tests/p13_bge_provider_measurement.py`:
-  `4aaf30cda5c4f9307b109cffcdb0f47ba6895ec163326c3850838fc9f3757610`;
-- untracked `tests/test_p13_bge_provider_measurement.py`:
-  `b618f3a6403ce243fa3109a3528adaace10d81055c4c4499a3d2c483a787ec9f`.
-
-The bundle manifest's packaging verification is separate from the P13
-product disposition and does not override **engineering FAIL →
-`reject`**. Reopening the implementation would require an explicit
-revision of the controlling scope/execution decisions and a complete
-offline closure from scratch before any live work.
+The resulting
+`/tmp/context-search-p13-reopen.pyadNs/live-final2/product-comparison.json`
+has SHA-256
+`bcb73020fbc6ceb0401d393525aa44aba4cdbf90500f3240341882ab6db0a1d2`.
+It is an executed recommendation FAIL, not a service `BLOCKED` result
+and not an engineering rejection.
