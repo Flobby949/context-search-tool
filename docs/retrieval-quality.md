@@ -736,6 +736,47 @@ cst quality feedback .context-search/mcp_calls.jsonl \
 
 Query terms and examples remain excluded unless their explicit flags are used.
 
+## P13 BGE Provider Hardening Disposition
+
+P13 ended in **engineering FAIL → `reject`**, not `BLOCKED`. The mandatory
+fixed-runtime non-slow suite produced `3,200 passed`, `5 skipped`,
+`6 deselected`, and `8 failed`. All eight failures reproduced one at a time
+in the candidate, while the same frozen nodes passed one at a time at
+`122ed052284fa488943cb4464301a391bd2e7e24`.
+
+Two historical boundary tests reject the P13-required changes to
+`embeddings.py` and `embeddings_bge.py`, but those boundary tests are outside
+the frozen eleven-file P13 test/harness map. Six historical P6 tests require
+a clean production tree, while this run prohibited commits and required HEAD
+to remain `a7c35368061283a9fadaacf81b3b6a318ce996f3`. Updating the boundary or
+P6 contracts, committing the candidate, or hiding its diff/status would all
+violate a frozen decision. These deterministic offline failures are not a
+live-service precondition, so they cannot be reported as `BLOCKED`.
+
+Focused provider/identity/index, query/health/privacy, capture/harness,
+characterization, hash-equivalence, protected-input, and allowlist checks
+otherwise passed. Those checks do not override the full-suite outcome
+regressions.
+
+Execution stopped before live correctness, singleton/batch equivalence,
+engineering captures, product-paired comparison, or mandatory P1 BGE
+continuity. Every associated request count, latency, ratio, recall, required
+item, noise, and P1 result is `not_run`, not zero or pass. No BGE performance
+or product-quality recommendation is supported.
+
+The default remains `hash`. The existing BGE implementation and P8/P11
+runner workaround remain in place, and none of the rejected P13 production,
+test, or harness bundle is delivered. See the
+[P13 implementation record](superpowers/plans/2026-07-27-p13-bge-provider-hardening.md#implementation-record)
+for the exact failures, evidence SHA-256 values, and rejected patch/archive
+inventory. The evidence root for this run is
+`/tmp/context-search-p13-evidence.ntPJ28`; its final machine-readable record
+is `offline-closure-final.json` with SHA-256
+`5a38d59667cf1c21311abea4841dc10858139060d875561a56e41bb1b93ec6a3`,
+and the independent disposition review is
+`offline-disposition-independent-review.txt` with SHA-256
+`295117fd569285ea7ee1165d681c17e416747f2389c691f7561024d97d75a2b0`.
+
 ## Interpreting Results
 
 Required failures, required removals, execution regressions, coverage loss, and
