@@ -31,9 +31,13 @@ _P13_BGE_DIGEST = (
 _P13_BGE_VERSION_SHA256 = (
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503"
 )
-_P13_BGE_IDENTITY = (
+_P13_BGE_V1_IDENTITY = (
     f"bge-ollama-v1:{_P13_BGE_CONFIG_HASH}:{_P13_BGE_DIGEST}:"
     f"{_P13_BGE_VERSION_SHA256}:bge-input-v1"
+)
+_P13_BGE_IDENTITY = (
+    f"bge-ollama-v1:{_P13_BGE_CONFIG_HASH}:{_P13_BGE_DIGEST}:"
+    f"{_P13_BGE_VERSION_SHA256}:bge-input-v2"
 )
 
 
@@ -637,6 +641,40 @@ def test_bge_exact_attested_identity_is_queryable_and_health_is_offline(
     assert http_calls == []
 
 
+def test_bge_v1_identity_requires_authoritative_v2_upgrade_offline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _health_module()
+    config = _p13_bge_config()
+    repo = tmp_path / "v1-bge"
+    _write_bound_embedding_index(
+        repo,
+        config=config,
+        descriptor_identity=_P13_BGE_V1_IDENTITY,
+    )
+    http_calls = _forbid_health_http(monkeypatch)
+
+    rendered = module.serialize_index_health(
+        module.inspect_repository_health(repo, mode="quick")
+    )
+
+    assert rendered["health"] == "stale"
+    assert rendered["freshness"]["status"] == "stale"
+    assert rendered["queryable"] is False
+    assert rendered["queryability_evidence"] == "none"
+    assert rendered["embedding_config_match"] is True
+    assert rendered["integrity"]["status"] == "valid_quick"
+    assert rendered["integrity"]["vector"] == "valid_identity_and_size"
+    assert rendered["refresh"] == {
+        "required": True,
+        "kind": "authoritative",
+        "reasons": ["embedding_identity_upgrade"],
+        "recommended_action": "index",
+    }
+    assert http_calls == []
+
+
 def test_bge_legacy_config_hash_identity_requires_authoritative_upgrade_offline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -677,10 +715,28 @@ def test_bge_legacy_config_hash_identity_requires_authoritative_upgrade_offline(
         "bge-ollama-v1:malformed",
         (
             f"bge-ollama-v1:{'f' * 64}:{_P13_BGE_DIGEST}:"
-            f"{_P13_BGE_VERSION_SHA256}:bge-input-v1"
+            f"{_P13_BGE_VERSION_SHA256}:bge-input-v2"
+        ),
+        (
+            f"bge-ollama-v1:{_P13_BGE_CONFIG_HASH}:{_P13_BGE_DIGEST}:"
+            f"{_P13_BGE_VERSION_SHA256}:bge-input-v3"
+        ),
+        (
+            f"bge-ollama-v1:{_P13_BGE_CONFIG_HASH}:{'G' * 64}:"
+            f"{_P13_BGE_VERSION_SHA256}:bge-input-v2"
+        ),
+        (
+            f"bge-ollama-v1:{_P13_BGE_CONFIG_HASH}:{_P13_BGE_DIGEST}:"
+            "abc:bge-input-v2"
         ),
     ],
-    ids=["malformed", "config-hash-mismatch"],
+    ids=[
+        "malformed",
+        "config-hash-mismatch",
+        "future-transform",
+        "digest-grammar",
+        "version-grammar",
+    ],
 )
 def test_bge_malformed_or_mismatched_identity_is_integrity_failure_offline(
     descriptor_identity: str,

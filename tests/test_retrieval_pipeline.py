@@ -165,9 +165,13 @@ _P13_BGE_DIGEST = (
 _P13_BGE_VERSION_SHA256 = (
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503"
 )
-_P13_BGE_IDENTITY = (
+_P13_BGE_V1_IDENTITY = (
     f"bge-ollama-v1:{_P13_BGE_CONFIG_HASH}:{_P13_BGE_DIGEST}:"
     f"{_P13_BGE_VERSION_SHA256}:bge-input-v1"
+)
+_P13_BGE_IDENTITY = (
+    f"bge-ollama-v1:{_P13_BGE_CONFIG_HASH}:{_P13_BGE_DIGEST}:"
+    f"{_P13_BGE_VERSION_SHA256}:bge-input-v2"
 )
 
 
@@ -421,8 +425,9 @@ def test_bge_query_attests_compares_embeds_postflights_then_searches(
     [
         None,
         _P13_BGE_CONFIG_HASH,
+        _P13_BGE_V1_IDENTITY,
     ],
-    ids=["missing", "legacy-config-hash"],
+    ids=["missing", "legacy-config-hash", "v1-transform"],
 )
 def test_bge_query_rejects_missing_or_legacy_identity_before_embedding_or_search(
     persisted_identity: str | None,
@@ -463,18 +468,14 @@ def test_bge_query_rejects_missing_or_legacy_identity_before_embedding_or_search
     [
         (
             f"bge-ollama-v1:{_P13_BGE_CONFIG_HASH}:"
-            f"{'8' * 64}:{_P13_BGE_VERSION_SHA256}:bge-input-v1"
+            f"{'8' * 64}:{_P13_BGE_VERSION_SHA256}:bge-input-v2"
         ),
         (
             f"bge-ollama-v1:{_P13_BGE_CONFIG_HASH}:{_P13_BGE_DIGEST}:"
-            f"{'9' * 64}:bge-input-v1"
-        ),
-        (
-            f"bge-ollama-v1:{_P13_BGE_CONFIG_HASH}:{_P13_BGE_DIGEST}:"
-            f"{_P13_BGE_VERSION_SHA256}:bge-input-v2"
+            f"{'9' * 64}:bge-input-v2"
         ),
     ],
-    ids=["digest", "version", "transform"],
+    ids=["digest", "version"],
 )
 def test_bge_query_rejects_persisted_runtime_mismatch_before_embedding_or_search(
     persisted_identity: str,
@@ -580,6 +581,53 @@ def test_bge_query_rejects_malformed_loaded_identity_as_integrity_failure(
     assert vector_store.calls == []
 
 
+@pytest.mark.parametrize(
+    "persisted_identity",
+    [
+        (
+            f"bge-ollama-v1:{'f' * 64}:{_P13_BGE_DIGEST}:"
+            f"{_P13_BGE_VERSION_SHA256}:bge-input-v2"
+        ),
+        (
+            f"bge-ollama-v1:{_P13_BGE_CONFIG_HASH}:{_P13_BGE_DIGEST}:"
+            f"{_P13_BGE_VERSION_SHA256}:bge-input-v3"
+        ),
+    ],
+    ids=["config-hash-mismatch", "future-transform"],
+)
+def test_bge_query_rejects_noncurrent_identity_outside_migration(
+    persisted_identity: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    provider = AttestedEmbeddingProvider(events)
+    vector_store = IdentityCapturingVectorStore(
+        {(1.0, 0.0): [VectorSearchResult("forbidden-hit", 0.75)]},
+        embedding_identity=persisted_identity,
+        events=events,
+    )
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
+
+    with pytest.raises(ValueError) as caught:
+        candidates.semantic_candidates_from_snapshot(
+            vector_store,
+            [
+                QueryVariant("original", "RAW_QUERY_SENTINEL_P13", "original"),
+                QueryVariant("planner:0", "rewrite", "planner"),
+            ],
+            _p13_bge_config(),
+            set(),
+        )
+
+    assert str(caught.value) not in {
+        "bge_reindex_required",
+        "bge_runtime_mismatch",
+    }
+    assert events == ["preflight", "persisted_identity"]
+    assert provider.embed_calls == []
+    assert vector_store.calls == []
+
+
 def test_query_repository_rejects_malformed_bound_bge_identity_when_graph_is_stale(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -635,6 +683,33 @@ def test_query_repository_preserves_legacy_bound_bge_reindex_migration_when_stal
     def forbidden_search(*_args: object, **_kwargs: object) -> object:
         search_calls.append("search")
         raise AssertionError("legacy BGE migration reached vector search")
+
+    monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
+    monkeypatch.setattr(candidates.NumpyVectorStore, "search", forbidden_search)
+
+    with pytest.raises(ValueError, match=r"^bge_reindex_required$") as caught:
+        query_repository(repo, "boundIdentityProbe", config)
+
+    assert getattr(caught.value, "code", None) == "bge_reindex_required"
+    assert provider.events == ["preflight"]
+    assert provider.embed_calls == []
+    assert search_calls == []
+
+
+def test_query_repository_requires_reindex_for_bound_v1_identity_before_embedding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, config = _p13_stale_bound_bge_repo(
+        tmp_path,
+        identity=_P13_BGE_V1_IDENTITY,
+    )
+    provider = AttestedEmbeddingProvider([])
+    search_calls: list[str] = []
+
+    def forbidden_search(*_args: object, **_kwargs: object) -> object:
+        search_calls.append("search")
+        raise AssertionError("v1 BGE migration reached vector search")
 
     monkeypatch.setattr(candidates, "provider_from_config", lambda _config: provider)
     monkeypatch.setattr(candidates.NumpyVectorStore, "search", forbidden_search)

@@ -1231,16 +1231,19 @@ def _descriptor_embedding_state(identity: str, manifest: ManifestV2) -> str:
     if len(parts) != 5:
         return "invalid"
     prefix, config_hash, digest, version_sha256, transform = parts
-    if all(
+    if not all(
         (
             prefix == "bge-ollama-v1",
             config_hash == manifest.embedding_config_hash,
             _is_lower_sha256(digest),
             _is_lower_sha256(version_sha256),
-            transform == "bge-input-v1",
         )
     ):
+        return "invalid"
+    if transform == "bge-input-v2":
         return "exact"
+    if transform == "bge-input-v1":
+        return "upgrade"
     return "invalid"
 
 

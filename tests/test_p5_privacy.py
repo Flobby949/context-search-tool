@@ -424,7 +424,7 @@ _DENSE_BGE_IDENTITY = (
     "ed32afa6f3bfefa7375a51eb47cc65d565d8a5a067d51bda6cb9ac926705b929:"
     "1111111111111111111111111111111111111111111111111111111111111111:"
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
-    "bge-input-v1"
+    "bge-input-v2"
 )
 
 
@@ -562,8 +562,8 @@ def test_dense_cjk_public_index_and_query_use_provider_owned_transform(
     assert request["model"] == "bge-m3"
     assert request["truncate"] is False
     sent_text = request["input"][0]
-    assert len(sent_text) == 4000
-    assert sent_text == raw_text[:3000] + "\n" + raw_text[-999:]
+    assert len(sent_text) == 2000
+    assert sent_text == raw_text[:1500] + "\n" + raw_text[-499:]
     assert "headMarker!" in sent_text
     assert "tail lexical sentinel" in sent_text
 

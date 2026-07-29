@@ -96,19 +96,27 @@ _BGE_VERSION = "0.30.10"
 _BGE_VERSION_SHA256 = (
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503"
 )
-_BGE_IDENTITY = (
+_BGE_V1_IDENTITY = (
     "bge-ollama-v1:"
     "ed32afa6f3bfefa7375a51eb47cc65d565d8a5a067d51bda6cb9ac926705b929:"
     "1111111111111111111111111111111111111111111111111111111111111111:"
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
     "bge-input-v1"
 )
+_BGE_V2_IDENTITY = (
+    "bge-ollama-v1:"
+    "ed32afa6f3bfefa7375a51eb47cc65d565d8a5a067d51bda6cb9ac926705b929:"
+    "1111111111111111111111111111111111111111111111111111111111111111:"
+    "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
+    "bge-input-v2"
+)
+_BGE_IDENTITY = _BGE_V2_IDENTITY
 _BGE_DIGEST_DRIFT_IDENTITY = (
     "bge-ollama-v1:"
     "ed32afa6f3bfefa7375a51eb47cc65d565d8a5a067d51bda6cb9ac926705b929:"
     "2222222222222222222222222222222222222222222222222222222222222222:"
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
-    "bge-input-v1"
+    "bge-input-v2"
 )
 _WAL_WITNESS = "WAL_LOGICAL_WITNESS_P13"
 _WAL_WITNESS_KEY = "p13_wal_logical_witness"
@@ -139,11 +147,13 @@ class _AttestedBGEProvider:
         *,
         identity: str | None = None,
         digest: str = _BGE_DIGEST,
+        transform_id: str = "bge-input-v2",
         failure: str | None = None,
     ) -> None:
         self.config = config
         self.identity = identity or _BGE_IDENTITY
         self.digest = digest
+        self.transform_id = transform_id
         self.failure = failure
         self.events: list[str] = []
         self.embedded_texts: list[str] = []
@@ -209,7 +219,7 @@ class _AttestedBGEProvider:
             "ollama_version": _BGE_VERSION,
             "base_url": self.config.embedding.base_url,
             "dimensions": self.config.embedding.dimensions,
-            "input_transform_id": "bge-input-v1",
+            "input_transform_id": self.transform_id,
             "embedding_identity": self.identity,
         }
 
@@ -395,7 +405,11 @@ def _vector_prefixed_artifacts(index_dir: Path) -> tuple[str, ...]:
     )
 
 
-def _force_attested_ready_fixture(repo: Path) -> None:
+def _force_attested_ready_fixture(
+    repo: Path,
+    *,
+    identity: str = _BGE_IDENTITY,
+) -> None:
     index_dir = repo / ".context-search"
     descriptor = NumpyVectorStore.inspect_published_descriptor(index_dir)
     assert descriptor is not None
@@ -408,13 +422,13 @@ def _force_attested_ready_fixture(repo: Path) -> None:
             index_dir,
             replace(
                 descriptor.descriptor,
-                embedding_identity=_BGE_IDENTITY,
+                embedding_identity=identity,
             ),
         )
     )
     rebound = NumpyVectorStore.inspect_published_descriptor(index_dir)
     assert rebound is not None
-    assert rebound.descriptor.embedding_identity == _BGE_IDENTITY
+    assert rebound.descriptor.embedding_identity == identity
 
     manifest = load_manifest(repo)
     assert isinstance(manifest, ManifestV2)
@@ -446,7 +460,11 @@ def _force_attested_ready_fixture(repo: Path) -> None:
     )
 
 
-def _bge_ready_state(repo: Path) -> _BGEReadyTuple:
+def _bge_ready_state(
+    repo: Path,
+    *,
+    expected_identity: str = _BGE_IDENTITY,
+) -> _BGEReadyTuple:
     index_dir = repo / ".context-search"
     manifest_path = index_dir / "manifest.json"
     descriptor_path = index_dir / "vector_snapshot.json"
@@ -465,8 +483,8 @@ def _bge_ready_state(repo: Path) -> _BGEReadyTuple:
     assert identity_parts[0] == "bge-ollama-v1"
     assert identity_parts[1] == _BGE_CONFIG_HASH
     assert identity_parts[3] == _BGE_VERSION_SHA256
-    assert identity_parts[4] == "bge-input-v1"
-    assert descriptor.descriptor.embedding_identity == _BGE_IDENTITY
+    assert identity_parts[4] == expected_identity.rsplit(":", 1)[-1]
+    assert descriptor.descriptor.embedding_identity == expected_identity
     operational = SQLiteStore(
         index_dir / "index.sqlite"
     ).read_operational_snapshot()
@@ -2506,6 +2524,90 @@ def test_bge_quiet_refresh_attests_without_embedding_and_reports_egress(
     assert provider.events == ["preflight"]
     assert provider.embedded_texts == []
     assert _bge_ready_state(repo) == before
+
+
+def test_bge_v1_transform_requires_authoritative_reindex_before_v2_embedding(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text(
+        "class App { int legacyTransform; }\n",
+        encoding="utf-8",
+    )
+    config = _bge_config()
+    _build_bge(repo, _AttestedBGEProvider(config))
+    _force_attested_ready_fixture(repo, identity=_BGE_V1_IDENTITY)
+    before = _bge_ready_state(repo, expected_identity=_BGE_V1_IDENTITY)
+
+    class _QuickMigrationForbiddenProvider(_AttestedBGEProvider):
+        def embed_texts(self, texts: list[str]) -> list[np.ndarray]:
+            self.events.append("embed")
+            self.embedded_texts.extend(texts)
+            raise AssertionError(
+                "quick refresh migrated bge-input-v1 vectors instead of "
+                "requiring authoritative indexing"
+            )
+
+    quick_provider = _QuickMigrationForbiddenProvider(
+        config,
+        identity=_BGE_V2_IDENTITY,
+        transform_id="bge-input-v2",
+    )
+
+    rejected = _refresh(
+        repo,
+        config,
+        embedding_provider=quick_provider,
+    )
+
+    assert rejected.ok is False
+    assert (
+        _bge_ready_state(repo, expected_identity=_BGE_V1_IDENTITY)
+        == before
+    )
+    assert quick_provider.events == ["preflight"]
+    assert quick_provider.embedded_texts == []
+    assert rejected.code == "authoritative_index_required"
+    assert rejected.network_egress_outcome == "performed"
+
+    authoritative_provider = _AttestedBGEProvider(
+        config,
+        identity=_BGE_V2_IDENTITY,
+        transform_id="bge-input-v2",
+    )
+    _build_bge(repo, authoritative_provider)
+
+    index_dir = repo / ".context-search"
+    after = NumpyVectorStore.inspect_published_descriptor(index_dir)
+    manifest = load_manifest(repo)
+    operational = SQLiteStore(
+        index_dir / "index.sqlite"
+    ).read_operational_snapshot()
+    assert after is not None
+    assert isinstance(manifest, ManifestV2)
+    assert operational is not None
+    loaded = NumpyVectorStore.load_bound_ready_snapshot(
+        index_dir,
+        expected_descriptor_sha256=after.sha256,
+        expected_generation=after.descriptor.generation,
+        expected_vectors_bytes=after.descriptor.vectors_bytes,
+        expected_ids_bytes=after.descriptor.ids_bytes,
+        expected_row_count=after.descriptor.row_count,
+        expected_dimensions=after.descriptor.dimensions,
+        expected_embedding_identity=_BGE_V2_IDENTITY,
+    )
+    assert authoritative_provider.events == ["preflight", "embed", "postflight"]
+    assert authoritative_provider.embedded_texts
+    assert after.descriptor.generation != before.descriptor_generation
+    assert after.descriptor.embedding_identity == _BGE_V2_IDENTITY
+    assert manifest.embedding_config_hash == _BGE_CONFIG_HASH
+    assert manifest.vector_descriptor_sha256 == after.sha256
+    assert operational.graph_status == "ready"
+    assert operational.binding.vector_generation == after.descriptor.generation
+    assert operational.binding.vector_descriptor_sha256 == after.sha256
+    assert loaded.embedding_identity == _BGE_V2_IDENTITY
+    assert loaded.ids == tuple(sorted(operational.active_embedding_ids))
 
 
 def test_bge_quick_refresh_zero_row_digest_drift_publishes_new_identity(

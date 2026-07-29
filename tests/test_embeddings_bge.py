@@ -16,28 +16,28 @@ _DESCRIPTOR_LITERAL = (
     "a31c280ece569f71b682328fbeb5c2fef9c85cca0e42acf7425724d134fd80d8:"
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
-    "bge-input-v1"
+    "bge-input-v2"
 )
 _DESCRIPTOR_EXPLICIT_TAG_LITERAL = (
     "bge-ollama-v1:"
     "f98644e6e7a650147c9acb84f3809db5e12b95ea91fbd65a0fa8492a0cb2f58b:"
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
-    "bge-input-v1"
+    "bge-input-v2"
 )
 _DESCRIPTOR_DIGEST_B_LITERAL = (
     "bge-ollama-v1:"
     "a31c280ece569f71b682328fbeb5c2fef9c85cca0e42acf7425724d134fd80d8:"
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:"
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
-    "bge-input-v1"
+    "bge-input-v2"
 )
 _DESCRIPTOR_VERSION_B_LITERAL = (
     "bge-ollama-v1:"
     "a31c280ece569f71b682328fbeb5c2fef9c85cca0e42acf7425724d134fd80d8:"
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"
     "e8b0cd5b6a434c25fc264f14215453212e8a2a9f2ee92853edcab28cf3ba369a:"
-    "bge-input-v1"
+    "bge-input-v2"
 )
 _EXPECTED_RUNTIME_A = {
     "configured_model": "bge-m3",
@@ -46,7 +46,7 @@ _EXPECTED_RUNTIME_A = {
     "ollama_version": _VERSION_A,
     "base_url": "http://localhost:11434",
     "dimensions": 3,
-    "input_transform_id": "bge-input-v1",
+    "input_transform_id": "bge-input-v2",
     "embedding_identity": _DESCRIPTOR_LITERAL,
 }
 
@@ -438,7 +438,7 @@ def test_bge_provider_resolves_explicit_tag_only_by_exact_name() -> None:
         "f98644e6e7a650147c9acb84f3809db5e12b95ea91fbd65a0fa8492a0cb2f58b:"
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:"
         "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
-        "bge-input-v1"
+        "bge-input-v2"
     )
 
 
@@ -802,12 +802,12 @@ def test_bge_provider_postflight_preserves_attestation_error_taxonomy(
     "text",
     [
         "",
-        "x" * 3999,
-        "x" * 4000,
+        "x" * 1999,
+        "x" * 2000,
     ],
-    ids=["zero", "3999", "4000"],
+    ids=["zero", "1999", "2000"],
 )
-def test_bge_provider_preserves_text_through_4000_code_points(text: str) -> None:
+def test_bge_provider_preserves_text_through_2000_code_points(text: str) -> None:
     session = _session()
     provider = BGEEmbeddingProvider(_config(), session=session)
 
@@ -816,9 +816,9 @@ def test_bge_provider_preserves_text_through_4000_code_points(text: str) -> None
     assert session.post.call_args.kwargs["json"]["input"] == [text]
 
 
-def test_bge_provider_applies_exact_head_tail_transform_at_4001() -> None:
-    text = ("H" * 3000) + "XY" + ("T" * 999)
-    expected = ("H" * 3000) + "\n" + ("T" * 999)
+def test_bge_provider_applies_exact_head_tail_transform_at_2001() -> None:
+    text = ("H" * 1500) + "XY" + ("T" * 499)
+    expected = ("H" * 1500) + "\n" + ("T" * 499)
     session = _session()
     provider = BGEEmbeddingProvider(_config(), session=session)
 
@@ -826,12 +826,12 @@ def test_bge_provider_applies_exact_head_tail_transform_at_4001() -> None:
 
     prepared = session.post.call_args.kwargs["json"]["input"][0]
     assert prepared == expected
-    assert len(prepared) == 4000
+    assert len(prepared) == 2000
 
 
-def test_bge_provider_counts_dense_cjk_by_code_point() -> None:
-    text = "界" * 4001
-    expected = ("界" * 3000) + "\n" + ("界" * 999)
+def test_bge_provider_prepares_6924_dense_cjk_by_exact_code_points() -> None:
+    text = "界" * 6924
+    expected = ("界" * 1500) + "\n" + ("界" * 499)
     session = _session()
     provider = BGEEmbeddingProvider(_config(), session=session)
 
@@ -839,16 +839,16 @@ def test_bge_provider_counts_dense_cjk_by_code_point() -> None:
 
     prepared = session.post.call_args.kwargs["json"]["input"][0]
     assert prepared == expected
-    assert len(prepared) == 4000
+    assert len(prepared) == 2000
 
 
 def test_bge_provider_preserves_tail_and_removes_middle_sentinel() -> None:
     head_sentinel = "HEAD_SENTINEL_P13"
     middle_sentinel = "MIDDLE_SENTINEL_P13"
     tail_sentinel = "TAIL_SENTINEL_P13"
-    head = head_sentinel + ("h" * (3000 - len(head_sentinel)))
+    head = head_sentinel + ("h" * (1500 - len(head_sentinel)))
     middle = middle_sentinel + ("m" * 1000)
-    tail = ("t" * (999 - len(tail_sentinel))) + tail_sentinel
+    tail = ("t" * (499 - len(tail_sentinel))) + tail_sentinel
     session = _session()
     provider = BGEEmbeddingProvider(_config(), session=session)
 
@@ -880,8 +880,8 @@ def test_bge_provider_does_not_mutate_input_list() -> None:
 
 
 def test_bge_provider_preserves_input_order() -> None:
-    long_text = ("A" * 3000) + "REMOVED" + ("Z" * 999)
-    expected_long = ("A" * 3000) + "\n" + ("Z" * 999)
+    long_text = ("A" * 1500) + "REMOVED" + ("Z" * 499)
+    expected_long = ("A" * 1500) + "\n" + ("Z" * 499)
     session = _session(
         embedding_batches=[
             [
@@ -910,7 +910,7 @@ def test_bge_provider_empty_input_performs_zero_http() -> None:
 
 
 def test_bge_provider_keeps_eight_maximum_inputs_in_one_request() -> None:
-    texts = [str(index) + ("x" * 3999) for index in range(8)]
+    texts = [str(index) + ("x" * 1999) for index in range(8)]
     embeddings = [[1.0, 0.0, 0.0] for _ in range(8)]
     session = _session(embedding_batches=[embeddings])
     provider = BGEEmbeddingProvider(_config(), session=session)

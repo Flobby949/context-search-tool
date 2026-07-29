@@ -27,6 +27,13 @@ _BGE_DESCRIPTOR_IDENTITY = (
     "c1cc02373a3d92d32afefaf6fcfb1cb8ba8e6cdbdd3f0298484965b94ca0896b:"
     "7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab:"
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
+    "bge-input-v2"
+)
+_SUPERSEDED_BGE_V1_DESCRIPTOR_IDENTITY = (
+    "bge-ollama-v1:"
+    "c1cc02373a3d92d32afefaf6fcfb1cb8ba8e6cdbdd3f0298484965b94ca0896b:"
+    "7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab:"
+    "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
     "bge-input-v1"
 )
 _CAPTURE_ROOT_KEYS = {
@@ -215,7 +222,7 @@ def _real_shaped_capture(*, provider: str = "hash") -> dict:
         "ollama_version": "0.30.10",
         "base_url": "http://localhost:11434",
         "dimensions": 1024,
-        "input_transform_id": "bge-input-v1",
+        "input_transform_id": "bge-input-v2",
         "embedding_identity": _BGE_DESCRIPTOR_IDENTITY,
     }
     payload["embedding_identity"] = {
@@ -227,7 +234,7 @@ def _real_shaped_capture(*, provider: str = "hash") -> dict:
         "canonical_model": "bge-m3:latest",
         "model_digest": _BGE_DIGEST,
         "ollama_version": "0.30.10",
-        "input_transform_id": "bge-input-v1",
+        "input_transform_id": "bge-input-v2",
         "pre_attestation": copy.deepcopy(attestation),
         "post_attestation": copy.deepcopy(attestation),
     }
@@ -514,7 +521,7 @@ def test_hash_v4_requires_static_descriptor_identity_and_zero_ollama(
         ("canonical_model", "bge-m3:latest"),
         ("model_digest", _BGE_DIGEST),
         ("ollama_version", "0.30.10"),
-        ("input_transform_id", "bge-input-v1"),
+        ("input_transform_id", "bge-input-v2"),
         ("pre_attestation", {}),
         ("post_attestation", {}),
     ):
@@ -544,7 +551,7 @@ def test_bge_v4_requires_one_matching_attested_descriptor_identity(
     assert identity["canonical_model"] == "bge-m3:latest"
     assert identity["model_digest"] == _BGE_DIGEST
     assert identity["ollama_version"] == "0.30.10"
-    assert identity["input_transform_id"] == "bge-input-v1"
+    assert identity["input_transform_id"] == "bge-input-v2"
     runner.check(_write_capture(tmp_path, "bge-v4.json", payload))
 
     mutations: list[dict] = []
@@ -578,6 +585,37 @@ def test_bge_v4_requires_one_matching_attested_descriptor_identity(
             runner.check(
                 _write_capture(tmp_path, f"bge-invalid-{index}.json", mutation)
             )
+
+
+def test_bge_v4_rejects_coherent_superseded_v1_identity(
+    tmp_path: Path,
+) -> None:
+    payload = _real_shaped_capture(provider="bge")
+    identity = payload["embedding_identity"]
+    identity["descriptor_identity"] = (
+        _SUPERSEDED_BGE_V1_DESCRIPTOR_IDENTITY
+    )
+    identity["input_transform_id"] = "bge-input-v1"
+    for phase in ("pre_attestation", "post_attestation"):
+        identity[phase]["input_transform_id"] = "bge-input-v1"
+        identity[phase]["embedding_identity"] = (
+            _SUPERSEDED_BGE_V1_DESCRIPTOR_IDENTITY
+        )
+
+    assert identity["pre_attestation"] == identity["post_attestation"]
+    assert identity["descriptor_identity"] == (
+        identity["pre_attestation"]["embedding_identity"]
+    )
+    assert identity["input_transform_id"] == (
+        identity["pre_attestation"]["input_transform_id"]
+    )
+    with pytest.raises(
+        ValueError,
+        match="BGE embedding descriptor identity mismatch",
+    ):
+        runner.check(
+            _write_capture(tmp_path, "bge-superseded-v1.json", payload)
+        )
 
 
 def test_bge_v4_requires_at_least_one_recorded_embedding_request(
@@ -693,7 +731,7 @@ def test_v4_check_recursively_rejects_private_payloads(
     version_sha = hashlib.sha256(raw_version.encode("utf-8")).hexdigest()
     descriptor = (
         f"bge-ollama-v1:{_BGE_CONFIG_IDENTITY}:{_BGE_DIGEST}:"
-        f"{version_sha}:bge-input-v1"
+        f"{version_sha}:bge-input-v2"
     )
     identity = query["embedding_identity"]
     identity["ollama_version"] = raw_version
@@ -1019,8 +1057,8 @@ def test_bge_truncation_bounds_every_embedded_text(
             prepared = [
                 (
                     text
-                    if len(text) <= 4000
-                    else text[:3000] + "\n" + text[-999:]
+                    if len(text) <= 2000
+                    else text[:1500] + "\n" + text[-499:]
                 )
                 for text in call["inputs"]
             ]
@@ -1032,7 +1070,7 @@ def test_bge_truncation_bounds_every_embedded_text(
             assert call["added_class_attributes"] == []
         assert http_embed_inputs == expected_http_inputs
         assert all(
-            len(text) <= 4000
+            len(text) <= 2000
             for request in http_embed_inputs
             for text in request
         )

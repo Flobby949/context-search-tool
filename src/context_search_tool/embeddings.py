@@ -150,7 +150,7 @@ def _embedding_descriptor_identity(
             and all(character in lower_hex for character in digest),
             len(version_hash) == 64
             and all(character in lower_hex for character in version_hash),
-            transform == "bge-input-v1",
+            transform == "bge-input-v2",
         )
     ):
         raise ValueError("BGE runtime embedding identity is invalid")

@@ -731,7 +731,7 @@ def _refresh_repository_locked(
             baseline.descriptor.descriptor.embedding_identity,
             baseline.manifest,
         )
-        if persisted_state == "invalid":
+        if persisted_state != "exact":
             raise _AuthoritativeRefreshRequired()
         bge_runtime_changed = (
             baseline.descriptor.descriptor.embedding_identity

@@ -28,14 +28,14 @@ _BGE_DESCRIPTOR_IDENTITY = (
     "a31c280ece569f71b682328fbeb5c2fef9c85cca0e42acf7425724d134fd80d8:"
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
-    "bge-input-v1"
+    "bge-input-v2"
 )
 _BGE_WRONG_CONFIG_IDENTITY = (
     "bge-ollama-v1:"
     "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff:"
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
-    "bge-input-v1"
+    "bge-input-v2"
 )
 _BGE_MISSING_TRANSFORM_IDENTITY = (
     "bge-ollama-v1:"
@@ -48,21 +48,21 @@ _BGE_INVALID_DIGEST_IDENTITY = (
     "a31c280ece569f71b682328fbeb5c2fef9c85cca0e42acf7425724d134fd80d8:"
     "not-a-model-digest:"
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
-    "bge-input-v1"
+    "bge-input-v2"
 )
 _BGE_INVALID_VERSION_IDENTITY = (
     "bge-ollama-v1:"
     "a31c280ece569f71b682328fbeb5c2fef9c85cca0e42acf7425724d134fd80d8:"
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"
     "not-an-ollama-version-hash:"
-    "bge-input-v1"
+    "bge-input-v2"
 )
-_BGE_WRONG_TRANSFORM_IDENTITY = (
+_BGE_LEGACY_V1_IDENTITY = (
     "bge-ollama-v1:"
     "a31c280ece569f71b682328fbeb5c2fef9c85cca0e42acf7425724d134fd80d8:"
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
-    "bge-input-v2"
+    "bge-input-v1"
 )
 
 
@@ -158,6 +158,29 @@ def test_embedding_descriptor_identity_requires_same_attested_bge_provider(
             helper(config, provider=invalid_provider)
 
 
+def test_embedding_descriptor_identity_rejects_legacy_v1_runtime_attestation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper = getattr(embeddings_module, "_embedding_descriptor_identity", None)
+    assert callable(helper), "P13 embedding descriptor identity helper is absent"
+    config = EmbeddingConfig(provider="bge", model="bge-m3", dimensions=3)
+
+    class _LegacyV1Provider:
+        def runtime_fingerprint(self) -> dict[str, object]:
+            return {"embedding_identity": _BGE_LEGACY_V1_IDENTITY}
+
+    def forbidden_factory(_config: EmbeddingConfig) -> object:
+        raise AssertionError("BGE identity replaced the caller-owned provider")
+
+    monkeypatch.setattr(embeddings_module, "provider_from_config", forbidden_factory)
+
+    with pytest.raises(
+        ValueError,
+        match=r"^BGE runtime embedding identity is invalid$",
+    ):
+        helper(config, provider=_LegacyV1Provider())
+
+
 @pytest.mark.parametrize(
     "invalid_identity",
     [
@@ -165,7 +188,7 @@ def test_embedding_descriptor_identity_requires_same_attested_bge_provider(
         pytest.param(_BGE_MISSING_TRANSFORM_IDENTITY, id="malformed-parts"),
         pytest.param(_BGE_INVALID_DIGEST_IDENTITY, id="invalid-digest"),
         pytest.param(_BGE_INVALID_VERSION_IDENTITY, id="invalid-version-hash"),
-        pytest.param(_BGE_WRONG_TRANSFORM_IDENTITY, id="wrong-transform"),
+        pytest.param(_BGE_LEGACY_V1_IDENTITY, id="legacy-v1-transform"),
     ],
 )
 def test_authoritative_bge_identity_attestation_fails_closed_before_publication(

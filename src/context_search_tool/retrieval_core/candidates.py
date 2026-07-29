@@ -24,7 +24,8 @@ _CJK_SEQUENCE_RE = re.compile(r"[㐀-鿿]{2,}")
 _DIRECT_FRAGMENT_RE = re.compile(r"[A-Za-z0-9_./:@-]{3,}")
 _DIRECT_TEXT_TOP_K_MULTIPLIER = 3
 _BGE_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
-_BGE_TRANSFORM_RE = re.compile(r"bge-input-v[1-9][0-9]*\Z")
+_BGE_LEGACY_TRANSFORM_ID = "bge-input-v1"
+_BGE_CURRENT_TRANSFORM_ID = "bge-input-v2"
 
 
 class _BGEQueryError(ValueError):
@@ -86,7 +87,17 @@ def _semantic_candidates_with_store(
         config_hash = embedding_config_hash(config.embedding)
         if persisted_identity is None or persisted_identity == config_hash:
             raise _BGEQueryError("bge_reindex_required")
-        if not _valid_bge_runtime_identity(persisted_identity, config_hash):
+        if _valid_bge_runtime_identity(
+            persisted_identity,
+            config_hash,
+            _BGE_LEGACY_TRANSFORM_ID,
+        ):
+            raise _BGEQueryError("bge_reindex_required")
+        if not _valid_bge_runtime_identity(
+            persisted_identity,
+            config_hash,
+            _BGE_CURRENT_TRANSFORM_ID,
+        ):
             raise ValueError("BGE vector embedding identity is invalid")
         if persisted_identity != bge_runtime_identity:
             raise _BGEQueryError("bge_runtime_mismatch")
@@ -149,7 +160,11 @@ def _semantic_candidates_with_store(
     return candidates, executed_variants, status, original_query_vector
 
 
-def _valid_bge_runtime_identity(identity: object, config_hash: str) -> bool:
+def _valid_bge_runtime_identity(
+    identity: object,
+    config_hash: str,
+    transform_id: str,
+) -> bool:
     if not isinstance(identity, str):
         return False
     parts = identity.split(":")
@@ -162,7 +177,7 @@ def _valid_bge_runtime_identity(identity: object, config_hash: str) -> bool:
             persisted_config_hash == config_hash,
             _BGE_SHA256_RE.fullmatch(digest) is not None,
             _BGE_SHA256_RE.fullmatch(version_sha256) is not None,
-            _BGE_TRANSFORM_RE.fullmatch(transform) is not None,
+            transform == transform_id,
         )
     )
 

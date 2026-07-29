@@ -13,11 +13,11 @@ from context_search_tool.manifest import embedding_config_hash
 
 
 _DEFAULT_BASE_URL = "http://localhost:11434"
-_INPUT_TRANSFORM_ID = "bge-input-v1"
+_INPUT_TRANSFORM_ID = "bge-input-v2"
 _MAX_TEXTS_PER_REQUEST = 8
-_MAX_TEXT_CODEPOINTS = 4_000
-_HEAD_CODEPOINTS = 3_000
-_TAIL_CODEPOINTS = 999
+_MAX_TEXT_CODEPOINTS = 2_000
+_HEAD_CODEPOINTS = 1_500
+_TAIL_CODEPOINTS = 499
 _PREFLIGHT_TIMEOUT_SECONDS = 5.0
 _EMBED_TIMEOUT_SECONDS = 60.0
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")

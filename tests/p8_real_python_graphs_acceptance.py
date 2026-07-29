@@ -935,7 +935,7 @@ def _validate_embedding_identity(
     )
     if (
         descriptor_identity != expected_descriptor
-        or embedding["input_transform_id"] != "bge-input-v1"
+        or embedding["input_transform_id"] != "bge-input-v2"
     ):
         raise ValueError("BGE embedding descriptor identity mismatch")
 

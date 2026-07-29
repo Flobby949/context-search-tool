@@ -41,6 +41,13 @@ BGE_DESCRIPTOR_IDENTITY = (
     "c1cc02373a3d92d32afefaf6fcfb1cb8ba8e6cdbdd3f0298484965b94ca0896b:"
     "7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab:"
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
+    "bge-input-v2"
+)
+SUPERSEDED_BGE_V1_DESCRIPTOR_IDENTITY = (
+    "bge-ollama-v1:"
+    "c1cc02373a3d92d32afefaf6fcfb1cb8ba8e6cdbdd3f0298484965b94ca0896b:"
+    "7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab:"
+    "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
     "bge-input-v1"
 )
 QUALITY_RUNNER = {
@@ -230,7 +237,7 @@ def _attestation() -> dict[str, object]:
         "ollama_version": "0.30.10",
         "base_url": "http://localhost:11434",
         "dimensions": 1024,
-        "input_transform_id": "bge-input-v1",
+        "input_transform_id": "bge-input-v2",
         "embedding_identity": BGE_DESCRIPTOR_IDENTITY,
     }
 
@@ -942,7 +949,7 @@ def _native_capture(provider: str) -> dict[str, object]:
         "canonical_model": "bge-m3:latest" if bge else None,
         "model_digest": BGE_DIGEST if bge else None,
         "ollama_version": "0.30.10" if bge else None,
-        "input_transform_id": "bge-input-v1" if bge else None,
+        "input_transform_id": "bge-input-v2" if bge else None,
         "pre_attestation": _attestation() if bge else None,
         "post_attestation": _attestation() if bge else None,
     }
@@ -1102,7 +1109,7 @@ def _capture_envelope(
         "transform_id": (
             "p11-runner-head-4000"
             if legacy
-            else ("bge-input-v1" if provider == "bge" else None)
+            else ("bge-input-v2" if provider == "bge" else None)
         ),
         "attestation": {
             "pre": copy.deepcopy(attestation),
@@ -2881,6 +2888,44 @@ def test_capture_envelope_is_closed_and_v3_is_legacy_only() -> None:
             module.validate_capture_envelope(invalid)
 
 
+def test_coherent_native_v1_envelope_is_rejected_as_superseded() -> None:
+    module = _load_harness()
+    payload = _strip_test_fields(
+        _capture_envelope(side="candidate", sequence=1)
+    )
+    payload["transform_id"] = "bge-input-v1"
+    for phase in ("pre", "post"):
+        payload["attestation"][phase]["input_transform_id"] = (
+            "bge-input-v1"
+        )
+        payload["attestation"][phase]["embedding_identity"] = (
+            SUPERSEDED_BGE_V1_DESCRIPTOR_IDENTITY
+        )
+
+    identity = payload["capture"]["embedding_identity"]
+    identity["descriptor_identity"] = (
+        SUPERSEDED_BGE_V1_DESCRIPTOR_IDENTITY
+    )
+    identity["input_transform_id"] = "bge-input-v1"
+    for phase in ("pre_attestation", "post_attestation"):
+        identity[phase]["input_transform_id"] = "bge-input-v1"
+        identity[phase]["embedding_identity"] = (
+            SUPERSEDED_BGE_V1_DESCRIPTOR_IDENTITY
+        )
+
+    assert payload["schema_version"] == ENVELOPE_SCHEMA
+    assert payload["capture"]["schema_version"] == 4
+    assert payload["attestation"]["pre"] == payload["attestation"]["post"]
+    assert identity["pre_attestation"] == identity["post_attestation"]
+    assert payload["attestation"]["pre"] == identity["pre_attestation"]
+    assert payload["transform_id"] == identity["input_transform_id"]
+    assert identity["descriptor_identity"] == (
+        identity["pre_attestation"]["embedding_identity"]
+    )
+    with pytest.raises(ValueError, match="attestation identity mismatch"):
+        module.validate_capture_envelope(payload)
+
+
 @pytest.mark.parametrize(
     "mutation",
     (
@@ -3131,7 +3176,7 @@ def test_legacy_requires_exact_clean_baseline_and_frozen_runner(
     wrong_runner = copy.deepcopy(payload)
     wrong_runner["runner"]["sha256"] = "f" * 64
     wrong_transform = copy.deepcopy(payload)
-    wrong_transform["transform_id"] = "bge-input-v1"
+    wrong_transform["transform_id"] = "bge-input-v2"
     for invalid in (wrong_commit, dirty, wrong_runner, wrong_transform):
         with pytest.raises(ValueError):
             module.validate_capture_envelope(invalid)
@@ -3265,7 +3310,7 @@ def test_hash_envelope_is_offline_and_has_no_bge_attestation() -> None:
 
     for mutation in (
         ("attestation", {"pre": _attestation(), "post": _attestation()}),
-        ("transform_id", "bge-input-v1"),
+        ("transform_id", "bge-input-v2"),
         (
             "embedding_requests",
             {"redink": 1, "daily": 0, "total": 1},

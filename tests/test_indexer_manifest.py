@@ -111,28 +111,28 @@ _BGE_IDENTITY = (
     "ed32afa6f3bfefa7375a51eb47cc65d565d8a5a067d51bda6cb9ac926705b929:"
     "1111111111111111111111111111111111111111111111111111111111111111:"
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
-    "bge-input-v1"
+    "bge-input-v2"
 )
 _BGE_DIGEST_DRIFT_IDENTITY = (
     "bge-ollama-v1:"
     "ed32afa6f3bfefa7375a51eb47cc65d565d8a5a067d51bda6cb9ac926705b929:"
     "2222222222222222222222222222222222222222222222222222222222222222:"
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
-    "bge-input-v1"
+    "bge-input-v2"
 )
 _BGE_VERSION_DRIFT_IDENTITY = (
     "bge-ollama-v1:"
     "ed32afa6f3bfefa7375a51eb47cc65d565d8a5a067d51bda6cb9ac926705b929:"
     "1111111111111111111111111111111111111111111111111111111111111111:"
     "e8b0cd5b6a434c25fc264f14215453212e8a2a9f2ee92853edcab28cf3ba369a:"
-    "bge-input-v1"
+    "bge-input-v2"
 )
 _BGE_TRANSFORM_DRIFT_IDENTITY = (
     "bge-ollama-v1:"
     "ed32afa6f3bfefa7375a51eb47cc65d565d8a5a067d51bda6cb9ac926705b929:"
     "1111111111111111111111111111111111111111111111111111111111111111:"
     "2a030a0065e54c79d856fc2b0a2b3f4c4cb5f81ed853fe99bccc2bbffe03e503:"
-    "bge-input-v2"
+    "bge-input-v1"
 )
 
 
@@ -181,7 +181,7 @@ class _AttestedBGEProvider:
             "ollama_version": _BGE_VERSION,
             "base_url": self.config.embedding.base_url,
             "dimensions": self.config.embedding.dimensions,
-            "input_transform_id": "bge-input-v1",
+            "input_transform_id": "bge-input-v2",
             "embedding_identity": self.identity,
         }
 
@@ -212,7 +212,7 @@ class _AttestedBGEProvider:
             "ollama_version": _BGE_VERSION,
             "base_url": self.config.embedding.base_url,
             "dimensions": self.config.embedding.dimensions,
-            "input_transform_id": "bge-input-v1",
+            "input_transform_id": "bge-input-v2",
             "embedding_identity": self.identity,
         }
 
