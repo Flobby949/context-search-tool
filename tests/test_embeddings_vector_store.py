@@ -13,7 +13,12 @@ import pytest
 from context_search_tool import embeddings as embeddings_module
 from context_search_tool import indexer as indexer_module
 from context_search_tool import vector_store as vector_store_module
-from context_search_tool.config import DEFAULT_CONFIG, EmbeddingConfig, ToolConfig
+from context_search_tool.config import (
+    DEFAULT_CONFIG,
+    EmbeddingConfig,
+    ToolConfig,
+    replace_embedding_config,
+)
 from context_search_tool.embeddings import (
     HashEmbeddingProvider,
     OpenAICompatibleEmbeddingProvider,
@@ -334,6 +339,39 @@ def test_openai_compatible_provider_uses_mock_transport() -> None:
         "https://example.test/v1/embeddings",
         json={"model": "demo-embedding", "input": ["hello"]},
         timeout=30.0,
+    )
+
+
+def test_openai_compatible_provider_prefers_configured_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LEGACY_EMBEDDING_KEY", "ignored-environment-key")
+    mock_session = Mock()
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "data": [{"index": 0, "embedding": [1.0, 0.0, 0.0]}]
+    }
+    mock_response.raise_for_status = Mock()
+    mock_session.post.return_value = mock_response
+    config = replace_embedding_config(
+        EmbeddingConfig(
+            provider="openai-compatible",
+            model="BAAI/bge-m3",
+            dimensions=3,
+            base_url="https://api.siliconflow.cn/v1",
+            api_key_env="LEGACY_EMBEDDING_KEY",
+        ),
+        api_key="configured-api-key",
+    )
+    provider = OpenAICompatibleEmbeddingProvider(config, session=mock_session)
+
+    provider.embed_texts(["hello"])
+
+    mock_session.post.assert_called_once_with(
+        "https://api.siliconflow.cn/v1/embeddings",
+        json={"model": "BAAI/bge-m3", "input": ["hello"]},
+        timeout=30.0,
+        headers={"Authorization": "Bearer configured-api-key"},
     )
 
 

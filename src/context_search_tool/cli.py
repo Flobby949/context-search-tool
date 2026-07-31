@@ -10,7 +10,11 @@ import requests
 import typer
 
 from context_search_tool import index_health
-from context_search_tool.config import ToolConfig, load_config
+from context_search_tool.config import (
+    ToolConfig,
+    load_config,
+    replace_query_planner_config,
+)
 from context_search_tool.context_pack import (
     ContextPackError,
     build_context_pack,
@@ -723,7 +727,10 @@ def _prepare_query_command(
     if planner or no_planner:
         config = replace(
             config,
-            query_planner=replace(config.query_planner, enabled=planner),
+            query_planner=replace_query_planner_config(
+                config.query_planner,
+                enabled=planner,
+            ),
         )
     return repo, query_text, config
 

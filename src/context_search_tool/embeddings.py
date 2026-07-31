@@ -98,6 +98,8 @@ class OpenAICompatibleEmbeddingProvider:
         }
 
     def _headers(self) -> dict[str, str]:
+        if self.config.api_key:
+            return {"Authorization": f"Bearer {self.config.api_key}"}
         if not self.config.api_key_env:
             return {}
         api_key = os.environ.get(self.config.api_key_env)

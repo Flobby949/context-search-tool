@@ -561,6 +561,58 @@ def test_index_repository_persists_passed_config_when_creating_config_file(
     assert summary.files_indexed == 0
 
 
+def test_global_secret_inheritance_preserves_project_vector_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    global_path = tmp_path / "global.toml"
+    global_path.write_text(
+        """
+[embedding]
+provider = "hash"
+model = "hash-v1"
+dimensions = 384
+api_key = "first-global-secret"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CST_GLOBAL_CONFIG_PATH", str(global_path))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "App.java").write_text("class App {}\n", encoding="utf-8")
+
+    index_repository(repo, config_loader=load_config)
+
+    local_config = (repo / ".context-search" / "config.toml").read_text(
+        encoding="utf-8"
+    )
+    assert "first-global-secret" not in local_config
+    global_path.write_text(
+        global_path.read_text(encoding="utf-8").replace(
+            "first-global-secret",
+            "rotated-global-secret",
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_config(repo)
+    assert loaded.embedding.api_key == "rotated-global-secret"
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    store.mark_graph_stale("test_global_config_inheritance")
+    with store.graph_read_session() as session:
+        snapshot = read_v5_vector_snapshot(repo, loaded, session)
+        assert snapshot is not None
+        snapshot.close()
+    global_path.write_text(
+        global_path.read_text(encoding="utf-8").replace(
+            'model = "hash-v1"',
+            'model = "hash-v2"',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(IncompatibleIndexError):
+        index_repository(repo, config_loader=load_config)
+
+
 def test_index_repository_retries_file_when_previous_vector_write_failed(
     tmp_path: Path,
 ) -> None:

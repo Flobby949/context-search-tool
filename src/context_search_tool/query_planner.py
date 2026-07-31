@@ -93,16 +93,7 @@ class OllamaQueryPlanner:
                     "stream": False,
                     "think": False,
                     "format": "json",
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {
-                            "role": "user",
-                            "content": json.dumps(
-                                _user_payload(query, self.config, repo_profile),
-                                ensure_ascii=False,
-                            ),
-                        },
-                    ],
+                    "messages": _planner_messages(query, self.config, repo_profile),
                 },
                 timeout=self.config.timeout_seconds,
             )
@@ -115,6 +106,107 @@ class OllamaQueryPlanner:
                     "planner response must be an object",
                 )
             message = response_payload.get("message", {})
+            if not isinstance(message, dict):
+                return self._fallback(
+                    query,
+                    start,
+                    "planner response message must be an object",
+                )
+            raw_content = message.get("content", "")
+            if not isinstance(raw_content, str):
+                return self._fallback(
+                    query,
+                    start,
+                    "planner response content must be a string",
+                )
+            payload = _decode_planner_json(raw_content)
+            if payload is None:
+                return self._fallback(query, start, "invalid planner JSON")
+            return clean_planner_payload(
+                original_query=query,
+                payload=payload,
+                config=self.config,
+                provider=self.config.provider,
+                model=self.config.model,
+                latency_ms=_elapsed_ms(start),
+                repo_profile=repo_profile,
+            )
+        except requests.Timeout:
+            return self._fallback(
+                query,
+                start,
+                f"planner timed out after {self.config.timeout_seconds:g} seconds",
+            )
+        except requests.HTTPError as exc:
+            return self._fallback(query, start, f"planner HTTP error: {exc}")
+        except requests.RequestException as exc:
+            return self._fallback(query, start, f"planner request failed: {exc}")
+
+    def _fallback(self, query: str, start: float, error: str) -> QueryPlan:
+        return fallback_plan(
+            query,
+            provider=self.config.provider,
+            model=self.config.model,
+            latency_ms=_elapsed_ms(start),
+            error=error,
+        )
+
+
+class OpenAICompatibleQueryPlanner:
+    def __init__(
+        self,
+        config: QueryPlannerConfig,
+        session: requests.Session | None = None,
+    ) -> None:
+        self.config = config
+        self.session = session or requests.Session()
+        self.session.trust_env = config.use_system_proxy
+
+    def plan(self, query: str, repo_profile: RepoProfile | None = None) -> QueryPlan:
+        start = time.perf_counter()
+        request_kwargs: dict[str, object] = {
+            "json": {
+                "model": self.config.model,
+                "stream": False,
+                "max_tokens": 512,
+                "response_format": {"type": "json_object"},
+                "temperature": 0,
+                "messages": _planner_messages(query, self.config, repo_profile),
+            },
+            "timeout": self.config.timeout_seconds,
+        }
+        api_key = self.config.api_key
+        if api_key:
+            request_kwargs["headers"] = {"Authorization": f"Bearer {api_key}"}
+
+        try:
+            response = self.session.post(
+                f"{self.config.base_url.rstrip('/')}/chat/completions",
+                **request_kwargs,
+            )
+            response.raise_for_status()
+            response_payload = response.json()
+            if not isinstance(response_payload, dict):
+                return self._fallback(
+                    query,
+                    start,
+                    "planner response must be an object",
+                )
+            choices = response_payload.get("choices")
+            if not isinstance(choices, list) or not choices:
+                return self._fallback(
+                    query,
+                    start,
+                    "planner response choices must be a non-empty list",
+                )
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                return self._fallback(
+                    query,
+                    start,
+                    "planner response choice must be an object",
+                )
+            message = choice.get("message")
             if not isinstance(message, dict):
                 return self._fallback(
                     query,
@@ -296,9 +388,11 @@ def clean_planner_payload(
 def planner_from_config(config: QueryPlannerConfig) -> QueryPlanner:
     if not config.enabled:
         return DisabledQueryPlanner()
-    if config.provider != "ollama":
-        return DisabledQueryPlanner()
-    return OllamaQueryPlanner(config)
+    if config.provider == "ollama":
+        return OllamaQueryPlanner(config)
+    if config.provider == "openai-compatible":
+        return OpenAICompatibleQueryPlanner(config)
+    return DisabledQueryPlanner()
 
 
 def expand_query_plan_tokens(query: str, plan: QueryPlan) -> list[str]:
@@ -335,6 +429,23 @@ def _user_payload(
     if repo_profile is not None:
         payload["repo_profile"] = repo_profile_payload(repo_profile)
     return payload
+
+
+def _planner_messages(
+    query: str,
+    config: QueryPlannerConfig,
+    repo_profile: RepoProfile | None,
+) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": json.dumps(
+                _user_payload(query, config, repo_profile),
+                ensure_ascii=False,
+            ),
+        },
+    ]
 
 
 def _elapsed_ms(start: float) -> int:

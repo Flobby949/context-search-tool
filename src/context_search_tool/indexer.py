@@ -18,7 +18,13 @@ from typing import Any
 import numpy as np
 
 from context_search_tool.chunker import chunk_text
-from context_search_tool.config import ToolConfig, load_config, read_config, render_config
+from context_search_tool.config import (
+    PROJECT_CONFIG_TEMPLATE,
+    ToolConfig,
+    load_config,
+    read_config,
+    render_config,
+)
 from context_search_tool.embeddings import (
     EmbeddingProvider,
     _embedding_descriptor_identity,
@@ -1792,7 +1798,9 @@ def _initialize_index_controls(
     path = repo / ".context-search" / "config.toml"
     if os.path.lexists(path) and (path.is_symlink() or not path.is_file()):
         raise ValueError("config must be a regular non-symlink file")
-    payload = render_config(config).encode("utf-8")
+    payload = (
+        render_config(config) if overwrite_config else PROJECT_CONFIG_TEMPLATE
+    ).encode("utf-8")
     if not path.exists() or (overwrite_config and path.read_bytes() != payload):
         atomic_write_index_bytes(
             path,
@@ -4003,9 +4011,6 @@ def _load_validated_v5_vector_tuple(
     expected_chunk_count: int,
 ) -> NumpyVectorStore:
     index_dir = repo / ".context-search"
-    expected_config = render_config(config).encode("utf-8")
-    if (index_dir / "config.toml").read_bytes() != expected_config:
-        raise GraphIntegrityError("config snapshot mismatch")
     manifest = load_manifest(repo)
     if (
         manifest.embedding_config_hash

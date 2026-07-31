@@ -4,7 +4,10 @@ from pathlib import Path
 import pytest
 import requests
 
-from context_search_tool.config import QueryPlannerConfig
+from context_search_tool.config import (
+    QueryPlannerConfig,
+    replace_query_planner_config,
+)
 from context_search_tool.models import (
     EvidenceAnchor,
     QueryPlan,
@@ -15,6 +18,7 @@ from context_search_tool.models import (
 )
 from context_search_tool.query_planner import (
     OllamaQueryPlanner,
+    OpenAICompatibleQueryPlanner,
     PROMPT_VERSION,
     build_query_variants,
     clean_planner_payload,
@@ -636,6 +640,129 @@ def test_ollama_planner_falls_back_on_http_error_without_retry() -> None:
     assert plan.status == "fallback"
     assert "planner HTTP error" in (plan.error or "")
     assert len(session.calls) == 1
+
+
+def test_openai_compatible_planner_uses_chat_completions_protocol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "ignored-environment-key")
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(
+                                {
+                                    "rewritten_queries": ["session cookies"],
+                                    "grep_keywords": ["RequestsCookieJar"],
+                                    "symbol_hints": ["Session"],
+                                    "intent": "feature_lookup",
+                                }
+                            ),
+                        }
+                    }
+                ]
+            },
+        )
+    )
+    config = replace_query_planner_config(
+        QueryPlannerConfig(
+            enabled=True,
+            provider="openai-compatible",
+            model="Qwen/Qwen2.5-7B-Instruct",
+            base_url="https://api.siliconflow.cn/v1",
+            timeout_seconds=12.0,
+        ),
+        api_key="configured-api-key",
+    )
+    planner = OpenAICompatibleQueryPlanner(config, session=session)
+
+    plan = planner.plan(
+        "where are cookies kept",
+        repo_profile=_python_requests_profile(),
+    )
+
+    assert plan.status == "ok"
+    assert plan.provider == "openai-compatible"
+    assert plan.model == "Qwen/Qwen2.5-7B-Instruct"
+    assert plan.grep_keywords == ["RequestsCookieJar"]
+    assert session.trust_env is False
+    call = session.calls[0]
+    assert call["url"] == "https://api.siliconflow.cn/v1/chat/completions"
+    assert call["headers"] == {"Authorization": "Bearer configured-api-key"}
+    assert call["timeout"] == 12.0
+    assert set(call["json"]) == {
+        "max_tokens",
+        "messages",
+        "model",
+        "response_format",
+        "stream",
+        "temperature",
+    }
+    assert call["json"]["model"] == "Qwen/Qwen2.5-7B-Instruct"
+    assert call["json"]["stream"] is False
+    assert call["json"]["max_tokens"] == 512
+    assert call["json"]["response_format"] == {"type": "json_object"}
+    assert call["json"]["temperature"] == 0
+    user_payload = json.loads(call["json"]["messages"][1]["content"])
+    assert user_payload["repo_profile"]["languages"] == ["python"]
+
+
+def test_openai_compatible_planner_allows_authless_local_endpoint() -> None:
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {"choices": [{"message": {"role": "assistant", "content": "{}"}}]},
+        )
+    )
+    config = QueryPlannerConfig(
+        enabled=True,
+        provider="openai-compatible",
+        base_url="http://127.0.0.1:8000/v1/",
+    )
+    planner = OpenAICompatibleQueryPlanner(config, session=session)
+
+    plan = planner.plan("query")
+
+    assert plan.status == "ok"
+    assert session.calls[0]["url"] == "http://127.0.0.1:8000/v1/chat/completions"
+    assert "headers" not in session.calls[0]
+
+
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    [
+        ({}, "planner response choices must be a non-empty list"),
+        ({"choices": [None]}, "planner response choice must be an object"),
+        (
+            {"choices": [{"message": None}]},
+            "planner response message must be an object",
+        ),
+    ],
+)
+def test_openai_compatible_planner_falls_back_on_malformed_response(
+    payload: dict[str, object],
+    error: str,
+) -> None:
+    session = FakeSession(FakeResponse(200, payload))
+    config = QueryPlannerConfig(enabled=True, provider="openai-compatible")
+    planner = OpenAICompatibleQueryPlanner(config, session=session)
+
+    plan = planner.plan("query")
+
+    assert plan.status == "fallback"
+    assert error in (plan.error or "")
+
+
+def test_planner_from_config_builds_openai_compatible_planner() -> None:
+    planner = planner_from_config(
+        QueryPlannerConfig(enabled=True, provider="openai-compatible")
+    )
+
+    assert isinstance(planner, OpenAICompatibleQueryPlanner)
 
 
 def test_planner_from_config_returns_disabled_planner_when_disabled() -> None:

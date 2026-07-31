@@ -5421,3 +5421,72 @@ def test_run_quality_fixture_forwards_repos_dir_for_remote_source(
         repos_dir,
     )
     assert full_file_calls == [False]
+
+
+def test_report_redacts_configured_toml_api_keys_from_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_source_repo(tmp_path / "source")
+    embedding_secret = "embedding-secret-token-not-for-reports"
+    planner_secret = "planner-secret-token-not-for-reports"
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "snapshot_path": str(source),
+                    "profiles": ["smoke"],
+                    "queries": [{"id": "target", "query": "targetToken"}],
+                }
+            ],
+        },
+    )
+    config = ToolConfig(
+        embedding=quality_runner.replace_embedding_config(
+            EmbeddingConfig(),
+            api_key=embedding_secret,
+        ),
+        query_planner=quality_runner.replace_query_planner_config(
+            QueryPlannerConfig(
+                enabled=True,
+                provider="openai-compatible",
+                model="remote-model",
+                base_url="https://api.example.test/v1",
+            ),
+            api_key=planner_secret,
+        )
+    )
+    captured: list[tuple[Path, ToolConfig]] = []
+    _patch_runner_dependencies(monkeypatch, captured)
+
+    def fail_query(repo: Path, query: str, effective: ToolConfig) -> QueryBundle:
+        raise RuntimeError(
+            f"embedding-key={embedding_secret} planner-key={planner_secret}"
+        )
+
+    monkeypatch.setattr(quality_runner, "query_repository", fail_query)
+    output = tmp_path / "reports" / "quality.json"
+    markdown = tmp_path / "reports" / "quality.md"
+
+    report = run_quality_fixture(
+        fixture,
+        "smoke",
+        output,
+        markdown,
+        config=config,
+        allow_empty=True,
+    )
+
+    serialized = "\n".join(
+        [
+            json.dumps(report, ensure_ascii=False),
+            output.read_text(encoding="utf-8"),
+            markdown.read_text(encoding="utf-8"),
+        ]
+    )
+    assert embedding_secret not in serialized
+    assert planner_secret not in serialized
+    assert "<api-key>" in serialized

@@ -26,7 +26,12 @@ try:
 except ImportError:  # pragma: no cover - POSIX quality runs use fcntl.
     fcntl = None  # type: ignore[assignment]
 
-from context_search_tool.config import DEFAULT_CONFIG, ToolConfig
+from context_search_tool.config import (
+    DEFAULT_CONFIG,
+    ToolConfig,
+    replace_embedding_config,
+    replace_query_planner_config,
+)
 from context_search_tool.context_pack import (
     ContextPack,
     build_context_pack,
@@ -195,7 +200,10 @@ def run_quality_fixture(
                 canonical=fixture.canonical,
             )
             api_key_env = repo_config.embedding.api_key_env
-            api_key = (os.environ.get(api_key_env) or None) if api_key_env else None
+            api_key = repo_config.embedding.api_key
+            if api_key is None and api_key_env:
+                api_key = os.environ.get(api_key_env) or None
+            planner_api_key = repo_config.query_planner.api_key
             source = (
                 _resolve_repo_source(repo, fixture.path, profile, repos_dir)
                 if repo.source_url
@@ -257,7 +265,13 @@ def run_quality_fixture(
                         repo.repo_key,
                         selected_cases,
                         "error",
-                        _safe_error(exc, source.path, workspace, api_key),
+                        _safe_error(
+                            exc,
+                            source.path,
+                            workspace,
+                            api_key,
+                            planner_api_key,
+                        ),
                     )
                 )
                 continue
@@ -337,7 +351,13 @@ def run_quality_fixture(
                         _error_case_record(
                             repo.repo_key,
                             case,
-                            _safe_error(exc, source.path, workspace, api_key),
+                            _safe_error(
+                                exc,
+                                source.path,
+                                workspace,
+                                api_key,
+                                planner_api_key,
+                            ),
                         )
                     )
 
@@ -429,9 +449,21 @@ def _apply_config_sections(
     for section_name in ("index", "retrieval", "embedding", "query_planner"):
         if section_name in overrides:
             current = getattr(result, section_name)
+            if section_name == "query_planner":
+                updated = replace_query_planner_config(
+                    current,
+                    **overrides[section_name],
+                )
+            elif section_name == "embedding":
+                updated = replace_embedding_config(
+                    current,
+                    **overrides[section_name],
+                )
+            else:
+                updated = replace(current, **overrides[section_name])
             result = replace(
                 result,
-                **{section_name: replace(current, **overrides[section_name])},
+                **{section_name: updated},
             )
     return result
 
@@ -456,7 +488,7 @@ def _effective_config(
     if "embedding" in profile_overrides:
         result = replace(
             result,
-            embedding=replace(
+            embedding=replace_embedding_config(
                 DEFAULT_CONFIG.embedding,
                 **profile_overrides["embedding"],
             ),
@@ -464,7 +496,7 @@ def _effective_config(
     if "query_planner" in profile_overrides:
         result = replace(
             result,
-            query_planner=replace(
+            query_planner=replace_query_planner_config(
                 DEFAULT_CONFIG.query_planner,
                 **profile_overrides["query_planner"],
             ),
@@ -969,6 +1001,7 @@ def _safe_error(
     source: Path,
     workspace: Path,
     api_key: str | None = None,
+    planner_api_key: str | None = None,
 ) -> str:
     message = str(exc)
     replacements = [
@@ -980,8 +1013,11 @@ def _safe_error(
         )
         for variant in _path_redaction_variants(path)
     ]
-    if api_key:
-        replacements.append((api_key, "<api-key>"))
+    replacements.extend(
+        (secret, "<api-key>")
+        for secret in (api_key, planner_api_key)
+        if secret
+    )
     sentinels = _redaction_sentinels(
         message,
         [variant for variant, _replacement in replacements],

@@ -1,3 +1,4 @@
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,11 @@ from context_search_tool.config import (
     EmbeddingConfig,
     QueryPlannerConfig,
     ToolConfig,
+    global_config_path,
     load_config,
+    read_config,
+    replace_embedding_config,
+    replace_query_planner_config,
     render_config,
     render_default_config,
 )
@@ -93,6 +98,67 @@ max_symbol_hints = 5
     assert config.query_planner.max_rewritten_queries == 3
     assert config.query_planner.max_keywords == 9
     assert config.query_planner.max_symbol_hints == 5
+
+
+def test_query_planner_api_key_round_trips_without_entering_dataclass_payloads(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    ensure_index_layout(repo)
+    (repo / ".context-search" / "config.toml").write_text(
+        """
+[query_planner]
+enabled = true
+provider = "openai-compatible"
+model = "remote-model"
+base_url = "https://api.example.test/v1"
+api_key = "secret-sentinel"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    config = load_config(repo)
+    replaced = replace_query_planner_config(
+        config.query_planner,
+        timeout_seconds=30.0,
+    )
+
+    assert config.query_planner.api_key == "secret-sentinel"
+    assert replaced.api_key == "secret-sentinel"
+    assert "secret-sentinel" not in repr(config)
+    assert "api_key" not in asdict(config.query_planner)
+    assert "secret-sentinel" not in str(asdict(config))
+    assert 'api_key = "secret-sentinel"' in render_config(config)
+
+
+def test_embedding_api_key_round_trips_without_entering_dataclass_payloads(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    ensure_index_layout(repo)
+    (repo / ".context-search" / "config.toml").write_text(
+        """
+[embedding]
+provider = "openai-compatible"
+model = "BAAI/bge-m3"
+dimensions = 1024
+base_url = "https://api.example.test/v1"
+api_key = "embedding-secret-sentinel"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    config = load_config(repo)
+    replaced = replace_embedding_config(config.embedding, dimensions=1024)
+
+    assert config.embedding.api_key == "embedding-secret-sentinel"
+    assert replaced.api_key == "embedding-secret-sentinel"
+    assert "embedding-secret-sentinel" not in repr(config)
+    assert "api_key" not in asdict(config.embedding)
+    assert "embedding-secret-sentinel" not in str(asdict(config))
+    assert 'api_key = "embedding-secret-sentinel"' in render_config(config)
 
 
 def test_render_default_config_places_exact_context_block_after_retrieval() -> None:
@@ -181,7 +247,164 @@ def test_load_config_creates_default_when_missing(tmp_path: Path) -> None:
     config = load_config(repo)
 
     assert config.index.max_file_bytes == 500000
-    assert (repo / ".context-search" / "config.toml").exists()
+    assert (
+        repo / ".context-search" / "config.toml"
+    ).read_text(encoding="utf-8") == config_module.PROJECT_CONFIG_TEMPLATE
+
+
+def test_load_config_inherits_global_config_without_copying_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    global_path = tmp_path / "user-config" / "config.toml"
+    global_path.parent.mkdir()
+    global_path.write_text(
+        """
+[embedding]
+provider = "openai-compatible"
+model = "BAAI/bge-m3"
+dimensions = 1024
+base_url = "https://api.example.test/v1"
+api_key = "global-embedding-secret"
+
+[query_planner]
+enabled = true
+provider = "openai-compatible"
+model = "remote-planner"
+base_url = "https://api.example.test/v1"
+api_key = "global-planner-secret"
+timeout_seconds = 30.0
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CST_GLOBAL_CONFIG_PATH", str(global_path))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    config = load_config(repo)
+
+    assert global_config_path() == global_path
+    assert config.embedding.provider == "openai-compatible"
+    assert config.embedding.model == "BAAI/bge-m3"
+    assert config.embedding.dimensions == 1024
+    assert config.embedding.api_key == "global-embedding-secret"
+    assert config.query_planner.enabled is True
+    assert config.query_planner.model == "remote-planner"
+    assert config.query_planner.api_key == "global-planner-secret"
+    persisted = (repo / ".context-search" / "config.toml").read_text(
+        encoding="utf-8"
+    )
+    assert "global-embedding-secret" not in persisted
+    assert "global-planner-secret" not in persisted
+    assert "BAAI/bge-m3" not in persisted
+    assert "remote-planner" not in persisted
+    assert "project-specific overrides" in persisted.lower()
+    loaded_again = load_config(repo)
+    assert loaded_again.embedding.model == "BAAI/bge-m3"
+    assert loaded_again.embedding.api_key == "global-embedding-secret"
+    assert loaded_again.query_planner.model == "remote-planner"
+    assert loaded_again.query_planner.api_key == "global-planner-secret"
+    assert (
+        repo / ".context-search" / "config.toml"
+    ).read_text(encoding="utf-8") == persisted
+
+
+def test_global_config_path_uses_xdg_config_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CST_GLOBAL_CONFIG_PATH")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    assert global_config_path() == (
+        tmp_path / "xdg" / "context-search" / "config.toml"
+    )
+
+
+def test_project_config_fields_and_secrets_override_global_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    global_path = tmp_path / "global.toml"
+    global_path.write_text(
+        """
+[retrieval]
+final_top_k = 7
+
+[embedding]
+provider = "openai-compatible"
+model = "global-embedding"
+dimensions = 1024
+base_url = "https://global.example.test/v1"
+api_key = "global-embedding-secret"
+
+[query_planner]
+enabled = true
+provider = "openai-compatible"
+model = "global-planner"
+base_url = "https://global.example.test/v1"
+api_key = "global-planner-secret"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CST_GLOBAL_CONFIG_PATH", str(global_path))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    ensure_index_layout(repo)
+    project_payload = """
+[retrieval]
+final_top_k = 3
+
+[embedding]
+model = "project-embedding"
+api_key = "project-embedding-secret"
+
+[query_planner]
+model = "project-planner"
+api_key = "project-planner-secret"
+""".lstrip()
+    (repo / ".context-search" / "config.toml").write_text(
+        project_payload,
+        encoding="utf-8",
+    )
+
+    config = load_config(repo)
+
+    assert config.retrieval.final_top_k == 3
+    assert config.embedding.provider == "openai-compatible"
+    assert config.embedding.model == "project-embedding"
+    assert config.embedding.base_url == "https://global.example.test/v1"
+    assert config.embedding.api_key == "project-embedding-secret"
+    assert config.query_planner.enabled is True
+    assert config.query_planner.model == "project-planner"
+    assert config.query_planner.api_key == "project-planner-secret"
+    read_only = read_config(repo)
+    assert read_only.embedding.api_key == "project-embedding-secret"
+    assert read_only.query_planner.api_key == "project-planner-secret"
+    assert read_only.retrieval.final_top_k == 3
+    assert (
+        repo / ".context-search" / "config.toml"
+    ).read_text(encoding="utf-8") == project_payload
+
+
+def test_malformed_global_config_fails_without_creating_project_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    global_path = tmp_path / "global.toml"
+    global_path.write_text(
+        'api_key = "global-secret-sentinel"\ninvalid = [\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CST_GLOBAL_CONFIG_PATH", str(global_path))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    with pytest.raises(ValueError) as caught:
+        load_config(repo)
+
+    assert "global-secret-sentinel" not in str(caught.value)
+    assert not (repo / ".context-search").exists()
 
 
 def test_ensure_index_layout_creates_gitignore_entry_when_missing(

@@ -230,6 +230,10 @@ P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/embeddings_bge.py",
 }
 
+OPENAI_COMPATIBLE_PLANNER_REVIEWED_PRODUCTION_CHANGES = {
+    "src/context_search_tool/query_planner.py",
+}
+
 REVIEWED_PRODUCTION_CHANGES = (
     P5_REVIEWED_PRODUCTION_CHANGES
     | LIGHTWEIGHT_GRAPH_REVIEWED_PRODUCTION_CHANGES
@@ -241,6 +245,7 @@ REVIEWED_PRODUCTION_CHANGES = (
     | P8_PYTHON_GRAPH_PRODUCTION_CHANGES
     | P9_RELATION_SLOT_PRODUCTION_CHANGES
     | P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES
+    | OPENAI_COMPATIBLE_PLANNER_REVIEWED_PRODUCTION_CHANGES
 )
 
 P4_IMPLEMENTATION_BASELINE = "b827707325d0ee4e9c6b2bcb3dee39955c263822"
@@ -962,6 +967,12 @@ def test_p13_bge_provider_reviewed_production_overlay_is_exact() -> None:
     assert P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES == {
         "src/context_search_tool/embeddings.py",
         "src/context_search_tool/embeddings_bge.py",
+    }
+
+
+def test_openai_compatible_planner_reviewed_production_overlay_is_exact() -> None:
+    assert OPENAI_COMPATIBLE_PLANNER_REVIEWED_PRODUCTION_CHANGES == {
+        "src/context_search_tool/query_planner.py",
     }
 
 

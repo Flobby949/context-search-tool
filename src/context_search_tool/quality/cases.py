@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from context_search_tool.config import DEFAULT_CONFIG, ToolConfig
+from context_search_tool.config import DEFAULT_CONFIG, EmbeddingConfig, ToolConfig
 from context_search_tool.context_pack import CONTEXT_GROUPS
 
 
@@ -416,10 +416,7 @@ def validate_profile_compatible(
             raise ValueError("ci profile requires hash embeddings")
         if config.query_planner.enabled:
             raise ValueError("ci profile requires the query planner disabled")
-        if (
-            config.embedding.api_key_env is not None
-            or config.embedding.base_url is not None
-        ):
+        if _has_remote_embedding_settings(config.embedding):
             raise ValueError("ci profile does not allow remote embedding settings")
         return
     if profile in {"ci", "smoke", "ab_hash"}:
@@ -427,10 +424,7 @@ def validate_profile_compatible(
             raise ValueError(f"{profile} profile requires hash embeddings")
         if config.query_planner.enabled:
             raise ValueError(f"{profile} profile requires the query planner disabled")
-        if profile == "ci" and (
-            config.embedding.api_key_env is not None
-            or config.embedding.base_url is not None
-        ):
+        if profile == "ci" and _has_remote_embedding_settings(config.embedding):
             raise ValueError("ci profile does not allow remote embedding settings")
         return
     if profile == "planner":
@@ -452,10 +446,7 @@ def validate_profile_compatible(
             )
         if config.query_planner.enabled:
             raise ValueError(f"{profile} profile requires the query planner disabled")
-        if (
-            config.embedding.api_key_env is not None
-            or config.embedding.base_url is not None
-        ):
+        if _has_remote_embedding_settings(config.embedding):
             raise ValueError(
                 f"{profile} profile does not allow remote embedding settings"
             )
@@ -478,10 +469,7 @@ def validate_profile_compatible(
             )
         if config.query_planner.enabled:
             raise ValueError(f"{profile} profile requires the query planner disabled")
-        if (
-            config.embedding.api_key_env is not None
-            or config.embedding.base_url is not None
-        ):
+        if _has_remote_embedding_settings(config.embedding):
             raise ValueError(
                 f"{profile} profile does not allow remote embedding settings"
             )
@@ -534,10 +522,7 @@ def validate_profile_compatible(
             raise ValueError(
                 "p2_context_pack profile requires the query planner disabled"
             )
-        if (
-            config.embedding.api_key_env is not None
-            or config.embedding.base_url is not None
-        ):
+        if _has_remote_embedding_settings(config.embedding):
             raise ValueError(
                 "p2_context_pack profile does not allow remote embedding settings"
             )
@@ -558,10 +543,7 @@ def validate_profile_compatible(
             raise ValueError(
                 "p2_real_context profile requires the query planner disabled"
             )
-        if (
-            config.embedding.api_key_env is not None
-            or config.embedding.base_url is not None
-        ):
+        if _has_remote_embedding_settings(config.embedding):
             raise ValueError(
                 "p2_real_context profile does not allow remote embedding settings"
             )
@@ -575,6 +557,14 @@ def validate_profile_compatible(
             raise ValueError(f"{profile} profile requires BGE M3 at 1024 dimensions")
         if config.query_planner.enabled:
             raise ValueError(f"{profile} profile requires the query planner disabled")
+
+
+def _has_remote_embedding_settings(config: EmbeddingConfig) -> bool:
+    return (
+        config.api_key is not None
+        or config.api_key_env is not None
+        or config.base_url is not None
+    )
 
 
 def _parse_repo(raw: dict[str, Any]) -> QualityRepo:

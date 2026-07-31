@@ -377,6 +377,17 @@ max_pack_bytes = 65536
 provider = "hash"
 model = "hash-v1"
 dimensions = 384
+
+[query_planner]
+enabled = false
+provider = "ollama"
+model = "qwen3.5:4b-mlx"
+base_url = "http://localhost:11434"
+use_system_proxy = false
+timeout_seconds = 8.0
+max_rewritten_queries = 4
+max_keywords = 12
+max_symbol_hints = 8
 ```
 
 ### Include / Exclude
@@ -439,18 +450,21 @@ dimensions = 384
 
 它是确定性、离线、零依赖服务的 embedding。它适合开发、测试，以及 endpoint、类名、字段名、枚举值这类代码 token 密集的搜索。
 
-也可以配置 OpenAI-compatible embedding 服务：
+也可以配置 OpenAI-compatible embedding 服务。下面是硅基流动
+`BAAI/bge-m3` 的配置：
 
 ```toml
 [embedding]
 provider = "openai-compatible"
-model = "text-embedding-3-small"
-dimensions = 1536
-base_url = "http://127.0.0.1:8000/v1"
-api_key_env = "EMBEDDING_API_KEY"
+model = "BAAI/bge-m3"
+dimensions = 1024
+base_url = "https://api.siliconflow.cn/v1"
+api_key = "sk-your-siliconflow-api-key"
 ```
 
 服务需要暴露 `/v1/embeddings` 风格接口。修改 embedding provider、model、dimensions 或 base_url 后，需要重新索引；旧索引会通过 manifest 兼容性检查阻止误用。
+旧配置中的 `api_key_env` 仍可继续使用；同时配置时，直接写在 TOML 中的
+`api_key` 优先。
 
 ### BGE Provider (Local via Ollama)
 
@@ -500,6 +514,85 @@ RedInk was
 `7.325094 / 0.1713095 = 42.7594149769861`, which passed. Therefore this
 provider is available for explicit evaluation and use, but P13 does not
 recommend it over the default hash provider.
+
+### Query Planner Provider
+
+Query planner 保留本地 Ollama provider，同时支持标准 OpenAI Chat
+Completions 协议。使用硅基流动时，完整的双模型配置如下；两个 section
+可以填写同一个 API Key，但应分别选择 embedding 模型和 chat 模型：
+
+```toml
+[embedding]
+provider = "openai-compatible"
+model = "BAAI/bge-m3"
+dimensions = 1024
+base_url = "https://api.siliconflow.cn/v1"
+api_key = "sk-your-siliconflow-api-key"
+
+[query_planner]
+enabled = true
+provider = "openai-compatible"
+model = "Qwen/Qwen2.5-7B-Instruct"
+base_url = "https://api.siliconflow.cn/v1"
+api_key = "sk-your-siliconflow-api-key"
+use_system_proxy = false
+timeout_seconds = 60.0
+max_rewritten_queries = 4
+max_keywords = 12
+max_symbol_hints = 8
+```
+
+推荐把这段保存为用户级全局配置：
+
+```text
+~/.config/context-search/config.toml
+```
+
+如果设置了 `XDG_CONFIG_HOME`，路径改为
+`$XDG_CONFIG_HOME/context-search/config.toml`。配置按字段合并，优先级是：
+
+```text
+内置默认值 < 用户级全局配置 < 项目 .context-search/config.toml
+```
+
+新项目只会生成不含模型和 Key 的稀疏项目配置，缺少的字段持续继承全局配置；
+项目文件中的字段只覆盖对应的全局字段，项目内显式 `api_key` 也优先于全局 Key。
+embedding 用于源码向量化，planner 用于改写查询；同一个 Key 写两次是因为两处
+配置彼此独立。
+
+旧版本已经生成的完整项目配置会继续覆盖全局字段。要迁移到持续继承，可以删除
+不再需要的项目字段；如果同时需要更换 embedding，则直接 `clean` 后重新
+`index`。
+
+如果旧索引使用的是其他 embedding，`cst index` 会拒绝混用。注意 `cst clean`
+会删除整个项目 `.context-search/`，但不会删除用户级全局配置。使用全局配置时
+可以直接清理并重建：
+
+```bash
+cst clean /path/to/repo
+cst index /path/to/repo
+```
+
+如果不用全局配置，仍可把完整配置直接写入项目
+`.context-search/config.toml`；这种情况下应在 `clean` 后重新创建项目配置再
+执行 `index`。
+
+只修改 query planner 模型则不需要重建索引。验证 planner：
+
+```bash
+cst query /path/to/repo "question or code clue" --planner
+```
+
+`base_url` 是 OpenAI-compatible API 根路径；planner 会请求
+`{base_url}/chat/completions`，读取
+`choices[0].message.content`。请求只使用标准 `model`、`messages`、
+`stream`、`max_tokens`、`response_format` 和 `temperature` 字段，不依赖
+Ollama 或硅基流动私有参数。远程 planner 会收到查询文本
+和派生的 repo profile（语言、源码根目录、重要文件、符号与 token），但不会收到
+源码 chunk。未配置 `api_key` 时不会发送认证头，以兼容不需要认证的本地
+OpenAI-compatible 服务。API Key 以明文保存在本机；`.context-search/` 默认被
+Git 忽略，因此不会出现在正常提交中，但不要使用 `git add -f` 强制添加该目录。
+用户级全局配置位于 Git 仓库之外，建议将文件权限设为 `600`。
 
 ## 检索流程
 
@@ -613,12 +706,15 @@ cst index /path/to/repo
 
 embedding 配置会写入 manifest。修改 provider、model、dimensions 或 base_url 后，旧索引不能继续混用。
 
-清理并重建：
+使用用户级全局配置时直接清理并重建；全局配置不会被删除：
 
 ```bash
 cst clean /path/to/repo
 cst index /path/to/repo
 ```
+
+如果只使用项目配置，`cst clean` 会同时删除该项目的 `config.toml`，需要在
+`clean` 后重新写入配置，再执行 `index`。
 
 ### 查询时报 incompatible_storage_layout
 

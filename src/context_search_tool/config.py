@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,11 @@ class EmbeddingConfig:
     base_url: str | None = None
     api_key_env: str | None = None
 
+    @property
+    def api_key(self) -> str | None:
+        # Keep secrets outside dataclass fields so asdict/report payloads omit them.
+        return getattr(self, "_api_key", None)
+
 
 @dataclass(frozen=True)
 class QueryPlannerConfig:
@@ -61,6 +67,11 @@ class QueryPlannerConfig:
     max_keywords: int = 12
     max_symbol_hints: int = 8
 
+    @property
+    def api_key(self) -> str | None:
+        # Keep secrets outside dataclass fields so asdict/report payloads omit them.
+        return getattr(self, "_api_key", None)
+
 
 @dataclass(frozen=True)
 class ToolConfig:
@@ -72,6 +83,10 @@ class ToolConfig:
 
 
 DEFAULT_CONFIG = ToolConfig()
+PROJECT_CONFIG_TEMPLATE = (
+    "# Project-specific overrides. Missing values inherit the user config "
+    "and built-in defaults.\n"
+)
 
 
 def render_default_config() -> str:
@@ -88,10 +103,34 @@ def render_config(config: ToolConfig) -> str:
         embedding_lines.append(
             f"base_url = {_toml_string(config.embedding.base_url)}"
         )
+    if config.embedding.api_key is not None:
+        embedding_lines.append(
+            f"api_key = {_toml_string(config.embedding.api_key)}"
+        )
     if config.embedding.api_key_env is not None:
         embedding_lines.append(
             f"api_key_env = {_toml_string(config.embedding.api_key_env)}"
         )
+
+    query_planner_lines = [
+        f"enabled = {_toml_bool(config.query_planner.enabled)}",
+        f"provider = {_toml_string(config.query_planner.provider)}",
+        f"model = {_toml_string(config.query_planner.model)}",
+        f"base_url = {_toml_string(config.query_planner.base_url)}",
+    ]
+    if config.query_planner.api_key is not None:
+        query_planner_lines.append(
+            f"api_key = {_toml_string(config.query_planner.api_key)}"
+        )
+    query_planner_lines.extend(
+        [
+            f"use_system_proxy = {_toml_bool(config.query_planner.use_system_proxy)}",
+            f"timeout_seconds = {config.query_planner.timeout_seconds}",
+            f"max_rewritten_queries = {config.query_planner.max_rewritten_queries}",
+            f"max_keywords = {config.query_planner.max_keywords}",
+            f"max_symbol_hints = {config.query_planner.max_symbol_hints}",
+        ]
+    )
 
     return "\n".join(
         [
@@ -120,15 +159,7 @@ def render_config(config: ToolConfig) -> str:
             *embedding_lines,
             "",
             "[query_planner]",
-            f"enabled = {_toml_bool(config.query_planner.enabled)}",
-            f"provider = {_toml_string(config.query_planner.provider)}",
-            f"model = {_toml_string(config.query_planner.model)}",
-            f"base_url = {_toml_string(config.query_planner.base_url)}",
-            f"use_system_proxy = {_toml_bool(config.query_planner.use_system_proxy)}",
-            f"timeout_seconds = {config.query_planner.timeout_seconds}",
-            f"max_rewritten_queries = {config.query_planner.max_rewritten_queries}",
-            f"max_keywords = {config.query_planner.max_keywords}",
-            f"max_symbol_hints = {config.query_planner.max_symbol_hints}",
+            *query_planner_lines,
             "",
         ]
     )
@@ -137,9 +168,11 @@ def render_config(config: ToolConfig) -> str:
 def load_config(repo: Path) -> ToolConfig:
     config_path = index_dir_for(repo) / "config.toml"
     if not config_path.exists():
+        global_path = global_config_path()
+        global_values = _load_toml(global_path) if global_path.exists() else {}
         config_path = ensure_index_layout(repo) / "config.toml"
-        config_path.write_text(render_default_config(), encoding="utf-8")
-        return DEFAULT_CONFIG
+        config_path.write_text(PROJECT_CONFIG_TEMPLATE, encoding="utf-8")
+        return _build_tool_config(global_values, {})
 
     return read_config(repo)
 
@@ -147,18 +180,61 @@ def load_config(repo: Path) -> ToolConfig:
 def read_config(repo: Path) -> ToolConfig:
     """Read persisted configuration without creating or modifying repository files."""
     config_path = index_dir_for(repo) / "config.toml"
+    global_path = global_config_path()
+    global_values = _load_toml(global_path) if global_path.exists() else {}
+    project_values = _load_toml(config_path)
+    return _build_tool_config(global_values, project_values)
 
-    data = _load_toml(config_path)
+
+def global_config_path() -> Path:
+    override = os.environ.get("CST_GLOBAL_CONFIG_PATH")
+    if override:
+        return Path(override).expanduser()
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    root = Path(config_home).expanduser() if config_home else Path.home() / ".config"
+    return root / "context-search" / "config.toml"
+
+
+def _build_tool_config(
+    global_values: dict[str, Any],
+    project_values: dict[str, Any],
+) -> ToolConfig:
     return ToolConfig(
-        index=_build_section(IndexConfig, data.get("index", {})),
-        retrieval=_build_section(RetrievalConfig, data.get("retrieval", {})),
-        embedding=_build_section(EmbeddingConfig, data.get("embedding", {})),
-        query_planner=_build_section(
-            QueryPlannerConfig,
-            data.get("query_planner", {}),
+        index=_build_section(
+            IndexConfig,
+            _merged_section(global_values, project_values, "index"),
         ),
-        context=_build_section(ContextConfig, data.get("context", {})),
+        retrieval=_build_section(
+            RetrievalConfig,
+            _merged_section(global_values, project_values, "retrieval"),
+        ),
+        embedding=_build_embedding_section(
+            _merged_section(global_values, project_values, "embedding")
+        ),
+        query_planner=_build_query_planner_section(
+            _merged_section(global_values, project_values, "query_planner")
+        ),
+        context=_build_section(
+            ContextConfig,
+            _merged_section(global_values, project_values, "context"),
+        ),
     )
+
+
+def replace_query_planner_config(
+    config: QueryPlannerConfig,
+    **changes: Any,
+) -> QueryPlannerConfig:
+    api_key = changes.pop("api_key", config.api_key)
+    return _attach_query_planner_api_key(replace(config, **changes), api_key)
+
+
+def replace_embedding_config(
+    config: EmbeddingConfig,
+    **changes: Any,
+) -> EmbeddingConfig:
+    api_key = changes.pop("api_key", config.api_key)
+    return _attach_embedding_api_key(replace(config, **changes), api_key)
 
 
 def _load_toml(path: Path) -> dict[str, Any]:
@@ -168,11 +244,61 @@ def _load_toml(path: Path) -> dict[str, Any]:
     return _parse_simple_toml(path.read_text(encoding="utf-8"))
 
 
+def _merged_section(
+    global_values: dict[str, Any],
+    project_values: dict[str, Any],
+    section_name: str,
+) -> dict[str, Any]:
+    inherited = global_values.get(section_name, {})
+    overrides = project_values.get(section_name, {})
+    if not isinstance(inherited, dict) or not isinstance(overrides, dict):
+        raise ValueError("configuration sections must be TOML tables")
+    return {**inherited, **overrides}
+
+
 def _build_section(config_type: type[Any], values: dict[str, Any]) -> Any:
     if not isinstance(values, dict):
         raise ValueError("configuration sections must be TOML tables")
     allowed = set(config_type.__dataclass_fields__)
     return config_type(**{key: value for key, value in values.items() if key in allowed})
+
+
+def _build_query_planner_section(values: dict[str, Any]) -> QueryPlannerConfig:
+    if not isinstance(values, dict):
+        raise ValueError("configuration sections must be TOML tables")
+    public_values = dict(values)
+    api_key = public_values.pop("api_key", None)
+    config = _build_section(QueryPlannerConfig, public_values)
+    return _attach_query_planner_api_key(config, api_key)
+
+
+def _build_embedding_section(values: dict[str, Any]) -> EmbeddingConfig:
+    if not isinstance(values, dict):
+        raise ValueError("configuration sections must be TOML tables")
+    public_values = dict(values)
+    api_key = public_values.pop("api_key", None)
+    config = _build_section(EmbeddingConfig, public_values)
+    return _attach_embedding_api_key(config, api_key)
+
+
+def _attach_query_planner_api_key(
+    config: QueryPlannerConfig,
+    api_key: object,
+) -> QueryPlannerConfig:
+    if api_key is not None and (type(api_key) is not str or not api_key):
+        raise ValueError("query_planner.api_key must be a non-empty string")
+    object.__setattr__(config, "_api_key", api_key)
+    return config
+
+
+def _attach_embedding_api_key(
+    config: EmbeddingConfig,
+    api_key: object,
+) -> EmbeddingConfig:
+    if api_key is not None and (type(api_key) is not str or not api_key):
+        raise ValueError("embedding.api_key must be a non-empty string")
+    object.__setattr__(config, "_api_key", api_key)
+    return config
 
 
 def _parse_simple_toml(content: str) -> dict[str, Any]:
