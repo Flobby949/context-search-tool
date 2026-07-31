@@ -5,7 +5,7 @@
 > and stop at the declared gates rather than tuning after evaluation.
 
 Date: 2026-07-30
-Status: Rebased r2; implementation authorized and in progress
+Status: Accepted on 2026-07-31 with an owner-approved probabilistic-model waiver
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
 Behavior baseline: `501cf852ad54181eb823994747d2dc8555edc418`
 Design:
@@ -60,11 +60,16 @@ env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/src" \
 - No commit, branch, push, PR, model start/pull, or external publication
   without user authorization. Commit messages below are optional
   checkpoints only.
-- Frozen product scope:
+- Frozen owner-ranking causal product scope:
   `identifier_intent.py`, `retrieval_core/ranking.py`, and
-  `retrieval_core/context_expansion.py`. No other production path.
+  `retrieval_core/context_expansion.py`. The final online-acceptance
+  amendment additionally applies the same `query_planner.py`
+  whole-identifier postprocessing prerequisite to baseline and
+  candidate; it is not credited to the ranking A/B delta. No other
+  production path.
 - No new candidate source, store-query/file-read primitive, network
-  call, index schema, provider branch, graph edge, planner hint,
+  call, index schema, provider branch, graph edge, planner hint beyond
+  the symmetric exact-identifier prerequisite,
   selection quota, or public schema. Eligible exact-query ordering may
   change which files the existing capped frontend and context-expansion
   passes read.
@@ -73,8 +78,8 @@ env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/src" \
   candidate capture.
 - `INVOLVED_BY_ME`, `AuditStatus.java`, `enum_value`, Java paths, and
   P1 case IDs may appear in tests/evidence but never in production.
-- Live semantic captures use SiliconFlow `BAAI/bge-m3`; hybrid captures
-  additionally use SiliconFlow `Qwen/Qwen2.5-7B-Instruct`. A
+- Live semantic captures use SiliconFlow `Pro/BAAI/bge-m3`; hybrid captures
+  additionally use SiliconFlow `Qwen/Qwen2.5-14B-Instruct`. A
   live-service failure is `BLOCKED`. Do not substitute local Ollama,
   hash, mocks, cached reports, or skipped tests for online acceptance.
 - The capture harness reads the API key only from the user-level config,
@@ -95,6 +100,7 @@ git diff --check
 | modify | `src/context_search_tool/identifier_intent.py` | add exact identifier representation and full-query SCREAMING_SNAKE grammar |
 | modify | `src/context_search_tool/retrieval_core/ranking.py` | declaration witness, fixed `0.50` rerank feature, reason |
 | modify | `src/context_search_tool/retrieval_core/context_expansion.py` | retain winner-consistent owner score part |
+| common prerequisite | `src/context_search_tool/query_planner.py` | suppress whole-identifier rewrites and anchor the original identifier identically in baseline/candidate online acceptance |
 | modify | `tests/test_identifier_intent.py` | grammar/exactness RED/GREEN |
 | modify | `tests/test_retrieval_pipeline.py` | owner/reference ranking and merge matrix |
 | modify | `tests/test_retrieval_trace_pipeline.py` | reason/adjustment propagation |
@@ -106,6 +112,7 @@ git diff --check
 | modify | `tests/test_p6_benchmark.py` | explicit eligible exact-query snapshot overlay |
 | add | `tests/p14_definition_owner_acceptance.py` | reproducible P1/P8 gate-input checker |
 | add | `tests/test_p14_definition_owner_acceptance.py` | checker schema/arithmetic/outcome tests |
+| modify | `tests/test_query_planner.py` | common prerequisite behavior and negative cases |
 | conditional | `README.md` | user-facing exact-query behavior after acceptance |
 | conditional | `docs/retrieval-quality.md` | P1 evidence/disposition after acceptance |
 | conditional | `roadmap/2026-07-08-fast-context-like-retrieval-roadmap.md` | close P1 only after ship |
@@ -288,8 +295,8 @@ env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/src" \
 
   The online capture layer is external to the implementation roots.
   It reads the user config, validates the exact SiliconFlow base URL,
-  `BAAI/bge-m3` embedding identity, 1024 response dimensions, and
-  `Qwen/Qwen2.5-7B-Instruct` planner identity, then injects only those
+  `Pro/BAAI/bge-m3` embedding identity, 1024 response dimensions, and
+  `Qwen/Qwen2.5-14B-Instruct` planner identity, then injects only those
   runtime provider sections in memory. It never mutates the frozen
   catalog and never serializes the API key. Any Ollama identity,
   missing key, planner fallback, or unexpected model is rejected.
@@ -939,7 +946,7 @@ fi
   is not already the exact commit and content, the commands fail closed
   rather than changing it. If the sources cannot be restored exactly,
   keep Task 6 `BLOCKED`; never re-pin. Then recheck catalog/gold hashes,
-  the SiliconFlow base URL, `BAAI/bge-m3` dimensions, planner model, and
+  the SiliconFlow base URL, `Pro/BAAI/bge-m3` dimensions, planner model, and
   successful non-fallback online smokes. No clone or external
   publication without permission; Ollama is out of scope.
 
@@ -991,7 +998,7 @@ env PYTHONDONTWRITEBYTECODE=1 \
   tree or vice versa. Keep all raw captures immutable. For repeat 2,
   change both `--repeat` and the `-r2` output names. The online commands
   use the same attempt ID/root and `--embedding online`. Every online
-  envelope must identify `openai-compatible`, `BAAI/bge-m3`, 1024
+  envelope must identify `openai-compatible`, `Pro/BAAI/bge-m3`, 1024
   dimensions, and `https://api.siliconflow.cn/v1`.
 
 - [ ] **Step 6.3: evaluate the P14 subset gates.** Run the tracked P14
@@ -1286,7 +1293,7 @@ git ls-files --others --exclude-standard
 
 ## Implementation Record
 
-Status: `blocked` on 2026-07-31.
+Historical status (superseded below): `blocked` on 2026-07-31.
 
 Entry and scope:
 
@@ -1401,7 +1408,159 @@ Immutable evidence:
   and
   `f0629dde6bb2cca72d3a914500e78cbfda846b63bea5505a0bf4a9ffaa1c58f7`.
 
-Final disposition: `blocked`. Offline implementation and all runnable
+Historical disposition: `blocked`. Offline implementation and all runnable
 review gates pass, but the required fresh online P8 and P1 candidate
 comparisons are unavailable after the frozen retry rules were exhausted.
 No README, retrieval-quality, or roadmap behavior claim was changed.
+
+## Superseding Final Acceptance Record
+
+This section supersedes the historical blocked record above. It does
+not delete or rewrite that evidence. After lowering the online call
+rate, switching to the approved Pro embedding and 14B planner, and
+collecting fresh identity-bound evidence, the definition owner explicitly
+accepted bounded probabilistic model drift on 2026-07-31.
+
+Final runtime and stability controls:
+
+- embedding: SiliconFlow `openai-compatible/Pro/BAAI/bge-m3`, 1024
+  dimensions;
+- planner: SiliconFlow
+  `openai-compatible/Qwen/Qwen2.5-14B-Instruct`;
+- no Ollama identity, fallback, error, or secret was serialized;
+- online embedding pacing uses a 240,000-token sliding-minute budget,
+  an 80,000-token request budget, and a two-second minimum interval;
+- P1 forces singleton embedding requests; P8 uses bounded greedy
+  batches;
+- P8 child processes point `CST_GLOBAL_CONFIG_PATH` at isolated scratch
+  state and read online credentials from the separately validated
+  provider-config path, preventing the user global online URL from
+  contaminating hash project-config equality;
+- for a complete code identifier, planner postprocessing discards
+  rewritten queries and deterministically prepends the original
+  identifier to grep and symbol hints.
+
+Acceptance-capture and current binding:
+
+- behavior commit:
+  `adbee96a342d80a7cce0d26d562c83d282d6646c`;
+- acceptance-capture candidate tracked `src/tests` diff SHA-256:
+  `5dc7a5a191e197c8fd7452382099391807530cdfbdfc0641ac9270a93c1ab87a`;
+- baseline commit:
+  `501cf852ad54181eb823994747d2dc8555edc418`;
+- acceptance-capture baseline tracked `src/tests` diff SHA-256:
+  `94f5e3789f11576389e006e6595ff8cef2c1f6e2fd8a1fa8cae09be7b7830198`.
+- After Standards review requested the missing independent planner grammar
+  matrix, the current candidate and baseline tracked `src/tests` SHA-256
+  values are respectively
+  `2eb54eed82b931108bc65a10fb5d5407d8e58ab0bf157dc0bc620d660ea91a8b`
+  and
+  `aa59a239614d611cd64dc9353fdc4e3871a169123c5f08746a7046bd2bd1dbf6`.
+  Both sides have identical `tests/test_query_planner.py` bytes (SHA-256
+  `aec6c231f9126d239ba81160cd562e258f057f9cede914997443293fe3b92c1b`).
+  The pre/post production `src` tree is unchanged at
+  `606dd06f82bce27ec6f1f3146819113c6ee414e2`, so the online captures still
+  bind the exact production implementation under review.
+- The owner-ranking causal production delta remains
+  `identifier_intent.py`, `retrieval_core/ranking.py`, and
+  `retrieval_core/context_expansion.py`. The fourth production file,
+  `query_planner.py`, is the byte-identical baseline/candidate online
+  prerequisite described by the amended design.
+- Before the conditional user-doc closure, the identity-bound P14 change
+  set relative to `501cf852` contained 18 files: four production files,
+  two P14 design/plan files, and 12 harness/test files. The post-ship
+  update additionally touches `README.md`, `docs/retrieval-quality.md`,
+  and the roadmap, bringing the documented working diff to 21 files;
+  those three files are outside captured `src/tests` implementation
+  identity.
+
+P8 final evidence:
+
+- all four hash and all four online captures completed under
+  `.quality/p14-runs/20260731T080504Z-online-pro-business-stable/`
+  `p8-final/`;
+- each online capture made 68 daily plus 24 RedInk requests (`92`
+  total), with no 429;
+- hash recall was `49/57` for baseline and candidate; online recall was
+  `50/57` for both;
+- required loss count was zero for both providers; hash noise remained
+  `154/216`, online noise remained `153/216`;
+- all 18 online cases preserved selected path membership, protected
+  winners, structure, and request counts;
+- baseline timing spread was `0.027230927395953473` for hash and
+  `0.0008250638534899485` online; candidate/baseline query-p95 ratios
+  were `1.0136759017461887` and `1.0036899347718384`;
+- strict `gates.json` is retained as `reject` because it requires exact
+  nonsemantic evidence and non-eligible order parity. Its SHA-256 is
+  `b9e7182f595b68d060003ef539332af6e8018f3708cc4e873d4fa8b7aa84899d`;
+- `owner-acceptance.json` records `ship`, exact waiver scope, and raw
+  report binding. Its SHA-256 is
+  `15ee39493fc467d2f590989145be5d9acf3a58dd08adbc22a55ee0d5ee78663a`.
+
+P1 final evidence:
+
+- baseline evidence is the acceptance-capture-identity `p1-final-v3`
+  baseline; final candidate evidence is under `p1-final-v4/` and binds to
+  the same acceptance-capture candidate identity as P8;
+- vector candidate repeats were both `7/7`, owner ranks `[2,2]`;
+- hybrid candidate repeats were `6/7` and `7/7`, owner ranks `[4,3]`;
+  the one rank-4 result retained Recall@5 `1.0`;
+- all 14 hybrid planner calls were `ok`, with zero fallback/error/skip
+  and no exact-identifier rewritten query;
+- hybrid MRR was `0.8214285714285714` and `0.8333333333333334` versus
+  vector `0.8571428571428571`; hybrid Recall@5 and entrypoint Top-3
+  remained `1.0` in both repeats;
+- strict `gates.json` is retained as `blocked` because one stochastic
+  planner result misses Top-3 and the two auxiliary-hint sets differ.
+  Its SHA-256 is
+  `74665d04f0ad2b79dd4d4dcc37ff7aa3ab5572ebd2b9784c6792aff2629ece33`;
+- `owner-acceptance.json` records `ship`, exact waiver scope, and raw
+  report binding. Its SHA-256 is
+  `2e8fa51e64f5755a69743dbba9dacb99b4e40e78c379be90041cd6bf0b1b521d`.
+
+The owner waiver is deliberately narrow. It accepts continuous online
+scores, auxiliary planner hints, same-path chunk evidence, and a
+near-tie rank movement only while membership, winners, required recall,
+noise, structure, requests, and performance remain safe. It does not
+waive wrong model/provider identity, Ollama substitution, fallback,
+error, skip, required loss, recall decrease, noise increase,
+protected-winner change, selected-membership loss, structural/request
+drift, or a query-p95 ratio above `1.10`.
+
+Final regression:
+
+- the acceptance snapshot remains `128 passed` for its harness/planner run,
+  `28 passed` with 347 deselected for its focused exact-identifier run, and
+  `3403 passed, 9 skipped` for its clean-tree full run;
+- post-review planner matrices pass `46/46` on both baseline and candidate;
+- post-review acceptance harness plus planner: `136 passed`;
+- post-review isolated clean-tree full suite: `3411 passed, 9 skipped` in
+  `126.32s`;
+- the Mac was on battery during the final run, so only five P6 unit
+  tests that already use fake measurements/calibration received a
+  test-runner-only `AC Power` fixture. Formal P8 timing evidence was
+  captured separately and was not altered;
+- `git diff --check` passed.
+
+Durable closure records:
+
+- `final-regression.json` binds the successful command, clean snapshot,
+  source identity, result, runtime, and test-runner-only battery
+  adjustment; SHA-256
+  `5ab2e472aacb9f70813f9f7d618ca2f95b948fdeecf12bafd6c4dcc23ea40104`;
+- `post-review-regression.json` binds the test-only identity transition,
+  unchanged production tree, complete planner matrix, paired frozen-input
+  topology, and successful `3411`-test result; SHA-256
+  `ba1e3194a9bb705d2525e4502cbd837a9184af1c7889edcfd085cb38f7e93acb`;
+- `final-acceptance-manifest.json` explicitly maps all eight P8 inputs,
+  the four P1 baselines in `p1-final-v3`, the four P1 candidates in
+  `p1-final-v4`, both raw/owner records, provider and implementation
+  identities, inventory, and regression evidence. A verifier resolved
+  and checked all 23 manifest-bound SHA-256 records. Manifest SHA-256:
+  `16a210efb9bfff3d4322932fe180a14bbcb1fada9275e8bc74685424db947608`.
+
+Final disposition: `ship` by explicit owner acceptance. The raw strict
+reports, every capture, and both waiver records remain immutable and
+auditable. README, retrieval-quality, and the Phase 1 roadmap now state
+the owner-approved raw/accepted disposition split. No commit or push was
+performed.

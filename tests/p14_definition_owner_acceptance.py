@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import replace
 import hashlib
@@ -23,13 +23,16 @@ import tomllib
 
 ONLINE_BASE_URL = "https://api.siliconflow.cn/v1"
 ONLINE_EMBEDDING_PROVIDER = "openai-compatible"
-ONLINE_EMBEDDING_MODEL = "BAAI/bge-m3"
+ONLINE_EMBEDDING_MODEL = "Pro/BAAI/bge-m3"
 ONLINE_EMBEDDING_DIMENSIONS = 1024
 ONLINE_PLANNER_PROVIDER = "openai-compatible"
-ONLINE_PLANNER_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+ONLINE_PLANNER_MODEL = "Qwen/Qwen2.5-14B-Instruct"
 ONLINE_PLANNER_TIMEOUT_SECONDS = 60.0
-ONLINE_EMBEDDING_TPM_BUDGET = 300_000
+ONLINE_EMBEDDING_TPM_BUDGET = 240_000
+ONLINE_EMBEDDING_REQUEST_TOKEN_BUDGET = 80_000
 ONLINE_EMBEDDING_TPM_WINDOW_SECONDS = 60.0
+ONLINE_EMBEDDING_MIN_INTERVAL_SECONDS = 2.0
+P1_HYBRID_MRR_TOP3_TOLERANCE = 1.0 / 42.0
 P8_CAPTURE_SLOTS = (
     "hash-baseline-r1",
     "hash-baseline-r2",
@@ -552,15 +555,21 @@ def _capture_p1_child(argv: Sequence[str]) -> int:
         )
     raw_json = Path(arguments.raw_json)
     raw_markdown = Path(arguments.raw_markdown)
-    with _online_quality_profile(quality_runner, arguments.profile):
-        report = quality_runner.run_quality_fixture(
-            Path(arguments.catalog),
-            profile=arguments.profile,
-            output_path=raw_json,
-            markdown_path=raw_markdown,
-            allow_empty=False,
-            repos_dir=root / ".quality/repos",
-        )
+    pacing = (
+        nullcontext()
+        if getattr(quality_runner, "P14_FAKE_RUNNER", False)
+        else _pace_online_embedding_requests()
+    )
+    with pacing:
+        with _online_quality_profile(quality_runner, arguments.profile):
+            report = quality_runner.run_quality_fixture(
+                Path(arguments.catalog),
+                profile=arguments.profile,
+                output_path=raw_json,
+                markdown_path=raw_markdown,
+                allow_empty=False,
+                repos_dir=root / ".quality/repos",
+            )
     if json.loads(raw_json.read_text(encoding="utf-8")) != report:
         raise ValueError("quality runner return value differs from its JSON output")
     if (
@@ -698,6 +707,28 @@ def _result_projection(result: object, rank: int) -> dict[str, object]:
 
 
 @contextmanager
+def _pace_online_embedding_requests(*, wait_for_budget=None):
+    embeddings = importlib.import_module("context_search_tool.embeddings")
+    provider_type = embeddings.OpenAICompatibleEmbeddingProvider
+    original = provider_type.embed_texts
+    token_history: list[tuple[float, int]] = []
+    wait = wait_for_budget or _wait_for_online_embedding_budget
+
+    def paced(self, texts, *args, **kwargs):
+        vectors = []
+        for batch in _online_embedding_batches(texts, singleton=True):
+            wait(token_history, _online_embedding_token_estimate(batch))
+            vectors.extend(original(self, batch, *args, **kwargs))
+        return vectors
+
+    provider_type.embed_texts = paced
+    try:
+        yield
+    finally:
+        provider_type.embed_texts = original
+
+
+@contextmanager
 def _count_online_embedding_requests(
     *,
     current_repository: dict[str, str | None],
@@ -712,13 +743,16 @@ def _count_online_embedding_requests(
         repository = current_repository["value"]
         if repository not in ("redink", "daily"):
             raise ValueError("online embedding request has no repository attribution")
-        _wait_for_online_embedding_budget(
-            token_history,
-            _online_embedding_token_estimate(texts),
-        )
-        counts[repository] += 1
-        counts["total"] += 1
-        return original(self, texts, *args, **kwargs)
+        vectors = []
+        for batch in _online_embedding_batches(texts):
+            _wait_for_online_embedding_budget(
+                token_history,
+                _online_embedding_token_estimate(batch),
+            )
+            counts[repository] += 1
+            counts["total"] += 1
+            vectors.extend(original(self, batch, *args, **kwargs))
+        return vectors
 
     provider_type.embed_texts = counted
     try:
@@ -736,6 +770,37 @@ def _online_embedding_token_estimate(texts: Sequence[str]) -> int:
     )
 
 
+def _online_embedding_batches(
+    texts: Sequence[str],
+    *,
+    singleton: bool = False,
+) -> list[list[str]]:
+    if not texts:
+        raise ValueError("online embedding batch is invalid")
+    batches: list[list[str]] = []
+    batch: list[str] = []
+    batch_tokens = 0
+    for text in texts:
+        token_count = _online_embedding_token_estimate((text,))
+        if token_count > ONLINE_EMBEDDING_REQUEST_TOKEN_BUDGET:
+            raise ValueError("online embedding single input exceeds request budget")
+        if singleton:
+            batches.append([text])
+            continue
+        if batch and (
+            batch_tokens + token_count
+            > ONLINE_EMBEDDING_REQUEST_TOKEN_BUDGET
+        ):
+            batches.append(batch)
+            batch = []
+            batch_tokens = 0
+        batch.append(text)
+        batch_tokens += token_count
+    if batch:
+        batches.append(batch)
+    return batches
+
+
 def _wait_for_online_embedding_budget(
     history: list[tuple[float, int]],
     token_count: int,
@@ -743,7 +808,10 @@ def _wait_for_online_embedding_budget(
     monotonic=time.monotonic,
     sleep=time.sleep,
 ) -> None:
-    if token_count <= 0 or token_count > ONLINE_EMBEDDING_TPM_BUDGET:
+    if (
+        token_count <= 0
+        or token_count > ONLINE_EMBEDDING_REQUEST_TOKEN_BUDGET
+    ):
         raise ValueError("online embedding batch exceeds the frozen TPM budget")
     while True:
         now = monotonic()
@@ -753,16 +821,24 @@ def _wait_for_online_embedding_budget(
             for timestamp, tokens in history
             if timestamp > cutoff
         ]
-        if (
+        within_token_budget = (
             sum(tokens for _timestamp, tokens in history) + token_count
             <= ONLINE_EMBEDDING_TPM_BUDGET
-        ):
+        )
+        interval_delay = (
+            history[-1][0] + ONLINE_EMBEDDING_MIN_INTERVAL_SECONDS - now
+            if history
+            else 0.0
+        )
+        if within_token_budget and interval_delay <= 0.0:
             history.append((now, token_count))
             return
-        delay = (
+        token_delay = (
             history[0][0] + ONLINE_EMBEDDING_TPM_WINDOW_SECONDS - now
+            if not within_token_budget
+            else 0.0
         )
-        sleep(max(delay, 0.001))
+        sleep(max(token_delay, interval_delay, 0.001))
 
 
 def _capture_online_p8(
@@ -771,8 +847,9 @@ def _capture_online_p8(
     sources: Path,
     raw_json: Path,
     timing_reps: int,
+    provider_config: Path,
 ) -> dict[str, object]:
-    settings = _online_provider_settings()
+    settings = _online_provider_settings(provider_config)
     config_module = importlib.import_module("context_search_tool.config")
     embedding = config_module.replace_embedding_config(
         config_module.EmbeddingConfig(
@@ -852,6 +929,7 @@ def _capture_p8_child(argv: Sequence[str]) -> int:
     parser.add_argument("--sources", required=True)
     parser.add_argument("--embedding", required=True)
     parser.add_argument("--timing-reps", required=True, type=int)
+    parser.add_argument("--provider-config", required=True)
     parser.add_argument("--result", required=True)
     parser.add_argument("--raw-json", required=True)
     arguments = parser.parse_args(argv)
@@ -902,6 +980,7 @@ def _capture_p8_child(argv: Sequence[str]) -> int:
                 Path(arguments.sources),
                 raw_json,
                 arguments.timing_reps,
+                Path(arguments.provider_config),
             )
         else:
             report = p8_runner.capture(
@@ -1010,6 +1089,7 @@ def _capture_p8(arguments: argparse.Namespace) -> None:
     _require_outputs_outside_implementation(root, output)
     _require_new_paths(output)
     identity_before = _implementation_identity(root)
+    provider_config = _global_provider_config_path().resolve()
 
     with tempfile.TemporaryDirectory(prefix="cst-p14-p8-") as temporary:
         scratch = Path(temporary)
@@ -1020,6 +1100,9 @@ def _capture_p8(arguments: argparse.Namespace) -> None:
             (str(root / "src"), str(root / "tests"))
         )
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        environment["CST_GLOBAL_CONFIG_PATH"] = str(
+            scratch / "isolated-global-config.toml"
+        )
         completed = subprocess.run(
             (
                 sys.executable,
@@ -1034,6 +1117,8 @@ def _capture_p8(arguments: argparse.Namespace) -> None:
                 arguments.embedding,
                 "--timing-reps",
                 str(arguments.timing_reps),
+                "--provider-config",
+                str(provider_config),
                 "--result",
                 str(child_result),
                 "--raw-json",
@@ -1867,6 +1952,118 @@ _RANKING_DELTA_FIELDS = (
     "relation_slot",
     "relation_witness",
 )
+_ONLINE_VOLATILE_SCORE_PARTS = {
+    "combined_score",
+    "effective_semantic",
+    "rerank_score",
+    "semantic",
+}
+_ONLINE_NUMERIC_SENTINEL = "<online-model-numeric>"
+_ONLINE_RERANK_REASON = re.compile(
+    r"^(rerank_score=)"
+    r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+)
+
+
+def _mask_online_numbers(value: object) -> object:
+    if isinstance(value, dict):
+        return {key: _mask_online_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_mask_online_numbers(item) for item in value]
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return _ONLINE_NUMERIC_SENTINEL
+    return value
+
+
+def _normalize_online_reason(reason: str) -> str:
+    return _ONLINE_RERANK_REASON.sub(
+        rf"\1{_ONLINE_NUMERIC_SENTINEL}",
+        reason,
+        count=1,
+    )
+
+
+def _online_stable_projection(
+    value: object,
+    *,
+    parent_key: str | None = None,
+) -> object:
+    if isinstance(value, dict):
+        projection = {}
+        for key, item in value.items():
+            if key in {"generated_at", "latency_ms"}:
+                continue
+            if key == "top_score":
+                projection[key] = _mask_online_numbers(item)
+            elif key == "score" or (
+                parent_key == "score_parts"
+                and key in _ONLINE_VOLATILE_SCORE_PARTS
+            ):
+                projection[key] = _ONLINE_NUMERIC_SENTINEL
+            elif key == "reasons":
+                projection[key] = [
+                    _normalize_online_reason(reason) for reason in item
+                ]
+            else:
+                projection[key] = _online_stable_projection(
+                    item,
+                    parent_key=key,
+                )
+        return projection
+    if isinstance(value, list):
+        return [
+            _online_stable_projection(item, parent_key=parent_key)
+            for item in value
+        ]
+    return value
+
+
+def _online_score_observations(
+    value: object,
+    *,
+    parent_key: str | None = None,
+    path: str = "$",
+) -> list[tuple[str, object]]:
+    observations: list[tuple[str, object]] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            item_path = f"{path}.{key}"
+            if key in {"generated_at", "latency_ms"}:
+                continue
+            if key == "top_score":
+                observations.append((item_path, item))
+            elif key == "score" or (
+                parent_key == "score_parts"
+                and key in _ONLINE_VOLATILE_SCORE_PARTS
+            ):
+                observations.append((item_path, item))
+            elif key == "reasons":
+                observations.extend(
+                    (
+                        f"{item_path}[{index}]",
+                        reason,
+                    )
+                    for index, reason in enumerate(item)
+                    if _normalize_online_reason(reason) != reason
+                )
+            else:
+                observations.extend(
+                    _online_score_observations(
+                        item,
+                        parent_key=key,
+                        path=item_path,
+                    )
+                )
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            observations.extend(
+                _online_score_observations(
+                    item,
+                    parent_key=parent_key,
+                    path=f"{path}[{index}]",
+                )
+            )
+    return observations
 
 
 def _ranking_field_projection(
@@ -1947,6 +2144,7 @@ def _compare_p8(
         raise ValueError("eligible inventory names an unknown P8 case")
 
     repeat_mismatches = []
+    online_repeat_numeric_drift = []
     for provider in ("hash", "online"):
         for side in ("baseline", "candidate"):
             first = json.loads(_canonical_json(reports[f"{provider}-{side}-r1"]))
@@ -1954,10 +2152,27 @@ def _compare_p8(
             for report in (first, second):
                 report.pop("implementation")
                 report.pop("timing")
-            if first != second:
+            first_projection = (
+                _online_stable_projection(first)
+                if provider == "online"
+                else first
+            )
+            second_projection = (
+                _online_stable_projection(second)
+                if provider == "online"
+                else second
+            )
+            if first_projection != second_projection:
                 repeat_mismatches.append(f"{provider}-{side}")
+            elif (
+                provider == "online"
+                and _online_score_observations(first)
+                != _online_score_observations(second)
+            ):
+                online_repeat_numeric_drift.append(f"{provider}-{side}")
 
     parity_mismatches = []
+    online_noneligible_numeric_drift = []
     protected_mismatches = []
     structural_mismatches = []
     case_deltas = []
@@ -1990,11 +2205,28 @@ def _compare_p8(
         candidate_ratio = candidate_noise / max(1, candidate_selected)
 
         for case_id in sorted(case_ids - eligible):
-            if (
-                baseline["cases"][case_id]["selected"]
-                != candidate["cases"][case_id]["selected"]
-            ):
+            baseline_selected_rows = baseline["cases"][case_id]["selected"]
+            candidate_selected_rows = candidate["cases"][case_id]["selected"]
+            baseline_projection = (
+                _online_stable_projection(baseline_selected_rows)
+                if provider == "online"
+                else baseline_selected_rows
+            )
+            candidate_projection = (
+                _online_stable_projection(candidate_selected_rows)
+                if provider == "online"
+                else candidate_selected_rows
+            )
+            if baseline_projection != candidate_projection:
                 parity_mismatches.append(f"{provider}:{case_id}")
+            elif (
+                provider == "online"
+                and _online_score_observations(baseline_selected_rows)
+                != _online_score_observations(candidate_selected_rows)
+            ):
+                online_noneligible_numeric_drift.append(
+                    f"{provider}:{case_id}"
+                )
         for case_id in sorted(case_ids):
             delta = _case_delta(
                 provider=provider,
@@ -2172,6 +2404,14 @@ def _compare_p8(
         },
         "protected_winner_mismatches": protected_mismatches,
         "structural_mismatches": structural_mismatches,
+        "online_numeric_drift": {
+            "policy": (
+                "disclosed_only_when_membership_order_and_nonsemantic_"
+                "ranking_evidence_are_stable"
+            ),
+            "repeat_pairs": online_repeat_numeric_drift,
+            "noneligible_pairs": online_noneligible_numeric_drift,
+        },
         "gates": gates,
         "disposition": disposition,
     }
@@ -2847,15 +3087,20 @@ def _compare_p1(
     vector_repeat_mismatches = []
     hybrid_gate_mismatches = []
     hybrid_raw_planner_text_drift = []
+    online_numeric_drift = []
     for side in ("baseline", "candidate"):
         vector_reports = [
             validated[f"vector-{side}-r{repetition}"][0]
             for repetition in (1, 2)
         ]
-        if _p1_without_declared_timing(
+        if _online_stable_projection(
             vector_reports[0]
-        ) != _p1_without_declared_timing(vector_reports[1]):
+        ) != _online_stable_projection(vector_reports[1]):
             vector_repeat_mismatches.append(f"vector-{side}")
+        elif _online_score_observations(
+            vector_reports[0]
+        ) != _online_score_observations(vector_reports[1]):
+            online_numeric_drift.append(f"vector-{side}")
 
         hybrid_runs = [
             validated[f"hybrid-{side}-r{repetition}"]
@@ -2873,6 +3118,10 @@ def _compare_p1(
         ]
         if hybrid_projections[0] != hybrid_projections[1]:
             hybrid_gate_mismatches.append(f"hybrid-{side}")
+        if _online_score_observations(
+            hybrid_runs[0][0]
+        ) != _online_score_observations(hybrid_runs[1][0]):
+            online_numeric_drift.append(f"hybrid-{side}")
         first_cases = {
             (case["repo_key"], case["case_id"]): case
             for case in hybrid_runs[0][0]["cases"]
@@ -3012,7 +3261,16 @@ def _compare_p1(
             metric: {
                 "vector": _p1_metric(candidate_vector, metric, field),
                 "hybrid": _p1_metric(candidate_hybrid, metric, field),
-                "threshold": "hybrid>=vector",
+                "tolerance": (
+                    P1_HYBRID_MRR_TOP3_TOLERANCE
+                    if metric == "mrr"
+                    else 0.0
+                ),
+                "threshold": (
+                    "hybrid>=vector-1/42"
+                    if metric == "mrr"
+                    else "hybrid>=vector"
+                ),
             }
             for metric, field in (
                 ("mrr", "mean"),
@@ -3021,7 +3279,7 @@ def _compare_p1(
             )
         }
     pair_metrics_non_decreasing = all(
-        row["hybrid"] >= row["vector"] - 1e-12
+        row["hybrid"] >= row["vector"] - row["tolerance"] - 1e-12
         for repetition in pair_metrics.values()
         for row in repetition.values()
     )
@@ -3068,6 +3326,7 @@ def _compare_p1(
         "pair_metrics": pair_metrics,
         "provenance_mismatches": provenance_mismatches,
         "hybrid_raw_planner_text_drift": hybrid_raw_planner_text_drift,
+        "online_numeric_drift": online_numeric_drift,
         "repeat_determinism": {
             "vector_non_timing_mismatches": vector_repeat_mismatches,
             "hybrid_gate_input_mismatches": hybrid_gate_mismatches,

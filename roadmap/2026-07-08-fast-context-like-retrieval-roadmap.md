@@ -168,12 +168,19 @@ Success signal:
 
 ### Phase 1: Query Understanding
 
-Status: Implementation complete; model acceptance pending
+Status: Closed by P14 owner-approved acceptance (2026-07-31)
 
-Latest acceptance check (2026-07-16): both required model profiles selected and
-executed seven cases but passed 6/7. `audit-status-literal` still misses
-`AuditStatus.java` within Top-3, so the focused pair gate and Phase 1 roadmap
-closure remain pending.
+The 2026-07-16 check remains the historical `6/7` local-model baseline.
+P14 reran the gate with SiliconFlow `Pro/BAAI/bge-m3` and
+`Qwen/Qwen2.5-14B-Instruct`. Vector candidate repeats were both `7/7`
+with owner rank 2; hybrid repeats were `6/7` at rank 4 and `7/7` at
+rank 3, with Recall@5 and entrypoint Top-3 `1.0` in both and zero
+fallback/error/skip. The strict raw P1 report remains `blocked`; the
+definition owner accepted the bounded probabilistic rank/hint drift in
+a separate hashed `ship` record. P8 retained zero required loss, equal
+recall/noise, stable membership/winners, and a `1.0036899347718384`
+online timing ratio. Phase 1 is therefore closed as
+**owner-approved ship**, not as an all-green strict machine gate.
 
 Goal: reduce the gap on natural-language and cross-language queries while preserving exact search.
 
@@ -202,8 +209,9 @@ Acceptance evidence at `be03fa73437cd897d112377d80dda5c83370def5`:
 - raw-result CI profile: 8/8 passed;
 - pinned real-project ContextPack v2 profile: 4/4 passed.
 
-Phase statuses are recorded independently: the open Phase 1 model-quality gate
-remains pending and is not weakened or reclassified by Phase 2 completion.
+Phase statuses are recorded independently: Phase 1 was still pending at
+Phase 2 completion and was later closed by P14; Phase 2 did not weaken or
+reclassify it.
 
 Goal: return a reading set, not only a ranked list.
 
@@ -238,8 +246,8 @@ Status: Complete (2026-07-16)
   - `cst-p3-1-ci.json`: raw `ci` selected/executed/passed 8/8/8,
     failed 0, errors 0.
 
-  Phase 1 remains pending at its independent 6/7 baseline; P3.1 does not weaken
-  or reclassify that gate.
+  Phase 1 remained pending at its independent 6/7 baseline when P3.1
+  closed; P3.1 did not weaken it, and P14 later closed it separately.
 - P3.2 retrieval-core decomposition: complete (2026-07-16).
   Design: `docs/superpowers/specs/2026-07-16-p3-2-retrieval-core-decomposition-design.md`.
   Plan: `docs/superpowers/plans/2026-07-16-p3-2-retrieval-core-decomposition.md`.
@@ -289,8 +297,9 @@ Acceptance evidence:
   service's tenant privacy policy and returned no file/range result; this was
   recorded honestly and remained non-gating.
 
-Phase statuses remain independent. Phase 1 is still 6/7 and pending; Phase 4
-does not reclassify it. Phase 5 subsequently completed on 2026-07-18.
+Phase statuses remain independent. Phase 1 was still 6/7 and pending at
+the Phase 4 record date; Phase 4 did not reclassify it. P14 later closed
+it separately. Phase 5 subsequently completed on 2026-07-18.
 
 Goal: approximate fast-context's exploratory strength in a deterministic, bounded local engine.
 
@@ -349,7 +358,9 @@ Acceptance evidence:
   four model-selected fast-context paths before grep expansion; the comparison
   remains qualitative and non-gating.
 
-Phase 1 remains independently pending at 6/7. Phase 6 status follows.
+Phase 1 was independently pending at 6/7 when this Phase 5 record was
+written; P14 later closed it under the owner-approved disposition. Phase
+6 status follows.
 
 ### Phase 6: Freshness, Performance, And Large Repositories
 

@@ -420,6 +420,18 @@ exclude = ["target/", "build/"]
 
 CST also treats explicit code intent as a generic ranking signal. Queries that name identifiers such as `UploadHandler`, `useAuthStore`, `apply_dev`, filenames such as `nav.go`, or broad path roles such as `handler`, `service`, `store`, `composable`, `command`, and `engine` receive explainable rerank support. These are language-neutral baseline signals, not framework plugins.
 
+When the complete trimmed query is exactly one Camel/Pascal,
+lower-snake, or SCREAMING_SNAKE identifier, CST can distinguish its
+definition owner from files that merely reference the same text. An
+already-recalled chunk receives a bounded, explainable
+`exact identifier definition owner` boost only when a case-sensitive
+symbol declaration with that exact name starts inside the chunk. This
+changes ranking, not recall. Mixed prose, wrappers or punctuation,
+case-only mismatches, filenames, and reference-only chunks do not receive
+the owner boost. For an online planner, the original whole identifier is
+kept as the authoritative query and model-generated rewrites are
+discarded; auxiliary grep/symbol hints remain bounded.
+
 ### P5 语言/框架图与数据边界
 
 索引升级到 signal schema v5 后，CST 会执行一次完整重建；从 v4 迁移时不能复用旧 chunk/vector/graph 快照。Tree-sitter parser、图解析器和 XML 校验都在本机运行，索引过程不会下载 grammar、执行被索引仓库的代码或调用其构建工具。图处于 stale 状态时，signal/relation evidence 会关闭，但 lexical、path、hash embedding 等基础召回仍可用。
@@ -451,12 +463,12 @@ dimensions = 384
 它是确定性、离线、零依赖服务的 embedding。它适合开发、测试，以及 endpoint、类名、字段名、枚举值这类代码 token 密集的搜索。
 
 也可以配置 OpenAI-compatible embedding 服务。下面是硅基流动
-`BAAI/bge-m3` 的配置：
+`Pro/BAAI/bge-m3` 的配置：
 
 ```toml
 [embedding]
 provider = "openai-compatible"
-model = "BAAI/bge-m3"
+model = "Pro/BAAI/bge-m3"
 dimensions = 1024
 base_url = "https://api.siliconflow.cn/v1"
 api_key = "sk-your-siliconflow-api-key"
@@ -524,7 +536,7 @@ Completions 协议。使用硅基流动时，完整的双模型配置如下；�
 ```toml
 [embedding]
 provider = "openai-compatible"
-model = "BAAI/bge-m3"
+model = "Pro/BAAI/bge-m3"
 dimensions = 1024
 base_url = "https://api.siliconflow.cn/v1"
 api_key = "sk-your-siliconflow-api-key"
@@ -532,7 +544,7 @@ api_key = "sk-your-siliconflow-api-key"
 [query_planner]
 enabled = true
 provider = "openai-compatible"
-model = "Qwen/Qwen2.5-7B-Instruct"
+model = "Qwen/Qwen2.5-14B-Instruct"
 base_url = "https://api.siliconflow.cn/v1"
 api_key = "sk-your-siliconflow-api-key"
 use_system_proxy = false

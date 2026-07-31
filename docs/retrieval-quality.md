@@ -10,8 +10,8 @@
 | `calibration_bge` | BGE and two Java repositories | all eight Java calibration cases |
 | `ab_hash` | committed A/B snapshot | local embedding baseline |
 | `ab_bge` | Ollama BGE-M3 | BGE candidate report |
-| `p1_vector_bge` | local `bge-m3` | Phase 1 vector-only acceptance baseline |
-| `p1_hybrid_bge` | local `bge-m3` and `qwen3.5:4b-mlx` | Phase 1 hybrid acceptance candidate |
+| `p1_vector_bge` | runtime-selected BGE provider; final P14 used SiliconFlow `Pro/BAAI/bge-m3` | Phase 1 vector-only acceptance baseline |
+| `p1_hybrid_bge` | the same BGE provider plus a planner; final P14 used `Qwen/Qwen2.5-14B-Instruct` | Phase 1 hybrid acceptance candidate |
 | `p2_context_pack` | committed snapshots and offline `hash-v1` | deterministic ContextPack v2 acceptance |
 | `p2_real_context` | explicitly prepared pinned PetClinic checkout | opt-in real-project ContextPack v2 acceptance |
 | `p4_exploration` | committed snapshots and offline `hash-v1` | deterministic controlled-exploration acceptance |
@@ -346,13 +346,15 @@ PYTHONPATH="$PWD/src" conda run -n base python -m pytest \
   -q
 ```
 
-`p1_vector_bge` requires the local `bge-m3` model. `p1_hybrid_bge` requires
-both local `bge-m3` and `qwen3.5:4b-mlx`. A missing service/model or an
-unsuccessful required profile/pair gate is `unverified_dependency`. A skipped,
-error, fallback, failed, or zero-executed run cannot close Phase 1. The focused
-pair test, not the general comparison command alone, enforces the Phase 1
-aggregate delta gate. Both reports record latency `mean`, `p50`, and `p95`
-under `aggregate.metrics.overall.latency_ms`.
+The commands above are the legacy local diagnostic path. The authoritative
+P14 closure uses the tracked external acceptance harness, which injects the
+validated online provider sections without changing the catalog bytes. Its
+final runtime was SiliconFlow `Pro/BAAI/bge-m3` (1024 dimensions) plus
+`Qwen/Qwen2.5-14B-Instruct`; Ollama and planner fallback were forbidden. A
+missing service/model is `unverified_dependency`, and skipped, error,
+fallback, or zero-executed evidence cannot close Phase 1. Reports record
+latency `mean`, `p50`, and `p95` under
+`aggregate.metrics.overall.latency_ms`.
 
 ### Phase 1 reconciliation (2026-07-15)
 
@@ -370,6 +372,44 @@ under `aggregate.metrics.overall.latency_ms`.
 - Reason: an executed-but-failed required case and failed pair gate cannot close
   the roadmap's independent Phase 1 acceptance dependency. No earlier report is
   substituted for this fresh result.
+
+### Phase 1 closure (2026-07-31, P14)
+
+- Final status: `ship` by explicit definition-owner acceptance of bounded
+  probabilistic online-model drift. This is not a claim that the strict raw
+  gates were all green.
+- Runtime: SiliconFlow `openai-compatible/Pro/BAAI/bge-m3`, 1024 dimensions,
+  and `openai-compatible/Qwen/Qwen2.5-14B-Instruct`; 14/14 final hybrid
+  planner calls were `ok`, with zero fallback/error/skip and no
+  exact-identifier rewrite.
+- Vector candidate: `7/7` in both repeats, owner ranks `[2,2]`, MRR
+  `0.8571428571428571`.
+- Hybrid candidate: `6/7` at owner rank 4 and `7/7` at owner rank 3. Both
+  repeats retained Recall@5 and entrypoint Top-3 `1.0`; MRR was
+  `0.8214285714285714` and `0.8333333333333334`.
+- Strict evidence: `p1-final-v4/gates.json` is retained as `blocked`. Repeat 1
+  exceeds the automatic `1/42` MRR tolerance, so it is accepted only by the
+  separately hashed `p1-final-v4/owner-acceptance.json`, not by rewriting the
+  raw gate.
+- Real-corpus safety: P8 required losses were zero; hash recall/noise stayed
+  `49/57` and `154/216`; online recall/noise stayed `50/57` and `153/216`;
+  the online timing ratio was `1.0036899347718384 < 1.10`. Its strict raw
+  report remains `reject` for exact repeat/parity rules and its separate owner
+  record is `ship`.
+- Evidence root:
+  `.quality/p14-runs/20260731T080504Z-online-pro-business-stable/`.
+- Final post-review clean-tree regression: `3411 passed, 9 skipped`. The
+  original acceptance-snapshot result (`3403 passed, 9 skipped`) remains
+  separately hashed; the only later `src/tests` change is the shared planner
+  identifier-regression matrix, and production source bytes are unchanged.
+
+The accepted drift boundary covers continuous online scores, auxiliary
+planner hints, same-path chunk evidence, and the observed near-tie rank
+movement only while selected membership, protected winners, required recall,
+noise, structure, requests, and performance remain safe. It does not waive a
+wrong provider/model, Ollama substitution, fallback, error, skip, required
+loss, recall decrease, noise increase, protected-winner or membership change,
+structural/request drift, or a query-p95 ratio above `1.10`.
 
 ## Phase 3.1 Retrieval Trace Acceptance
 
@@ -390,8 +430,9 @@ selections. Every non-empty committed P3.1 case requires TraceCoverage 1.0.
 
 Stage and selection counts describe uncapped work, not preview length. Timings are
 informational in end-to-end tests; collector unit tests use an injected clock. P3.1
-does not add a quality-catalog mode. Phase 1 model acceptance remains independent
-and pending until its own required 7/7 gate passes.
+does not add a quality-catalog mode. Phase 1 remained independent and pending at
+the P3.1 record date; P14 subsequently closed it with the raw/owner disposition
+split recorded above.
 
 ## Phase 3.2 Retrieval Core Decomposition Acceptance
 
@@ -417,7 +458,8 @@ Final acceptance evidence:
   `remaining: 0` and a resolved task; all eight supported-facade rows retain
   their contracts. The protected-source diff and source worktree status were
   clean.
-- Phase 1 remains independently pending at `6/7`; P3.2 does not reclassify it.
+- At the P3.2 record date Phase 1 remained independently pending at `6/7`;
+  P14 subsequently closed it without reclassifying the historical P3.2 result.
 
 The immutable Slice 1 baseline is commit
 `680b252b5c863fce9b236771b1a54c28e3f9839e`, and its `baseline.json` blob is
@@ -575,7 +617,8 @@ evidence, not a substitute P4 result.
 - Explore feedback contains only bounded aggregate counts and limit/outcome
   fields. Generated probes/queries, goal IDs, seed/final paths, source content,
   source-count detail, and exception text are excluded.
-- Phase 1 remains independently pending at `6/7`.
+- At this Phase 4 record date, Phase 1 remained independently pending at
+  `6/7`; P14 subsequently closed it under the documented owner waiver.
 
 ## Phase 5 Language And Framework Graph Acceptance
 
@@ -662,7 +705,9 @@ for the P4 catalog,
 `78e81f1c08c8216dc3355519cb89f07577ed61706e8150c9575e8395141c0b40`
 for the P4 input manifest, and
 `4235ec5539c548005d75b98be4a0c347364d40ec28a79fc45b10d351bcf8bed7`
-for the retrieval-core baseline. Phase 1 remains `6/7`; Phase 6 is next.
+for the retrieval-core baseline. At this Phase 5 record date, Phase 1
+remained `6/7`; P14 subsequently closed it, while Phase 6 remained next
+in the historical sequence.
 
 ## Phase 7 Final Path-Diverse Selection Acceptance
 

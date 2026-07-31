@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from typing import Any, Protocol
 
@@ -19,6 +20,14 @@ from context_search_tool.tokenizer import tokenize_query
 
 PROMPT_VERSION = "qwen-query-planner-v2"
 MAX_PLANNER_QUERY_VARIANT_CODEPOINTS = 256
+_EXACT_CODE_IDENTIFIER_RE = re.compile(
+    r"(?:"
+    r"[A-Z]{2,}(?=[A-Z][a-z])[A-Za-z0-9]*"
+    r"|[A-Z]?[a-z]+(?:[A-Z][A-Za-z0-9]*)+"
+    r"|[a-z][a-z0-9]+(?:_[a-z0-9]+)+"
+    r"|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+"
+    r")"
+)
 
 ALLOWED_INTENTS = {
     "feature_lookup",
@@ -60,6 +69,7 @@ DO NOT:
 DO:
 - Add English code terms for Chinese business words.
 - Use likely class or method names only when strongly implied.
+- If the complete query is already one code identifier, return rewritten_queries as an empty array and keep that identifier in grep_keywords and symbol_hints.
 - Keep keywords concise."""
 
 
@@ -359,6 +369,21 @@ def clean_planner_payload(
         symbol_hints, dropped = _filter_identifier_hints(symbol_hints, vocabulary)
         discarded_hints.extend(dropped)
 
+    exact_identifier = original_query.strip()
+    if _EXACT_CODE_IDENTIFIER_RE.fullmatch(exact_identifier):
+        discarded_hints.extend(rewritten_queries)
+        rewritten_queries = []
+        grep_keywords = _prepend_bounded(
+            exact_identifier,
+            grep_keywords,
+            config.max_keywords,
+        )
+        symbol_hints = _prepend_bounded(
+            exact_identifier,
+            symbol_hints,
+            config.max_symbol_hints,
+        )
+
     raw_intent = payload.get("intent", "unknown")
     intent = (
         raw_intent
@@ -383,6 +408,15 @@ def clean_planner_payload(
         else False,
         discarded_hints=discarded_hints,
     )
+
+
+def _prepend_bounded(value: str, values: list[str], limit: int) -> list[str]:
+    if limit <= 0:
+        return []
+    return [
+        value,
+        *(item for item in values if item.casefold() != value.casefold()),
+    ][:limit]
 
 
 def planner_from_config(config: QueryPlannerConfig) -> QueryPlanner:

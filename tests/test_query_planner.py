@@ -254,6 +254,78 @@ def test_clean_planner_payload_strips_dedupes_truncates_and_validates_intent() -
     assert plan.intent == "feature_lookup"
 
 
+@pytest.mark.parametrize(
+    ("original_query", "exact_identifier"),
+    (
+        ("useAuthStore", "useAuthStore"),
+        (" AuditStatus ", "AuditStatus"),
+        ("apply_dev", "apply_dev"),
+        ("INVOLVED_BY_ME", "INVOLVED_BY_ME"),
+    ),
+)
+def test_clean_planner_payload_enforces_original_only_for_exact_identifier(
+    original_query: str,
+    exact_identifier: str,
+) -> None:
+    plan = clean_planner_payload(
+        original_query=original_query,
+        payload={
+            "rewritten_queries": ["involved by me", "can apply"],
+            "grep_keywords": ["canApply", "findByStatus"],
+            "symbol_hints": ["canApply", "AuditStatus"],
+            "intent": "symbol_lookup",
+        },
+        config=QueryPlannerConfig(
+            max_rewritten_queries=4,
+            max_keywords=2,
+            max_symbol_hints=2,
+        ),
+        provider="openai-compatible",
+        model="Qwen/Qwen2.5-14B-Instruct",
+        latency_ms=42,
+    )
+
+    assert plan.status == "ok"
+    assert plan.rewritten_queries == []
+    assert plan.grep_keywords == [exact_identifier, "canApply"]
+    assert plan.symbol_hints == [exact_identifier, "canApply"]
+    assert plan.discarded_hints == ["involved by me", "can apply"]
+
+
+@pytest.mark.parametrize(
+    "original_query",
+    (
+        "`INVOLVED_BY_ME`",
+        "(AuditStatus)",
+        "apply_dev!",
+        "find useAuthStore",
+        "AuditStatus apply_dev",
+    ),
+)
+def test_clean_planner_payload_preserves_hints_for_non_exact_identifier_queries(
+    original_query: str,
+) -> None:
+    plan = clean_planner_payload(
+        original_query=original_query,
+        payload={
+            "rewritten_queries": ["related behavior"],
+            "grep_keywords": ["canApply"],
+            "symbol_hints": ["AuditStatus"],
+            "intent": "symbol_lookup",
+        },
+        config=QueryPlannerConfig(),
+        provider="openai-compatible",
+        model="Qwen/Qwen2.5-14B-Instruct",
+        latency_ms=42,
+    )
+
+    assert plan.status == "ok"
+    assert plan.rewritten_queries == ["related behavior"]
+    assert plan.grep_keywords == ["canApply"]
+    assert plan.symbol_hints == ["AuditStatus"]
+    assert plan.discarded_hints == []
+
+
 def test_clean_planner_payload_discards_overlong_rewrite_before_count_limit() -> None:
     overlong = "x" * 257
 
@@ -707,6 +779,9 @@ def test_openai_compatible_planner_uses_chat_completions_protocol(
     assert call["json"]["max_tokens"] == 512
     assert call["json"]["response_format"] == {"type": "json_object"}
     assert call["json"]["temperature"] == 0
+    system_prompt = call["json"]["messages"][0]["content"]
+    assert "complete query is already one code identifier" in system_prompt
+    assert "rewritten_queries as an empty array" in system_prompt
     user_payload = json.loads(call["json"]["messages"][1]["content"])
     assert user_payload["repo_profile"]["languages"] == ["python"]
 

@@ -345,7 +345,7 @@ def _p8_report(
                 "hash" if embedding == "hash" else "openai-compatible"
             ),
             "configured_model": (
-                "hash-v1" if embedding == "hash" else "BAAI/bge-m3"
+                "hash-v1" if embedding == "hash" else "Pro/BAAI/bge-m3"
             ),
             "dimensions": 384 if embedding == "hash" else 1024,
             "static_config_identity": "1" * 64,
@@ -356,7 +356,7 @@ def _p8_report(
                 else "https://api.siliconflow.cn/v1"
             ),
             "canonical_model": (
-                None if embedding == "hash" else "BAAI/bge-m3"
+                None if embedding == "hash" else "Pro/BAAI/bge-m3"
             ),
             "model_digest": None,
             "ollama_version": None,
@@ -366,7 +366,7 @@ def _p8_report(
                 if embedding == "hash"
                 else {
                     "provider": "openai-compatible",
-                    "configured_model": "BAAI/bge-m3",
+                    "configured_model": "Pro/BAAI/bge-m3",
                     "dimensions": 1024,
                     "base_url": "https://api.siliconflow.cn/v1",
                 }
@@ -376,7 +376,7 @@ def _p8_report(
                 if embedding == "hash"
                 else {
                     "provider": "openai-compatible",
-                    "configured_model": "BAAI/bge-m3",
+                    "configured_model": "Pro/BAAI/bge-m3",
                     "dimensions": 1024,
                     "base_url": "https://api.siliconflow.cn/v1",
                 }
@@ -502,7 +502,7 @@ def _p1_report(
                     "status": "ok" if is_hybrid else "disabled",
                     "provider": "openai-compatible" if is_hybrid else "",
                     "model": (
-                        "Qwen/Qwen2.5-7B-Instruct" if is_hybrid else ""
+                        "Qwen/Qwen2.5-14B-Instruct" if is_hybrid else ""
                     ),
                     "latency_ms": 10 + repetition if is_hybrid else None,
                     "rewritten_queries": (
@@ -589,7 +589,7 @@ def _p1_report(
             "config_hash": "sha256:" + "c" * 64,
             "embedding": {
                 "provider": "openai-compatible",
-                "model": "BAAI/bge-m3",
+                "model": "Pro/BAAI/bge-m3",
                 "dimensions": 1024,
                 "base_url": "https://api.siliconflow.cn/v1",
                 "api_key_env": None,
@@ -598,7 +598,7 @@ def _p1_report(
         "planner": {
             "enabled": is_hybrid,
             "provider": "openai-compatible",
-            "model": "Qwen/Qwen2.5-7B-Instruct",
+            "model": "Qwen/Qwen2.5-14B-Instruct",
             "base_url": "https://api.siliconflow.cn/v1",
             "timeout_seconds": 60.0,
             "use_system_proxy": False,
@@ -845,6 +845,7 @@ def _add_fake_p8_runner(implementation: Path) -> None:
             """
             import hashlib
             import json
+            import os
             from pathlib import Path
             import subprocess
 
@@ -949,6 +950,10 @@ def _add_fake_p8_runner(implementation: Path) -> None:
             ):
                 from context_search_tool.retrieval import query_repository
 
+                if (repos_dir / "require-isolated-global-config").exists():
+                    global_config = os.environ.get("CST_GLOBAL_CONFIG_PATH")
+                    if not global_config or Path(global_config).exists():
+                        raise ValueError("P8 global config was not isolated")
                 bundle = None
                 query = (
                     "WrongQuery"
@@ -1417,6 +1422,53 @@ def test_capture_p8_extends_legacy_projection_in_fresh_requested_child(
     }
 
 
+def test_capture_p8_isolates_hash_workspace_from_global_config(
+    tmp_path: Path,
+) -> None:
+    implementation = _write_fake_implementation(tmp_path)
+    _add_fake_p8_runner(implementation)
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    (sources / "require-isolated-global-config").touch()
+    global_config = tmp_path / "global-config.toml"
+    global_config.write_text("[embedding]\nprovider = 'openai-compatible'\n")
+    output = tmp_path / "capture.json"
+    environment = os.environ.copy()
+    environment["CST_GLOBAL_CONFIG_PATH"] = str(global_config)
+
+    completed = subprocess.run(
+        (
+            sys.executable,
+            "-P",
+            str(SCRIPT),
+            "capture-p8",
+            "--attempt-id",
+            "p8-initial",
+            "--side",
+            "baseline",
+            "--repeat",
+            "1",
+            "--implementation-root",
+            str(implementation),
+            "--sources",
+            str(sources),
+            "--embedding",
+            "hash",
+            "--timing-reps",
+            "2",
+            "--output",
+            str(output),
+        ),
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert output.is_file()
+
+
 @pytest.mark.parametrize("failure_mode", ("malformed", "wrong-query"))
 def test_capture_p8_rejects_invalid_legacy_capture_before_extension(
     tmp_path: Path,
@@ -1569,7 +1621,7 @@ def test_online_provider_settings_rejects_wrong_identity_without_secret(
             [query_planner]
             enabled = true
             provider = "openai-compatible"
-            model = "Qwen/Qwen2.5-7B-Instruct"
+            model = "Qwen/Qwen2.5-14B-Instruct"
             base_url = "https://api.siliconflow.cn/v1"
             api_key = "{secret}"
             use_system_proxy = false
@@ -1603,12 +1655,88 @@ def test_online_embedding_rate_limit_uses_a_sliding_tpm_window() -> None:
         clock[0] += seconds
 
     wait = harness["_wait_for_online_embedding_budget"]
-    wait(history, 200_000, monotonic=monotonic, sleep=sleep)
-    wait(history, 150_000, monotonic=monotonic, sleep=sleep)
+    wait(history, 80_000, monotonic=monotonic, sleep=sleep)
+    wait(history, 80_000, monotonic=monotonic, sleep=sleep)
+    wait(history, 80_000, monotonic=monotonic, sleep=sleep)
+    wait(history, 1, monotonic=monotonic, sleep=sleep)
 
-    assert sleeps == [60.0]
-    assert history == [(60.0, 150_000)]
+    assert sleeps == [2.0, 2.0, 56.0]
+    assert history == [(2.0, 80_000), (4.0, 80_000), (60.0, 1)]
     assert harness["_online_embedding_token_estimate"](("abc", "中", "abcd")) == 4
+
+
+def test_online_embedding_rate_limit_spaces_adjacent_requests() -> None:
+    harness = runpy.run_path(str(SCRIPT), run_name="p14_rate_spacing_probe")
+    history: list[tuple[float, int]] = []
+    clock = [0.0]
+    sleeps: list[float] = []
+
+    def monotonic() -> float:
+        return clock[0]
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    wait = harness["_wait_for_online_embedding_budget"]
+    wait(history, 1, monotonic=monotonic, sleep=sleep)
+    wait(history, 1, monotonic=monotonic, sleep=sleep)
+
+    assert sleeps == [2.0]
+    assert history == [(0.0, 1), (2.0, 1)]
+
+
+def test_online_embedding_batches_are_bounded_and_ordered() -> None:
+    harness = runpy.run_path(str(SCRIPT), run_name="p14_rate_batch_probe")
+    texts = ["a" * 120_000, "b" * 120_000, "c" * 120_000]
+
+    batches = harness["_online_embedding_batches"](texts)
+
+    assert batches == [[texts[0], texts[1]], [texts[2]]]
+    assert all(
+        harness["_online_embedding_token_estimate"](batch) <= 80_000
+        for batch in batches
+    )
+    with pytest.raises(ValueError, match="single input exceeds"):
+        harness["_online_embedding_batches"](["x" * 240_003])
+
+
+def test_online_embedding_batches_can_force_singleton_requests() -> None:
+    harness = runpy.run_path(str(SCRIPT), run_name="p14_rate_singleton_probe")
+    texts = ["first", "second", "third"]
+
+    batches = harness["_online_embedding_batches"](texts, singleton=True)
+
+    assert batches == [[texts[0]], [texts[1]], [texts[2]]]
+
+
+def test_online_embedding_pacer_splits_calls_and_preserves_order() -> None:
+    harness = runpy.run_path(str(SCRIPT), run_name="p14_p1_rate_probe")
+    from context_search_tool.embeddings import OpenAICompatibleEmbeddingProvider
+
+    original = OpenAICompatibleEmbeddingProvider.embed_texts
+    calls: list[list[str]] = []
+    waits: list[int] = []
+
+    def fake_embed_texts(self, texts):
+        calls.append(list(texts))
+        return [f"vector:{text}" for text in texts]
+
+    OpenAICompatibleEmbeddingProvider.embed_texts = fake_embed_texts
+    try:
+        with harness["_pace_online_embedding_requests"](
+            wait_for_budget=lambda _history, token_count: waits.append(
+                token_count
+            )
+        ):
+            provider = object.__new__(OpenAICompatibleEmbeddingProvider)
+            vectors = provider.embed_texts(["first", "second", "third"])
+    finally:
+        OpenAICompatibleEmbeddingProvider.embed_texts = original
+
+    assert calls == [["first"], ["second"], ["third"]]
+    assert vectors == ["vector:first", "vector:second", "vector:third"]
+    assert waits == [2, 2, 2]
 
 
 def test_compare_p8_rejects_ollama_online_identity(tmp_path: Path) -> None:
@@ -1737,6 +1865,7 @@ def test_compare_p8_writes_complete_ship_gate_arithmetic(
         "r2_cohort_deltas",
         "protected_winner_mismatches",
         "structural_mismatches",
+        "online_numeric_drift",
         "gates",
         "disposition",
     }
@@ -2010,6 +2139,99 @@ def test_compare_p8_non_timing_repeat_drift_is_reject_not_retry(
     assert gates["disposition"] == "reject"
 
 
+def test_compare_p8_allows_online_score_repeat_jitter_with_disclosure(
+    tmp_path: Path,
+) -> None:
+    paths = _write_valid_p8_capture_set(tmp_path)
+    for side in ("baseline", "candidate"):
+        for repeat in (1, 2):
+            reason_target = paths[f"online-{side}-r{repeat}"]
+            reason_envelope = json.loads(
+                reason_target.read_text(encoding="utf-8")
+            )
+            reason_envelope["report"]["cases"][P8_CASE_IDS[0]]["selected"][0][
+                "reasons"
+            ] = ["rerank_score=1.00 (original_direct)"]
+            reason_target.write_text(
+                json.dumps(reason_envelope, sort_keys=True)
+            )
+    target = paths["online-candidate-r2"]
+    envelope = json.loads(target.read_text(encoding="utf-8"))
+    selected = envelope["report"]["cases"][P8_CASE_IDS[0]]["selected"][0]
+    selected["score"] += 0.0001
+    selected["score_parts"]["score"] += 0.0001
+    selected["reasons"] = ["rerank_score=1.01 (original_direct)"]
+    target.write_text(json.dumps(envelope, sort_keys=True))
+    inventory = tmp_path / "eligible.json"
+    inventory.write_text(
+        json.dumps(_eligible_inventory(), sort_keys=True)
+    )
+    output = tmp_path / "gates.json"
+
+    completed = _invoke_compare_p8(paths, inventory, output)
+
+    assert completed.returncode == 0, completed.stderr
+    gates = json.loads(output.read_text(encoding="utf-8"))
+    assert gates["gates"]["repeat_determinism"] is True
+    assert gates["disposition"] == "ship"
+    assert gates["online_numeric_drift"]["repeat_pairs"] == [
+        "online-candidate"
+    ]
+
+
+def test_compare_p8_rejects_online_nonsemantic_score_part_repeat_drift(
+    tmp_path: Path,
+) -> None:
+    paths = _write_valid_p8_capture_set(tmp_path)
+    for repeat, lexical in ((1, 0.5), (2, 0.6)):
+        target = paths[f"online-candidate-r{repeat}"]
+        envelope = json.loads(target.read_text(encoding="utf-8"))
+        envelope["report"]["cases"][P8_CASE_IDS[0]]["selected"][0][
+            "score_parts"
+        ]["lexical"] = lexical
+        target.write_text(json.dumps(envelope, sort_keys=True))
+    inventory = tmp_path / "eligible.json"
+    inventory.write_text(
+        json.dumps(_eligible_inventory(), sort_keys=True)
+    )
+    output = tmp_path / "gates.json"
+
+    completed = _invoke_compare_p8(paths, inventory, output)
+
+    assert completed.returncode == 0, completed.stderr
+    gates = json.loads(output.read_text(encoding="utf-8"))
+    assert gates["gates"]["repeat_determinism"] is False
+    assert gates["disposition"] == "reject"
+
+
+def test_compare_p8_allows_online_noneligible_score_jitter_with_disclosure(
+    tmp_path: Path,
+) -> None:
+    paths = _write_valid_p8_capture_set(tmp_path)
+    for repeat in (1, 2):
+        target = paths[f"online-candidate-r{repeat}"]
+        envelope = json.loads(target.read_text(encoding="utf-8"))
+        selected = envelope["report"]["cases"][P8_CASE_IDS[1]]["selected"][0]
+        selected["score"] += 0.0001
+        selected["score_parts"]["score"] += 0.0001
+        target.write_text(json.dumps(envelope, sort_keys=True))
+    inventory = tmp_path / "eligible.json"
+    inventory.write_text(
+        json.dumps(_eligible_inventory(), sort_keys=True)
+    )
+    output = tmp_path / "gates.json"
+
+    completed = _invoke_compare_p8(paths, inventory, output)
+
+    assert completed.returncode == 0, completed.stderr
+    gates = json.loads(output.read_text(encoding="utf-8"))
+    assert gates["gates"]["noneligible_parity"] is True
+    assert gates["disposition"] == "ship"
+    assert gates["online_numeric_drift"]["noneligible_pairs"] == [
+        f"online:{P8_CASE_IDS[1]}"
+    ]
+
+
 def test_compare_p1_writes_complete_ship_gate_arithmetic(
     tmp_path: Path,
 ) -> None:
@@ -2165,28 +2387,68 @@ def test_compare_p1_rejects_config_provenance_drift(tmp_path: Path) -> None:
     assert gates["disposition"] == "reject"
 
 
-@pytest.mark.parametrize("mutation", ("score", "query-variants"))
-def test_compare_p1_vector_repeat_checks_complete_non_timing_report(
+def test_compare_p1_vector_repeat_rejects_query_variant_drift(
     tmp_path: Path,
-    mutation: str,
 ) -> None:
     catalog = SCRIPT.parent / "fixtures/retrieval_quality/queries.json"
     paths = _write_valid_p1_capture_set(tmp_path, catalog)
     target = paths["vector-candidate-r2"]
     envelope = json.loads(target.read_text(encoding="utf-8"))
     case = envelope["report"]["cases"][0]
-    if mutation == "score":
-        case["top_results"][0]["score"] = 99.0
-        case["metrics"]["top_score"] = 99.0
-    else:
-        case["query_variants"].append(
-            {
-                "variant_id": "planner:0",
-                "text": "unexpected",
-                "source": "planner",
-            }
-        )
+    case["query_variants"].append(
+        {
+            "variant_id": "planner:0",
+            "text": "unexpected",
+            "source": "planner",
+        }
+    )
     target.write_text(json.dumps(envelope, sort_keys=True))
+    output = tmp_path / "gates.json"
+
+    completed = _invoke_compare_p1(paths, catalog, output)
+
+    assert completed.returncode == 0, completed.stderr
+    gates = json.loads(output.read_text(encoding="utf-8"))
+    assert gates["gates"]["vector_repeat_determinism"] is False
+    assert gates["disposition"] == "reject"
+
+
+def test_compare_p1_vector_repeat_allows_online_score_jitter_with_disclosure(
+    tmp_path: Path,
+) -> None:
+    catalog = SCRIPT.parent / "fixtures/retrieval_quality/queries.json"
+    paths = _write_valid_p1_capture_set(tmp_path, catalog)
+    target = paths["vector-candidate-r2"]
+    envelope = json.loads(target.read_text(encoding="utf-8"))
+    case = envelope["report"]["cases"][0]
+    result = case["top_results"][0]
+    result["score"] += 0.0001
+    result["score_parts"]["score"] += 0.0001
+    case["metrics"]["top_score"] += 0.0001
+    target.write_text(json.dumps(envelope, sort_keys=True))
+    output = tmp_path / "gates.json"
+
+    completed = _invoke_compare_p1(paths, catalog, output)
+
+    assert completed.returncode == 0, completed.stderr
+    gates = json.loads(output.read_text(encoding="utf-8"))
+    assert gates["gates"]["vector_repeat_determinism"] is True
+    assert gates["disposition"] == "ship"
+    assert gates["online_numeric_drift"] == ["vector-candidate"]
+
+
+def test_compare_p1_vector_repeat_rejects_nonsemantic_score_part_drift(
+    tmp_path: Path,
+) -> None:
+    catalog = SCRIPT.parent / "fixtures/retrieval_quality/queries.json"
+    paths = _write_valid_p1_capture_set(tmp_path, catalog)
+    for repeat, lexical in ((1, 0.5), (2, 0.6)):
+        target = paths[f"vector-candidate-r{repeat}"]
+        envelope = json.loads(target.read_text(encoding="utf-8"))
+        envelope["report"]["cases"][0]["top_results"][0]["score_parts"][
+            "lexical"
+        ] = lexical
+        target.write_text(json.dumps(envelope, sort_keys=True))
     output = tmp_path / "gates.json"
 
     completed = _invoke_compare_p1(paths, catalog, output)
@@ -2210,6 +2472,58 @@ def test_compare_p1_discloses_hybrid_raw_planner_text_drift(
     gates = json.loads(output.read_text(encoding="utf-8"))
     assert gates["disposition"] == "ship"
     assert gates["hybrid_raw_planner_text_drift"]
+
+
+def test_compare_p1_allows_one_hybrid_owner_rank_step_within_top3(
+    tmp_path: Path,
+) -> None:
+    catalog = SCRIPT.parent / "fixtures/retrieval_quality/queries.json"
+    paths = _write_valid_p1_capture_set(tmp_path, catalog)
+    for repeat in (1, 2):
+        target = paths[f"hybrid-candidate-r{repeat}"]
+        envelope = json.loads(target.read_text(encoding="utf-8"))
+        owner = next(
+            case
+            for case in envelope["report"]["cases"]
+            if case["case_id"] == "audit-status-literal"
+        )
+        target_result = owner["top_results"].pop()
+        filler = dict(owner["top_results"][0])
+        filler["path"] = "owner-rank-three-filler.java"
+        owner["top_results"].extend((filler, target_result))
+        for rank, result in enumerate(owner["top_results"], start=1):
+            result["rank"] = rank
+        owner["metrics"].update(
+            {
+                "result_count": 3,
+                "hit_at_1": False,
+                "hit_at_3": True,
+                "hit_at_5": True,
+                "hit_at_10": True,
+                "mrr": 1.0 / 3.0,
+                "recall_at_5": 1.0,
+                "recall_at_10": 1.0,
+                "entrypoint_rank": (
+                    3
+                    if owner["metrics"]["entrypoint_rank"] is not None
+                    else None
+                ),
+                "top_score": owner["top_results"][0]["score"],
+            }
+        )
+        _recompute_p1_overall(envelope["report"])
+        target.write_text(json.dumps(envelope, sort_keys=True))
+    output = tmp_path / "gates.json"
+
+    completed = _invoke_compare_p1(paths, catalog, output)
+
+    assert completed.returncode == 0, completed.stderr
+    gates = json.loads(output.read_text(encoding="utf-8"))
+    assert gates["gates"]["hybrid_metrics_not_below_vector"] is True
+    assert gates["pair_metrics"]["repeat_1"]["mrr"]["tolerance"] == pytest.approx(
+        1.0 / 42.0
+    )
+    assert gates["disposition"] == "ship"
 
 
 def test_compare_p1_checks_focused_pair_metrics_in_both_repeats(
