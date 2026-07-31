@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 _CAMEL_OR_PASCAL_RE = re.compile(r"\b(?:[A-Z]{2,}(?=[A-Z][a-z])[A-Za-z0-9]*|[A-Z]?[a-z]+(?:[A-Z][A-Za-z0-9]*)+)\b")
 _SNAKE_IDENTIFIER_RE = re.compile(r"\b[a-z][a-z0-9]+(?:_[a-z0-9]+)+\b")
+_SCREAMING_SNAKE_RE = re.compile(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+")
 _FILE_HINT_RE = re.compile(r"(?i)(?<![\w.-])[\w-]+(?:\.[\w-]+)+(?![\w.-])")
 
 _ROLE_HINTS = {
@@ -60,6 +61,7 @@ class IdentifierIntent:
     file_hints: tuple[str, ...] = ()
     suffix_hints: tuple[str, ...] = ()
     role_hints: tuple[str, ...] = ()
+    exact_identifier: str | None = None
 
 
 def infer_identifier_intent(query: str, tokens: list[str]) -> IdentifierIntent:
@@ -67,6 +69,15 @@ def infer_identifier_intent(query: str, tokens: list[str]) -> IdentifierIntent:
     file_hints: list[str] = []
     suffix_hints: list[str] = []
     role_hints: list[str] = []
+
+    trimmed_query = query.strip()
+    exact_identifier = (
+        trimmed_query
+        if _CAMEL_OR_PASCAL_RE.fullmatch(trimmed_query)
+        or _SNAKE_IDENTIFIER_RE.fullmatch(trimmed_query)
+        or _SCREAMING_SNAKE_RE.fullmatch(trimmed_query)
+        else None
+    )
 
     for match in _CAMEL_OR_PASCAL_RE.findall(query):
         _append_unique(identifiers, match)
@@ -85,6 +96,7 @@ def infer_identifier_intent(query: str, tokens: list[str]) -> IdentifierIntent:
 
     return IdentifierIntent(
         identifiers=tuple(sorted(identifiers)),
+        exact_identifier=exact_identifier,
         file_hints=tuple(file_hints),
         suffix_hints=tuple(suffix_hints),
         role_hints=tuple(role_hints),

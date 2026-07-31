@@ -31,6 +31,8 @@ _PROTECTED_CASES = {
     ),
 }
 
+_P14_OWNER_OVERLAY = {"workspace-service-symbol": 0.50}
+
 
 def _p5_config():
     return replace(
@@ -88,4 +90,11 @@ def test_ready_v5_protected_direct_score_parts_are_byte_exact(
         expected["start_line"],
         expected["end_line"],
     )
-    assert _direct_score_parts(result.score_parts) == expected["direct_score_parts"]
+    observed_parts = _direct_score_parts(result.score_parts)
+    if case_id in _P14_OWNER_OVERLAY:
+        assert observed_parts["identifier_definition_owner_boost"] == (
+            _P14_OWNER_OVERLAY[case_id]
+        )
+        observed_parts = dict(observed_parts)
+        observed_parts.pop("identifier_definition_owner_boost")
+    assert observed_parts == expected["direct_score_parts"]

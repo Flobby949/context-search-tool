@@ -1990,7 +1990,62 @@ def test_exact_candidate_baseline_matches_two_real_generated_snapshots(
         PERFORMANCE / "query_cases.json",
     )
     expected = _load(PERFORMANCE / "exact_candidate_baseline.json")
-    assert generated == expected
+    queries = _load(PERFORMANCE / "query_cases.json")
+    query_tokens = {case["id"]: case["query_token"] for case in queries["cases"]}
+    p14_overlay = {
+        (
+            "path_symbol_ambiguity",
+            "AmbiguousGateway",
+        ): "171ef9a7218b91262f7aaaa2433174eb30e120e6c3ead2311d91715e898c8c6e",
+    }
+    expected_cases = {case["case_id"]: case for case in expected["cases"]}
+    normalized_generated = deepcopy(generated)
+    seen: set[tuple[str, str]] = set()
+
+    for generated_case, normalized_case in zip(
+        generated["cases"], normalized_generated["cases"]
+    ):
+        case_id = generated_case["case_id"]
+        overlay_key = (case_id, query_tokens[case_id])
+        if overlay_key not in p14_overlay:
+            assert normalized_case == generated_case
+            continue
+
+        assert overlay_key not in seen
+        seen.add(overlay_key)
+        expected_case = expected_cases[case_id]
+        for snapshot_name in ("snapshot_a", "snapshot_b"):
+            generated_snapshot = generated_case[snapshot_name]
+            expected_snapshot = expected_case[snapshot_name]
+            normalized_snapshot = normalized_case[snapshot_name]
+            generated_candidates = generated_snapshot["ordered_candidates"]
+            expected_candidates = expected_snapshot["ordered_candidates"]
+
+            assert [candidate["candidate_id"] for candidate in generated_candidates] == [
+                candidate["candidate_id"] for candidate in expected_candidates
+            ]
+            assert [candidate["source_parts"] for candidate in generated_candidates] == [
+                candidate["source_parts"] for candidate in expected_candidates
+            ]
+            assert expected_candidates[0]["score"] == 1.5
+            assert generated_candidates[0]["score"] == expected_candidates[0]["score"] + 0.50
+            assert generated_candidates[0]["score"] == 2.0
+            assert generated_candidates[1:] == expected_candidates[1:]
+
+            normalized_snapshot["ordered_candidates"][0]["score"] = expected_candidates[
+                0
+            ]["score"]
+            assert (
+                generated_snapshot["final_result_sha256"]
+                == p14_overlay[overlay_key]
+            )
+            normalized_snapshot["final_result_sha256"] = expected_snapshot[
+                "final_result_sha256"
+            ]
+            assert normalized_snapshot == expected_snapshot
+
+    assert seen == set(p14_overlay)
+    assert normalized_generated == expected
     cases = {case["case_id"]: case for case in generated["cases"]}
     assert cases["lexical_zero"]["snapshot_a"]["ordered_candidates"] == []
     fingerprints = {

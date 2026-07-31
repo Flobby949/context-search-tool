@@ -275,7 +275,12 @@ def rank_chunks(
         )
         score_parts = evidence_merge.merge_score_parts(
             score_parts,
-            _identifier_intent_score_parts(chunk, identifier_intent, path_role),
+            _identifier_intent_score_parts(
+                chunk,
+                identifier_intent,
+                path_role,
+                has_project_scope_mismatch=_has_project_scope_mismatch(score_parts),
+            ),
         )
         score_parts = evidence_merge.merge_score_parts(
             score_parts,
@@ -381,8 +386,9 @@ def rank_chunks(
     # explicit project metadata. Does not enter _combined_score.
     if len(project_units) > 1:
         anchor_item = max(ranked, key=lambda item: item['rerank_score'])
-        anchor_unit = _chunk_project_unit(anchor_item['chunk'])
-        if anchor_unit and not _query_scope_is_mixed(query_scope):
+        query_scope_is_mixed = _query_scope_is_mixed(query_scope)
+        anchor_unit = _chunk_project_unit(anchor_item["chunk"])
+        if anchor_unit and not query_scope_is_mixed:
             for item in ranked:
                 if item is anchor_item:
                     continue
@@ -420,17 +426,42 @@ def rank_chunks(
 def _ranked_chunk_sort_key(
     item: core_types._RankedChunk,
 ) -> tuple[float, int, int, float, float, float, float, str, int, str]:
+    return _ranking_sort_projection(
+        rerank_score=item.rerank_score,
+        evidence_priority=item.evidence_priority,
+        was_ceiling_clamped=item.was_ceiling_clamped,
+        pre_ceiling_rerank_score=item.pre_ceiling_rerank_score,
+        role_priority=item.score_parts.get("role_priority", 99.0),
+        combined_score=item.score,
+        file_path=item.chunk.file_path,
+        start_line=item.chunk.start_line,
+        chunk_id=item.chunk.chunk_id,
+    )
+
+
+def _ranking_sort_projection(
+    *,
+    rerank_score: float,
+    evidence_priority: int,
+    was_ceiling_clamped: bool,
+    pre_ceiling_rerank_score: float,
+    role_priority: float,
+    combined_score: float,
+    file_path: Path,
+    start_line: int,
+    chunk_id: str,
+) -> tuple[float, int, int, float, float, float, float, str, int, str]:
     return (
-        -round(item.rerank_score, ordering.RERANK_SORT_DECIMALS),
-        item.evidence_priority,
-        0 if item.was_ceiling_clamped else 1,
-        -(item.pre_ceiling_rerank_score if item.was_ceiling_clamped else 0.0),
-        item.score_parts.get("role_priority", 99.0),
-        -item.rerank_score,
-        -item.score,
-        item.chunk.file_path.as_posix(),
-        item.chunk.start_line,
-        item.chunk.chunk_id,
+        -round(rerank_score, ordering.RERANK_SORT_DECIMALS),
+        evidence_priority,
+        0 if was_ceiling_clamped else 1,
+        -(pre_ceiling_rerank_score if was_ceiling_clamped else 0.0),
+        role_priority,
+        -rerank_score,
+        -combined_score,
+        file_path.as_posix(),
+        start_line,
+        chunk_id,
     )
 
 
@@ -959,6 +990,8 @@ def _rerank_score(
     if not has_project_scope_mismatch:
         if score_parts.get("identifier_exact_match_boost", 0.0) > 0:
             rerank_score += score_parts["identifier_exact_match_boost"]
+        if score_parts.get("identifier_definition_owner_boost", 0.0) > 0:
+            rerank_score += score_parts["identifier_definition_owner_boost"]
         if score_parts.get("path_role_hint_boost", 0.0) > 0:
             rerank_score += score_parts["path_role_hint_boost"]
         if score_parts.get("path_role_mismatch_penalty", 0.0) < 0:
@@ -1284,11 +1317,17 @@ def _identifier_intent_score_parts(
     chunk: DocumentChunk,
     intent: IdentifierIntent,
     path_role: PathRole,
+    *,
+    has_project_scope_mismatch: bool,
 ) -> dict[str, float]:
     parts: dict[str, float] = {}
     identifier_score = _identifier_exact_match_score(chunk, intent)
     if identifier_score:
         parts["identifier_exact_match_boost"] = identifier_score
+
+    owner_score = _identifier_definition_owner_score(chunk, intent)
+    if owner_score and not has_project_scope_mismatch:
+        parts["identifier_definition_owner_boost"] = owner_score
 
     explicit_file_hint_score = _explicit_artifact_file_hint_score(chunk, intent)
     if explicit_file_hint_score:
@@ -1343,7 +1382,13 @@ def _identifier_exact_match_score(
     chunk: DocumentChunk,
     intent: IdentifierIntent,
 ) -> float:
-    if not intent.identifiers and not intent.file_hints:
+    identifiers = ordering.ordered_unique_preserving_case(
+        [
+            *intent.identifiers,
+            *([intent.exact_identifier] if intent.exact_identifier is not None else []),
+        ]
+    )
+    if not identifiers and not intent.file_hints:
         return 0.0
 
     path_text = chunk.file_path.as_posix().lower()
@@ -1360,7 +1405,7 @@ def _identifier_exact_match_score(
             score = max(score, 0.30)
 
     matched_identifiers = 0
-    for identifier in intent.identifiers:
+    for identifier in identifiers:
         normalized = identifier.lower()
         if normalized in symbol_names or normalized == stem_text or normalized in path_text:
             matched_identifiers += 1
@@ -1376,6 +1421,22 @@ def _identifier_exact_match_score(
         score += min(0.15, repeated_identifier_bonus)
 
     return min(score, 0.40)
+
+
+def _identifier_definition_owner_score(
+    chunk: DocumentChunk,
+    intent: IdentifierIntent,
+) -> float:
+    exact_identifier = intent.exact_identifier
+    if exact_identifier is None:
+        return 0.0
+    if any(
+        symbol.name == exact_identifier
+        and chunk.start_line <= symbol.start_line <= chunk.end_line
+        for symbol in chunk.symbols
+    ):
+        return 0.50
+    return 0.0
 
 
 def _explicit_artifact_file_hint_score(
@@ -2380,6 +2441,8 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
         reasons.append("role exact match boost")
     if score_parts.get("identifier_exact_match_boost", 0.0) > 0:
         reasons.append("explicit identifier match")
+    if score_parts.get("identifier_definition_owner_boost", 0.0) > 0:
+        reasons.append("exact identifier definition owner")
     if score_parts.get("path_role_hint_boost", 0.0) > 0:
         reasons.append("path role hint match")
     if score_parts.get("path_role_mismatch_penalty", 0.0) < 0:

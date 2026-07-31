@@ -1,4 +1,5 @@
 from dataclasses import replace
+import json
 import logging
 from pathlib import Path
 from typing import get_args, get_type_hints
@@ -27,6 +28,7 @@ from context_search_tool.context_pack import (
 )
 from context_search_tool.indexer import index_repository
 from context_search_tool.graph_lifecycle import GraphIntegrityError
+from context_search_tool.identifier_intent import infer_identifier_intent
 from context_search_tool.java_graph import JavaGraphProducer
 from context_search_tool.manifest import (
     ManifestV2,
@@ -8321,6 +8323,1106 @@ def test_identifier_intent_ranks_state_store_above_related_frontend_files(
     assert ranked[0].score_parts["path_role_hint_boost"] > 0
 
 
+def _rank_exact_identifier_definition_owner_case(
+    db_path: Path,
+    *,
+    qualifying_owner: bool,
+) -> list[core_types._RankedChunk]:
+    owner = DocumentChunk(
+        chunk_id="definition-owner",
+        file_path=Path("src/model/INVOLVED_BY_ME.java"),
+        start_line=1,
+        end_line=20,
+        content="enum AuditStatus { INVOLVED_BY_ME }",
+        chunk_type="symbol",
+        symbols=[
+            SymbolRef(
+                "INVOLVED_BY_ME" if qualifying_owner else "involved_by_me",
+                "enum_value",
+                1,
+                1,
+                "java",
+            )
+        ],
+        lexical_tokens=["involved_by_me"],
+        metadata={"language": "java"},
+    )
+    references = [
+        DocumentChunk(
+            chunk_id="controller-reference",
+            file_path=Path("src/controller/AuditController.java"),
+            start_line=1,
+            end_line=20,
+            content="class AuditController { String status = INVOLVED_BY_ME; }",
+            chunk_type="symbol",
+            lexical_tokens=["involved_by_me"],
+            metadata={"language": "java"},
+        ),
+        DocumentChunk(
+            chunk_id="executor-reference",
+            file_path=Path("src/service/AuditQueryExecutor.java"),
+            start_line=1,
+            end_line=20,
+            content="class AuditQueryExecutor { String status = INVOLVED_BY_ME; }",
+            chunk_type="symbol",
+            lexical_tokens=["involved_by_me"],
+            metadata={"language": "java"},
+        ),
+        DocumentChunk(
+            chunk_id="test-reference",
+            file_path=Path("src/test/AuditStatusTest.java"),
+            start_line=1,
+            end_line=20,
+            content="class AuditStatusTest { String expected = INVOLVED_BY_ME; }",
+            chunk_type="symbol",
+            lexical_tokens=["involved_by_me"],
+            metadata={"language": "java", "is_test": True},
+        ),
+    ]
+    candidate_parts = {
+        "definition-owner": {},
+        "controller-reference": {
+            "semantic": 0.62,
+            "lexical": 0.55,
+            "path_symbol": 3.5,
+            "direct_text": 0.90,
+        },
+        "executor-reference": {
+            "semantic": 0.56,
+            "lexical": 0.50,
+            "path_symbol": 3.0,
+            "direct_text": 0.85,
+        },
+        "test-reference": {
+            "semantic": 0.50,
+            "lexical": 0.45,
+            "path_symbol": 2.5,
+            "direct_text": 0.80,
+        },
+    }
+    return _rank_exact_identifier_chunks(
+        db_path,
+        [owner, *references],
+        candidate_parts=candidate_parts,
+    )
+
+
+def test_exact_identifier_definition_owner_moves_into_top3_with_only_bounded_rerank_delta(
+    tmp_path: Path,
+) -> None:
+    control = _rank_exact_identifier_definition_owner_case(
+        tmp_path / "control.sqlite",
+        qualifying_owner=False,
+    )
+    ranked = _rank_exact_identifier_definition_owner_case(
+        tmp_path / "owner.sqlite",
+        qualifying_owner=True,
+    )
+    control_by_id = {item.chunk.chunk_id: item for item in control}
+    ranked_by_id = {item.chunk.chunk_id: item for item in ranked}
+    owner = ranked_by_id["definition-owner"]
+    control_owner = control_by_id["definition-owner"]
+    reference_ids = (
+        "controller-reference",
+        "executor-reference",
+        "test-reference",
+    )
+
+    assert owner.score_parts["identifier_definition_owner_boost"] == pytest.approx(0.50)
+    assert all(
+        "identifier_definition_owner_boost" not in ranked_by_id[chunk_id].score_parts
+        for chunk_id in reference_ids
+    )
+    assert owner.rerank_score - control_owner.rerank_score == pytest.approx(0.50)
+    assert [item.chunk.chunk_id for item in ranked].index("definition-owner") < 3
+    assert [item.chunk.chunk_id for item in control].index("definition-owner") >= 3
+    assert [
+        item.chunk.chunk_id
+        for item in ranked
+        if item.chunk.chunk_id in reference_ids
+    ] == [
+        item.chunk.chunk_id
+        for item in control
+        if item.chunk.chunk_id in reference_ids
+    ]
+
+    ordered_ids = sorted(ranked_by_id)
+    assert [
+        ranked_by_id[chunk_id].score for chunk_id in ordered_ids
+    ] == pytest.approx(
+        [control_by_id[chunk_id].score for chunk_id in ordered_ids]
+    )
+    assert ranking.normalize_score(
+        [ranked_by_id[chunk_id].score for chunk_id in ordered_ids]
+    ) == pytest.approx(
+        ranking.normalize_score(
+            [control_by_id[chunk_id].score for chunk_id in ordered_ids]
+        )
+    )
+    for chunk_id in ordered_ids:
+        actual = ranked_by_id[chunk_id]
+        baseline = control_by_id[chunk_id]
+        assert actual.evidence_class == baseline.evidence_class
+        assert actual.evidence_priority == baseline.evidence_priority
+        assert actual.rank_tier == baseline.rank_tier
+
+
+def _rank_exact_identifier_chunks(
+    db_path: Path,
+    chunks: list[DocumentChunk],
+    *,
+    query: str = "INVOLVED_BY_ME",
+    candidate_parts: dict[str, dict[str, float]] | None = None,
+    reverse_candidate_order: bool = False,
+) -> list[core_types._RankedChunk]:
+    store = SQLiteStore(db_path)
+    store.initialize()
+    chunks_by_path: dict[Path, list[DocumentChunk]] = {}
+    for chunk in chunks:
+        chunks_by_path.setdefault(chunk.file_path, []).append(chunk)
+    for path, path_chunks in chunks_by_path.items():
+        store.replace_chunks(path, path_chunks)
+
+    ordered_chunks = list(reversed(chunks)) if reverse_candidate_order else chunks
+    candidates_by_id = {
+        chunk.chunk_id: RetrievalCandidate(
+            chunk_id=chunk.chunk_id,
+            score=1.0,
+            source="direct",
+            score_parts=(
+                candidate_parts[chunk.chunk_id]
+                if candidate_parts is not None
+                else {
+                    "semantic": 0.40,
+                    "lexical": 0.30,
+                    "direct_text": 0.70,
+                }
+            ),
+        )
+        for chunk in ordered_chunks
+    }
+    return ranking.rank_chunks(
+        store,
+        candidates_by_id,
+        tokenizer.tokenize_query(query),
+        query,
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_identifier_score"),
+    (
+        ("content-only", 0.20),
+        ("path-only", 0.30),
+        ("case-mismatch", 0.30),
+        ("symbol-substring", 0.20),
+        ("start-line-outside", 0.30),
+    ),
+)
+def test_exact_identifier_definition_owner_requires_declaration_witness(
+    tmp_path: Path,
+    case: str,
+    expected_identifier_score: float,
+) -> None:
+    path = (
+        Path("src/model/INVOLVED_BY_ME.py")
+        if case in {"path-only", "case-mismatch"}
+        else Path("src/model/AuditStatus.py")
+    )
+    content = (
+        "status = 'unrelated'"
+        if case == "path-only"
+        else "status = INVOLVED_BY_ME"
+    )
+    symbols = {
+        "content-only": [],
+        "path-only": [],
+        "case-mismatch": [
+            SymbolRef("involved_by_me", "constant", 5, 5, "python")
+        ],
+        "symbol-substring": [
+            SymbolRef("INVOLVED_BY_ME_EXTRA", "constant", 5, 5, "python")
+        ],
+        "start-line-outside": [
+            SymbolRef("INVOLVED_BY_ME", "constant", 81, 81, "python")
+        ],
+    }[case]
+    chunk = DocumentChunk(
+        chunk_id=case,
+        file_path=path,
+        start_line=1,
+        end_line=80,
+        content=content,
+        chunk_type="symbol",
+        symbols=symbols,
+        lexical_tokens=["involved_by_me"],
+        metadata={"language": "python"},
+    )
+
+    result = _rank_exact_identifier_chunks(
+        tmp_path / f"{case}.sqlite",
+        [chunk],
+    )[0]
+
+    assert result.score_parts["identifier_exact_match_boost"] == pytest.approx(
+        expected_identifier_score
+    )
+    assert "identifier_definition_owner_boost" not in result.score_parts
+    assert "exact identifier definition owner" not in result.reasons
+
+
+def test_lower_snake_definition_owner_adds_only_the_bounded_owner_feature(
+    tmp_path: Path,
+) -> None:
+    chunks = [
+        DocumentChunk(
+            chunk_id="lower-snake-owner",
+            file_path=Path("src/commands.py"),
+            start_line=1,
+            end_line=20,
+            content="def apply_dev(): pass",
+            chunk_type="symbol",
+            symbols=[
+                SymbolRef("apply_dev", "function", 5, 5, "python")
+            ],
+            lexical_tokens=["apply_dev"],
+            metadata={"language": "python"},
+        ),
+        DocumentChunk(
+            chunk_id="lower-snake-reference",
+            file_path=Path("src/runner.py"),
+            start_line=1,
+            end_line=20,
+            content="result = apply_dev()",
+            chunk_type="symbol",
+            lexical_tokens=["apply_dev"],
+            metadata={"language": "python"},
+        ),
+    ]
+
+    ranked = _rank_exact_identifier_chunks(
+        tmp_path / "lower-snake-owner.sqlite",
+        chunks,
+        query="apply_dev",
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+    owner = by_id["lower-snake-owner"]
+    reference = by_id["lower-snake-reference"]
+
+    assert owner.score_parts["identifier_exact_match_boost"] == pytest.approx(0.30)
+    assert owner.score_parts[
+        "identifier_definition_owner_boost"
+    ] == pytest.approx(0.50)
+    assert reference.score_parts["identifier_exact_match_boost"] == pytest.approx(0.20)
+    assert "identifier_definition_owner_boost" not in reference.score_parts
+    assert "exact identifier definition owner" in owner.reasons
+    assert "exact identifier definition owner" not in reference.reasons
+    assert owner.score == pytest.approx(reference.score)
+    assert owner.evidence_class == reference.evidence_class
+    assert owner.evidence_priority == reference.evidence_priority
+    assert owner.rank_tier == reference.rank_tier
+
+
+@pytest.mark.parametrize(
+    "query",
+    (
+        "find INVOLVED_BY_ME",
+        "`INVOLVED_BY_ME`",
+        "REST",
+        "/apply/audit/pageEs INVOLVED_BY_ME",
+    ),
+)
+def test_non_exact_identifier_queries_preserve_ranking_without_definition_owner(
+    tmp_path: Path,
+    query: str,
+) -> None:
+    chunks = [
+        DocumentChunk(
+            chunk_id=chunk_id,
+            file_path=Path(f"src/{chunk_id}.py"),
+            start_line=1,
+            end_line=20,
+            content="find INVOLVED_BY_ME REST",
+            chunk_type="symbol",
+            symbols=[SymbolRef("INVOLVED_BY_ME", "constant", 1, 1, "python")],
+            lexical_tokens=["find", "involved_by_me", "rest"],
+            metadata={"language": "python"},
+        )
+        for chunk_id in ("high", "low")
+    ]
+    ranked = _rank_exact_identifier_chunks(
+        tmp_path / f"non-exact-{len(query)}.sqlite",
+        chunks,
+        query=query,
+        candidate_parts={
+            "high": {"semantic": 0.60, "lexical": 0.50, "direct_text": 0.80},
+            "low": {"semantic": 0.40, "lexical": 0.30, "direct_text": 0.60},
+        },
+    )
+
+    assert infer_identifier_intent(query, tokenizer.tokenize_query(query)).exact_identifier is None
+    assert [item.chunk.chunk_id for item in ranked] == ["high", "low"]
+    assert all(
+        "identifier_exact_match_boost" not in item.score_parts
+        and "identifier_definition_owner_boost" not in item.score_parts
+        for item in ranked
+    )
+    standard_expected = [
+        {
+            "chunk_id": "high",
+            "score_parts": {
+                "combined_score": 1.0450000000000002,
+                "direct_text": 0.8,
+                "effective_semantic": 0.6,
+                "evidence_priority": 0.0,
+                "file_role_source_boost": 0.03,
+                "lexical": 0.5,
+                "rerank_score": 1.2,
+                "role_boost": 0.0,
+                "role_priority": 5.0,
+                "semantic": 0.6,
+                "token_coverage": 1.0,
+            },
+        },
+        {
+            "chunk_id": "low",
+            "score_parts": {
+                "combined_score": 0.7950000000000002,
+                "direct_text": 0.6,
+                "effective_semantic": 0.4,
+                "evidence_priority": 0.0,
+                "file_role_source_boost": 0.03,
+                "lexical": 0.3,
+                "rerank_score": 0.9607655502392345,
+                "role_boost": 0.0,
+                "role_priority": 5.0,
+                "semantic": 0.4,
+                "token_coverage": 1.0,
+            },
+        },
+    ]
+    route_expected = [
+        {
+            "chunk_id": "high",
+            "score_parts": {
+                "combined_score": 0.9307142857142858,
+                "direct_text": 0.8,
+                "effective_semantic": 0.6,
+                "evidence_priority": 0.0,
+                "file_role_source_boost": 0.03,
+                "lexical": 0.5,
+                "rerank_score": 1.2,
+                "role_boost": 0.0,
+                "role_priority": 5.0,
+                "semantic": 0.6,
+                "token_coverage": 0.42857142857142855,
+            },
+        },
+        {
+            "chunk_id": "low",
+            "score_parts": {
+                "combined_score": 0.6807142857142858,
+                "direct_text": 0.6,
+                "effective_semantic": 0.4,
+                "evidence_priority": 0.0,
+                "file_role_source_boost": 0.03,
+                "lexical": 0.3,
+                "rerank_score": 0.9313891020721412,
+                "role_boost": 0.0,
+                "role_priority": 5.0,
+                "semantic": 0.4,
+                "token_coverage": 0.42857142857142855,
+            },
+        },
+    ]
+    projection = [
+        {
+            "chunk_id": item.chunk.chunk_id,
+            "score_parts": item.score_parts,
+        }
+        for item in ranked
+    ]
+    assert projection == (
+        route_expected
+        if query == "/apply/audit/pageEs INVOLVED_BY_ME"
+        else standard_expected
+    )
+
+
+def test_exact_identifier_definition_owner_is_declaration_start_chunk_scoped(
+    tmp_path: Path,
+) -> None:
+    symbol = SymbolRef("INVOLVED_BY_ME", "class", 10, 170, "python")
+    declaration_chunk = DocumentChunk(
+        chunk_id="declaration",
+        file_path=Path("src/long_owner.py"),
+        start_line=1,
+        end_line=80,
+        content="class INVOLVED_BY_ME:\n    pass",
+        chunk_type="symbol",
+        symbols=[symbol],
+        lexical_tokens=["involved_by_me"],
+        metadata={"language": "python"},
+    )
+    overlap_chunk = DocumentChunk(
+        chunk_id="overlap",
+        file_path=Path("src/long_owner.py"),
+        start_line=81,
+        end_line=160,
+        content="# INVOLVED_BY_ME continues",
+        chunk_type="symbol",
+        symbols=[symbol],
+        lexical_tokens=["involved_by_me"],
+        metadata={"language": "python"},
+    )
+    enum_value = DocumentChunk(
+        chunk_id="enum-value",
+        file_path=Path("src/AuditStatus.java"),
+        start_line=1,
+        end_line=20,
+        content="enum AuditStatus { INVOLVED_BY_ME }",
+        chunk_type="symbol",
+        symbols=[
+            SymbolRef("INVOLVED_BY_ME", "enum_value", 5, 5, "java")
+        ],
+        lexical_tokens=["involved_by_me"],
+        metadata={"language": "java"},
+    )
+
+    ranked = _rank_exact_identifier_chunks(
+        tmp_path / "declaration-boundary.sqlite",
+        [declaration_chunk, overlap_chunk, enum_value],
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+
+    assert by_id["declaration"].score_parts[
+        "identifier_definition_owner_boost"
+    ] == pytest.approx(0.50)
+    assert "identifier_definition_owner_boost" not in by_id["overlap"].score_parts
+    assert by_id["enum-value"].score_parts[
+        "identifier_definition_owner_boost"
+    ] == pytest.approx(0.50)
+
+
+@pytest.mark.parametrize(
+    ("owner_candidate_parts", "expected_evidence_class"),
+    (
+        (
+            {"planner_relation": 0.90, "relation": 0.90},
+            "planner_relation",
+        ),
+        (
+            {"graph_seed_planner": 1.0, "graph_calls_match": 0.90},
+            "planner_relation",
+        ),
+    ),
+)
+def test_exact_identifier_definition_owner_remains_unprotected_and_ceiling_clamped(
+    tmp_path: Path,
+    owner_candidate_parts: dict[str, float],
+    expected_evidence_class: str,
+) -> None:
+    store = SQLiteStore(tmp_path / f"{expected_evidence_class}-{len(owner_candidate_parts)}.sqlite")
+    store.initialize()
+    anchor = DocumentChunk(
+        chunk_id="strong-anchor",
+        file_path=Path("src/StrongAnchor.py"),
+        start_line=1,
+        end_line=20,
+        content="status = INVOLVED_BY_ME",
+        chunk_type="symbol",
+        lexical_tokens=["involved_by_me"],
+        metadata={"language": "python"},
+    )
+    owner = DocumentChunk(
+        chunk_id="planner-owner",
+        file_path=Path("src/AuditStatus.py"),
+        start_line=1,
+        end_line=20,
+        content="status = unrelated",
+        chunk_type="symbol",
+        symbols=[
+            SymbolRef("INVOLVED_BY_ME", "constant", 5, 5, "python")
+        ],
+        lexical_tokens=[],
+        metadata={"language": "python"},
+    )
+    for chunk in (anchor, owner):
+        store.replace_chunks(chunk.file_path, [chunk])
+    candidates_by_id = {
+        "strong-anchor": RetrievalCandidate(
+            chunk_id="strong-anchor",
+            score=1.0,
+            source="direct",
+            score_parts={
+                "semantic": 0.75,
+                "lexical": 0.60,
+                "direct_text": 0.90,
+            },
+        ),
+        "planner-owner": RetrievalCandidate(
+            chunk_id="planner-owner",
+            score=1.0,
+            source="planner",
+            score_parts=owner_candidate_parts,
+        ),
+    }
+    query = "INVOLVED_BY_ME"
+    tokens = tokenizer.tokenize_query(query)
+
+    protected = ranking.protected_direct_chunk_ids(
+        store,
+        list(candidates_by_id.values()),
+        tokens,
+    )
+    ranked = ranking.rank_chunks(store, candidates_by_id, tokens, query)
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+    ranked_owner = by_id["planner-owner"]
+
+    assert "planner-owner" not in protected
+    assert ranked_owner.score_parts[
+        "identifier_definition_owner_boost"
+    ] == pytest.approx(0.50)
+    assert ranked_owner.evidence_class == expected_evidence_class
+    assert ranked_owner.evidence_priority == 3
+    assert ranked_owner.was_ceiling_clamped is True
+    assert ranked_owner.rerank_score < by_id["strong-anchor"].rerank_score
+
+
+def _rank_exact_identifier_ceiling_case(
+    db_path: Path,
+    *,
+    qualifying_owner: bool,
+) -> dict[str, core_types._RankedChunk]:
+    owner = DocumentChunk(
+        chunk_id="strong-owner",
+        file_path=Path("src/INVOLVED_BY_ME.py"),
+        start_line=1,
+        end_line=20,
+        content="status = unrelated",
+        chunk_type="symbol",
+        symbols=[
+            SymbolRef(
+                "INVOLVED_BY_ME" if qualifying_owner else "involved_by_me",
+                "constant",
+                5,
+                5,
+                "python",
+            )
+        ],
+        lexical_tokens=[],
+        metadata={"language": "python"},
+    )
+    planner = DocumentChunk(
+        chunk_id="planner-only",
+        file_path=Path("src/PlannerHint.py"),
+        start_line=1,
+        end_line=20,
+        content="status = unrelated",
+        chunk_type="symbol",
+        lexical_tokens=[],
+        metadata={"language": "python"},
+    )
+    ranked = _rank_exact_identifier_chunks(
+        db_path,
+        [owner, planner],
+        candidate_parts={
+            "strong-owner": {
+                "path_symbol": 1.0,
+            },
+            "planner-only": {
+                "planner_relation": 1.0,
+                "relation": 1.0,
+            },
+        },
+    )
+    return {item.chunk.chunk_id: item for item in ranked}
+
+
+def test_exact_identifier_definition_owner_participates_in_existing_strong_direct_ceiling(
+    tmp_path: Path,
+) -> None:
+    control = _rank_exact_identifier_ceiling_case(
+        tmp_path / "ceiling-control.sqlite",
+        qualifying_owner=False,
+    )
+    ranked = _rank_exact_identifier_ceiling_case(
+        tmp_path / "ceiling-owner.sqlite",
+        qualifying_owner=True,
+    )
+    owner = ranked["strong-owner"]
+    control_owner = control["strong-owner"]
+    planner = ranked["planner-only"]
+
+    assert (
+        owner.pre_ceiling_rerank_score
+        - control_owner.pre_ceiling_rerank_score
+        == pytest.approx(0.50)
+    )
+    assert planner.was_ceiling_clamped is True
+    assert planner.rerank_score == pytest.approx(
+        owner.rerank_score * (1.0 - 1e-6)
+    )
+
+
+def test_exact_identifier_definition_owner_does_not_bypass_scope_or_artifact_penalties(
+    tmp_path: Path,
+) -> None:
+    intended_metadata = {
+        "language": "python",
+        "project_name": "involved_by_me",
+        "project_kind": "python",
+        "project_languages": ["python"],
+        "project_root": "involved_by_me",
+        "project_scope_metadata_version": 1,
+    }
+    other_metadata = {
+        "language": "python",
+        "project_name": "other",
+        "project_kind": "python",
+        "project_languages": ["python"],
+        "project_root": "other",
+        "project_scope_metadata_version": 1,
+    }
+    scoped_reference = DocumentChunk(
+        chunk_id="scoped-reference",
+        file_path=Path("involved_by_me/reference.py"),
+        start_line=1,
+        end_line=20,
+        content="status = INVOLVED_BY_ME",
+        chunk_type="symbol",
+        lexical_tokens=["involved_by_me"],
+        metadata=intended_metadata,
+    )
+    mismatched_owner = DocumentChunk(
+        chunk_id="mismatched-owner",
+        file_path=Path("other/owner.py"),
+        start_line=1,
+        end_line=20,
+        content="status = INVOLVED_BY_ME",
+        chunk_type="symbol",
+        symbols=[
+            SymbolRef("INVOLVED_BY_ME", "constant", 5, 5, "python")
+        ],
+        lexical_tokens=["involved_by_me"],
+        metadata=other_metadata,
+    )
+    mismatched = _rank_exact_identifier_chunks(
+        tmp_path / "scope-mismatch.sqlite",
+        [scoped_reference, mismatched_owner],
+    )
+    mismatch_result = next(
+        item for item in mismatched if item.chunk.chunk_id == "mismatched-owner"
+    )
+
+    assert mismatch_result.score_parts["project_scope_mismatch_penalty"] < 0
+    assert "identifier_definition_owner_boost" not in mismatch_result.score_parts
+    assert "exact identifier definition owner" not in mismatch_result.reasons
+
+
+@pytest.mark.parametrize(
+    ("case", "path", "metadata", "expected_penalties"),
+    (
+        (
+            "generated",
+            Path("generated/AuditStatus.py"),
+            {"language": "python", "is_generated": True},
+            {
+                "penalty": -0.20,
+                "generated_schema_penalty": -0.20,
+            },
+        ),
+        (
+            "test",
+            Path("src/test/AuditStatusTest.py"),
+            {"language": "python", "is_test": True},
+            {
+                "penalty": -0.10,
+                "test_penalty": -0.10,
+                "non_source_artifact_penalty": -0.25,
+                "artifact_display_test_penalty": -0.25,
+            },
+        ),
+        (
+            "doc",
+            Path("docs/AuditStatus.md"),
+            {"language": "markdown"},
+            {
+                "non_source_artifact_penalty": -0.45,
+                "artifact_display_doc_penalty": -0.45,
+            },
+        ),
+    ),
+)
+def test_exact_identifier_definition_owner_preserves_artifact_penalties(
+    tmp_path: Path,
+    case: str,
+    path: Path,
+    metadata: dict[str, object],
+    expected_penalties: dict[str, float],
+) -> None:
+    def rank(qualifying_owner: bool) -> core_types._RankedChunk:
+        chunk = DocumentChunk(
+            chunk_id=f"{case}-owner",
+            file_path=path,
+            start_line=1,
+            end_line=20,
+            content="status = INVOLVED_BY_ME",
+            chunk_type="symbol",
+            symbols=[
+                SymbolRef(
+                    (
+                        "INVOLVED_BY_ME"
+                        if qualifying_owner
+                        else "involved_by_me"
+                    ),
+                    "constant",
+                    5,
+                    5,
+                    str(metadata["language"]),
+                )
+            ],
+            lexical_tokens=["involved_by_me"],
+            metadata=metadata,
+        )
+        return _rank_exact_identifier_chunks(
+            tmp_path / f"{case}-{qualifying_owner}.sqlite",
+            [chunk],
+        )[0]
+
+    control = rank(False)
+    owner = rank(True)
+
+    assert owner.score_parts[
+        "identifier_definition_owner_boost"
+    ] == pytest.approx(0.50)
+    assert "identifier_definition_owner_boost" not in control.score_parts
+    assert owner.rerank_score - control.rerank_score == pytest.approx(0.50)
+    assert owner.score == pytest.approx(control.score)
+    for key, value in expected_penalties.items():
+        assert owner.score_parts[key] == pytest.approx(value)
+        assert control.score_parts[key] == pytest.approx(value)
+
+
+def _project_metadata(name: str) -> dict[str, object]:
+    return {
+        "language": "python",
+        "project_name": name,
+        "project_kind": "python",
+        "project_languages": ["python"],
+        "project_root": name,
+        "project_scope_metadata_version": 1,
+    }
+
+
+def _rank_exact_identifier_cohort_case(
+    db_path: Path,
+    *,
+    qualifying_owner: bool,
+    reverse_candidate_order: bool,
+) -> list[core_types._RankedChunk]:
+    chunks = [
+        DocumentChunk(
+            chunk_id="alpha-owner",
+            file_path=Path("alpha/src/Owner.py"),
+            start_line=1,
+            end_line=20,
+            content="status = unrelated",
+            chunk_type="symbol",
+            symbols=[
+                SymbolRef(
+                    "INVOLVED_BY_ME" if qualifying_owner else "involved_by_me",
+                    "constant",
+                    5,
+                    5,
+                    "python",
+                )
+            ],
+            lexical_tokens=[],
+            metadata=_project_metadata("alpha"),
+        ),
+        DocumentChunk(
+            chunk_id="alpha-peer",
+            file_path=Path("alpha/src/Peer.py"),
+            start_line=1,
+            end_line=20,
+            content="status = unrelated",
+            chunk_type="symbol",
+            lexical_tokens=[],
+            metadata=_project_metadata("alpha"),
+        ),
+        DocumentChunk(
+            chunk_id="beta-reference",
+            file_path=Path("beta/src/Reference.py"),
+            start_line=1,
+            end_line=20,
+            content="status = INVOLVED_BY_ME",
+            chunk_type="symbol",
+            lexical_tokens=["involved_by_me"],
+            metadata=_project_metadata("beta"),
+        ),
+    ]
+    return _rank_exact_identifier_chunks(
+        db_path,
+        chunks,
+        reverse_candidate_order=reverse_candidate_order,
+        candidate_parts={
+            "alpha-owner": {
+                "semantic": 0.45,
+                "direct_text": 0.60,
+            },
+            "alpha-peer": {
+                "semantic": 0.35,
+                "direct_text": 0.45,
+            },
+            "beta-reference": {
+                "semantic": 0.55,
+                "direct_text": 0.70,
+            },
+        },
+    )
+
+
+def _canonical_ranked_projection(
+    ranked: list[core_types._RankedChunk],
+) -> bytes:
+    projection = [
+        {
+            "chunk_id": item.chunk.chunk_id,
+            "rerank_score": item.rerank_score,
+            "score_parts": item.score_parts,
+            "reasons": item.reasons,
+        }
+        for item in ranked
+    ]
+    return json.dumps(
+        projection,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def test_exact_identifier_definition_owner_preserves_cohort_cascade_under_reversed_candidate_order(
+    tmp_path: Path,
+) -> None:
+    control = _rank_exact_identifier_cohort_case(
+        tmp_path / "cohort-control.sqlite",
+        qualifying_owner=False,
+        reverse_candidate_order=False,
+    )
+    ranked = _rank_exact_identifier_cohort_case(
+        tmp_path / "cohort-owner.sqlite",
+        qualifying_owner=True,
+        reverse_candidate_order=False,
+    )
+    reversed_ranked = _rank_exact_identifier_cohort_case(
+        tmp_path / "cohort-owner-reversed.sqlite",
+        qualifying_owner=True,
+        reverse_candidate_order=True,
+    )
+    control_parts = {
+        item.chunk.chunk_id: item.score_parts for item in control
+    }
+    ranked_parts = {
+        item.chunk.chunk_id: item.score_parts for item in ranked
+    }
+
+    assert control[0].chunk.chunk_id == "beta-reference"
+    assert ranked[0].chunk.chunk_id == "alpha-owner"
+    assert control_parts["alpha-owner"]["cohort_mismatch_penalty"] == pytest.approx(
+        -ranking._COHORT_MISMATCH_PENALTY
+    )
+    assert "cohort_mismatch_penalty" not in ranked_parts["alpha-peer"]
+    assert ranked_parts["beta-reference"]["cohort_mismatch_penalty"] == pytest.approx(
+        -ranking._COHORT_MISMATCH_PENALTY
+    )
+    assert _canonical_ranked_projection(ranked) == _canonical_ranked_projection(
+        reversed_ranked
+    )
+
+
+def test_exact_identifier_duplicate_definition_owners_are_deterministic(
+    tmp_path: Path,
+) -> None:
+    chunks = [
+        DocumentChunk(
+            chunk_id="python-owner",
+            file_path=Path("a/owner.py"),
+            start_line=1,
+            end_line=20,
+            content="status = unrelated",
+            chunk_type="symbol",
+            symbols=[
+                SymbolRef("INVOLVED_BY_ME", "constant", 5, 5, "python")
+            ],
+            lexical_tokens=[],
+            metadata={"language": "python"},
+        ),
+        DocumentChunk(
+            chunk_id="java-owner",
+            file_path=Path("b/Owner.java"),
+            start_line=1,
+            end_line=20,
+            content="class Owner {}",
+            chunk_type="symbol",
+            symbols=[
+                SymbolRef("INVOLVED_BY_ME", "enum_value", 5, 5, "java")
+            ],
+            lexical_tokens=[],
+            metadata={"language": "java"},
+        ),
+    ]
+    candidate_parts = {
+        chunk.chunk_id: {"semantic": 0.40, "direct_text": 0.60}
+        for chunk in chunks
+    }
+    ranked = _rank_exact_identifier_chunks(
+        tmp_path / "duplicate-owners.sqlite",
+        chunks,
+        candidate_parts=candidate_parts,
+    )
+    reversed_ranked = _rank_exact_identifier_chunks(
+        tmp_path / "duplicate-owners-reversed.sqlite",
+        chunks,
+        candidate_parts=candidate_parts,
+        reverse_candidate_order=True,
+    )
+
+    assert all(
+        item.score_parts["identifier_definition_owner_boost"]
+        == pytest.approx(0.50)
+        for item in ranked
+    )
+    assert _canonical_ranked_projection(ranked) == _canonical_ranked_projection(
+        reversed_ranked
+    )
+
+
+def test_exact_identifier_definition_owner_preserves_frontend_cohort_caps_and_read_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert ranking._FRONTEND_IMPORT_SCAN_TOP_K == 10
+    assert ranking._FRONTEND_IMPORT_SCAN_FILE_LIMIT == 3
+    assert ranking._FRONTEND_IMPORT_MAX_FILE_BYTES == 50_000
+
+    oversized = tmp_path / "oversized.vue"
+    oversized.write_text(
+        "x" * 50_000 + '\nimport hidden from "@/services/hidden"\n',
+        encoding="utf-8",
+    )
+    bounded_content = ranking._read_frontend_import_anchor(oversized)
+    assert len(bounded_content.encode("utf-8")) == 50_000
+    assert "@/services/hidden" not in bounded_content
+
+    def ranked_item(
+        chunk_id: str,
+        path: str,
+        rerank_score: float,
+        *,
+        owner: bool = False,
+    ) -> core_types._RankedChunk:
+        score_parts = {
+            "rerank_score": rerank_score,
+            "role_priority": 5.0,
+        }
+        reasons = [chunk_id]
+        if owner:
+            score_parts["identifier_definition_owner_boost"] = 0.50
+            reasons.append("exact identifier definition owner")
+        item = _span_ranked_chunk(
+            Path(path),
+            chunk_id=chunk_id,
+            start_line=1,
+            end_line=1,
+            rerank_score=rerank_score,
+            score_parts=score_parts,
+        )
+        return replace(item, reasons=reasons)
+
+    common = [
+        ranked_item("view-a", "src/views/ViewA.vue", 2.0),
+        ranked_item("noise-1", "src/backend/noise_1.py", 1.9),
+        ranked_item("view-b", "src/views/ViewB.vue", 1.8),
+        *[
+            ranked_item(
+                f"noise-{index}",
+                f"src/backend/noise_{index}.py",
+                1.8 - index * 0.1,
+            )
+            for index in range(2, 8)
+        ],
+    ]
+    boundary = ranked_item(
+        "boundary-view",
+        "src/views/BoundaryView.vue",
+        1.0,
+    )
+    owner_control = ranked_item(
+        "owner-view",
+        "src/views/OwnerView.vue",
+        0.9,
+    )
+    owner_enabled = ranked_item(
+        "owner-view",
+        "src/views/OwnerView.vue",
+        1.4,
+        owner=True,
+    )
+    control = sorted(
+        [*common, boundary, owner_control],
+        key=ranking._ranked_chunk_sort_key,
+    )
+    enabled = sorted(
+        [*common, boundary, owner_enabled],
+        key=ranking._ranked_chunk_sort_key,
+    )
+    enabled_reversed = sorted(
+        reversed([*common, boundary, owner_enabled]),
+        key=ranking._ranked_chunk_sort_key,
+    )
+
+    read_paths: list[str] = []
+
+    def record_read(path: Path) -> str:
+        read_paths.append(path.relative_to(tmp_path).as_posix())
+        return ""
+
+    monkeypatch.setattr(ranking, "_read_frontend_import_anchor", record_read)
+    ranking.apply_frontend_import_cohort_rerank(tmp_path, control, "INVOLVED_BY_ME")
+    control_reads = tuple(read_paths)
+    read_paths.clear()
+    ranking.apply_frontend_import_cohort_rerank(tmp_path, enabled, "INVOLVED_BY_ME")
+    enabled_reads = tuple(read_paths)
+    read_paths.clear()
+    ranking.apply_frontend_import_cohort_rerank(
+        tmp_path,
+        enabled_reversed,
+        "INVOLVED_BY_ME",
+    )
+
+    assert [item.chunk.chunk_id for item in control[:10]].index(
+        "boundary-view"
+    ) < 10
+    assert "owner-view" not in {
+        item.chunk.chunk_id for item in control[:10]
+    }
+    assert "owner-view" in {
+        item.chunk.chunk_id for item in enabled[:10]
+    }
+    assert control_reads == (
+        "src/views/ViewA.vue",
+        "src/views/ViewB.vue",
+        "src/views/BoundaryView.vue",
+    )
+    assert enabled_reads == (
+        "src/views/ViewA.vue",
+        "src/views/ViewB.vue",
+        "src/views/OwnerView.vue",
+    )
+    assert tuple(read_paths) == enabled_reads
+
+
 def test_identifier_intent_ranks_composable_above_chat_types_and_views(
     tmp_path: Path,
 ) -> None:
@@ -11897,6 +12999,63 @@ def test_rerank_merge_frontend_import_boost_is_winner_scoped() -> None:
 
     assert merged.rerank_score == 0.8
     assert "frontend_import_support_boost" not in merged.score_parts
+
+
+@pytest.mark.parametrize("owner_wins", (True, False))
+def test_definition_owner_expansion_boost_is_winner_scoped(
+    owner_wins: bool,
+) -> None:
+    owner_score = 0.90 if owner_wins else 0.60
+    reference_score = 0.60 if owner_wins else 0.90
+    owner = core_types._ExpandedResult(
+        chunk_ids=["owner"],
+        file_path=Path("src/AuditStatus.java"),
+        start_line=1,
+        end_line=5,
+        content="\n".join(f"line{line}" for line in range(1, 6)),
+        score=1.2,
+        score_parts={
+            "combined_score": 1.2,
+            "rerank_score": owner_score,
+            "identifier_definition_owner_boost": 0.50,
+        },
+        reasons=["exact identifier definition owner"],
+        followup_keywords=[],
+        rank_tier=1,
+        rerank_score=owner_score,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+    reference = core_types._ExpandedResult(
+        chunk_ids=["reference"],
+        file_path=Path("src/AuditStatus.java"),
+        start_line=4,
+        end_line=8,
+        content="\n".join(f"line{line}" for line in range(4, 9)),
+        score=1.1,
+        score_parts={
+            "combined_score": 1.1,
+            "rerank_score": reference_score,
+        },
+        reasons=["reference winner"],
+        followup_keywords=[],
+        rank_tier=1,
+        rerank_score=reference_score,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+
+    merged = context_expansion._merge_expanded_result(owner, reference)
+
+    expected_winner = owner if owner_wins else reference
+    assert merged.rerank_score == expected_winner.rerank_score
+    assert merged.reasons == expected_winner.reasons
+    if owner_wins:
+        assert merged.score_parts[
+            "identifier_definition_owner_boost"
+        ] == pytest.approx(0.50)
+    else:
+        assert "identifier_definition_owner_boost" not in merged.score_parts
 
 
 def test_merge_score_parts_preserves_stronger_penalty() -> None:

@@ -44,6 +44,10 @@ _PROTECTED_DIRECT_FIXTURES = {
     "order-service-symbol": "tests/fixtures/real_projects/embedding_ab",
 }
 
+_P14_PROTECTED_DIRECT_OWNER_OVERLAY = {
+    ("workspace-service-symbol", "WorkspaceServiceImpl"): 0.50,
+}
+
 # The Task-1 manifest records planned proof labels, including one historical
 # non-runtime alias. They select structural relation kinds only; none is treated
 # as a runtime score-part key here.
@@ -373,6 +377,7 @@ def test_protected_direct_and_no_edge_projections_are_exact(
 ) -> None:
     config = _p5_config()
     manifest = load_input_manifest()
+    seen_p14_owner_overlays: set[tuple[str, str]] = set()
 
     for expected in manifest["evidence"]["protected_direct"]:
         case_id = expected["case_id"]
@@ -388,7 +393,24 @@ def test_protected_direct_and_no_edge_projections_are_exact(
             "end_line": winner.end_line,
             "direct_score_parts": _direct_score_parts(winner.score_parts),
         }
-        assert observed == expected
+        overlay_key = (case_id, expected["query"])
+        normalized_observed = observed
+        if overlay_key in _P14_PROTECTED_DIRECT_OWNER_OVERLAY:
+            owner_boost = _P14_PROTECTED_DIRECT_OWNER_OVERLAY[overlay_key]
+            assert observed["direct_score_parts"][
+                "identifier_definition_owner_boost"
+            ] == owner_boost
+            normalized_observed = {
+                **observed,
+                "direct_score_parts": dict(observed["direct_score_parts"]),
+            }
+            normalized_observed["direct_score_parts"].pop(
+                "identifier_definition_owner_boost"
+            )
+            seen_p14_owner_overlays.add(overlay_key)
+        assert normalized_observed == expected
+
+    assert seen_p14_owner_overlays == set(_P14_PROTECTED_DIRECT_OWNER_OVERLAY)
 
     expected_no_edge = json.loads(
         PRE_P5_NO_EDGE_PATH.read_text(encoding="utf-8")

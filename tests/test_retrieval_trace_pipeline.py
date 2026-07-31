@@ -39,7 +39,9 @@ from context_search_tool.models import (
     QueryVariant,
     RetrievalCandidate,
     SemanticMatch,
+    SymbolRef,
 )
+from context_search_tool.paths import index_dir_for
 from context_search_tool.retrieval_trace import (
     CANONICAL_TRACE_STAGES,
     TraceLimits,
@@ -61,6 +63,41 @@ def _indexed_repo(tmp_path: Path) -> tuple[Path, ToolConfig]:
     repo.mkdir()
     (repo / "AuditController.py").write_text(
         "def audit_status():\n    return 'INVOLVED_BY_ME'\n",
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=8,
+            lexical_top_k=8,
+            final_top_k=4,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    index_repository(repo, config)
+    return repo, config
+
+
+def _indexed_definition_owner_repo(tmp_path: Path) -> tuple[Path, ToolConfig]:
+    repo = tmp_path / "definition-owner-repo"
+    repo.mkdir()
+    (repo / "AuditStatus.java").write_text(
+        """
+enum AuditStatus {
+    INVOLVED_BY_ME
+}
+// PRIVATE_OWNER_SOURCE_SENTINEL
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (repo / "AuditController.java").write_text(
+        """
+class AuditController {
+    String status = "INVOLVED_BY_ME";
+}
+""".strip()
+        + "\n",
         encoding="utf-8",
     )
     config = ToolConfig(
@@ -417,6 +454,50 @@ def test_complete_trace_has_all_canonical_stages_and_final_provenance(
         assert all(adjustment.value != 0 for adjustment in selection.adjustments)
 
 
+def test_exact_identifier_definition_owner_trace_preserves_schema_rank_reason_and_privacy(
+    tmp_path: Path,
+) -> None:
+    repo, config = _indexed_definition_owner_repo(tmp_path)
+
+    traced = retrieval.trace_repository(repo, "INVOLVED_BY_ME", config)
+    selection = next(
+        item
+        for item in traced.trace.final_selections
+        if item.file_path == "AuditStatus.java"
+    )
+    result = next(
+        item
+        for item in traced.bundle.results
+        if item.file_path == Path("AuditStatus.java")
+    )
+    adjustments = {
+        adjustment.name: adjustment.value
+        for adjustment in selection.adjustments
+    }
+    trace_strings = _all_strings(asdict(traced.trace))
+
+    assert traced.trace.schema_version == 1
+    assert [stage.name for stage in traced.trace.stages] == list(
+        CANONICAL_TRACE_STAGES
+    )
+    assert "exact identifier definition owner" in selection.reasons
+    assert adjustments["identifier_definition_owner_boost"] == pytest.approx(0.50)
+    assert selection.rank_history[-1].stage == "final_selection"
+    assert selection.score == pytest.approx(selection.rank_history[-1].score)
+    assert selection.score == pytest.approx(result.score)
+    assert selection.score == pytest.approx(result.score_parts["rerank_score"])
+    assert adjustments["identifier_definition_owner_boost"] == pytest.approx(
+        result.score_parts["identifier_definition_owner_boost"]
+    )
+    assert result.score_parts["combined_score"] != pytest.approx(selection.score)
+    assert "PRIVATE_OWNER_SOURCE_SENTINEL" not in trace_strings
+    assert all(
+        not Path(value).is_absolute()
+        for value in trace_strings
+        if "/" in value
+    )
+
+
 def test_final_selection_stage_explains_limits_and_anchor_duplicates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -587,6 +668,148 @@ def test_merged_final_selection_keeps_origins_best_ranks_and_clamp() -> None:
     assert "semantic" not in adjustment_names
     assert "combined_score" not in adjustment_names
     assert "SOURCE_CONTENT_SENTINEL" not in repr(selection)
+
+
+def test_definition_owner_trace_reports_existing_ceiling_clamp_adjustment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, config = _indexed_definition_owner_repo(tmp_path)
+    store = SQLiteStore(index_dir_for(repo) / "index.sqlite")
+    owner = DocumentChunk(
+        chunk_id="controlled-owner",
+        file_path=Path("AuditStatus.java"),
+        start_line=1,
+        end_line=5,
+        content="status = unrelated",
+        chunk_type="symbol",
+        symbols=[
+            SymbolRef("INVOLVED_BY_ME", "enum_value", 2, 2, "java")
+        ],
+        lexical_tokens=[],
+        metadata={"language": "java"},
+    )
+    anchor = DocumentChunk(
+        chunk_id="controlled-anchor",
+        file_path=Path("AuditController.java"),
+        start_line=1,
+        end_line=3,
+        content="status = INVOLVED_BY_ME",
+        chunk_type="symbol",
+        lexical_tokens=["involved_by_me"],
+        metadata={"language": "java"},
+    )
+    store.replace_chunks(owner.file_path, [owner])
+    store.replace_chunks(anchor.file_path, [anchor])
+
+    owner_candidate = RetrievalCandidate(
+        chunk_id=owner.chunk_id,
+        score=1.0,
+        source="planner_relation",
+        score_parts={"planner_relation": 1.0, "relation": 1.0},
+    )
+    anchor_candidate = RetrievalCandidate(
+        chunk_id=anchor.chunk_id,
+        score=0.8,
+        source="lexical",
+        score_parts={"lexical": 0.8},
+    )
+
+    def no_semantic(snapshot, variants, *args, **kwargs):
+        return [], variants[:1], "original_only", None
+
+    monkeypatch.setattr(candidates, "semantic_candidates_from_snapshot", no_semantic)
+    monkeypatch.setattr(
+        candidates,
+        "lexical_candidates",
+        lambda *args, **kwargs: [anchor_candidate],
+    )
+    monkeypatch.setattr(
+        candidates,
+        "path_symbol_candidates",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        candidates,
+        "direct_text_candidates",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        candidates,
+        "signal_candidates",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        candidates,
+        "planner_hint_candidates",
+        lambda *args, **kwargs: [owner_candidate],
+    )
+    monkeypatch.setattr(
+        expansion,
+        "anchor_candidates",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        expansion,
+        "relation_candidates",
+        lambda *args, **kwargs: [],
+    )
+
+    traced = retrieval.trace_repository(repo, "INVOLVED_BY_ME", config)
+    trace_selection = next(
+        item
+        for item in traced.trace.final_selections
+        if item.file_path == "AuditStatus.java"
+    )
+    adjustments = {
+        adjustment.name: adjustment.value
+        for adjustment in trace_selection.adjustments
+    }
+
+    assert adjustments["identifier_definition_owner_boost"] == pytest.approx(0.50)
+    assert adjustments["planner_ceiling_clamp"] < 0
+    assert trace_selection.score == pytest.approx(
+        trace_selection.rank_history[-1].score
+    )
+    assert tuple(item.stage for item in trace_selection.rank_history) == (
+        "ranking",
+        "cohort_rerank",
+        "context_expansion",
+        "final_selection",
+    )
+    assert "exact identifier definition owner" in trace_selection.reasons
+    assert "status = unrelated" not in repr(trace_selection)
+
+
+def test_exact_identifier_scope_mismatch_trace_omits_definition_owner_attribution() -> None:
+    mismatch = core_types._ExpandedResult(
+        chunk_ids=["mismatched-owner"],
+        file_path=Path("other/AuditStatus.py"),
+        start_line=1,
+        end_line=10,
+        content="PRIVATE_SCOPE_MISMATCH_SOURCE",
+        score=0.8,
+        score_parts={
+            "combined_score": 0.8,
+            "rerank_score": 0.7,
+            "project_scope_mismatch_penalty": -0.06,
+        },
+        reasons=["project scope mismatch penalty"],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=0.7,
+        evidence_class="original_direct",
+        evidence_priority=0,
+    )
+
+    adjustments, omitted = tracing._adjustments(mismatch, TraceLimits().adjustment_top_k)
+    adjustment_names = {adjustment.name for adjustment in adjustments}
+
+    assert omitted == 0
+    assert "project_scope_mismatch_penalty" in adjustment_names
+    assert "identifier_definition_owner_boost" not in adjustment_names
+    assert "exact identifier definition owner" not in mismatch.reasons
+    assert "PRIVATE_SCOPE_MISMATCH_SOURCE" not in repr(adjustments)
 
 
 @pytest.mark.parametrize("entrypoint", ["plain", "traced"])

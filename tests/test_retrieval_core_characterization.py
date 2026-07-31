@@ -166,7 +166,6 @@ _DISABLED_PROFILE_OPERATIONS = {
     "sqlite.token_counts_for_profile",
 }
 
-
 def _load_baseline() -> dict[str, object]:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
 
@@ -299,6 +298,20 @@ EXPECTED_P9_FINAL_TRACE_HASHES: dict[tuple[str, str, str], str] = {
     ): "9c2f45cafef740f2e3913e48e822c4cdc9b667ba88201e66da2a9f609299aae5",
 }
 
+EXPECTED_P14_DEFINITION_OWNER_CASE_HASHES = {
+    (
+        "p2_context_pack",
+        "context_pack_java",
+        "workspace-service-symbol",
+    ): {
+        "json_sha256": "6c1d0daa69c960697e8a3fdaa2b375bfe1c83117ebe535378aec06d5ec0853d8",
+        "markdown_sha256": "9330ecc7f0134d143b73f9bf36bff4c8e8ac73c0094d8bd00ef764c98b4a7061",
+        "trace_json_sha256": "877ebefafcac7ab65530fe3194864b1347c4869bd93990f8f37d0863bfd6bda0",
+        "internal_bundle_sha256": "428144831ffdc16e52628dfc64b56d795f7b7b9c5df55acbdd2a025c1237f1e9",
+        "context_pack_sha256": "23f276db9ff84319df06bfd2ea433d004635eaa2e81ab57776a62619add12bcc",
+    },
+}
+
 
 def _normalize_p9_final_trace_delta(
     actual: dict[str, object],
@@ -356,6 +369,55 @@ def _normalize_p9_final_trace_delta(
                 "protected fixture case activated the relation quota"
             )
             counts.pop(entry_index)
+    return normalized
+
+
+def _normalize_p14_definition_owner_delta(
+    actual: dict[str, object],
+    expected: dict[str, object],
+) -> dict[str, object]:
+    normalized = deepcopy(actual)
+    expected_cases = {
+        (case["profile"], case["repo_key"], case["case_id"]): case
+        for case in expected["cases"]
+    }
+    seen: set[tuple[str, str, str]] = set()
+
+    for case in normalized["cases"]:
+        key = (case["profile"], case["repo_key"], case["case_id"])
+        p14_hashes = EXPECTED_P14_DEFINITION_OWNER_CASE_HASHES.get(key)
+        if p14_hashes is None:
+            continue
+        seen.add(key)
+        assert case["query"] == "WorkspaceServiceImpl"
+        assert case["hashes"] == {
+            name: value
+            for name, value in p14_hashes.items()
+            if name != "context_pack_sha256"
+        }
+        assert (
+            case["context_pack"]["sha256"]
+            == p14_hashes["context_pack_sha256"]
+        )
+
+        expected_case = expected_cases[key]
+        for name in (
+            "json_sha256",
+            "markdown_sha256",
+            "internal_bundle_sha256",
+        ):
+            assert case["hashes"][name] != expected_case["hashes"][name]
+            case["hashes"][name] = expected_case["hashes"][name]
+        case["hashes"]["trace_json_sha256"] = EXPECTED_P9_FINAL_TRACE_HASHES[
+            key
+        ]
+        assert (
+            case["context_pack"]["sha256"]
+            != expected_case["context_pack"]["sha256"]
+        )
+        case["context_pack"]["sha256"] = expected_case["context_pack"]["sha256"]
+
+    assert seen == set(EXPECTED_P14_DEFINITION_OWNER_CASE_HASHES)
     return normalized
 
 
@@ -667,7 +729,13 @@ def test_characterization_matches_immutable_baseline(tmp_path: Path) -> None:
     normalized_actual = _without_disabled_profile_work(
         _normalize_followup_filter_delta(
             _normalize_p7_final_trace_delta(
-                _normalize_p9_final_trace_delta(actual, expected),
+                _normalize_p9_final_trace_delta(
+                    _normalize_p14_definition_owner_delta(
+                        actual,
+                        expected,
+                    ),
+                    expected,
+                ),
                 expected,
             ),
             expected,

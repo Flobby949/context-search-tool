@@ -230,8 +230,21 @@ P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/embeddings_bge.py",
 }
 
+P14_DEFINITION_OWNER_REVIEWED_PRODUCTION_CHANGES = {
+    "src/context_search_tool/identifier_intent.py",
+    "src/context_search_tool/retrieval_core/context_expansion.py",
+    "src/context_search_tool/retrieval_core/ranking.py",
+}
+
 OPENAI_COMPATIBLE_PLANNER_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/query_planner.py",
+}
+
+P14_DIRECT_REFERENCE_COUNT_DELTAS = {
+    (
+        "trace_repository",
+        "tests/test_retrieval_trace_pipeline.py",
+    ): 2,
 }
 
 REVIEWED_PRODUCTION_CHANGES = (
@@ -245,6 +258,7 @@ REVIEWED_PRODUCTION_CHANGES = (
     | P8_PYTHON_GRAPH_PRODUCTION_CHANGES
     | P9_RELATION_SLOT_PRODUCTION_CHANGES
     | P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES
+    | P14_DEFINITION_OWNER_REVIEWED_PRODUCTION_CHANGES
     | OPENAI_COMPATIBLE_PLANNER_REVIEWED_PRODUCTION_CHANGES
 )
 
@@ -351,6 +365,8 @@ def _is_p4_public_facade_reference(reference: dict[str, object]) -> bool:
 def _normalize_current_test_reference(
     reference: dict[str, object],
     frozen: list[dict[str, object]],
+    *,
+    count_delta: int = 0,
 ) -> dict[str, object]:
     if reference["file"] not in {
         THIS_TEST_PATH,
@@ -361,7 +377,7 @@ def _normalize_current_test_reference(
     frozen_reference = next(
         item for item in frozen if item["file"] == reference["file"]
     )
-    assert reference["count"] == frozen_reference["count"]
+    assert reference["count"] == frozen_reference["count"] + count_delta
     assert reference["syntax_kinds"] == frozen_reference["syntax_kinds"]
     return frozen_reference
 
@@ -908,7 +924,14 @@ def test_migration_ledger_matches_complete_ast_and_dynamic_inventory() -> None:
 
         frozen_references = frozen_row["direct_references"]
         actual_references = [
-            _normalize_current_test_reference(item, frozen_references)
+            _normalize_current_test_reference(
+                item,
+                frozen_references,
+                count_delta=P14_DIRECT_REFERENCE_COUNT_DELTAS.get(
+                    (actual_row["old_symbol"], item["file"]),
+                    0,
+                ),
+            )
             for item in actual_row["direct_references"]
         ]
         assert all(item in actual_references for item in frozen_references)
@@ -916,9 +939,16 @@ def test_migration_ledger_matches_complete_ast_and_dynamic_inventory() -> None:
             item for item in actual_references if item not in frozen_references
         ]
         assert all(_is_p4_public_facade_reference(item) for item in additions)
+        reviewed_count_delta = sum(
+            P14_DIRECT_REFERENCE_COUNT_DELTAS.get(
+                (actual_row["old_symbol"], item["file"]),
+                0,
+            )
+            for item in actual_row["direct_references"]
+        )
         assert actual_row["remaining"] == frozen_row["remaining"] + sum(
             item["count"] for item in additions
-        )
+        ) + reviewed_count_delta
         actual_row["direct_references"] = frozen_references
         actual_row["remaining"] = frozen_row["remaining"]
 
@@ -967,6 +997,14 @@ def test_p13_bge_provider_reviewed_production_overlay_is_exact() -> None:
     assert P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES == {
         "src/context_search_tool/embeddings.py",
         "src/context_search_tool/embeddings_bge.py",
+    }
+
+
+def test_p14_definition_owner_reviewed_production_overlay_is_exact() -> None:
+    assert P14_DEFINITION_OWNER_REVIEWED_PRODUCTION_CHANGES == {
+        "src/context_search_tool/identifier_intent.py",
+        "src/context_search_tool/retrieval_core/context_expansion.py",
+        "src/context_search_tool/retrieval_core/ranking.py",
     }
 
 

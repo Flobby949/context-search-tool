@@ -105,6 +105,12 @@ P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/embeddings_bge.py",
 }
 
+P14_DEFINITION_OWNER_REVIEWED_PRODUCTION_CHANGES = {
+    "src/context_search_tool/identifier_intent.py",
+    "src/context_search_tool/retrieval_core/context_expansion.py",
+    "src/context_search_tool/retrieval_core/ranking.py",
+}
+
 OPENAI_COMPATIBLE_PLANNER_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/query_planner.py",
 }
@@ -117,6 +123,7 @@ REVIEWED_PRODUCTION_CHANGES = (
     | P8_PYTHON_GRAPH_PRODUCTION_CHANGES
     | P9_RELATION_SLOT_PRODUCTION_CHANGES
     | P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES
+    | P14_DEFINITION_OWNER_REVIEWED_PRODUCTION_CHANGES
     | OPENAI_COMPATIBLE_PLANNER_REVIEWED_PRODUCTION_CHANGES
 )
 
@@ -198,6 +205,14 @@ def test_p13_bge_provider_reviewed_production_overlay_is_exact() -> None:
     assert P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES == {
         "src/context_search_tool/embeddings.py",
         "src/context_search_tool/embeddings_bge.py",
+    }
+
+
+def test_p14_definition_owner_reviewed_production_overlay_is_exact() -> None:
+    assert P14_DEFINITION_OWNER_REVIEWED_PRODUCTION_CHANGES == {
+        "src/context_search_tool/identifier_intent.py",
+        "src/context_search_tool/retrieval_core/context_expansion.py",
+        "src/context_search_tool/retrieval_core/ranking.py",
     }
 
 

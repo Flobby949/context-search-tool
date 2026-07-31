@@ -326,6 +326,7 @@ def _merge_expanded_result(
         "file_hint_match_boost",
         "role_exact_match_boost",
         "identifier_exact_match_boost",
+        "identifier_definition_owner_boost",
         "path_role_hint_boost",
         "path_role_mismatch_penalty",
         "impl_match_boost",
