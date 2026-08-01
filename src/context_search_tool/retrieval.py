@@ -18,6 +18,7 @@ from context_search_tool.config import ToolConfig, read_config
 from context_search_tool.graph_lifecycle import GraphIntegrityError
 from context_search_tool.models import (
     EvidenceAnchor,
+    ExactImportedSymbolProvenance,
     QueryPlan,
     QueryVariant,
     RetrievalResult,
@@ -310,7 +311,8 @@ def _query_repository_impl(
     )
     repo_profile = (
         build_repo_profile(store)
-        if planner is not None or config.query_planner.enabled
+        if config.query_planner.send_repo_profile
+        and (planner is not None or config.query_planner.enabled)
         else None
     )
     plan = planner_instance.plan(query, repo_profile=repo_profile)
@@ -555,6 +557,7 @@ def _query_repository_impl(
         if graph_session is not None
         else set()
     )
+    exact_imported_symbol_provenance = []
     relation_candidates = expansion.relation_candidates(
         store,
         list(relation_seed_candidates.values()),
@@ -562,6 +565,7 @@ def _query_repository_impl(
         graph_session=graph_session,
         test_intent=has_test_intent,
         protected_chunk_ids=protected_chunk_ids,
+        exact_imported_symbol_provenance=exact_imported_symbol_provenance,
     )
     if graph_session is not None and graph_session.graph_fault is not None:
         planner_candidates = [
@@ -573,6 +577,7 @@ def _query_repository_impl(
             [*initial_candidates, *planner_candidates]
         )
         relation_candidates = []
+        exact_imported_symbol_provenance = []
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_candidate_stage(
         trace_collector,
@@ -587,6 +592,23 @@ def _query_repository_impl(
         *direct_candidates.values(),
         *anchor_candidates,
         *relation_candidates,
+    ]
+    provenance_by_chunk: dict[str, set[ExactImportedSymbolProvenance]] = {}
+    for atom in exact_imported_symbol_provenance:
+        provenance_by_chunk.setdefault(atom.target_chunk_id, set()).add(atom)
+    all_candidates = [
+        replace(
+            candidate,
+            exact_imported_symbol_provenance=tuple(
+                sorted(
+                    {
+                        *candidate.exact_imported_symbol_provenance,
+                        *provenance_by_chunk.get(candidate.chunk_id, set()),
+                    }
+                )
+            ),
+        )
+        for candidate in all_candidates
     ]
     token = tracing.start_stage(
         trace_collector,
@@ -659,6 +681,21 @@ def _query_repository_impl(
         ranked=ranked_chunks,
         candidates=merged_candidates,
     )
+
+    ranked_chunks = ranking.apply_exact_imported_symbol_bonus(
+        ranked_chunks,
+        merged_candidates,
+        query,
+    )
+    if config.retrieval.consume_dependency_hints:
+        ranked_chunks = ranking.apply_planner_dependency_hint_promotions(
+            ranked_chunks,
+            merged_candidates,
+            plan,
+            query,
+            graph_session,
+            final_top_k=config.retrieval.final_top_k,
+        )
 
     token = tracing.start_stage(
         trace_collector,

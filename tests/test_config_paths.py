@@ -170,6 +170,7 @@ lexical_top_k = 80
 final_top_k = 12
 context_before_lines = 8
 context_after_lines = 12
+consume_dependency_hints = false
 
 [context]
 max_items = 12

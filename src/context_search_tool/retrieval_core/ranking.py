@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from dataclasses import dataclass
+import math
+import unicodedata
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from context_search_tool import sqlite_store, tokenizer
@@ -14,7 +16,12 @@ from context_search_tool.frontend_roles import (
     resolve_frontend_import,
 )
 from context_search_tool.identifier_intent import IdentifierIntent, infer_identifier_intent
-from context_search_tool.models import CodeSignal, DocumentChunk, RetrievalCandidate
+from context_search_tool.models import (
+    CodeSignal,
+    DocumentChunk,
+    QueryPlan,
+    RetrievalCandidate,
+)
 from context_search_tool.path_roles import PathRole, classify_path_role
 from context_search_tool.project_scope import (
     QueryScope,
@@ -74,6 +81,9 @@ _FRONTEND_IMPORT_SCAN_FILE_LIMIT = 3
 _FRONTEND_IMPORT_MAX_FILE_BYTES = 50_000
 _FRONTEND_IMPORT_SUPPORT_BOOST = 0.30
 _FRONTEND_IMPORT_ANCHOR_EPSILON = 10 ** -ordering.RERANK_SORT_DECIMALS
+_EXACT_IMPORTED_SYMBOL_BONUS = 0.04
+_PLANNER_DEPENDENCY_MAX_PROMOTIONS = 2
+_PLANNER_DEPENDENCY_PROMOTION_STEP = 10 ** -ordering.RERANK_SORT_DECIMALS
 _FRONTEND_IMPORT_ANCHOR_ROLES = {
     "view_page",
     "layout_component",
@@ -539,6 +549,248 @@ def apply_frontend_import_cohort_rerank(
         )
 
     return sorted(adjusted, key=_ranked_chunk_sort_key)
+
+
+def apply_exact_imported_symbol_bonus(
+    ranked_chunks: list[core_types._RankedChunk],
+    candidates: dict[str, RetrievalCandidate],
+    query: str,
+) -> list[core_types._RankedChunk]:
+    eligible = [
+        ranked
+        for ranked in ranked_chunks
+        if (candidate := candidates.get(ranked.chunk.chunk_id)) is not None
+        if any(
+            atom.target_file_path == ranked.chunk.file_path.as_posix()
+            and atom.target_chunk_id == ranked.chunk.chunk_id
+            for atom in candidate.exact_imported_symbol_provenance
+        )
+    ]
+    if not eligible:
+        return ranked_chunks
+
+    winner = min(eligible, key=_ranked_chunk_sort_key)
+    score_parts = dict(winner.score_parts)
+    existing_bonus = score_parts.get("exact_imported_symbol", 0.0)
+    bonus_delta = max(0.0, _EXACT_IMPORTED_SYMBOL_BONUS - existing_bonus)
+    if bonus_delta <= 0.0:
+        return sorted(ranked_chunks, key=_ranked_chunk_sort_key)
+
+    rerank_score = winner.rerank_score + bonus_delta
+    score_parts["exact_imported_symbol"] = _EXACT_IMPORTED_SYMBOL_BONUS
+    score_parts["rerank_score"] = rerank_score
+    adjusted = [
+        replace(
+            ranked,
+            rerank_score=rerank_score,
+            score_parts=score_parts,
+            reasons=_reasons(score_parts, query),
+        )
+        if ranked is winner
+        else ranked
+        for ranked in ranked_chunks
+    ]
+    return sorted(adjusted, key=_ranked_chunk_sort_key)
+
+
+def apply_planner_dependency_hint_promotions(
+    ranked_chunks: list[core_types._RankedChunk],
+    candidates: dict[str, RetrievalCandidate],
+    plan: QueryPlan,
+    query: str,
+    graph_session: sqlite_store.GraphReadSession | None,
+    *,
+    final_top_k: int,
+) -> list[core_types._RankedChunk]:
+    ordered = sorted(ranked_chunks, key=_ranked_chunk_sort_key)
+    if any(
+        ranked.score_parts.get("planner_dependency_hint_promotion", 0.0) > 0
+        for ranked in ordered
+    ):
+        return ordered
+    if (
+        graph_session is None
+        or getattr(graph_session, "graph_fault", None) is not None
+        or plan.status != "ok"
+        or plan.dependency_intent != "follow_imports"
+        or final_top_k <= 0
+        or not (plan.symbol_hints or plan.grep_keywords)
+    ):
+        return ordered
+
+    top_paths: list[Path] = []
+    for ranked in ordered:
+        if ranked.chunk.file_path not in top_paths:
+            top_paths.append(ranked.chunk.file_path)
+        if len(top_paths) >= final_top_k:
+            break
+    if len(top_paths) < final_top_k:
+        return ordered
+    protected_paths = set(top_paths)
+    cutoff = next(
+        ranked for ranked in ordered if ranked.chunk.file_path == top_paths[-1]
+    )
+
+    source_hints = {
+        normalized
+        for value in (*plan.symbol_hints, *plan.grep_keywords)
+        if (normalized := _normalized_dependency_hint(value))
+    }
+    if not source_hints:
+        return ordered
+
+    source_signal_cache: dict[str, CodeSignal | None] = {}
+    target_signal_cache: dict[str, CodeSignal | None] = {}
+    selected_paths: set[Path] = set()
+    top_bucket = (
+        math.floor(
+            ordered[0].rerank_score
+            * (10**ordering.RERANK_SORT_DECIMALS)
+        )
+        / (10**ordering.RERANK_SORT_DECIMALS)
+    )
+    replacements: dict[str, core_types._RankedChunk] = {}
+    for ranked in ordered:
+        if (
+            ranked.chunk.file_path in protected_paths
+            or ranked.chunk.file_path in selected_paths
+        ):
+            continue
+        candidate = candidates.get(ranked.chunk.chunk_id)
+        if candidate is None:
+            continue
+        matched = False
+        for atom in candidate.exact_imported_symbol_provenance:
+            if not _closed_exact_dependency_atom(ranked, atom):
+                continue
+            if atom.source_signal_id not in source_signal_cache:
+                try:
+                    source_signal_cache[atom.source_signal_id] = (
+                        graph_session.signal_for_id(atom.source_signal_id)
+                    )
+                except sqlite3.Error:
+                    source_signal_cache[atom.source_signal_id] = None
+            source_signal = source_signal_cache[atom.source_signal_id]
+            if source_signal is None or not _closed_dependency_source_signal(
+                atom,
+                source_signal,
+            ):
+                continue
+            if not _dependency_source_signal_matches(source_signal, source_hints):
+                continue
+            if atom.target_signal_id not in target_signal_cache:
+                try:
+                    target_signal_cache[atom.target_signal_id] = (
+                        graph_session.signal_for_id(atom.target_signal_id)
+                    )
+                except sqlite3.Error:
+                    target_signal_cache[atom.target_signal_id] = None
+            target_signal = target_signal_cache[atom.target_signal_id]
+            if target_signal is None or not _closed_dependency_target_signal(
+                atom,
+                target_signal,
+            ):
+                continue
+            matched = True
+            break
+        if not matched:
+            continue
+        index = len(replacements) + 1
+        target_score = top_bucket - (
+            index * _PLANNER_DEPENDENCY_PROMOTION_STEP
+        )
+        if round(target_score, ordering.RERANK_SORT_DECIMALS) <= round(
+            cutoff.rerank_score,
+            ordering.RERANK_SORT_DECIMALS,
+        ):
+            continue
+        delta = max(0.0, target_score - ranked.rerank_score)
+        if delta <= 0.0:
+            continue
+        score_parts = dict(ranked.score_parts)
+        score_parts["planner_dependency_hint_promotion"] = delta
+        score_parts["rerank_score"] = target_score
+        replacements[ranked.chunk.chunk_id] = replace(
+            ranked,
+            rerank_score=target_score,
+            score_parts=score_parts,
+            reasons=_reasons(score_parts, query),
+        )
+        selected_paths.add(ranked.chunk.file_path)
+        if len(replacements) >= _PLANNER_DEPENDENCY_MAX_PROMOTIONS:
+            break
+    if not replacements:
+        return ordered
+    return sorted(
+        [replacements.get(item.chunk.chunk_id, item) for item in ordered],
+        key=_ranked_chunk_sort_key,
+    )
+
+
+def _closed_exact_dependency_atom(
+    ranked: core_types._RankedChunk,
+    atom: object,
+) -> bool:
+    return (
+        getattr(atom, "target_chunk_id", None) == ranked.chunk.chunk_id
+        and getattr(atom, "target_file_path", None)
+        == ranked.chunk.file_path.as_posix()
+        and getattr(atom, "relation_kind", None) == "imports"
+        and getattr(atom, "resolution", None) == "resolved_exact"
+        and getattr(atom, "producer", None) == "python_ast"
+        and getattr(atom, "resolution_basis", None)
+        == "exact_python_imported_symbol"
+    )
+
+
+def _normalized_dependency_hint(value: str) -> str:
+    return unicodedata.normalize("NFKC", value).strip().casefold()
+
+
+def _closed_dependency_source_signal(
+    atom: object,
+    signal: CodeSignal,
+) -> bool:
+    return (
+        signal.signal_id == getattr(atom, "source_signal_id", None)
+        and signal.chunk_id == getattr(atom, "source_chunk_id", None)
+        and signal.file_path.as_posix()
+        == getattr(atom, "source_file_path", None)
+        and signal.kind == "module"
+        and signal.producer == "core_module"
+    )
+
+
+def _closed_dependency_target_signal(
+    atom: object,
+    signal: CodeSignal,
+) -> bool:
+    return (
+        signal.signal_id == getattr(atom, "target_signal_id", None)
+        and signal.chunk_id == getattr(atom, "target_chunk_id", None)
+        and signal.file_path.as_posix()
+        == getattr(atom, "target_file_path", None)
+        and signal.producer == "python_ast"
+    )
+
+
+def _dependency_source_signal_matches(
+    signal: CodeSignal,
+    source_hints: set[str],
+) -> bool:
+    module_path = signal.file_path.with_suffix("").as_posix()
+    project_relative_module_path = module_path
+    if signal.project_unit_key:
+        prefix = signal.project_unit_key.rstrip("/") + "/"
+        if project_relative_module_path.startswith(prefix):
+            project_relative_module_path = project_relative_module_path[len(prefix) :]
+    source_identities = {
+        _normalized_dependency_hint(module_path),
+        _normalized_dependency_hint(project_relative_module_path),
+        _normalized_dependency_hint(project_relative_module_path).replace("/", "."),
+        _normalized_dependency_hint(Path(module_path).name),
+    }
+    return bool(source_hints.intersection(source_identities))
 
 
 def _read_frontend_import_anchor(path: Path) -> str:
@@ -2419,6 +2671,10 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
     )
     if graph_reason is not None:
         reasons.append(graph_reason)
+    if score_parts.get("exact_imported_symbol", 0.0) > 0:
+        reasons.append("exact imported symbol dependency")
+    if score_parts.get("planner_dependency_hint_promotion", 0.0) > 0:
+        reasons.append("planner exact dependency target")
     if score_parts.get("direct_text", 0.0) > 0:
         reasons.append("direct text match")
     if score_parts.get("anchored_relation", 0.0) > 0:

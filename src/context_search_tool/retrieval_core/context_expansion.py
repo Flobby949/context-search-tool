@@ -339,6 +339,17 @@ def _merge_expanded_result(
         else:
             merged_score_parts.pop(key, None)
 
+    reasons = list(winner.reasons)
+    for score_key, fixed_reason in (
+        ("exact_imported_symbol", "exact imported symbol dependency"),
+        (
+            "planner_dependency_hint_promotion",
+            "planner exact dependency target",
+        ),
+    ):
+        if merged_score_parts.get(score_key, 0.0) > 0.0 and fixed_reason not in reasons:
+            reasons.append(fixed_reason)
+
     start_line = min(left.start_line, right.start_line)
     end_line = max(left.end_line, right.end_line)
     return core_types._ExpandedResult(
@@ -349,7 +360,7 @@ def _merge_expanded_result(
         content="\n".join(content_lines),
         score=max(left.score, right.score),
         score_parts=merged_score_parts,
-        reasons=winner.reasons,
+        reasons=reasons,
         followup_keywords=ordering.dedupe_lowered([*left.followup_keywords, *right.followup_keywords]),
         rank_tier=min(left.rank_tier, right.rank_tier),
         rerank_score=winner.rerank_score,

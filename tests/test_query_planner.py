@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -17,9 +18,13 @@ from context_search_tool.models import (
     RetrievalResult,
 )
 from context_search_tool.query_planner import (
+    MAX_IMPORTED_HINT_CODEPOINTS,
+    MAX_IMPORTED_MODULE_HINTS,
+    MAX_IMPORTED_SYMBOL_HINTS,
     OllamaQueryPlanner,
     OpenAICompatibleQueryPlanner,
     PROMPT_VERSION,
+    PLANNER_JSON_FIELDS,
     build_query_variants,
     clean_planner_payload,
     disabled_plan,
@@ -29,6 +34,7 @@ from context_search_tool.query_planner import (
     planner_from_config,
     prompt_hash,
 )
+from context_search_tool.retrieval_core import ordering, ranking
 from context_search_tool.tokenizer import tokenize_query
 
 
@@ -39,7 +45,50 @@ def test_query_plan_defaults_to_disabled() -> None:
     assert plan.rewritten_queries == []
     assert plan.grep_keywords == []
     assert plan.symbol_hints == []
+    assert plan.dependency_intent == "none"
+    assert plan.imported_symbol_hints == []
+    assert plan.imported_module_hints == []
     assert plan.intent == "unknown"
+
+
+def test_p15_v4_attempt_contract_binds_product_constants_before_fresh() -> None:
+    contract_path = (
+        Path(__file__).parent
+        / "fixtures"
+        / "p15_v4_query_dependency_hints"
+        / "attempt-contract.json"
+    )
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+
+    assert contract["status"] == "frozen_before_fresh_repository_selection"
+    assert contract["fresh_repository"] == {
+        "identity_selected": False,
+        "queries_disclosed": False,
+        "gold_disclosed": False,
+    }
+    assert contract["online"]["model"] == "Qwen/Qwen2.5-14B-Instruct"
+    assert contract["online"]["temperature"] == 0
+    assert contract["online"]["seed"] == 0
+    assert contract["planner"]["prompt_version"] == PROMPT_VERSION
+    assert contract["planner"]["prompt_sha256"] == prompt_hash().removeprefix(
+        "sha256:"
+    )
+    assert set(contract["planner"]["response_fields"]) == PLANNER_JSON_FIELDS
+    assert contract["planner"]["max_imported_symbol_hints"] == MAX_IMPORTED_SYMBOL_HINTS
+    assert contract["planner"]["max_imported_module_hints"] == MAX_IMPORTED_MODULE_HINTS
+    assert contract["planner"]["max_imported_hint_codepoints"] == MAX_IMPORTED_HINT_CODEPOINTS
+    assert contract["planner"]["response_envelope"] == (
+        "one_complete_json_object_only"
+    )
+    assert contract["planner"]["missing_response_field"] == "reject_entire_plan"
+    assert contract["local_rule"]["maximum_promotions"] == (
+        ranking._PLANNER_DEPENDENCY_MAX_PROMOTIONS
+    )
+    assert contract["local_rule"]["score_bucket_decimals"] == (
+        ordering.RERANK_SORT_DECIMALS
+    )
+    assert contract["local_rule"]["reason"] == "planner exact dependency target"
+    assert len(hashlib.sha256(contract_path.read_bytes()).hexdigest()) == 64
 
 
 def test_query_plan_disabled_default_uses_empty_disabled_plan() -> None:
@@ -252,6 +301,61 @@ def test_clean_planner_payload_strips_dedupes_truncates_and_validates_intent() -
     assert plan.grep_keywords == ["Dashboard", "Chart"]
     assert plan.symbol_hints == ["DashboardService"]
     assert plan.intent == "feature_lookup"
+
+
+def test_clean_planner_payload_strictly_cleans_dependency_hints() -> None:
+    plan = clean_planner_payload(
+        original_query="trace Request imports from httpx._models",
+        payload={
+            "rewritten_queries": [],
+            "grep_keywords": [],
+            "symbol_hints": [],
+            "intent": "data_flow",
+            "dependency_intent": "follow_imports",
+            "imported_symbol_hints": [" Request ", "request", "URL", "Invalid path"],
+            "imported_module_hints": [
+                " httpx._models ",
+                "HTTPX._MODELS",
+                "httpx._urls",
+                "src/httpx/_models.py",
+            ],
+        },
+        config=QueryPlannerConfig(),
+        provider="openai-compatible",
+        model="Qwen/Qwen2.5-14B-Instruct",
+        latency_ms=42,
+    )
+
+    assert plan.status == "ok"
+    assert plan.dependency_intent == "follow_imports"
+    assert plan.imported_symbol_hints == ["Request", "URL"]
+    assert plan.imported_module_hints == ["httpx._models", "httpx._urls"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"dependency_intent": "invented"},
+        {"dependency_intent": "follow_imports", "imported_symbol_hints": "Request"},
+        {"dependency_intent": "follow_imports", "unexpected": []},
+    ],
+)
+def test_clean_planner_payload_rejects_invalid_dependency_schema(
+    payload: dict[str, object],
+) -> None:
+    plan = clean_planner_payload(
+        original_query="trace imports",
+        payload=payload,
+        config=QueryPlannerConfig(),
+        provider="openai-compatible",
+        model="Qwen/Qwen2.5-14B-Instruct",
+        latency_ms=42,
+    )
+
+    assert plan.status == "fallback"
+    assert plan.dependency_intent == "none"
+    assert plan.imported_symbol_hints == []
+    assert plan.imported_module_hints == []
 
 
 @pytest.mark.parametrize(
@@ -473,6 +577,20 @@ class FakeSession:
         return self.response
 
 
+def _complete_planner_payload(**changes: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "rewritten_queries": [],
+        "grep_keywords": [],
+        "symbol_hints": [],
+        "intent": "unknown",
+        "dependency_intent": "none",
+        "imported_symbol_hints": [],
+        "imported_module_hints": [],
+    }
+    payload.update(changes)
+    return payload
+
+
 def _python_requests_profile() -> RepoProfile:
     return RepoProfile(
         languages=["python"],
@@ -491,12 +609,12 @@ def test_ollama_planner_sends_repo_profile_without_java_spring_defaults() -> Non
             {
                 "message": {
                     "content": json.dumps(
-                        {
-                            "rewritten_queries": ["session cookies"],
-                            "grep_keywords": ["RequestsCookieJar"],
-                            "symbol_hints": ["Session"],
-                            "intent": "feature_lookup",
-                        }
+                        _complete_planner_payload(
+                            rewritten_queries=["session cookies"],
+                            grep_keywords=["RequestsCookieJar"],
+                            symbol_hints=["Session"],
+                            intent="feature_lookup",
+                        )
                     )
                 }
             },
@@ -544,12 +662,12 @@ def test_ollama_planner_parses_valid_json_and_bypasses_proxy() -> None:
             {
                 "message": {
                     "content": json.dumps(
-                        {
-                            "rewritten_queries": ["数据看板 dashboard statistics chart"],
-                            "grep_keywords": ["Dashboard", "Statistics", "Chart"],
-                            "symbol_hints": ["DashboardController"],
-                            "intent": "feature_lookup",
-                        }
+                        _complete_planner_payload(
+                            rewritten_queries=["数据看板 dashboard statistics chart"],
+                            grep_keywords=["Dashboard", "Statistics", "Chart"],
+                            symbol_hints=["DashboardController"],
+                            intent="feature_lookup",
+                        )
                     )
                 }
             },
@@ -580,7 +698,16 @@ def test_ollama_planner_parses_valid_json_and_bypasses_proxy() -> None:
 
 
 def test_ollama_planner_honors_use_system_proxy() -> None:
-    session = FakeSession(FakeResponse(200, {"message": {"content": "{}"}}))
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {
+                "message": {
+                    "content": json.dumps(_complete_planner_payload())
+                }
+            },
+        )
+    )
     config = QueryPlannerConfig(enabled=True, use_system_proxy=True)
     planner = OllamaQueryPlanner(config, session=session)
 
@@ -612,7 +739,7 @@ def test_ollama_planner_falls_back_on_invalid_json_content() -> None:
     assert "invalid planner JSON" in (plan.error or "")
 
 
-def test_ollama_planner_parses_fenced_json_content() -> None:
+def test_ollama_planner_rejects_fenced_json_content() -> None:
     session = FakeSession(
         FakeResponse(
             200,
@@ -623,7 +750,10 @@ def test_ollama_planner_parses_fenced_json_content() -> None:
   "rewritten_queries": ["station device list"],
   "grep_keywords": ["StationDevice"],
   "symbol_hints": [],
-  "intent": "feature_lookup"
+  "intent": "feature_lookup",
+  "dependency_intent": "none",
+  "imported_symbol_hints": [],
+  "imported_module_hints": []
 }
 ```"""
                 }
@@ -634,13 +764,11 @@ def test_ollama_planner_parses_fenced_json_content() -> None:
 
     plan = planner.plan("驿站设备列表")
 
-    assert plan.status == "ok"
-    assert plan.rewritten_queries == ["station device list"]
-    assert plan.grep_keywords == ["StationDevice"]
-    assert plan.intent == "feature_lookup"
+    assert plan.status == "fallback"
+    assert "invalid planner JSON" in (plan.error or "")
 
 
-def test_ollama_planner_prefers_embedded_planner_json_over_example_json() -> None:
+def test_ollama_planner_rejects_prefixed_or_multiple_json_objects() -> None:
     session = FakeSession(
         FakeResponse(
             200,
@@ -651,7 +779,10 @@ def test_ollama_planner_prefers_embedded_planner_json_over_example_json() -> Non
   "rewritten_queries": ["station device list"],
   "grep_keywords": ["StationDevice"],
   "symbol_hints": [],
-  "intent": "feature_lookup"
+  "intent": "feature_lookup",
+  "dependency_intent": "none",
+  "imported_symbol_hints": [],
+  "imported_module_hints": []
 }"""
                 }
             },
@@ -661,8 +792,26 @@ def test_ollama_planner_prefers_embedded_planner_json_over_example_json() -> Non
 
     plan = planner.plan("驿站设备列表")
 
-    assert plan.status == "ok"
-    assert plan.rewritten_queries == ["station device list"]
+    assert plan.status == "fallback"
+    assert "invalid planner JSON" in (plan.error or "")
+
+
+def test_ollama_planner_rejects_json_object_with_missing_schema_field() -> None:
+    incomplete = _complete_planner_payload()
+    incomplete.pop("imported_module_hints")
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {"message": {"content": json.dumps(incomplete)}},
+        )
+    )
+
+    plan = OllamaQueryPlanner(QueryPlannerConfig(enabled=True), session=session).plan(
+        "query"
+    )
+
+    assert plan.status == "fallback"
+    assert "invalid planner JSON" in (plan.error or "")
 
 
 def test_ollama_planner_falls_back_on_top_level_array_json() -> None:
@@ -727,12 +876,12 @@ def test_openai_compatible_planner_uses_chat_completions_protocol(
                         "message": {
                             "role": "assistant",
                             "content": json.dumps(
-                                {
-                                    "rewritten_queries": ["session cookies"],
-                                    "grep_keywords": ["RequestsCookieJar"],
-                                    "symbol_hints": ["Session"],
-                                    "intent": "feature_lookup",
-                                }
+                                _complete_planner_payload(
+                                    rewritten_queries=["session cookies"],
+                                    grep_keywords=["RequestsCookieJar"],
+                                    symbol_hints=["Session"],
+                                    intent="feature_lookup",
+                                )
                             ),
                         }
                     }
@@ -773,12 +922,14 @@ def test_openai_compatible_planner_uses_chat_completions_protocol(
         "response_format",
         "stream",
         "temperature",
+        "seed",
     }
     assert call["json"]["model"] == "Qwen/Qwen2.5-7B-Instruct"
     assert call["json"]["stream"] is False
     assert call["json"]["max_tokens"] == 512
     assert call["json"]["response_format"] == {"type": "json_object"}
     assert call["json"]["temperature"] == 0
+    assert call["json"]["seed"] == 0
     system_prompt = call["json"]["messages"][0]["content"]
     assert "complete query is already one code identifier" in system_prompt
     assert "rewritten_queries as an empty array" in system_prompt
@@ -786,11 +937,79 @@ def test_openai_compatible_planner_uses_chat_completions_protocol(
     assert user_payload["repo_profile"]["languages"] == ["python"]
 
 
+def test_openai_compatible_planner_query_only_mode_sends_no_repo_metadata() -> None:
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "rewritten_queries": [],
+                                    "grep_keywords": [],
+                                    "symbol_hints": [],
+                                    "intent": "data_flow",
+                                    "dependency_intent": "follow_imports",
+                                    "imported_symbol_hints": ["Request"],
+                                    "imported_module_hints": ["httpx._models"],
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+    )
+    config = replace_query_planner_config(
+        QueryPlannerConfig(
+            enabled=True,
+            provider="openai-compatible",
+            model="Qwen/Qwen2.5-14B-Instruct",
+            base_url="https://api.siliconflow.cn/v1",
+            send_repo_profile=False,
+        ),
+        api_key="configured-api-key",
+    )
+
+    plan = OpenAICompatibleQueryPlanner(config, session=session).plan(
+        "trace Request imports",
+        repo_profile=_python_requests_profile(),
+    )
+
+    assert plan.status == "ok"
+    assert plan.imported_symbol_hints == ["Request"]
+    call = session.calls[0]
+    user_payload = json.loads(call["json"]["messages"][1]["content"])
+    assert set(user_payload) == {
+        "query",
+        "max_rewritten_queries",
+        "max_keywords",
+        "max_symbol_hints",
+        "max_imported_symbol_hints",
+        "max_imported_module_hints",
+    }
+    serialized_user_payload = call["json"]["messages"][1]["content"]
+    assert "repo_profile" not in serialized_user_payload
+    assert "important_files" not in serialized_user_payload
+    assert "configured-api-key" not in json.dumps(call["json"], ensure_ascii=False)
+
+
 def test_openai_compatible_planner_allows_authless_local_endpoint() -> None:
     session = FakeSession(
         FakeResponse(
             200,
-            {"choices": [{"message": {"role": "assistant", "content": "{}"}}]},
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(_complete_planner_payload()),
+                        }
+                    }
+                ]
+            },
         )
     )
     config = QueryPlannerConfig(

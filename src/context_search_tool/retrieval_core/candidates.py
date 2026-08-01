@@ -403,6 +403,12 @@ def merge_candidates(
                 source=candidate.source,
                 score_parts=score_parts,
                 semantic_matches=candidate.semantic_matches,
+                exact_imported_symbol_provenance=(
+                    evidence_merge.merge_exact_imported_symbol_provenance(
+                        (),
+                        candidate.exact_imported_symbol_provenance,
+                    )
+                ),
             )
             continue
 
@@ -414,6 +420,12 @@ def merge_candidates(
             semantic_matches=evidence_merge.merge_semantic_matches(
                 existing.semantic_matches,
                 candidate.semantic_matches,
+            ),
+            exact_imported_symbol_provenance=(
+                evidence_merge.merge_exact_imported_symbol_provenance(
+                    existing.exact_imported_symbol_provenance,
+                    candidate.exact_imported_symbol_provenance,
+                )
             ),
         )
     return merged

@@ -18,8 +18,11 @@ from context_search_tool.repo_profile import (
 )
 from context_search_tool.tokenizer import tokenize_query
 
-PROMPT_VERSION = "qwen-query-planner-v2"
+PROMPT_VERSION = "qwen-query-planner-v3-import-dependency-v1"
 MAX_PLANNER_QUERY_VARIANT_CODEPOINTS = 256
+MAX_IMPORTED_HINT_CODEPOINTS = 128
+MAX_IMPORTED_SYMBOL_HINTS = 4
+MAX_IMPORTED_MODULE_HINTS = 4
 _EXACT_CODE_IDENTIFIER_RE = re.compile(
     r"(?:"
     r"[A-Z]{2,}(?=[A-Z][a-z])[A-Za-z0-9]*"
@@ -43,6 +46,9 @@ PLANNER_JSON_FIELDS = {
     "grep_keywords",
     "symbol_hints",
     "intent",
+    "dependency_intent",
+    "imported_symbol_hints",
+    "imported_module_hints",
 }
 
 SYSTEM_PROMPT = """You rewrite code-search queries. Return only one compact JSON object, no Markdown.
@@ -51,6 +57,9 @@ Required fields:
 - grep_keywords: string[]
 - symbol_hints: string[]
 - intent: feature_lookup | endpoint_lookup | bug_trace | data_flow | symbol_lookup | unknown
+- dependency_intent: follow_imports | none
+- imported_symbol_hints: string[]
+- imported_module_hints: string[]
 
 Do not explain. Do not guess file paths. Prefer identifiers and English code terms.
 Use repo_profile terms when possible.
@@ -58,6 +67,10 @@ Do not infer unrelated frameworks, languages, libraries, or file paths.
 If repo_profile is present, prefer its languages, files, symbols, and tokens.
 Only return hints that would plausibly exist in this repository.
 Use an empty array when a list has no useful values.
+Set dependency_intent to follow_imports only when the query asks to trace imported
+symbols, module dependencies, or a cross-file implementation flow. Otherwise use none.
+Imported symbol and module hints must be identifiers derived from the query. Never
+invent repository-specific names. Module hints use dotted identifier form, never paths.
 
 DO NOT:
 - Add file paths such as src/main/java/com/example/Foo.java.
@@ -181,6 +194,7 @@ class OpenAICompatibleQueryPlanner:
                 "max_tokens": 512,
                 "response_format": {"type": "json_object"},
                 "temperature": 0,
+                "seed": 0,
                 "messages": _planner_messages(query, self.config, repo_profile),
             },
             "timeout": self.config.timeout_seconds,
@@ -327,6 +341,9 @@ def clean_planner_payload(
     repo_profile: RepoProfile | None = None,
 ) -> QueryPlan:
     try:
+        unknown_fields = set(payload) - PLANNER_JSON_FIELDS
+        if unknown_fields:
+            raise ValueError("planner payload contains unknown fields")
         raw_rewritten_queries = payload.get("rewritten_queries", [])
         if not isinstance(raw_rewritten_queries, list):
             raise ValueError("rewritten_queries must be a list")
@@ -344,6 +361,24 @@ def clean_planner_payload(
             payload,
             "symbol_hints",
             config.max_symbol_hints,
+        )
+        dependency_intent = payload.get("dependency_intent", "none")
+        if not isinstance(dependency_intent, str) or dependency_intent not in {
+            "follow_imports",
+            "none",
+        }:
+            raise ValueError("dependency_intent is invalid")
+        imported_symbol_hints = _clean_import_hint_list(
+            payload,
+            "imported_symbol_hints",
+            MAX_IMPORTED_SYMBOL_HINTS,
+            dotted=False,
+        )
+        imported_module_hints = _clean_import_hint_list(
+            payload,
+            "imported_module_hints",
+            MAX_IMPORTED_MODULE_HINTS,
+            dotted=True,
         )
     except ValueError as exc:
         return fallback_plan(
@@ -390,11 +425,17 @@ def clean_planner_payload(
         if isinstance(raw_intent, str) and raw_intent in ALLOWED_INTENTS
         else "unknown"
     )
+    if dependency_intent == "none":
+        imported_symbol_hints = []
+        imported_module_hints = []
     return QueryPlan(
         original_query=original_query,
         rewritten_queries=rewritten_queries,
         grep_keywords=grep_keywords,
         symbol_hints=symbol_hints,
+        dependency_intent=dependency_intent,
+        imported_symbol_hints=imported_symbol_hints,
+        imported_module_hints=imported_module_hints,
         intent=intent,
         status="ok",
         provider=provider,
@@ -459,8 +500,10 @@ def _user_payload(
         "max_rewritten_queries": config.max_rewritten_queries,
         "max_keywords": config.max_keywords,
         "max_symbol_hints": config.max_symbol_hints,
+        "max_imported_symbol_hints": MAX_IMPORTED_SYMBOL_HINTS,
+        "max_imported_module_hints": MAX_IMPORTED_MODULE_HINTS,
     }
-    if repo_profile is not None:
+    if repo_profile is not None and config.send_repo_profile:
         payload["repo_profile"] = repo_profile_payload(repo_profile)
     return payload
 
@@ -487,36 +530,13 @@ def _elapsed_ms(start: float) -> int:
 
 
 def _decode_planner_json(raw_content: str) -> dict[str, Any] | None:
-    for candidate in _whole_json_candidates(raw_content):
-        try:
-            payload = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        return payload if isinstance(payload, dict) else None
-
-    decoder = json.JSONDecoder()
-    for index, char in enumerate(raw_content):
-        if char != "{":
-            continue
-        try:
-            payload, _ = decoder.raw_decode(raw_content[index:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict) and PLANNER_JSON_FIELDS.intersection(payload):
-            return payload
-    return None
-
-
-def _whole_json_candidates(raw_content: str) -> list[str]:
-    stripped = raw_content.strip()
-    candidates = [stripped]
-    if not stripped.startswith("```"):
-        return candidates
-
-    lines = stripped.splitlines()
-    if len(lines) >= 3 and lines[-1].strip() == "```":
-        candidates.append("\n".join(lines[1:-1]).strip())
-    return candidates
+    try:
+        payload = json.loads(raw_content)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict) or set(payload) != PLANNER_JSON_FIELDS:
+        return None
+    return payload
 
 
 def _clean_string_list(payload: dict[str, Any], key: str, limit: int) -> list[str]:
@@ -533,6 +553,37 @@ def _clean_string_list(payload: dict[str, Any], key: str, limit: int) -> list[st
         stripped = item.strip()
         normalized = stripped.lower()
         if not normalized or normalized in seen:
+            continue
+        cleaned.append(stripped)
+        seen.add(normalized)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
+
+
+def _clean_import_hint_list(
+    payload: dict[str, Any],
+    key: str,
+    limit: int,
+    *,
+    dotted: bool,
+) -> list[str]:
+    value = payload.get(key, [])
+    if not isinstance(value, list):
+        raise ValueError(f"{key} must be a list")
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError(f"{key} must contain only strings")
+        stripped = item.strip()
+        if not stripped or len(stripped) > MAX_IMPORTED_HINT_CODEPOINTS:
+            continue
+        parts = stripped.split(".") if dotted else [stripped]
+        if any(not part.isidentifier() for part in parts):
+            continue
+        normalized = stripped.casefold()
+        if normalized in seen:
             continue
         cleaned.append(stripped)
         seen.add(normalized)

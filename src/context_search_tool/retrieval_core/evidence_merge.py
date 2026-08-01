@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from context_search_tool.models import SemanticMatch
+from context_search_tool.models import ExactImportedSymbolProvenance, SemanticMatch
 from context_search_tool.retrieval_core import relation_policy
 
 
@@ -62,6 +62,13 @@ def merge_semantic_matches(
         if existing is None or match.score > existing.score:
             by_variant[match.variant_id] = match
     return sorted(by_variant.values(), key=_semantic_match_sort_key)
+
+
+def merge_exact_imported_symbol_provenance(
+    left: tuple[ExactImportedSymbolProvenance, ...],
+    right: tuple[ExactImportedSymbolProvenance, ...],
+) -> tuple[ExactImportedSymbolProvenance, ...]:
+    return tuple(sorted({*left, *right}))
 
 
 def _semantic_match_sort_key(match: SemanticMatch) -> tuple[int, int, str]:

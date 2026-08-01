@@ -92,6 +92,9 @@ class QueryPlan:
     rewritten_queries: list[str] = field(default_factory=list)
     grep_keywords: list[str] = field(default_factory=list)
     symbol_hints: list[str] = field(default_factory=list)
+    dependency_intent: str = "none"
+    imported_symbol_hints: list[str] = field(default_factory=list)
+    imported_module_hints: list[str] = field(default_factory=list)
     intent: str = "unknown"
     status: str = "disabled"
     provider: str = ""
@@ -120,6 +123,22 @@ class QueryVariant:
 class SemanticMatch:
     variant_id: str
     score: float
+
+
+@dataclass(frozen=True, order=True)
+class ExactImportedSymbolProvenance:
+    relation_id: str
+    source_signal_id: str
+    source_file_path: str
+    source_chunk_id: str
+    target_signal_id: str
+    target_file_path: str
+    target_chunk_id: str
+    relation_kind: str
+    resolution: str
+    producer: str
+    resolution_basis: str
+    ordered_edge_position: int
 
 
 @dataclass(frozen=True)
@@ -155,6 +174,9 @@ class RetrievalCandidate:
     source: str
     score_parts: dict[str, float] = field(default_factory=dict)
     semantic_matches: list[SemanticMatch] = field(default_factory=list)
+    exact_imported_symbol_provenance: tuple[
+        ExactImportedSymbolProvenance, ...
+    ] = ()
 
 
 @dataclass(frozen=True)

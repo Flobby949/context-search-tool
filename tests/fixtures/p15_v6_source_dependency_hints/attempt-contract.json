@@ -1,0 +1,256 @@
+{
+  "schema_version": "p15-v6-source-closed-dependency-hints-attempt-v1",
+  "status": "frozen_before_fresh_allowlist_identity_or_source_access",
+  "prior_v5": {
+    "contract_path": "tests/fixtures/p15_v5_control_headroom_selection/attempt-contract.json",
+    "contract_sha256": "2f93425d79db6f66bfea43340acc3f559997f2f31540597718f4b031133c7458",
+    "disposition": "rejected_selection_and_query_template_before_candidate",
+    "pool_cases_examined": 126,
+    "candidate_runs": 0,
+    "efficacy_credit": false
+  },
+  "frozen_product": {
+    "product_projection_algorithm": "sha256_of_canonical_json_map_from_repo_relative_path_to_file_sha256_sort_keys_compact_ascii",
+    "product_projection_sha256": "89fec142a2920c16612a250a165e177af5b4abd9d4f077596ae0cd0d804b88cc",
+    "product_files_sha256": {
+      "src/context_search_tool/config.py": "2dfa57a0b6ac45e0916d3eddd52e45125d896d9d630826a795d348db45fbdbdf",
+      "src/context_search_tool/models.py": "3da530cf77bffde911c84a34c36aca358265cc72a216aa0c56dbdfd908ad3dc3",
+      "src/context_search_tool/query_planner.py": "cddecbcf0cfb445d54f93aaf1468547c6a23e6fd9bc551ee02cbb5175b0d8601",
+      "src/context_search_tool/retrieval.py": "4bee0ef896fe6402c821b38ba0bebd73f108e24c433c7da77385fc1c68acffbf",
+      "src/context_search_tool/retrieval_core/candidates.py": "a8e089354b509be4d74c6675128f11e98d1c26aae811fbfc37364fa87f0420d9",
+      "src/context_search_tool/retrieval_core/context_expansion.py": "946d7e95def786c05044617ee20f7c66a47963a1798439083197b8e519b33423",
+      "src/context_search_tool/retrieval_core/evidence_merge.py": "664c489c43b7b8ac5f73807084cd4d0a2d88b876fc2b5906c1c80b1fd1e4fe3f",
+      "src/context_search_tool/retrieval_core/expansion.py": "69b4745aba115962ffbd4d9c062798e31101fe188ef5770ee8201c32acdb85d4",
+      "src/context_search_tool/retrieval_core/ranking.py": "87fb977955e35bc6c9db0b96d05f02c580e0aa5f353127a5c2d37952c26cfa67"
+    },
+    "product_tests_sha256": {
+      "tests/test_exact_imported_symbol_bonus.py": "12ced2a2db0bd1dc628d0aede276762f47f7a41876cfe7dd66cc299433364164",
+      "tests/test_query_planner.py": "3a585b62e6e7a39af0c17a959552e25d859a5b8c8e62e3dedf2555dd6254dc44",
+      "tests/test_retrieval_core_boundaries.py": "847dae73d85f63cc987cad1303090831ce8fed2dcc23f26639865b38402873b1"
+    },
+    "planner_prompt_version": "qwen-query-planner-v3-import-dependency-v1",
+    "planner_prompt_sha256": "47bdeb31eea13e481c9a5ddabbb444e1a5b72ca297dcc11b6d56f088e4d3f322",
+    "planner_prompt_changed_from_v4": false,
+    "planner_response_schema_changed_from_v4": false,
+    "planner_model": "Qwen/Qwen2.5-14B-Instruct",
+    "planner_provider": "openai-compatible",
+    "planner_base_domain": "api.siliconflow.cn",
+    "planner_temperature": 0,
+    "planner_seed": 0,
+    "qwen_chat_requests_per_query": 1,
+    "remote_payload": "query_and_fixed_numeric_limits_only",
+    "repo_profile_path_source_snippet_gold_or_candidate_sent": false,
+    "control_consume_dependency_hints": false,
+    "candidate_consume_dependency_hints": true,
+    "only_control_candidate_difference": "consume_dependency_hints"
+  },
+  "local_rule": {
+    "activation": "plan_status_ok_and_dependency_intent_follow_imports_and_nonempty_symbol_hints_or_grep_keywords",
+    "source_hint_inputs": [
+      "symbol_hints",
+      "grep_keywords"
+    ],
+    "target_hint_inputs_used": [],
+    "target_only_imported_symbol_or_module_hints": "must_not_activate_or_match",
+    "normalization": "NFKC_then_strip_then_casefold",
+    "match": "strict_exact_only_no_substring",
+    "allowed_source_identities": [
+      "full_repo_relative_source_path_without_suffix",
+      "project_relative_source_module_path_without_suffix",
+      "project_relative_dotted_source_module",
+      "source_path_stem"
+    ],
+    "required_source_closure": {
+      "signal_id": "atom.source_signal_id_exact",
+      "chunk_id": "atom.source_chunk_id_exact",
+      "file_path": "atom.source_file_path_exact_repo_relative_posix",
+      "kind": "module",
+      "producer": "core_module"
+    },
+    "required_target_closure": {
+      "ranked_chunk_id": "atom.target_chunk_id_exact",
+      "ranked_file_path": "atom.target_file_path_exact_repo_relative_posix",
+      "signal_id": "atom.target_signal_id_exact",
+      "signal_chunk_id": "atom.target_chunk_id_exact",
+      "signal_file_path": "atom.target_file_path_exact_repo_relative_posix",
+      "signal_producer": "python_ast",
+      "relation_kind": "imports",
+      "resolution": "resolved_exact",
+      "relation_producer": "python_ast",
+      "resolution_basis": "exact_python_imported_symbol"
+    },
+    "preorder": "existing_complete_ranked_chunk_total_order",
+    "top_k_distinct_paths": 12,
+    "only_promote_outside_top_k": true,
+    "maximum_successful_promotions": 2,
+    "winner_selection": "first_two_actual_admissible_distinct_target_paths_in_existing_total_order_skipping_failed_edges_without_consuming_slots",
+    "rank_one_protected": true,
+    "score_bucket_decimals": 3,
+    "target_score_rule": "floor(rank_one_score*1000)/1000-successful_promotion_index*0.001",
+    "admission_rule": "target_score_rounded_3_strictly_exceeds_original_rank12_distinct_path_score_rounded_3_and_delta_is_positive",
+    "score_part": "planner_dependency_hint_promotion",
+    "reason": "planner exact dependency target",
+    "idempotence": "reapplication_preserves_total_order_and_scores",
+    "graph_fault_sqlite_error_corrupt_or_missing_identity": "fail_closed_preserve_original_total_order"
+  },
+  "fresh_allowlist_boundary": {
+    "fresh_identity_present_in_this_contract": false,
+    "fresh_repository_identity_seen": false,
+    "fresh_source_accessed": false,
+    "required_external_binding": "independent_ordered_fresh_python_repository_allowlist_seal",
+    "binding_must_precede": [
+      "repository_checkout",
+      "source_inventory_read",
+      "mechanical_pool_generation",
+      "control_execution"
+    ],
+    "characterization_repositories_forbidden": "every_repository_used_by_p15_v1_through_p15_v5",
+    "selection_order": "exact_external_allowlist_order",
+    "stop_after_qualifying_repository_count": 2
+  },
+  "mechanical_pool": {
+    "language": "python",
+    "parser": "stdlib_ast",
+    "source_role": "importer_file_with_a_direct_local_from_module_import_name_edge",
+    "source_signal": "exact_core_module_signal_bound_to_source_path_and_source_chunk",
+    "source_symbol": "lexicographically_first_start_line_start_column_name_python_ast_function_or_type_declaration_whose_ast_subtree_references_the_imported_local_alias",
+    "source_module": "project_relative_dotted_module_derived_mechanically_from_source_path",
+    "source_behavior": "lowercase_space_join_of_camel_and_snake_tokens_from_source_symbol_name",
+    "query_template": "Trace the cross-file behavior of {source_symbol} in module {source_module} while it performs {source_behavior}.",
+    "query_fields_allowed": [
+      "source_symbol",
+      "source_module",
+      "source_behavior"
+    ],
+    "target_name_module_path_signal_or_alias_in_query": "forbidden",
+    "gold_target": "direct_unique_local_python_ast_type_or_function_target_of_the_exact_imported_symbol_edge",
+    "required_items": [
+      {
+        "role": "query_anchor",
+        "path_source": "lexicographically_first_distinct_local_python_file_with_an_exact_direct_import_of_source_module"
+      },
+      {
+        "role": "source",
+        "path_source": "source_importer_file"
+      },
+      {
+        "role": "target",
+        "path_source": "direct_exact_imported_symbol_target_file"
+      }
+    ],
+    "path_constraints": "query_anchor_source_and_target_are_three_distinct_repo_relative_python_paths",
+    "target_signal_constraints": "unique_type_or_function_python_ast_signal_and_closed_exact_direct_edge",
+    "skip_if": [
+      "star_import",
+      "external_ambiguous_or_unresolved_import",
+      "target_declaration_not_unique",
+      "source_symbol_owner_not_unique_or_does_not_reference_imported_alias",
+      "query_contains_any_target_derived_term",
+      "three_required_paths_not_distinct"
+    ],
+    "pool_dedupe_key": [
+      "query",
+      "query_anchor_path",
+      "source_path",
+      "source_signal_id",
+      "target_path",
+      "target_signal_id"
+    ],
+    "stable_dictionary_order": [
+      "query_anchor_path",
+      "source_path",
+      "source_signal_id",
+      "target_path",
+      "target_signal_id",
+      "import_start_line",
+      "import_start_column",
+      "query"
+    ]
+  },
+  "baseline_only_selection": {
+    "candidate_configuration_constructed_or_executed_before_corpus_seal": false,
+    "candidate_rank_or_output_read_for_selection": false,
+    "control_runs_per_pool_case": 2,
+    "control_run_order": [
+      "canonical",
+      "reverse"
+    ],
+    "independent_process_per_control_run": true,
+    "inventory_order_canonical": "sealed_inventory_lexicographic_order",
+    "inventory_order_reverse": "exact_reverse_of_canonical",
+    "planner_status_required": "ok",
+    "normalized_top12": "first_occurrence_repo_relative_posix_paths_exactly_12",
+    "baseline_required_state": {
+      "query_anchor_in_top12": true,
+      "source_in_top12": true,
+      "target_in_top12": false
+    },
+    "source_hint_observation": "normalized_symbol_hints_and_grep_keywords_may_only_be_projected_to_exact_source_identity_match_boolean",
+    "imported_target_hint_content_read_or_used_for_selection": false,
+    "actual_admissible_roster": "control_total_order_outside_top12_filtered_by_frozen_source_and_target_closure_and_frozen_score_admission_without_executing_candidate",
+    "gold_target_gate": "gold_target_must_be_one_of_first_two_distinct_actual_admissible_targets_for_its_source",
+    "repeat_stability_requires_exact_equality": [
+      "planner_status_ok",
+      "normalized_top12",
+      "source_identity_match_boolean",
+      "ordered_first_two_actual_admissible_target_path_and_signal_pairs",
+      "query_anchor_present_boolean",
+      "source_present_boolean",
+      "gold_target_missing_boolean"
+    ],
+    "selected_cases_per_repository": 4,
+    "selected_case_rule": "first_four_eligible_cases_in_frozen_stable_dictionary_order",
+    "distinct_within_repository": [
+      "query",
+      "source_path",
+      "source_signal_id",
+      "target_path",
+      "target_signal_id"
+    ],
+    "gold_mutation_after_control": false
+  },
+  "sealed_corpus_requirements": {
+    "repository_count": 2,
+    "cases_per_repository": 4,
+    "case_count": 8,
+    "required_items_per_case": 3,
+    "required_item_denominator": 24,
+    "baseline_selected_required_items": 16,
+    "baseline_missing_required_items": 8,
+    "baseline_missing_case_count": 8,
+    "maximum_mathematical_new_items": 8,
+    "minimum_new_required_items": 3,
+    "minimum_distinct_gain_cases": 3,
+    "minimum_gain_repository_count": 2,
+    "minimum_three_item_recall_delta": 0.125,
+    "required_loss_limit": 0,
+    "noise_growth_limit": 0,
+    "seal_precedes_first_candidate_run": true
+  },
+  "credential_and_artifact_protocol": {
+    "forbidden_credential_sources": [
+      "~/.config/context-search/config.toml",
+      "any_persistent_context_search_config",
+      "local_model_or_ollama_configuration"
+    ],
+    "credential_source": "parent_injected_process_environment_or_in_memory_secret_attachment_only",
+    "runtime_config": "construct_non_persisted_Config_instance_in_memory",
+    "persistent_attempt_config_api_key": "empty_or_literal_placeholder_only",
+    "pre_call_validation": "reject_if_persistent_attempt_config_contains_actual_secret_or_non_placeholder_api_key",
+    "credential_write_to_disk": false,
+    "authorization_header_logged_or_persisted": false,
+    "artifact_recursive_actual_secret_byte_matches": 0,
+    "artifact_scan_required_before_acceptance": true,
+    "local_endpoint_requests_allowed": false,
+    "ollama_requests_allowed": false
+  },
+  "current_pre_fresh_state": {
+    "fresh_allowlist_identity_bound": false,
+    "fresh_repository_identity_seen": false,
+    "fresh_source_accessed": false,
+    "online_requests_made": 0,
+    "candidate_runs": 0,
+    "credential_files_read": 0,
+    "actual_secret_bytes_read_or_output": 0
+  }
+}

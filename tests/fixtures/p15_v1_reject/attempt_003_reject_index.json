@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "program": "p15-v1",
+  "attempt_id": "p15-v1-attempt-003",
+  "status": "task0_hash_reject",
+  "immutable": true,
+  "disposition": "reject",
+  "reason": "development oracle produced zero new required items and zero exact rank gains",
+  "capture_execution": "four separate processes ran concurrently per repeat",
+  "required_item_total": 57,
+  "baseline_hits": 49,
+  "oracle_hits": 49,
+  "micro_recall_delta": 0.0,
+  "new_required_items": 0,
+  "exact_rank_gains": 0,
+  "deterministic": {
+    "baseline": true,
+    "oracle": true
+  },
+  "online_started": false,
+  "heldout_opened": false,
+  "hash_proceed_marker_created": false,
+  "product_identity": {
+    "baseline": "5f56de2e1b57ed7f1ec0ee9a513b508461d78233",
+    "head": "7e05f6f5766acbc61e8ab639f5cb92aa3996be1a",
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "product_tree_sha256": "dd00a4a0bc375f6088fd2419bfa24e16a817f3cc4b7297fc18ef1f26dbcb9f6d",
+    "clean_against_baseline": true
+  },
+  "identities": {
+    "manifest_sha256": "e067dc27809c8f6abfb430924fa98467cabbcf2e23734ab67b609431b9fe9426",
+    "harness_sha256": "aa64c93a241ed26675394f44b120a172dffd81d6d57b3c4b3ec8b0ac5682466b",
+    "harness_tests_sha256": "1ad513b95de1c01f8a99913b46850b2f3c043d618c1b115ba445d0a7c74264ea"
+  },
+  "artifacts": {
+    "validation.json": "b021f5eafcbc7e7575f933de54b782e0ae34ff525f04c30c2dfb219896057123",
+    "oracle/hash/development/baseline-r1-canonical.json": "5d33871fa89af7a3ac5cf7646d5929789b75a5525d83aa4a833e6d25c28e0342",
+    "oracle/hash/development/baseline-r1-reverse.json": "6431b4227c3418ffc7062e3da01f496a6d8c4645fee8b4f2d79362d7fb145412",
+    "oracle/hash/development/baseline-r2-canonical.json": "328907007fcd58fe1133648f5c3ca93cd72de10e0c1e5db51e096593de2755d2",
+    "oracle/hash/development/baseline-r2-reverse.json": "b8a4dd33af17a7f192330b3bf373e4265b47e3d72e3270717d6f4a486667810b",
+    "oracle/hash/development/oracle-r1-canonical.json": "aa2c0264ef0ddd58573da60ae8b9c93f6974ac396bc7fbeaeb684f87405bfd0c",
+    "oracle/hash/development/oracle-r1-reverse.json": "48ad0e07642c9aa47155dc3a8bc4e0d9960c6610b1e219045764460775e0e737",
+    "oracle/hash/development/oracle-r2-canonical.json": "b58741c172dbdfabb54e4db5710b1179293bb2fb680173471e4a39e1c7a18352",
+    "oracle/hash/development/oracle-r2-reverse.json": "d497d5e24fcae303314d5e40d6baeda8b9f7de352fe07a8d2c22a5f57109eecf",
+    "oracle/hash/development/comparison.json": "65b9e9708f9118fee9c2d7b03b592c88f199dd47cf93af8f646e53bc029c07f6"
+  }
+}

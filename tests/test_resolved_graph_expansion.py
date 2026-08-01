@@ -842,6 +842,190 @@ def test_planner_only_seed_sets_only_planner_graph_provenance(
     assert "planner_relation" not in expanded.score_parts
 
 
+def test_exact_imported_symbol_provenance_is_direct_only(
+    tmp_path: Path,
+) -> None:
+    store = _new_store(tmp_path)
+    source_chunk, source_module, _source = _add_node_file(
+        store,
+        path="src/source.py",
+        chunk_id="source",
+        signal_id="source-signal",
+    )
+    target_chunk, target_module, target = _add_node_file(
+        store,
+        path="src/target.py",
+        chunk_id="target",
+        signal_id="target-signal",
+    )
+    deep_chunk, _deep_module, deep = _add_node_file(
+        store,
+        path="src/deep.py",
+        chunk_id="deep",
+        signal_id="deep-signal",
+    )
+    exact_metadata = {"resolution_basis": "exact_python_imported_symbol"}
+    direct = replace(
+        _relation("direct-import", source_module, target, "imports"),
+        producer="python_ast",
+        metadata=exact_metadata,
+    )
+    second_hop = replace(
+        _relation("second-import", target, deep, "imports"),
+        producer="python_ast",
+        metadata=exact_metadata,
+    )
+    store.replace_graph_facts(
+        source_chunk.file_path,
+        [source_module, _signal("source-signal", "source", "src/source.py")],
+        [direct],
+    )
+    store.replace_graph_facts(
+        target_chunk.file_path,
+        [target_module, target],
+        [second_hop],
+    )
+    _ready(store)
+
+    inventory = []
+    with store.graph_read_session() as session:
+        expanded = expansion.relation_candidates(
+            store,
+            [_seed(source_chunk.chunk_id)],
+            DEFAULT_CONFIG,
+            graph_session=session,
+            exact_imported_symbol_provenance=inventory,
+        )
+
+    by_id = {candidate.chunk_id: candidate for candidate in expanded}
+    [atom] = by_id[target_chunk.chunk_id].exact_imported_symbol_provenance
+    assert atom.relation_id == "direct-import"
+    assert atom.source_signal_id == source_module.signal_id
+    assert atom.source_file_path == source_chunk.file_path.as_posix()
+    assert atom.source_chunk_id == source_chunk.chunk_id
+    assert atom.target_signal_id == target.signal_id
+    assert atom.target_file_path == target_chunk.file_path.as_posix()
+    assert atom.target_chunk_id == target_chunk.chunk_id
+    assert atom.ordered_edge_position == 1
+    assert by_id[deep_chunk.chunk_id].exact_imported_symbol_provenance == ()
+    assert inventory == [atom]
+
+
+def test_private_v5_query_applies_exact_imported_symbol_bonus_once(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    source_path = repo / "src" / "source.py"
+    target_path = repo / "src" / "target.py"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text("needle source\n", encoding="utf-8")
+    target_path.write_text("needle target implementation\n", encoding="utf-8")
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    store.initialize_v5()
+    source_chunk = _chunk("source", "src/source.py", "needle source")
+    source_module = _module("module-source", "source", "src/source.py")
+    source = _signal("source-signal", "source", "src/source.py")
+    target_chunk = _chunk(
+        "target",
+        "src/target.py",
+        "needle target implementation",
+    )
+    target_module = _module("module-target", "target", "src/target.py")
+    target = _signal("target-signal", "target", "src/target.py")
+    relation = replace(
+        _relation("exact-import", source_module, target, "imports"),
+        producer="python_ast",
+        metadata={"resolution_basis": "exact_python_imported_symbol"},
+    )
+    store.replace_chunks(source_chunk.file_path, [source_chunk])
+    store.replace_graph_facts(
+        source_chunk.file_path,
+        [source_module, source],
+        [relation],
+    )
+    store.replace_chunks(target_chunk.file_path, [target_chunk])
+    store.replace_graph_facts(target_chunk.file_path, [target_module, target], [])
+    _ready(store)
+
+    bundle = retrieval._query_repository_v5(
+        repo,
+        "needle",
+        DEFAULT_CONFIG,
+        vector_snapshot_loader=lambda _repo, _config, _session: None,
+    )
+
+    target_result = next(
+        result for result in bundle.results if result.file_path == target_chunk.file_path
+    )
+    assert target_result.score_parts["exact_imported_symbol"] == pytest.approx(0.04)
+    assert target_result.reasons.count("exact imported symbol dependency") == 1
+    assert "graph_imports_match" not in target_result.score_parts
+    assert all(
+        "exact_imported_symbol" not in result.score_parts
+        for result in bundle.results
+        if result.file_path != target_chunk.file_path
+    )
+
+
+def test_direct_seed_identity_survives_better_hop_dominance(
+    tmp_path: Path,
+) -> None:
+    store = _new_store(tmp_path)
+    source_chunk, source_module, source = _add_node_file(
+        store,
+        path="src/source.py",
+        chunk_id="source",
+        signal_id="source-signal",
+    )
+    middle_chunk, middle_module, middle = _add_node_file(
+        store,
+        path="src/middle.py",
+        chunk_id="middle",
+        signal_id="middle-signal",
+    )
+    target_chunk, _target_module, target = _add_node_file(
+        store,
+        path="src/target.py",
+        chunk_id="target",
+        signal_id="target-signal",
+    )
+    store.replace_graph_facts(
+        source_chunk.file_path,
+        [source_module, source],
+        [_relation("source-middle", source_module, middle_module, "calls")],
+    )
+    store.replace_graph_facts(
+        middle_chunk.file_path,
+        [middle_module, middle],
+        [
+            replace(
+                _relation("middle-target", middle_module, target, "imports"),
+                producer="python_ast",
+                metadata={"resolution_basis": "exact_python_imported_symbol"},
+            )
+        ],
+    )
+    _ready(store)
+    inventory = []
+
+    with store.graph_read_session() as session:
+        expanded = expansion.relation_candidates(
+            store,
+            [_seed(source_chunk.chunk_id, 1.0), _seed(middle_chunk.chunk_id, 0.1)],
+            DEFAULT_CONFIG,
+            graph_session=session,
+            exact_imported_symbol_provenance=inventory,
+        )
+
+    candidate = next(
+        item for item in expanded if item.chunk_id == target_chunk.chunk_id
+    )
+    [atom] = candidate.exact_imported_symbol_provenance
+    assert atom.source_signal_id == middle_module.signal_id
+    assert atom.target_signal_id == target.signal_id
+    assert inventory == [atom]
+
+
 def test_resolved_graph_stops_after_four_hops_and_handles_cycles(
     tmp_path: Path,
 ) -> None:
@@ -1132,4 +1316,3 @@ def test_seed_and_candidate_caps_return_the_canonical_prefix(
         "target-0",
     ]
     assert session.graph_truncated
-

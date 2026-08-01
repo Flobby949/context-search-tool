@@ -1,0 +1,176 @@
+{
+  "schema_version": 2,
+  "program": "p15-v2",
+  "attempt_id": "p15-v2-attempt-001",
+  "status": "task0d_hash_capture_authorized",
+  "capture_authorized": true,
+  "behavior_baseline": "5f56de2e1b57ed7f1ec0ee9a513b508461d78233",
+  "design": {
+    "path": "docs/superpowers/specs/2026-08-01-p15-v2-python-exact-imported-symbol-relations-design.md",
+    "sha256": "054f44d4a0a7ab53efa13394b2e471afe04eca1eb92581f01a40d0b3c64d15d5"
+  },
+  "plan": {
+    "path": "docs/superpowers/plans/2026-08-01-p15-v2-python-exact-imported-symbol-relations.md",
+    "sha256": "c874a8d5bace18aabec54fa94260989bfac3cecf4eadb7e0b6d08275618cbc3b"
+  },
+  "v1_terminal": {
+    "attempt_id": "p15-v1-attempt-003",
+    "status": "task0_hash_reject",
+    "reject_index_path": ".quality/p15-runs/p15-v1-attempt-003/reject-index.json",
+    "reject_index_sha256": "d6942a94256351e510d7efc4b1719219de9f9529471645c627a5b5524aba8a10",
+    "tracked_reject_index_path": "tests/fixtures/p15_v1_reject/attempt_003_reject_index.json",
+    "tracked_reject_index_sha256": "d6942a94256351e510d7efc4b1719219de9f9529471645c627a5b5524aba8a10",
+    "captures_reusable": false
+  },
+  "protected_characterization": {
+    "gold_path": "tests/fixtures/p8_python_graphs/input_manifest.json",
+    "gold_sha256": "56071dfc281f9947b989de26ddd1d07ff4e35666d8314686d0ffbb16cd92a013",
+    "efficacy_credit": false,
+    "sources": {
+      "redink": {
+        "role": "protected_characterization",
+        "url": "https://github.com/HisMax/RedInk.git",
+        "commit": "4d48722344594cf00e0498f0e1ed3df9cd4fd6be",
+        "selected_count": 28,
+        "inventory_sha256": "0da08ce10d82b76b7020f083da194fa14b3663c19dac24d4adad9e324b3eed74",
+        "content_sha256": "53644c921010b3c32b9b82a45c4ab4e70bd993af5dab07b4de2fa90945b6d632"
+      },
+      "daily": {
+        "role": "protected_characterization",
+        "url": "https://github.com/ZhuLinsen/daily_stock_analysis.git",
+        "commit": "487e49e565ffd1b96a7cf4d855f99cee3c981eaa",
+        "selected_count": 203,
+        "inventory_sha256": "76cca5c6f2ae1ee83c563b11678559a70d8a4adf0356b4410a2f36d3ff7e37ee",
+        "content_sha256": "0b77bceb5225e7ff75a9ee2b1e0db04b70ecd0bd5aaef5c1b861b143f54423bb"
+      }
+    }
+  },
+  "replacement_efficacy_development": {
+    "required_count": 2,
+    "roster_contract_path": ".quality/p15-v2-review-seal/roster_contract.json",
+    "roster_contract_sha256": "27ad5f2b6abb2f9d11c202877bb56f3e76cbcaaa5d58e1059b79fdffb1446823",
+    "seal_hashes_path": ".quality/p15-v2-review-seal/seal_hashes.json",
+    "seal_hashes_sha256": "17e069d90f66899d0dab7b433b91b40620a55bcc92df881d1e038aa55cc78b1f",
+    "release_digests_verified": true,
+    "slots": [
+      {
+        "slot": "replacement_a",
+        "repository_key": "starlette",
+        "role": "efficacy_development",
+        "status": "sealed_development_released_digest_verified",
+        "commit": "5174d4c8358a6f06aa8056bafd14c2272dab8dd1",
+        "case_count": 4,
+        "required_item_denominator": 12,
+        "top_k": 12,
+        "public_contract_path": ".quality/p15-v2-review-seal/starlette_public_contract.json",
+        "public_contract_sha256": "d230a78f86ab1225305e454b83a674e391faec5c4c024ee89c050fb6eefc35d8",
+        "sealed_payload_path": ".quality/p15-v2-review-seal/starlette_development_payload.json.enc",
+        "sealed_payload_sha256": "39e322da78cc0bc3fd863a1cdf34650102e459b0279231c0a6c6fca699c0c8fb",
+        "released_payload_path": ".quality/p15-v2-review-seal/starlette_development_payload.released.json",
+        "released_payload_sha256": "309388945b12fb9becc15e2d037d85bfc7f09299f469dde5d8d5a8642fcd6182"
+      },
+      {
+        "slot": "replacement_b",
+        "repository_key": "requests",
+        "role": "efficacy_development",
+        "status": "sealed_development_released_digest_verified",
+        "commit": "414f0513c33883adf6f2b46901d4f0b38a455851",
+        "case_count": 4,
+        "required_item_denominator": 12,
+        "top_k": 12,
+        "public_contract_path": ".quality/p15-v2-review-seal/requests_public_contract.json",
+        "public_contract_sha256": "19a116a434debaba3dde6dfbeb3848d5a298477f79280be06d0c982c1a2ede51",
+        "sealed_payload_path": ".quality/p15-v2-review-seal/requests_development_payload.json.enc",
+        "sealed_payload_sha256": "71e203e4af21bac7092525b00205b2a56d15de9f20ac9700516e561729b20821",
+        "released_payload_path": ".quality/p15-v2-review-seal/requests_development_payload.released.json",
+        "released_payload_sha256": "cfa75bd1cf2cba1b4456fbf590c02fe85fd418d0e1e1c4032e880c569fd7f1ee"
+      }
+    ]
+  },
+  "heldout_seal": {
+    "seal_id": "p15-heldout-click-00e592c-v2",
+    "repository": "pallets/click",
+    "commit": "00e592cea702e0b2caa0dee42489fdb1c22cd845",
+    "case_count": 4,
+    "required_item_denominator": 12,
+    "top_k": 12,
+    "public_contract_path": ".quality/p15-review-seal/public_contract.json",
+    "public_contract_sha256": "a0b881dee27fdc05155139a97d398f22f5a14bb2fb33fc492fb512565753e582",
+    "sealed_payload_path": ".quality/p15-review-seal/heldout_payload_v2.json.enc",
+    "sealed_plaintext_sha256": "cbe4efbcd88a41f61d643a9200d6acc817fcc4784eaecd575f869a7650b61217",
+    "sealed_ciphertext_sha256": "329226be63911c8f7fddd0b6ff9ec6b9a5cd5c2217b3c482964fceab9329d979",
+    "status": "sealed_unopened",
+    "carry_forward_review": "approved"
+  },
+  "r1": {
+    "target_kind": "python_declaration",
+    "target_signal_kinds": ["type", "function"],
+    "relation_kind": "imports",
+    "producer": "python_ast",
+    "resolution_basis": "exact_python_imported_symbol"
+  },
+  "r2": {
+    "development_minimum_micro_recall_gain": 0.05,
+    "development_minimum_new_required_items": 3,
+    "development_minimum_distinct_cases": 3,
+    "development_required_efficacy_repository_count": 2,
+    "heldout_minimum_new_required_items": 2,
+    "heldout_minimum_distinct_cases": 2,
+    "maximum_index_regression_ratio": 0.25,
+    "maximum_query_regression_ratio": 0.1,
+    "minimum_query_regression_seconds": 0.005,
+    "required_loss_limit": 0,
+    "noise_growth_limit": 0,
+    "top_k": 12,
+    "credit_rule": {
+      "version": "p15_exact_imported_symbol_chain_v1",
+      "required_all": [
+        "frozen_named_importfrom_source_fact",
+        "preserved_resolved_exact_module_relation_same_target_file_unit",
+        "exact_symbol_relation_references_module_relation",
+        "unique_active_python_ast_python_type_or_function_same_file_unit_qualified_name",
+        "resolved_exact_target_signal_provenance",
+        "selected_primary_chunk_equals_target_signal_chunk",
+        "selected_result_has_graph_imports_match_and_static_module_dependency",
+        "baseline_outside_top12_candidate_inside_top12_no_unrelated_difference"
+      ],
+      "forbidden_credit": "relation_slot"
+    }
+  },
+  "online": {
+    "provider": "openai-compatible",
+    "model": "Pro/BAAI/bge-m3",
+    "dimensions": 1024,
+    "base_url": "https://api.siliconflow.cn/v1",
+    "planner_enabled": false,
+    "tokens_per_minute": 240000,
+    "tokens_per_request": 80000,
+    "minimum_interval_seconds": 2.0,
+    "batching": "p14-bounded-greedy-v1"
+  },
+  "review": {
+    "replacement_seals": "hash_bound_release_digests_verified",
+    "design": "approved",
+    "plan": "approved",
+    "click_carry_forward": "approved",
+    "independent_disposition_path": ".quality/p15-v2-review-seal/independent_plan_harness_disposition.json",
+    "independent_disposition_sha256": "d9113575dfeb04b847cbe4acfe47027ff2a9f2e61467be6d84eaecacdaa0ce18",
+    "task0d_engine_disposition_path": ".quality/p15-v2-review-seal/independent_task0d_engine_disposition.json",
+    "task0d_engine_disposition_sha256": "3ec9cecc9e6c8abc435761768e03bc6f103a08438ba93a03bed9be5a735ed480",
+    "task0d_runtime_privacy_fix_disposition_path": ".quality/p15-v2-review-seal/independent_task0d_runtime_privacy_fix_disposition.json",
+    "task0d_runtime_privacy_fix_disposition_sha256": "029bb607366c2ac3f460f87dedc72f82bfce5fd87933dee95caecdbdd0433764",
+    "task0d_signal_name_privacy_fix_disposition_path": ".quality/p15-v2-review-seal/independent_task0d_signal_name_privacy_fix_disposition.json",
+    "task0d_signal_name_privacy_fix_disposition_sha256": "d9e266b670aa1f8406602b7c6b41aa397c4e83f65eda67faa50ff28aa297e4be",
+    "task0d_module_metadata_privacy_fix_disposition_path": ".quality/p15-v2-review-seal/independent_task0d_module_metadata_privacy_fix_disposition.json",
+    "task0d_module_metadata_privacy_fix_disposition_sha256": "c25a0a53c646a61640ef1b41ce86c5e51608868df5b7432baa4c6768350d88dd",
+    "task0d_structured_identity_privacy_disposition_path": ".quality/p15-v2-review-seal/independent_task0d_structured_identity_privacy_disposition.json",
+    "task0d_structured_identity_privacy_disposition_sha256": "c969079ed71b24dcb5ccb36cdca031a99e58d4c7eeb7bdc4be79d1d700d6d68c"
+  },
+  "evidence": {
+    "run_root": ".quality/p15-runs/p15-v2-attempt-001",
+    "required_initial_state": "absent",
+    "v1_capture_import_allowed": false,
+    "write_policy": "write_new_only"
+  },
+  "closed_world_rule": "For each case, a selected ordinary path is relevant only when frozen as required or contextual; every other selected ordinary path is noise; no post-candidate relabeling."
+}

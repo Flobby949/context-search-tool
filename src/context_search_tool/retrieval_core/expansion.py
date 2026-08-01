@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import heapq
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from context_search_tool import sqlite_store
@@ -12,6 +12,7 @@ from context_search_tool.models import (
     CodeRelation,
     CodeSignal,
     DocumentChunk,
+    ExactImportedSymbolProvenance,
     RetrievalCandidate,
 )
 from context_search_tool.retrieval_core import (
@@ -51,6 +52,9 @@ class _ResolvedState:
 class _ResolvedStep:
     state: _ResolvedState
     graph_score_key: str
+    exact_imported_symbol_provenance: tuple[
+        ExactImportedSymbolProvenance, ...
+    ] = ()
 
 
 @dataclass(frozen=True)
@@ -235,6 +239,9 @@ def relation_candidates(
     graph_session: sqlite_store.GraphReadSession | None = None,
     test_intent: bool = False,
     protected_chunk_ids: set[str] | None = None,
+    exact_imported_symbol_provenance: list[
+        ExactImportedSymbolProvenance
+    ] | None = None,
 ) -> list[RetrievalCandidate]:
     if graph_session is not None:
         if graph_session.capability.status == "stale":
@@ -251,6 +258,9 @@ def relation_candidates(
                 initial_signals=initial_signals,
                 test_intent=test_intent,
                 protected_chunk_ids=protected,
+                exact_imported_symbol_provenance=(
+                    exact_imported_symbol_provenance
+                ),
             )
             if graph_session.graph_fault is not None:
                 return []
@@ -498,6 +508,9 @@ def _resolved_relation_candidates(
     initial_signals: list[tuple[CodeSignal, _RelationSeed]],
     test_intent: bool,
     protected_chunk_ids: set[str],
+    exact_imported_symbol_provenance: list[
+        ExactImportedSymbolProvenance
+    ] | None = None,
 ) -> list[RetrievalCandidate]:
     if not seed_candidates or session.graph_fault is not None:
         return []
@@ -508,6 +521,9 @@ def _resolved_relation_candidates(
     }
     if not initial_signals:
         return []
+    direct_seed_signal_ids = {
+        signal.signal_id for signal, _seed in initial_signals
+    }
 
     frontier: list[tuple[_ResolvedPathKey, int, _ResolvedState]] = []
     best_signal_keys: dict[str, _ResolvedPathKey] = {}
@@ -594,6 +610,10 @@ def _resolved_relation_candidates(
             for relation in relations
         ]
         steps: list[_ResolvedStep] = []
+        outgoing_positions = {
+            relation.relation_id: position
+            for position, relation in enumerate(outgoing, start=1)
+        }
         for relation, direction in sorted(
             raw_edges,
             key=lambda item: _resolved_edge_sort_key(
@@ -613,11 +633,23 @@ def _resolved_relation_candidates(
                 relation,
                 direction=direction,
                 test_intent=test_intent,
+                direct_seed_signal=(
+                    state.signal.signal_id in direct_seed_signal_ids
+                ),
+                ordered_edge_position=(
+                    outgoing_positions[relation.relation_id]
+                    if direction == "outgoing"
+                    else None
+                ),
             )
             if session.graph_fault is not None:
                 return []
             if edge is not None and edge.step is not None:
                 steps.append(edge.step)
+                if exact_imported_symbol_provenance is not None:
+                    exact_imported_symbol_provenance.extend(
+                        edge.step.exact_imported_symbol_provenance
+                    )
 
         for step in steps:
             next_state = step.state
@@ -627,27 +659,45 @@ def _resolved_relation_candidates(
                 and chunk_id != next_state.root_chunk_id
             )
             existing = expanded.get(chunk_id)
-            if should_add and (existing is None or next_state.key < existing[0]):
+            if should_add:
                 score = evidence_merge.bounded_score(next_state.score)
-                expanded[chunk_id] = (
-                    next_state.key,
-                    RetrievalCandidate(
-                        chunk_id=chunk_id,
-                        score=score,
-                        source="relation",
-                        score_parts={
-                            step.graph_score_key: score,
-                            "resolved_relation": 1.0,
-                            next_state.seed_key: 1.0,
-                        },
+                provenance = evidence_merge.merge_exact_imported_symbol_provenance(
+                    (
+                        existing[1].exact_imported_symbol_provenance
+                        if existing is not None
+                        else ()
                     ),
+                    step.exact_imported_symbol_provenance,
                 )
-                if (
-                    len(expanded)
-                    >= relation_policy.MAX_RELATION_EXPANDED_CANDIDATES
-                ):
-                    session.record_graph_truncation()
-                    stop_after_item = True
+                if existing is None or next_state.key < existing[0]:
+                    expanded[chunk_id] = (
+                        next_state.key,
+                        RetrievalCandidate(
+                            chunk_id=chunk_id,
+                            score=score,
+                            source="relation",
+                            score_parts={
+                                step.graph_score_key: score,
+                                "resolved_relation": 1.0,
+                                next_state.seed_key: 1.0,
+                            },
+                            exact_imported_symbol_provenance=provenance,
+                        ),
+                    )
+                    if (
+                        len(expanded)
+                        >= relation_policy.MAX_RELATION_EXPANDED_CANDIDATES
+                    ):
+                        session.record_graph_truncation()
+                        stop_after_item = True
+                elif provenance != existing[1].exact_imported_symbol_provenance:
+                    expanded[chunk_id] = (
+                        existing[0],
+                        replace(
+                            existing[1],
+                            exact_imported_symbol_provenance=provenance,
+                        ),
+                    )
 
             if next_state.hops >= relation_policy.MAX_RESOLVED_GRAPH_HOPS:
                 continue
@@ -962,6 +1012,12 @@ def _merge_session_relation_candidates(
             score=max(existing.score, candidate.score),
             source="relation",
             score_parts=score_parts,
+            exact_imported_symbol_provenance=(
+                evidence_merge.merge_exact_imported_symbol_provenance(
+                    existing.exact_imported_symbol_provenance,
+                    candidate.exact_imported_symbol_provenance,
+                )
+            ),
         )
     return sorted(
         merged.values(),
@@ -976,6 +1032,8 @@ def _resolved_edge(
     *,
     direction: str,
     test_intent: bool,
+    direct_seed_signal: bool = False,
+    ordered_edge_position: int | None = None,
 ) -> _ResolvedEdge | None:
     neighbor_id = (
         relation.target_signal_id
@@ -1046,6 +1104,54 @@ def _resolved_edge(
                 root_chunk_id=state.root_chunk_id,
             ),
             graph_score_key=graph_score_key,
+            exact_imported_symbol_provenance=(
+                _exact_imported_symbol_provenance(
+                    state,
+                    relation,
+                    neighbor,
+                    direction=direction,
+                    direct_seed_signal=direct_seed_signal,
+                    ordered_edge_position=ordered_edge_position,
+                )
+            ),
+        ),
+    )
+
+
+def _exact_imported_symbol_provenance(
+    state: _ResolvedState,
+    relation: CodeRelation,
+    target: CodeSignal,
+    *,
+    direction: str,
+    direct_seed_signal: bool,
+    ordered_edge_position: int | None,
+) -> tuple[ExactImportedSymbolProvenance, ...]:
+    if not (
+        direct_seed_signal
+        and direction == "outgoing"
+        and ordered_edge_position is not None
+        and relation.kind == "imports"
+        and relation.resolution == "resolved_exact"
+        and relation.producer == "python_ast"
+        and relation.metadata.get("resolution_basis")
+        == "exact_python_imported_symbol"
+    ):
+        return ()
+    return (
+        ExactImportedSymbolProvenance(
+            relation_id=relation.relation_id,
+            source_signal_id=state.signal.signal_id,
+            source_file_path=state.signal.file_path.as_posix(),
+            source_chunk_id=state.signal.chunk_id,
+            target_signal_id=target.signal_id,
+            target_file_path=target.file_path.as_posix(),
+            target_chunk_id=target.chunk_id,
+            relation_kind=relation.kind,
+            resolution=relation.resolution,
+            producer=relation.producer,
+            resolution_basis=str(relation.metadata["resolution_basis"]),
+            ordered_edge_position=ordered_edge_position,
         ),
     )
 

@@ -1,0 +1,849 @@
+{
+  "schema_version": 3,
+  "program": "p15-v3",
+  "attempt_id": "p15-v3-attempt-001",
+  "status": "awaiting_independent_phasea_engine_review",
+  "capture_authorized": false,
+  "skeleton_only": true,
+  "identities": {
+    "design": {
+      "path": "docs/superpowers/specs/2026-08-01-p15-v3-exact-provenance-bonus-design.md",
+      "sha256": "86a9ab83d493ccfdb4f3039f2b901d6fc06c1a0bc3d65f5970d8de00f3f972e5"
+    },
+    "plan": {
+      "path": "docs/superpowers/plans/2026-08-01-p15-v3-exact-provenance-bonus-plan.md",
+      "sha256": "de565be48c88fee1a7c6f5319bd5069bbcd586ceaaae6129153a17d7a201ff6f"
+    },
+    "manifest_path": "tests/fixtures/p15_v3_exact_provenance_bonus/input_manifest.json",
+    "harness_path": "tests/p15_v3_exact_provenance_bonus_acceptance.py",
+    "harness_tests_path": "tests/test_p15_v3_exact_provenance_bonus_acceptance.py"
+  },
+  "policy": {
+    "name": "B",
+    "policy_a": "permanently_forbidden_never_run",
+    "factor": "direct_closed_exact_imported_symbol_tuple_binary_bonus",
+    "ablation_values": [
+      0.0,
+      0.04
+    ],
+    "provenance_tuple_fields": [
+      "relation_id",
+      "source_signal_id",
+      "source_file_path",
+      "source_chunk_id",
+      "target_signal_id",
+      "target_file_path",
+      "target_chunk_id",
+      "relation_kind",
+      "resolution",
+      "producer",
+      "resolution_basis",
+      "ordered_edge_position"
+    ],
+    "emission": "direct_python_ast_imports_resolved_exact_exact_python_imported_symbol_only",
+    "propagation": "forbidden_no_hops_ancestry_adjacency_witness_or_context_synthesis",
+    "merge_routes": [
+      "candidate",
+      "same_chunk",
+      "context_overlap"
+    ],
+    "merge_operation": "lexicographically_sorted_complete_tuple_set_union_and_dedupe",
+    "eligibility_join": "candidate.file_path=tuple.target_file_path_and_candidate.origin_chunk_ids_contains_tuple.target_chunk_id",
+    "winner_cardinality_per_case": "exactly_one_if_eligible_set_nonempty_else_zero",
+    "prebonus_stage": "after_identifier_owner_ceiling_project_and_frontend_cohort",
+    "existing_total_order": [
+      "-round(rerank_score,3)",
+      "evidence_priority",
+      "0_if_was_ceiling_clamped_else_1",
+      "-pre_ceiling_rerank_score_if_clamped_else_0.0",
+      "role_priority",
+      "-rerank_score",
+      "-combined_score",
+      "file_path",
+      "start_line",
+      "chunk_id"
+    ],
+    "winner_order": "minimum_complete_existing_prebonus_total_order_over_derived_eligible_full_roster",
+    "input_order_independent": true,
+    "bonus_target": "rerank_score_only",
+    "score_part": "exact_imported_symbol",
+    "reason": "exact imported symbol dependency",
+    "aggregation": "boolean_max_not_sum",
+    "maximum_case_bonus": 0.04,
+    "postbonus_order": "rerank_full_roster_with_same_existing_total_order",
+    "stage": "after_owner_ceiling_and_cohort_before_context_expansion_and_final_selection",
+    "eligibility_feedback": false
+  },
+  "frozen_nonchanges": {
+    "top_k": 12,
+    "relation_slots": 2,
+    "slot_ownership": "unchanged",
+    "budgets": "all_unchanged",
+    "definition_owner_behavior": "unchanged",
+    "imports_relation_weight": 0.85,
+    "graph_decay": 0.8,
+    "existing_score_part": "graph_imports_match",
+    "existing_reason": "static module dependency",
+    "traversal_direction": "outgoing_only",
+    "merge_semantics": "unchanged_except_preserving_closed_exact_provenance_union_visibility",
+    "context_expansion": "unchanged",
+    "final_selection": "unchanged",
+    "caps": {
+      "maximum_graph_seed_signals": 512,
+      "maximum_resolved_graph_hops": 4,
+      "maximum_edges_per_signal_direction": 64,
+      "maximum_relation_expanded_candidates": 1000,
+      "maximum_python_imports_per_file": 256
+    }
+  },
+  "formula_contract": {
+    "structure_closed": {
+      "top_level_keys": [
+        "selected_files",
+        "non_relation_fields",
+        "relation_buckets",
+        "module_projection_sha256",
+        "non_python_projection_sha256"
+      ],
+      "non_relation_field_keys": [
+        "active_chunks",
+        "signals_by_producer"
+      ],
+      "complete_key_sets": "frozen_from_baseline_and_identical_in_both_arms",
+      "selected_files_nonrelation_producer_module_nonpython": "direct_equality",
+      "all_non_resolved_exact_relation_buckets": "direct_equality",
+      "resolved_exact_equation": "oracle_resolved_exact=baseline_resolved_exact+oracle_causal_relation_count"
+    },
+    "cap_constants": "direct_equality_to_frozen_constants_in_both_arms",
+    "degree_delta": "oracle_observed_max_outgoing<=baseline_observed_max_outgoing+maximum_exact_relations_per_source",
+    "saturation_visibility": {
+      "edge_cap": 64,
+      "proof": "reconstruct_real_complete_edge_identities_from_hash_bound_v2_capture_and_match_enumerated_positions_1_through_64",
+      "position_65": "relocated_real_position_64_edge_fails_closed_on_cap",
+      "cap_increase": "forbidden"
+    },
+    "runtime_visibility": {
+      "source_of_truth": "manifest_bound_external_seal_and_on_disk_raw_control_only",
+      "candidate_scope": "complete_ranked_candidate_roster_before_context_expansion_including_ineligible_candidates",
+      "pipeline_boundary_proof": "complete_ordered_graph_outgoing_candidate_same_chunk_and_context_overlap_calls_with_actual_context_origins",
+      "envelope_fields": [
+        "stage",
+        "prebonus_input_candidate_ids",
+        "prebonus_input_sha256",
+        "ordered_edge_inventory",
+        "ordered_edge_inventory_sha256",
+        "pipeline_boundaries",
+        "roster"
+      ],
+      "required_fields": [
+        "candidate_id",
+        "chunk_id",
+        "file_path",
+        "origin_chunk_ids",
+        "merge_inputs",
+        "provenance_union",
+        "rerank_score",
+        "evidence_priority",
+        "was_ceiling_clamped",
+        "pre_ceiling_rerank_score",
+        "role_priority",
+        "combined_score",
+        "start_line",
+        "prebonus_position",
+        "score_parts",
+        "reasons",
+        "stage"
+      ],
+      "derived_fields": [
+        "every_merge_atom_exactly_matches_actual_ordered_edge_inventory",
+        "deduped_complete_provenance_union",
+        "eligibility_from_candidate_target_tuple_join",
+        "prebonus_total_order",
+        "winner",
+        "treatment_postbonus_total_order_from_same_control"
+      ],
+      "self_reported_boolean_or_count_is_proof": false,
+      "winner_rule": "one_minimum_existing_total_order_eligible_candidate_from_full_roster",
+      "omission_proof": "full_roster_and_recomputed_eligibility_show_no_better_eligible_candidate",
+      "bonus_rule": "winner_rerank_score_only_exact_imported_symbol_0.04_max_not_sum",
+      "postbonus_rule": "same_existing_total_order_reapplied_to_full_roster"
+    }
+  },
+  "task0_two_phase_runtime": {
+    "status": "protocol_frozen_no_capture_authorized",
+    "control": {
+      "phase": "task0a_raw_control",
+      "policy_contribution": 0.0,
+      "required_matrix": [
+        {"repeat": 1, "input_order": "canonical"},
+        {"repeat": 1, "input_order": "reverse"},
+        {"repeat": 2, "input_order": "canonical"},
+        {"repeat": 2, "input_order": "reverse"}
+      ],
+      "capture_count_per_query": 4,
+      "each_capture_separate_process": true,
+      "distinct_pid_and_invocation_required": true,
+      "producer": "p15_v3_independent_raw_control_capture",
+      "schema_version": 1,
+      "privacy": {
+        "status": "closed_no_source_content_or_click",
+        "source_content_allowed": false,
+        "click_material_allowed": false,
+        "model_request_allowed": false
+      },
+      "serialization": "canonical_json_sort_keys_compact_utf8_no_trailing_newline",
+      "write_policy": "write_new_only_never_overwrite",
+      "stable_projection": "runtime_visibility_exact_equality_across_full_repeat_order_matrix",
+      "freeze_marker": {
+        "producer": "p15_v3_independent_control_freezer",
+        "status": "immutable_control_frozen",
+        "required_mode": "0444",
+        "process_identity_required": true,
+        "canonical_digest_required": true,
+        "binds": [
+          "four_raw_control_paths",
+          "four_raw_control_digests",
+          "common_stable_projection_sha256",
+          "repeat_order_matrix",
+          "producer",
+          "process_identities",
+          "schema_version",
+          "privacy",
+          "policy_contribution",
+          "write_policy"
+        ]
+      }
+    },
+    "external_control_seal": {
+      "phase": "task0r_external_control_seal",
+      "capture_must_stop_before_review": true,
+      "producer": "p15_v3_independent_external_control_reviewer",
+      "process_identity_disjoint_from_controls_and_freezer": true,
+      "control_directory": "task0a-control",
+      "exact_inventory": [
+        "control-r1-canonical.json",
+        "control-r1-reverse.json",
+        "control-r2-canonical.json",
+        "control-r2-reverse.json",
+        "control-freeze-marker.json"
+      ],
+      "reads_actual_bytes_and_lstat": true,
+      "file_requirements": [
+        "byte_sha256",
+        "canonical_sha256",
+        "stable_projection_sha256_for_each_raw_control",
+        "mode_0444",
+        "no_symlink",
+        "nlink_1",
+        "pid_invocation_isolation"
+      ],
+      "disposition_path": ".quality/p15-runs/p15-v3-attempt-001/task0-control-seal-disposition.json",
+      "disposition_status": "pending_capture_and_independent_review",
+      "disposition_sha256": null,
+      "required_mode": "0444",
+      "manifest_exact_digest_required_before_treatment": true,
+      "future_manifest_revision_required": true,
+      "write_policy": "write_new_only_never_overwrite"
+    },
+    "treatment": {
+      "phase": "task0b_treatment",
+      "policy_contribution": 0.04,
+      "blocked_before_manifest_bound_external_control_seal": true,
+      "producer": "p15_v3_independent_treatment_capture",
+      "schema_version": 1,
+      "required_fields": [
+        "schema_version",
+        "program",
+        "attempt_id",
+        "phase",
+        "query_id",
+        "policy_contribution",
+        "external_control_seal",
+        "raw_control_snapshot",
+        "process_identity",
+        "producer",
+        "privacy",
+        "write_policy",
+        "output"
+      ],
+      "forbidden_self_reported_inputs": [
+        "candidate_roster",
+        "ordered_edge_inventory",
+        "merge_inputs",
+        "provenance_union",
+        "eligibility",
+        "prebonus_order"
+      ],
+      "derivation": "validator_reloads_actual_bytes_from_fixed_paths_and_rebuilds_all_prebonus_facts_from_exact_external_seal_bound_raw_control",
+      "validator_input": "fixed_on_disk_paths_only_no_in_memory_evidence_payloads",
+      "process_identity_disjoint_from_controls_freezer_and_external_reviewer": true,
+      "privacy": "same_closed_privacy_as_control",
+      "write_policy": "write_new_only_never_overwrite"
+    }
+  },
+  "phase_a_control_engine": {
+    "status": "implemented_inert_awaiting_independent_review",
+    "execution_authorized": false,
+    "capture_authorized": false,
+    "online_model_required_after_future_authorization": true,
+    "local_ollama_forbidden": true,
+    "new_oracle_forbidden": true,
+    "released_input_repository_order": [
+      "httpx",
+      "poetry_core"
+    ],
+    "query_count": 8,
+    "raw_capture_count": 32,
+    "freeze_marker_count": 8,
+    "query_root_template": ".quality/p15-runs/p15-v3-attempt-001/task0a/{repository_key}/{case_id}",
+    "control_directory": "task0a-control",
+    "raw_control_filenames": [
+      "control-r1-canonical.json",
+      "control-r1-reverse.json",
+      "control-r2-canonical.json",
+      "control-r2-reverse.json"
+    ],
+    "freeze_marker_filename": "control-freeze-marker.json",
+    "trusted_staging": {
+      "namespace": ".quality/p15-v3-phase-a-staging",
+      "leaf_pattern": "p15-v3-attempt-001-[0-9a-f]{32}",
+      "namespace_mode": "0700",
+      "leaf_mode": "0700",
+      "owner": "effective_uid_of_authorized_runner",
+      "directory_type": "real_directory_no_symlink",
+      "artifact_type": "regular_non_symlink_nlink_1",
+      "lifecycle": "whole_attempt_tree_private_until_single_atomic_no_overwrite_directory_publish",
+      "publication": "all_40_artifacts_validated_readback_fsynced_then_one_atomic_directory_rename_no_overwrite_and_parent_fsync",
+      "publication_identity": "record_published_tree_dev_ino_in_trusted_run_parent_before_postpublish_verification",
+      "failure_state": "rollback_nofollow_removes_run_name_substitute_and_locates_published_inode_within_authorized_run_parent_then_removes_attempt_tree_and_fsyncs_parents_final_absent_retriable_else_inode_outside_parent_terminal_non_retriable",
+      "job_scratch_pattern": ".phase-a-job-{global_index_2d}-{invocation_id_32hex}",
+      "job_scratch_lifecycle": "created_via_captured_leaf_dirfd_inode_bound_and_removed_before_child_evidence_or_freezer",
+      "job_scratch_outside_leaf": "forbidden",
+      "namespace_outside_run": "absent_or_empty",
+      "other_temporary_or_third_outputs": "forbidden"
+    },
+    "input_closure": {
+      "source": "exact_manifest_bound_released_payload_bytes_only",
+      "case_fields": [
+        "id",
+        "query",
+        "required",
+        "contextual",
+        "baseline_selected_paths",
+        "baseline_required_ranks",
+        "eligible_missing_required_paths",
+        "membership_change_eligible",
+        "protected_winner",
+        "exact_import_witnesses"
+      ],
+      "policy_contribution": 0.0,
+      "repeat_order_matrix": [
+        {"repeat": 1, "input_order": "canonical"},
+        {"repeat": 1, "input_order": "reverse"},
+        {"repeat": 2, "input_order": "canonical"},
+        {"repeat": 2, "input_order": "reverse"}
+      ],
+      "one_separate_process_per_raw_capture": true,
+      "independent_fifth_freezer_process_per_query": true,
+      "stable_projection_exact_equality_required": true,
+      "stop_after_freeze_marker": true
+    },
+    "write_new_protocol": {
+      "required_initial_run_root_state": "absent",
+      "create_only_after_future_independent_capture_authorization": true,
+      "open_mode": "exclusive_create",
+      "serialization": "canonical_json_sort_keys_compact_utf8_no_trailing_newline",
+      "final_mode": "0444",
+      "regular_non_symlink": true,
+      "nlink": 1,
+      "overwrite_forbidden": true,
+      "temporary_or_third_output_forbidden": true
+    }
+  },
+  "legacy_protected": {
+    "efficacy_credit": false,
+    "sources": {
+      "starlette": {
+        "role": "protected_legacy_characterization",
+        "url": "https://github.com/Kludex/starlette.git",
+        "commit": "5174d4c8358a6f06aa8056bafd14c2272dab8dd1",
+        "selected_count": 35,
+        "inventory_sha256": "276c780e1f897cd0444f43045846ec9bfdaa150b01a843e6e35e99a1e138762f",
+        "content_sha256": "d74975b15aa95f0d2cec6328f40a9a467b476524e4675df75e25157b5c2393a7",
+        "baseline_resolved_exact": 119,
+        "oracle_resolved_exact": 254,
+        "oracle_causal_relation_count": 135,
+        "baseline_observed_max_outgoing": 24,
+        "oracle_observed_max_outgoing": 38,
+        "maximum_exact_relations_per_source": 16,
+        "structure_projection": {
+          "baseline": {
+            "selected_files": 35,
+            "non_relation_fields": {
+              "active_chunks": 101,
+              "signals_by_producer": {
+                "core_module": 35,
+                "python_ast": 575
+              }
+            },
+            "relation_buckets": {
+              "imports:external": 194,
+              "imports:resolved_exact": 119
+            },
+            "module_projection_sha256": "c4bd32e971befb79f75d9e9155746107c810ccd2d269f490ff18d924170755d6",
+            "non_python_projection_sha256": "ce163d5c2e2f0d4288f4cc9a12d284664279e9654ce2ff3108562b012d42d2c6"
+          },
+          "oracle": {
+            "selected_files": 35,
+            "non_relation_fields": {
+              "active_chunks": 101,
+              "signals_by_producer": {
+                "core_module": 35,
+                "python_ast": 575
+              }
+            },
+            "relation_buckets": {
+              "imports:external": 194,
+              "imports:resolved_exact": 254
+            },
+            "module_projection_sha256": "c4bd32e971befb79f75d9e9155746107c810ccd2d269f490ff18d924170755d6",
+            "non_python_projection_sha256": "ce163d5c2e2f0d4288f4cc9a12d284664279e9654ce2ff3108562b012d42d2c6"
+          }
+        }
+      },
+      "requests": {
+        "role": "protected_legacy_characterization",
+        "url": "https://github.com/psf/requests.git",
+        "commit": "414f0513c33883adf6f2b46901d4f0b38a455851",
+        "selected_count": 20,
+        "inventory_sha256": "b3e6f4499ef2413e7b14ca46f917ec4d3a7374459b79eb9ec00ad8a31072283b",
+        "content_sha256": "db3b333f12cf87658bda31dad4acdc71afe99121226701aec3ef3dda2e4d5746",
+        "baseline_resolved_exact": 73,
+        "oracle_resolved_exact": 200,
+        "oracle_causal_relation_count": 127,
+        "baseline_observed_max_outgoing": 28,
+        "oracle_observed_max_outgoing": 51,
+        "maximum_exact_relations_per_source": 27,
+        "structure_projection": {
+          "baseline": {
+            "selected_files": 20,
+            "non_relation_fields": {
+              "active_chunks": 92,
+              "signals_by_producer": {
+                "core_module": 20,
+                "python_ast": 312
+              }
+            },
+            "relation_buckets": {
+              "imports:external": 131,
+              "imports:resolved_exact": 73
+            },
+            "module_projection_sha256": "aade7c1c315a67749f61cbf80d271e960c4ab110c3e9d9e216244f05eef96d8a",
+            "non_python_projection_sha256": "9a09a79c6e72c39552482dbc9b2bf2389435f2a97f70ac815270344cbae53b52"
+          },
+          "oracle": {
+            "selected_files": 20,
+            "non_relation_fields": {
+              "active_chunks": 92,
+              "signals_by_producer": {
+                "core_module": 20,
+                "python_ast": 312
+              }
+            },
+            "relation_buckets": {
+              "imports:external": 131,
+              "imports:resolved_exact": 200
+            },
+            "module_projection_sha256": "aade7c1c315a67749f61cbf80d271e960c4ab110c3e9d9e216244f05eef96d8a",
+            "non_python_projection_sha256": "9a09a79c6e72c39552482dbc9b2bf2389435f2a97f70ac815270344cbae53b52"
+          }
+        }
+      },
+      "redink": {
+        "role": "protected_legacy_characterization",
+        "url": "https://github.com/HisMax/RedInk.git",
+        "commit": "4d48722344594cf00e0498f0e1ed3df9cd4fd6be",
+        "selected_count": 28,
+        "inventory_sha256": "0da08ce10d82b76b7020f083da194fa14b3663c19dac24d4adad9e324b3eed74",
+        "content_sha256": "53644c921010b3c32b9b82a45c4ab4e70bd993af5dab07b4de2fa90945b6d632",
+        "baseline_resolved_exact": 35,
+        "oracle_resolved_exact": 73,
+        "oracle_causal_relation_count": 38,
+        "baseline_observed_max_outgoing": 10,
+        "oracle_observed_max_outgoing": 13,
+        "maximum_exact_relations_per_source": 5,
+        "structure_projection": {
+          "baseline": {
+            "selected_files": 28,
+            "non_relation_fields": {
+              "active_chunks": 87,
+              "signals_by_producer": {
+                "core_module": 25,
+                "python_ast": 137
+              }
+            },
+            "relation_buckets": {
+              "imports:external": 101,
+              "imports:resolved_exact": 35
+            },
+            "module_projection_sha256": "7d49ac72a563158d68ecc394bc34a606e68afc46036399902b3471837e35880d",
+            "non_python_projection_sha256": "4dd67818a097ec5d79c335d5e4a231a2b65f8d94fd6e8b98caca198bebac182c"
+          },
+          "oracle": {
+            "selected_files": 28,
+            "non_relation_fields": {
+              "active_chunks": 87,
+              "signals_by_producer": {
+                "core_module": 25,
+                "python_ast": 137
+              }
+            },
+            "relation_buckets": {
+              "imports:external": 101,
+              "imports:resolved_exact": 73
+            },
+            "module_projection_sha256": "7d49ac72a563158d68ecc394bc34a606e68afc46036399902b3471837e35880d",
+            "non_python_projection_sha256": "4dd67818a097ec5d79c335d5e4a231a2b65f8d94fd6e8b98caca198bebac182c"
+          }
+        }
+      },
+      "daily": {
+        "role": "protected_legacy_characterization",
+        "url": "https://github.com/ZhuLinsen/daily_stock_analysis.git",
+        "commit": "487e49e565ffd1b96a7cf4d855f99cee3c981eaa",
+        "selected_count": 203,
+        "inventory_sha256": "76cca5c6f2ae1ee83c563b11678559a70d8a4adf0356b4410a2f36d3ff7e37ee",
+        "content_sha256": "0b77bceb5225e7ff75a9ee2b1e0db04b70ecd0bd5aaef5c1b861b143f54423bb",
+        "baseline_resolved_exact": 696,
+        "oracle_resolved_exact": 1889,
+        "oracle_causal_relation_count": 1193,
+        "baseline_observed_max_outgoing": 44,
+        "oracle_observed_max_outgoing": 108,
+        "maximum_exact_relations_per_source": 64,
+        "structure_projection": {
+          "baseline": {
+            "selected_files": 203,
+            "non_relation_fields": {
+              "active_chunks": 1596,
+              "signals_by_producer": {
+                "core_module": 201,
+                "python_ast": 3884
+              }
+            },
+            "relation_buckets": {
+              "imports:external": 1127,
+              "imports:resolved_exact": 696,
+              "tests:resolved_exact": 3
+            },
+            "module_projection_sha256": "e2ad97155bc13924f16e7399ee45ac6a72fdbed89bdcd1a5be4aaeb4d9b9cc03",
+            "non_python_projection_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+          },
+          "oracle": {
+            "selected_files": 203,
+            "non_relation_fields": {
+              "active_chunks": 1596,
+              "signals_by_producer": {
+                "core_module": 201,
+                "python_ast": 3884
+              }
+            },
+            "relation_buckets": {
+              "imports:external": 1127,
+              "imports:resolved_exact": 1889,
+              "tests:resolved_exact": 3
+            },
+            "module_projection_sha256": "e2ad97155bc13924f16e7399ee45ac6a72fdbed89bdcd1a5be4aaeb4d9b9cc03",
+            "non_python_projection_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+          }
+        },
+        "saturation_snapshot": {
+          "source_capture_path": ".quality/p15-runs/p15-v2-attempt-001/oracle/hash/development_and_protected/oracle-r1-canonical.json",
+          "source_capture_sha256": "f60c6f4a2065a1aab65913dbd6aed3662eb9ef22146e9e48aebd9fd1eef64a01",
+          "source_signal_id": "s5:00b95fd8ae31d8ca420a00beebc3255abac75483ee5719bca61ff79ee2a762e2",
+          "source_file_path": "src/core/pipeline.py",
+          "source_chunk_id": "140094d643b0e18544fdf07b516d96d37b409ab089e2537fa53c4ab7f5e0c036",
+          "identity_projection_fields": [
+            "relation_id",
+            "source_signal_id",
+            "source_file_path",
+            "source_chunk_id",
+            "target_signal_id",
+            "target_file_path",
+            "target_chunk_id"
+          ],
+          "identity_projection_sha256": "c59f96bd2158a16037df322920a2263096413e0bd7a19a4eac9660351942c7f6",
+          "ordering": "lexicographic_complete_identity_projection",
+          "ordered_edges": [
+            {"position": 1, "edge_identity": "r5:0bb9390b2d32b2e890c6e505ad8a980ed8469dea74e0866181abd8abf7832011"},
+            {"position": 2, "edge_identity": "r5:0bbde42d3a10e837a7cc135c4f9b897411bacee6b4f5b644204b79a38c56f737"},
+            {"position": 3, "edge_identity": "r5:0ef12316c89437e0f363ed7ad4adeec1fb11ae634ec62dadde8c8714cdc7f1b5"},
+            {"position": 4, "edge_identity": "r5:117f6911f141cfaf39d970235367299c8a8fd290fc60a7e4246280fb6fc7b132"},
+            {"position": 5, "edge_identity": "r5:11fafaafd279d784aebeedab6ce3c67abf1fa305e7edee8a77878874cc6686fd"},
+            {"position": 6, "edge_identity": "r5:14bc0fea8d5c48e6439738efae3ed0b54a32e5b7f43973cc98d33f2560c2cabc"},
+            {"position": 7, "edge_identity": "r5:17139ccb9b90d650c7ea9a60dd9b3c6cc070846bc384a785c3c157fca5e239f9"},
+            {"position": 8, "edge_identity": "r5:19953fc05913af49a8c32b68166c37734c2cff292ceb7f19bd409bd85ae12898"},
+            {"position": 9, "edge_identity": "r5:1dd06e6b1b9ba8cd0ea2378255c0ca258adb8afe14de853b990b73f84354754a"},
+            {"position": 10, "edge_identity": "r5:238272de45bf7fa139a6e1e596dcb1585dff54fb95f6d5e48306c725790c53fe"},
+            {"position": 11, "edge_identity": "r5:27276e06c1d6718f8e241d9f07721abd4513d22a743e43bc8cd30e8fc4781117"},
+            {"position": 12, "edge_identity": "r5:2744517e520bf8d27348fbd2003c1a56b931a33f7bdd384fadc91dbd4ed3635a"},
+            {"position": 13, "edge_identity": "r5:292b9841bcaa4f6fe7a2d1beb14d158a3b6123355b7bef372f34370ea1f61f25"},
+            {"position": 14, "edge_identity": "r5:2a206b37fcc81f9306b10c526bfed92577c97da353f8e6891285166f35f46992"},
+            {"position": 15, "edge_identity": "r5:2adaa7b6dd86a4899a34d1d41aabcb4c41bbd1eea113ab8daf244e5f569f48f4"},
+            {"position": 16, "edge_identity": "r5:2aff6cfc3c13c0728d175c7a88c8102113c4cc60bf9ec2f7fee8c20039fc959a"},
+            {"position": 17, "edge_identity": "r5:2b41ad25b33b58a3ac5c1199cea96efcbd0e75fe8452e216e519cfd2d9e7fd94"},
+            {"position": 18, "edge_identity": "r5:2bf1f8220b5fc2558ed3104a1deb75a2dbbe32b64c38a9906ac6ecb13caf3e26"},
+            {"position": 19, "edge_identity": "r5:36cdda61a910307af5b5a362d80e99abeb269346ff330c2b5896888d4a39a1bf"},
+            {"position": 20, "edge_identity": "r5:392b7b023b9a560bb7478c8333274d974fcfd424dd3e8ebba9b420fd2936f5f9"},
+            {"position": 21, "edge_identity": "r5:3da8c9bc9f41d1d98b3ec875f906ecb1d1f1b6e7ebcbbd9cde9a067c8b3193d4"},
+            {"position": 22, "edge_identity": "r5:43e3a27a02217c88cf295985a4ac6f3b5e44cbee4230f51af46f1fa8fa904041"},
+            {"position": 23, "edge_identity": "r5:457785f4a33752abba0ad6a2c36a7a7f3d4f1a24eb5015bdec5f98b38c99e7c9"},
+            {"position": 24, "edge_identity": "r5:45c29d4a86530ad1efbc35d8784491a4721b8d6ad0edf3ac866e382cd321ee32"},
+            {"position": 25, "edge_identity": "r5:465725f3999c2218fa4d4bcbd799c75710c82df97a74bff6ce8c5cd6d9548bfc"},
+            {"position": 26, "edge_identity": "r5:5614a93957cb23c5474c1a740fcf0ef5f9e4f7292c984129e1fd769055f5a606"},
+            {"position": 27, "edge_identity": "r5:5cd22ffd1519a8f1c502d41946239a6fabbf65e562ab993b98dba2db7d61c8bc"},
+            {"position": 28, "edge_identity": "r5:5e8194e8833f9630a04674d1098e524959e876f7891c5c76af8b59c5475224ff"},
+            {"position": 29, "edge_identity": "r5:63d4a9a6182766dad848e3b79973e5a1b8d8caa43620249f7bf000aaf4f2b2ba"},
+            {"position": 30, "edge_identity": "r5:6cadc1b186fbaf14aae0fe777031575732beefa7875b9dfbc8bc9ee033496783"},
+            {"position": 31, "edge_identity": "r5:727e6168c217409e830a971454f31f2834358a4ea61f8a680acaece28200cb82"},
+            {"position": 32, "edge_identity": "r5:7716d0f3e1a0cde760e339714d12d7f47bb9e8ea3be79a2a81d960ea43da0906"},
+            {"position": 33, "edge_identity": "r5:77e67e1d2662170531f502e1649480f127cdb08855c3600f4f65a135ffffdffd"},
+            {"position": 34, "edge_identity": "r5:77f17c21ad6939ff8906060db80269e46c6f3b01f072f5ea141ab4103efc7df0"},
+            {"position": 35, "edge_identity": "r5:7d66e33e0f4f92e1a7df83696c3f7bf91c3ac8b20caa2c901cb6484c40cb7c79"},
+            {"position": 36, "edge_identity": "r5:7e175c9481f512405f5c22ca67e3d6a2c2b34996bfa4e6e6ac1fd5ae96f0c180"},
+            {"position": 37, "edge_identity": "r5:84056b6f000679c8336a03a191232f19f1879122bf650d97eef5a2447d4f5853"},
+            {"position": 38, "edge_identity": "r5:876a5e1320ddc8ce78108c78baa7de118391d845ee8027c0a911f9326cf595b7"},
+            {"position": 39, "edge_identity": "r5:8a281f9d038970491d0d770e46c0efa3e7bcef267a741dfb111a1630c78e960c"},
+            {"position": 40, "edge_identity": "r5:8ac408fb8c6b41a3438c10bd6594eae532d341307627605bd85a7e0f1eb1b773"},
+            {"position": 41, "edge_identity": "r5:8c28aaff9e423db8a2a565bfbea47437946bb9b3be6fc57cfcdf098d9c4cc98c"},
+            {"position": 42, "edge_identity": "r5:8fa1ae8db9979d492a8e85e97d0ccb3db782415054da4c8fca0e7b805f6346f3"},
+            {"position": 43, "edge_identity": "r5:9108787fb16d944bea0e20b794de803f2b9456e5b4c05c5e5e40ad99a526c2df"},
+            {"position": 44, "edge_identity": "r5:98d48e867aa1f268be052358ba064dd18d3abebc1899e0fc84601615808b9ce9"},
+            {"position": 45, "edge_identity": "r5:ae38646f3d50b6fd13994afbbebf161fd8c0d5e9a71e48b077210c523d51ca22"},
+            {"position": 46, "edge_identity": "r5:b49d0995c8843810e4d198a772740d2046a55833bc46c1ce65ea6bfac03f29d3"},
+            {"position": 47, "edge_identity": "r5:b7d972651037789ad3a30e97d1d2efb811f53e3d0fe4934a75f414f33e26fe06"},
+            {"position": 48, "edge_identity": "r5:bd11fb2252d4abad6701e494f0e0765dc22de50a1736fb63524513791a90293d"},
+            {"position": 49, "edge_identity": "r5:be7d477a5729204ace0fe3e8612b74b7c0c5f63a7f0a0d97378eee7baed87261"},
+            {"position": 50, "edge_identity": "r5:c1b639285309c453744f80a7d45a6692de568bb53ef6add89329aa6895941e60"},
+            {"position": 51, "edge_identity": "r5:c44cad32e3da636d11a4bba9629cac4da287ac9774709376114070ca0c444cf1"},
+            {"position": 52, "edge_identity": "r5:c4c09d782e5f8d1e05b0ec6a23835d6371675c9e0601f1cad4b5b9deab753fc8"},
+            {"position": 53, "edge_identity": "r5:d13cac4f9a9692d0ff66ac77ac18d9c9f42e81b1779a2e6bf063c62a6402373b"},
+            {"position": 54, "edge_identity": "r5:d2f2e30f102787396446012215850ea0625c78fbc18cbd926a6352ecc18ea4d9"},
+            {"position": 55, "edge_identity": "r5:d30c695dbb7a1f1a616a570337c225c0873bb6f7028a8467908af7d2ec269415"},
+            {"position": 56, "edge_identity": "r5:d7b4a5eba72f2944d4bf8a407f021e26fd2ec2dc160cdb5a390085c4e754f2e4"},
+            {"position": 57, "edge_identity": "r5:dc2c54c0bd4fbaa7e03d4fa2f792bb2601dea8f9be821f60a5e544858d20eac2"},
+            {"position": 58, "edge_identity": "r5:e3e55ee8051eb4176423855fbb37916da9f47accf5842eeb308e82ade56104c8"},
+            {"position": 59, "edge_identity": "r5:e73198171573b0fb92036d48c4bf1b30df5c749adbcf8878875d1cf01572eb32"},
+            {"position": 60, "edge_identity": "r5:ef5cb2d6758747f3c5edd7ca94bcaf5579184e2f9349725e1a65abdfa58523d2"},
+            {"position": 61, "edge_identity": "r5:f0c7808076dd4983b62da0dc957f61743827f85fc5bdc315a3a4e979b7bcbe3c"},
+            {"position": 62, "edge_identity": "r5:fc15c55221ca114647abbf298261817ee0e8e431ecbbc3d291f6f20fb590a9dd"},
+            {"position": 63, "edge_identity": "r5:fc5f20d3395c83b29295980aba72b790b11e1a9fa68cdab25de484ca6c2ffbcd"},
+            {"position": 64, "edge_identity": "r5:fe890389f49fd46547cd1ddec0a5237773e8ecf62224384c65e2cf9809b3bee9"}
+          ],
+          "position_65_negative": {
+            "position": 65,
+            "edge_identity": "r5:fe890389f49fd46547cd1ddec0a5237773e8ecf62224384c65e2cf9809b3bee9",
+            "real_source_position": 64,
+            "operation": "relocate_real_edge_without_identity_change",
+            "expected": "fail_closed_edge_cap"
+          }
+        }
+      }
+    }
+  },
+  "v2_terminal": {
+    "attempt_id": "p15-v2-attempt-001",
+    "status": "task0d_hash_reject",
+    "disposition": "reject",
+    "reject_index_path": ".quality/p15-runs/p15-v2-attempt-001/reject-index.json",
+    "reject_index_sha256": "cde8f5baf1aa8b6e96f04fdc24f221b450824563cb5721a59cf40872c3a69dd5",
+    "recursive_artifact_verification": true,
+    "captures_reusable": false,
+    "efficacy_credit": false
+  },
+  "fresh_efficacy": {
+    "status": "recovery_v2_released_exact_bound_capture_unauthorized",
+    "seal_generation": "recovery_v2",
+    "required_repository_count": 2,
+    "selection_authority": "independent_reviewer",
+    "identity_publicly_released": true,
+    "roster_contract": {
+      "path": ".quality/p15-v3-recovery-seal-v2/roster_contract_v2.json",
+      "sha256": "303a08e0e1c18f845abea8e44bb2a074bc58bb6aef30b4448c9111638a039266"
+    },
+    "seal_hashes": {
+      "path": ".quality/p15-v3-recovery-seal-v2/seal_hashes_v2.json",
+      "sha256": "0b7f4e3c69857b9fbb0e3e96b67ba1e5d9b84adc84dbff04fe7fb65ec96905de"
+    },
+    "release_review": {
+      "path": ".quality/p15-v3-recovery-release-review/independent_recovery_v2_fresh_release_review_disposition.json",
+      "sha256": "1cf0dab5e35fe4b27af805612e72bc88558f988b82baca766fc81b71d9e2a964",
+      "disposition": "approved_exact_recovery_v2_fresh_release_for_manifest_harness_binding_only"
+    },
+    "seal_directory": ".quality/p15-v3-recovery-seal-v2",
+    "seal_directory_exact_inventory": [
+      "click_conditional_carry_forward_disposition_v2.json",
+      "httpx_fresh_payload_v2.json",
+      "httpx_fresh_payload_v2.json.enc",
+      "httpx_public_contract_v2.json",
+      "poetry_core_fresh_payload_v2.json",
+      "poetry_core_fresh_payload_v2.json.enc",
+      "poetry_core_public_contract_v2.json",
+      "roster_contract_v2.json",
+      "seal_hashes_v2.json"
+    ],
+    "archived_revoked_chain": {
+      "only_active_seal_directory": ".quality/p15-v3-recovery-seal-v2",
+      "old_fresh_seal_directory": {
+        "path": ".quality/p15-v3-review-seal",
+        "status": "archived_and_revoked_for_release_or_capture_not_deleted"
+      },
+      "old_manifest_harness_rebind": {
+        "path": ".quality/p15-v3-rebind-review-seal/independent_manifest_harness_rebind_disposition.json",
+        "sha256": "6d146807c5f497552a68b53e934138cc4639e4d178977503c3f96f3ac6877059",
+        "status": "archived_revoked_for_old_fresh_release_and_not_valid_for_recovery_v2"
+      },
+      "old_release_byte_supplemental": {
+        "path": ".quality/p15-v3-rebind-review-seal/independent_fresh_release_byte_identity_supplemental_disposition.json",
+        "sha256": "7715ddb343949e3148b87c8162cd931f922c237716561deb8e27ef0f3e50b9f1",
+        "status": "archived_revoked_for_old_fresh_release_and_not_valid_for_recovery_v2"
+      },
+      "old_incident_disposition": {
+        "path": ".quality/p15-v3-incident-review/independent_ciphertext_probe_boundary_incident_disposition.json",
+        "sha256": "3afa2e4624e2a80bcf2b7d928987c2d944b81a1c3de87a040fab1ff19868b1b2",
+        "status": "archived_as_recovery_trigger_not_release_authority_for_recovery_v2"
+      },
+      "old_release_paths_state": "absent",
+      "old_artifacts_may_be_referenced_by_active_fields": false
+    },
+    "combined_headroom": {
+      "case_count": 8,
+      "required_item_denominator": 24,
+      "baseline_selected_required_items": 16,
+      "baseline_missing_required_items": 8,
+      "baseline_missing_case_count": 8,
+      "unique_exact_signal_eligible_missing_items": 8,
+      "minimum_required_items": 3,
+      "minimum_required_cases": 3,
+      "mathematical_headroom_gate": "pass"
+    },
+    "release_authorized": false,
+    "capture_authorized": false,
+    "slots": [
+      {
+        "slot": "fresh_a",
+        "status": "released_exact_bound_capture_unauthorized",
+        "repository_key": "httpx",
+        "source_root": ".quality/p15-v3-sources/httpx",
+        "repository_identity": "encode/httpx",
+        "url": "https://github.com/encode/httpx.git",
+        "commit": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254",
+        "tree": "31ba94512339180efacceacc0646b56ee15eba63",
+        "license_spdx": "BSD-3-Clause",
+        "license_path": "LICENSE.md",
+        "license_sha256": "4ec59d544f12b5f539a3a716fd321ac58ccd8030b465221f2c880200cdf28d8d",
+        "selected_count": 24,
+        "inventory_sha256": "618f23539ee93232bbc76e689cbbf8d1d210a661c39d39356cf54d07252fa59d",
+        "content_sha256": "7045b1db5fb1a8b08b2ce45698c17422bdfe50963748a989c1c3d50a44a83f33",
+        "case_count": 4,
+        "required_item_denominator": 12,
+        "baseline_selected_required_items": 8,
+        "baseline_missing_required_items": 4,
+        "baseline_missing_case_count": 4,
+        "unique_exact_signal_eligible_missing_items": 4,
+        "public_contract_path": ".quality/p15-v3-recovery-seal-v2/httpx_public_contract_v2.json",
+        "public_contract_sha256": "89e4a783fbb612c8d2863bae21594976d3467ff87726971c7b178fc0c3e23a59",
+        "sealed_payload_path": ".quality/p15-v3-recovery-seal-v2/httpx_fresh_payload_v2.json.enc",
+        "sealed_payload_sha256": "5eff61dd8c4159e15b041f510abbca11c275f035bb2021279df53bdfeb8e4268",
+        "sealed_plaintext_metadata_sha256": "c107d7a744154d93c54041dd9b026d31ed2fe6cc7d53775ccffafa931737ac75",
+        "sealed_payload_bytes": 15952,
+        "sealed_payload_mode": "0600",
+        "plaintext_path": ".quality/p15-v3-recovery-seal-v2/httpx_fresh_payload_v2.json",
+        "release_authorized": false,
+        "capture_authorized": false,
+        "released_payload_path": ".quality/p15-v3-recovery-seal-v2/httpx_fresh_payload_v2.json",
+        "released_payload_sha256": "c107d7a744154d93c54041dd9b026d31ed2fe6cc7d53775ccffafa931737ac75",
+        "released_payload_bytes": 15935,
+        "released_payload_mode": "0444"
+      },
+      {
+        "slot": "fresh_b",
+        "status": "released_exact_bound_capture_unauthorized",
+        "repository_key": "poetry_core",
+        "source_root": ".quality/p15-v3-sources/poetry-core",
+        "repository_identity": "python-poetry/poetry-core",
+        "url": "https://github.com/python-poetry/poetry-core.git",
+        "commit": "5de24118d23a05a23af5d9eb1d8bd98850d09205",
+        "tree": "a2b840fed5e731e978f6e895d1db6d83730ac96e",
+        "license_spdx": "MIT",
+        "license_path": "LICENSE",
+        "license_sha256": "f1978133782b90f4733bc308ddb19267c3fe04797c88d9ed3bc219032495a982",
+        "selected_count": 78,
+        "inventory_sha256": "0713655069b8d3d3423e5cc96dc203742b94a4c5ab58e5293e1edb5332b2e706",
+        "content_sha256": "89b20c30586195c416f2f5f46e54221febd30a0c8cf1b0eef79390d5e3e214b8",
+        "case_count": 4,
+        "required_item_denominator": 12,
+        "baseline_selected_required_items": 8,
+        "baseline_missing_required_items": 4,
+        "baseline_missing_case_count": 4,
+        "unique_exact_signal_eligible_missing_items": 4,
+        "public_contract_path": ".quality/p15-v3-recovery-seal-v2/poetry_core_public_contract_v2.json",
+        "public_contract_sha256": "8428aaf2c2b952e579e75ec388031000cb9594b66784ed811e88e24d25903ec7",
+        "sealed_payload_path": ".quality/p15-v3-recovery-seal-v2/poetry_core_fresh_payload_v2.json.enc",
+        "sealed_payload_sha256": "40a011a5272fb748ae116a087f1d4c9998c9ebc18b69bc837b45ab136cb04ccf",
+        "sealed_plaintext_metadata_sha256": "385c15af37c226ac869b3dcdc84f5b4d6750fb1bad83aabab7ea362fdde0f8cf",
+        "sealed_payload_bytes": 18784,
+        "sealed_payload_mode": "0600",
+        "plaintext_path": ".quality/p15-v3-recovery-seal-v2/poetry_core_fresh_payload_v2.json",
+        "release_authorized": false,
+        "capture_authorized": false,
+        "released_payload_path": ".quality/p15-v3-recovery-seal-v2/poetry_core_fresh_payload_v2.json",
+        "released_payload_sha256": "385c15af37c226ac869b3dcdc84f5b4d6750fb1bad83aabab7ea362fdde0f8cf",
+        "released_payload_bytes": 18753,
+        "released_payload_mode": "0444"
+      }
+    ]
+  },
+  "click": {
+    "role": "conditional_carry_forward_only",
+    "status": "approved_conditional_carry_forward_sealed_unopened_capture_unauthorized",
+    "repository": "pallets/click",
+    "commit": "00e592cea702e0b2caa0dee42489fdb1c22cd845",
+    "public_contract_path": ".quality/p15-review-seal/public_contract.json",
+    "public_contract_sha256": "a0b881dee27fdc05155139a97d398f22f5a14bb2fb33fc492fb512565753e582",
+    "sealed_payload_path": ".quality/p15-review-seal/heldout_payload_v2.json.enc",
+    "sealed_plaintext_sha256": "cbe4efbcd88a41f61d643a9200d6acc817fcc4784eaecd575f869a7650b61217",
+    "sealed_ciphertext_sha256": "329226be63911c8f7fddd0b6ff9ec6b9a5cd5c2217b3c482964fceab9329d979",
+    "sealed_payload_bytes": 10976,
+    "sealed_payload_mode": "0600",
+    "carry_forward_disposition_path": ".quality/p15-v3-recovery-seal-v2/click_conditional_carry_forward_disposition_v2.json",
+    "carry_forward_disposition_sha256": "9ace5e51975f21fc626556ab99673a7ec66650896e44a37c9618e8dc956be009",
+    "plaintext_path": ".quality/p15-review-seal/heldout_payload_v2.json",
+    "open_record_path": ".quality/p15-review-seal/heldout-open-record.json",
+    "opened": false,
+    "capture_authorized": false
+  },
+  "execution_boundary": {
+    "skeleton_model_calls_allowed": false,
+    "eventual_capture_requires_online_model": true,
+    "local_ollama_forbidden": true,
+    "new_oracle_forbidden": true,
+    "sealed_payload_reads_forbidden": true,
+    "fresh_release_forbidden": true,
+    "click_access_forbidden": true,
+    "src_writes_forbidden": true
+  },
+  "review": {
+    "recovery_v2_fresh_roster": "externally_reviewed_exact_release_bound_capture_unauthorized",
+    "recovery_v2_click_carry_forward": "approved_conditional_sealed_unopened_capture_unauthorized",
+    "recovery_v2_release_review": "approved_exact_release_binding_only",
+    "phase_a_control_engine": "pending_independent_review_no_execution_authority",
+    "old_fresh_rebind_supplemental_incident_chain": "archived_revoked_not_active_authority",
+    "capture_authorization": "none"
+  },
+  "evidence": {
+    "run_root": ".quality/p15-runs/p15-v3-attempt-001",
+    "required_initial_state": "absent",
+    "write_policy_after_authorization": "write_new_only"
+  },
+  "behavior_baseline": "5f56de2e1b57ed7f1ec0ee9a513b508461d78233"
+}

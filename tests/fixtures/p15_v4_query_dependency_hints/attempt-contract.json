@@ -1,0 +1,116 @@
+{
+  "schema_version": "p15-v4-query-only-dependency-hints-attempt-v1",
+  "status": "frozen_before_fresh_repository_selection",
+  "prior_attempt": {
+    "path": ".quality/p15-runs/p15-v3-attempt-001/reject-index.json",
+    "sha256": "fb8e4c707413218c1715ce14037cdde7d5bc1e21b9f2d764e585a8100127490f",
+    "disposition": "rejected_frozen_exact_provenance_bonus"
+  },
+  "online": {
+    "provider": "openai-compatible",
+    "base_domain": "api.siliconflow.cn",
+    "model": "Qwen/Qwen2.5-14B-Instruct",
+    "local_endpoints_forbidden": true,
+    "ollama_forbidden": true,
+    "chat_requests_per_query": 1,
+    "temperature": 0,
+    "seed": 0,
+    "max_output_tokens": 512
+  },
+  "planner": {
+    "prompt_version": "qwen-query-planner-v3-import-dependency-v1",
+    "prompt_sha256": "47bdeb31eea13e481c9a5ddabbb444e1a5b72ca297dcc11b6d56f088e4d3f322",
+    "send_repo_profile": false,
+    "user_payload_fields": [
+      "query",
+      "max_rewritten_queries",
+      "max_keywords",
+      "max_symbol_hints",
+      "max_imported_symbol_hints",
+      "max_imported_module_hints"
+    ],
+    "response_fields": [
+      "rewritten_queries",
+      "grep_keywords",
+      "symbol_hints",
+      "intent",
+      "dependency_intent",
+      "imported_symbol_hints",
+      "imported_module_hints"
+    ],
+    "dependency_intents": ["follow_imports", "none"],
+    "max_imported_symbol_hints": 4,
+    "max_imported_module_hints": 4,
+    "max_imported_hint_codepoints": 128,
+    "hint_normalization": "strip_then_casefold_dedupe",
+    "hint_grammar": "identifier_or_dotted_identifier",
+    "response_envelope": "one_complete_json_object_only",
+    "markdown_fence_or_prose_or_prefix_or_multiple_objects": "reject_entire_plan",
+    "missing_response_field": "reject_entire_plan",
+    "unknown_response_field": "reject_entire_plan",
+    "invalid_dependency_intent": "reject_entire_plan",
+    "invalid_hint_container_or_member_type": "reject_entire_plan",
+    "invalid_or_overlong_hint_value": "discard_value",
+    "fallback_dependency_intent": "none",
+    "fallback_imported_symbol_hints": [],
+    "fallback_imported_module_hints": []
+  },
+  "privacy": {
+    "remote_query_allowed": true,
+    "remote_fixed_numeric_limits_allowed": true,
+    "remote_repo_profile_allowed": false,
+    "remote_repository_path_allowed": false,
+    "remote_candidate_path_allowed": false,
+    "remote_source_or_snippet_allowed": false,
+    "remote_gold_or_required_path_allowed": false,
+    "api_key_allowed_only_in_authorization_header": true
+  },
+  "candidate_pool": {
+    "remote_candidate_payload": false,
+    "source": "existing_complete_exact_imported_symbol_provenance_roster",
+    "new_retrieval_work_budget": 0,
+    "eligibility": {
+      "relation_kind": "imports",
+      "resolution": "resolved_exact",
+      "producer": "python_ast",
+      "resolution_basis": "exact_python_imported_symbol",
+      "target_chunk_and_path_identity_required": true
+    }
+  },
+  "local_rule": {
+    "control_consume_dependency_hints": false,
+    "candidate_consume_dependency_hints": true,
+    "only_control_candidate_difference": "consume_dependency_hints",
+    "match": "NFKC_strip_casefold_strict_exact_target_signal_name_or_module_identity",
+    "preorder": "existing_complete_ranked_chunk_total_order",
+    "top_k_distinct_paths": 12,
+    "only_promote_outside_top_k": true,
+    "maximum_promotions": 2,
+    "winner_selection": "first_unique_paths_in_existing_total_order",
+    "rank_one_protected": true,
+    "score_bucket_decimals": 3,
+    "target_score_rule": "floor(rank_one_score*1000)/1000-index*0.001_for_index_1_or_2",
+    "admission_rule": "target_score_rounded_3_must_strictly_exceed_original_rank12_distinct_path_score_rounded_3",
+    "score_part": "planner_dependency_hint_promotion",
+    "score_part_value": "target_score_minus_original_rerank_score",
+    "reason": "planner exact dependency target",
+    "displacement": "natural_stable_rerank_displaces_same_count_from_bottom_of_original_top12",
+    "failure_or_no_exact_match": "preserve_original_total_order"
+  },
+  "paired_run": {
+    "same_product_candidate_code": true,
+    "same_prompt_and_schema": true,
+    "same_online_model": true,
+    "same_chat_request_count": true,
+    "same_temperature_and_seed": true,
+    "online_repeat_requires_identical_top12": true,
+    "maximum_query_regression_ratio": 0.1,
+    "minimum_query_regression_seconds": 0.005,
+    "timing_statistic": "median_of_paired_alternating_control_candidate_runs"
+  },
+  "fresh_repository": {
+    "identity_selected": false,
+    "queries_disclosed": false,
+    "gold_disclosed": false
+  }
+}

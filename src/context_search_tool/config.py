@@ -29,6 +29,7 @@ class RetrievalConfig:
     final_top_k: int = 12
     context_before_lines: int = 8
     context_after_lines: int = 12
+    consume_dependency_hints: bool = False
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,7 @@ class QueryPlannerConfig:
     model: str = "qwen3.5:4b-mlx"
     base_url: str = "http://localhost:11434"
     use_system_proxy: bool = False
+    send_repo_profile: bool = True
     timeout_seconds: float = 8.0
     max_rewritten_queries: int = 4
     max_keywords: int = 12
@@ -125,6 +127,7 @@ def render_config(config: ToolConfig) -> str:
     query_planner_lines.extend(
         [
             f"use_system_proxy = {_toml_bool(config.query_planner.use_system_proxy)}",
+            f"send_repo_profile = {_toml_bool(config.query_planner.send_repo_profile)}",
             f"timeout_seconds = {config.query_planner.timeout_seconds}",
             f"max_rewritten_queries = {config.query_planner.max_rewritten_queries}",
             f"max_keywords = {config.query_planner.max_keywords}",
@@ -146,6 +149,7 @@ def render_config(config: ToolConfig) -> str:
             f"final_top_k = {config.retrieval.final_top_k}",
             f"context_before_lines = {config.retrieval.context_before_lines}",
             f"context_after_lines = {config.retrieval.context_after_lines}",
+            f"consume_dependency_hints = {_toml_bool(config.retrieval.consume_dependency_hints)}",
             "",
             "[context]",
             f"max_items = {config.context.max_items}",

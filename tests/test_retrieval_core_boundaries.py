@@ -43,10 +43,12 @@ EXPECTED_BUNDLE_REPR = (
     "followup_keywords=[], summary=RetrievalSummary(entry_points=[], "
     "implementation=[], related_types=[], possibly_legacy=[]), "
     "planner=QueryPlan(original_query='', rewritten_queries=[], "
-    "grep_keywords=[], symbol_hints=[], intent='unknown', status='disabled', "
-    "provider='', model='', prompt_version='', prompt_hash='', latency_ms=None, "
-    "error=None, repo_profile_hash='', repo_profile_truncated=False, "
-    "discarded_hints=[]), evidence_anchors=[], query_variants=[], "
+    "grep_keywords=[], symbol_hints=[], dependency_intent='none', "
+    "imported_symbol_hints=[], imported_module_hints=[], intent='unknown', "
+    "status='disabled', provider='', model='', prompt_version='', prompt_hash='', "
+    "latency_ms=None, error=None, repo_profile_hash='', "
+    "repo_profile_truncated=False, discarded_hints=[]), evidence_anchors=[], "
+    "query_variants=[], "
     "variant_retrieval_status='original_only')"
 )
 
