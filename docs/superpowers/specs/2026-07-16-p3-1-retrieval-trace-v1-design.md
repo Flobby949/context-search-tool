@@ -18,7 +18,7 @@ once and expose:
 - raw candidate counts by source;
 - ordered snapshots for each retrieval stage;
 - candidate provenance and semantic-variant attribution;
-- rank movement and non-zero rerank adjustments;
+- rank movement and non-zero score transitions recorded where they are applied;
 - final result and evidence-anchor selection reasons;
 - bounded stage and total timings.
 
@@ -147,15 +147,18 @@ state as retrieval input.
 ### Typed And Versioned
 
 Public payloads are built from frozen dataclasses and explicit serializers.
-There is no arbitrary `details: dict[str, object]` escape hatch. New meanings
-require an additive schema field or a new schema version.
+There is no arbitrary `details: dict[str, object]` escape hatch. Schema v1 has
+frozen exact key sets: any new public field, stage, legal value, or semantic
+meaning requires a new schema version. Internal implementation fields may change
+without becoming serialized fields.
 
 ### Bounded By Construction
 
 The trace records every stage count but previews at most five candidates per
-stage, twenty final selections, and twenty-four adjustments per selection.
-Stage truncation remains visible through uncapped output and unique-output
-counts; final-selection and adjustment previews report explicit omitted counts.
+stage, twenty final selections, sixteen origin chunk IDs per selection, and
+twenty-four adjustments per selection. Stage truncation remains visible through
+uncapped output and unique-output counts; final-selection, origin-ID, and
+adjustment previews report explicit omitted counts.
 
 ### Explicitly Requested Data
 
@@ -264,6 +267,7 @@ The exact top-level trace keys, in serialization order, are:
     "max_stages": 16,
     "stage_top_k": 5,
     "final_selection_top_k": 20,
+    "origin_chunk_id_top_k": 16,
     "adjustment_top_k": 24
   },
   "query": {
@@ -344,9 +348,9 @@ A stage has exactly these keys:
 }
 ```
 
-Counts describe the stage before preview truncation. `output_count` includes
-duplicates when the operation naturally emits them; `unique_output_count` is by
-chunk ID, or by expanded-result identity after context expansion.
+Counts describe the stage before preview truncation. The per-stage table below
+defines the counted unit and identity; consumers must not infer a different unit
+from `top_candidates`.
 
 A candidate preview has exactly these keys:
 
@@ -370,23 +374,29 @@ sort key already used by the following retrieval stage.
 
 ### Canonical Stage Order
 
-| position | stage | input/output meaning |
-| ---: | --- | --- |
-| 1 | `query_understanding` | original tokens to expanded tokens and variants |
-| 2 | `semantic_recall` | query variants to vector matches |
-| 3 | `lexical_recall` | original tokens to FTS candidates |
-| 4 | `path_symbol_recall` | original tokens to path/symbol candidates |
-| 5 | `direct_text_recall` | direct probes to raw-text candidates |
-| 6 | `signal_recall` | original tokens to code-signal candidates |
-| 7 | `planner_hint_recall` | planner-only tokens to lexical/path/signal candidates |
-| 8 | `direct_merge` | raw direct candidates to unique direct candidates |
-| 9 | `anchor_expansion` | direct candidates to evidence-anchor expansions |
-| 10 | `relation_expansion` | direct and anchor seeds to related candidates |
-| 11 | `candidate_merge` | all candidate sources to one candidate per chunk |
-| 12 | `ranking` | merged candidates to ranked chunks |
-| 13 | `cohort_rerank` | ranked chunks to frontend-cohort-adjusted order |
-| 14 | `context_expansion` | ranked chunks to expanded and overlap-merged results |
-| 15 | `final_selection` | expanded results to code results and evidence anchors |
+| position | stage | `input_count` unit | `output_count` unit | `unique_output_count` identity | preview |
+| ---: | --- | --- | --- | --- | --- |
+| 1 | `query_understanding` | original tokens | expanded tokens | distinct expanded token | always empty; variants live in `query.variants` |
+| 2 | `semantic_recall` | requested query variants | returned semantic candidate records | chunk ID | returned candidate order |
+| 3 | `lexical_recall` | original tokens | returned FTS candidate records | chunk ID | returned candidate order |
+| 4 | `path_symbol_recall` | original tokens | returned path/symbol candidate records | chunk ID | returned candidate order |
+| 5 | `direct_text_recall` | direct-text probes | returned raw-text candidate records | chunk ID | returned candidate order |
+| 6 | `signal_recall` | original tokens | returned code-signal candidate records | chunk ID | returned candidate order |
+| 7 | `planner_hint_recall` | planner-only tokens | returned planner lexical/path/signal records | chunk ID | returned candidate order |
+| 8 | `direct_merge` | all direct candidate records | merged direct candidates | chunk ID | merged-map encounter order |
+| 9 | `anchor_expansion` | merged direct candidates | returned anchor candidate records | chunk ID | returned candidate order |
+| 10 | `relation_expansion` | merged direct-plus-anchor seeds | returned relation candidate records | chunk ID | returned candidate order |
+| 11 | `candidate_merge` | direct, anchor, and relation records | merged candidates | chunk ID | merged-map encounter order |
+| 12 | `ranking` | merged candidates | ranked chunks | chunk ID | ranking order |
+| 13 | `cohort_rerank` | ranked chunks | cohort-adjusted ranked chunks | chunk ID | reranked order |
+| 14 | `context_expansion` | cohort-ranked chunks | origin expanded results before overlap deduplication | overlap-merged result keyed by repository-relative path and inclusive line range | merged result order; `chunk_id` is the winner origin whose score and reasons survive |
+| 15 | `final_selection` | overlap-merged results | selected results plus anchors | selected path/range/kind tuple | always empty; details live in `final_selections` |
+
+`final_selection.rank` is the one-based global encounter order of selected
+items while walking the expanded list. Results and evidence anchors do not have
+independent rank sequences. For `context_expansion`, `output_count` is the sum
+of origin counts on the merged results and `unique_output_count` is the merged
+result count; their delta is the overlap-deduplication signal.
 
 A zero-result stage is still recorded when execution reaches it. Stages after an
 early return are absent; `termination_reason` explains why.
@@ -415,6 +425,28 @@ Counts are raw contributions, so the same chunk may contribute to more than one
 source. `direct_merge` and `candidate_merge` show the corresponding unique
 counts. This distinction is required to diagnose source overlap.
 
+The same eleven values, in the same order, are the only legal values in every
+candidate and selection `sources` array. Public provenance applies this mapping
+to both `RetrievalCandidate.source` tokens and positive score-part evidence:
+
+| public source | accepted internal source/score-part family |
+| --- | --- |
+| `semantic` | `semantic` |
+| `planner_semantic` | `planner_semantic` |
+| `lexical` | `lexical`, `fts` |
+| `path_symbol` | `path_symbol` |
+| `direct_text` | `direct_text` |
+| `signal` | `signal` |
+| `planner_lexical` | `planner_lexical` |
+| `planner_path_symbol` | `planner_path_symbol` |
+| `planner_signal` | `planner_signal` |
+| `anchor_expansion` | `anchor_expansion`, `anchored_relation`, `same_file_anchor`, `directory_anchor` |
+| `relation` | `relation`, `original_relation`, `planner_relation` |
+
+Internal aggregate names such as `planner_hint` and producer names such as
+`anchored_relation` are never serialized. A single `_trace_public_sources()`
+policy owns this mapping for recall, ranked, expanded, and final observations.
+
 ## Final Selection Contract
 
 A final selection has exactly these fields:
@@ -428,7 +460,9 @@ A final selection has exactly these fields:
   "start_line": 18,
   "end_line": 62,
   "score": 1.42,
+  "origin_chunk_count": 1,
   "origin_chunk_ids": ["37ee82f4:function:18:5406409b"],
+  "origin_chunk_id_omitted_count": 0,
   "sources": ["semantic", "direct_text", "signal"],
   "variant_ids": ["original"],
   "rank_history": [
@@ -438,8 +472,20 @@ A final selection has exactly these fields:
     {"stage": "final_selection", "rank": 1, "score": 1.42}
   ],
   "adjustments": [
-    {"name": "frontend_import_support_boost", "value": 0.3},
-    {"name": "role_boost", "value": 0.2}
+    {
+      "stage": "ranking",
+      "name": "role_boost",
+      "score_before": 1.11,
+      "value": 0.2,
+      "score_after": 1.31
+    },
+    {
+      "stage": "cohort_rerank",
+      "name": "frontend_import_support_boost",
+      "score_before": 1.31,
+      "value": 0.11,
+      "score_after": 1.42
+    }
   ],
   "adjustment_omitted_count": 0,
   "reasons": ["semantic match", "direct text match", "business role boost"]
@@ -459,16 +505,20 @@ The `final_selection` stage additionally records decision counts for:
 - `result_limit`;
 - `anchor_limit`.
 
-Overlap merging is represented by multiple `origin_chunk_ids` on the resulting
-selection and by the `context_expansion` input/unique-output count delta. It is
-not mislabeled as a final-selection drop.
+Overlap merging is represented by `origin_chunk_count`, the first sixteen
+origin IDs in deterministic merge encounter order, and
+`origin_chunk_id_omitted_count`. It is also visible in the
+`context_expansion` output/unique-output count delta and is not mislabeled as a
+final-selection drop.
 
 ### Provenance
 
-`sources` is a canonical deduplicated union across all origin chunks. It derives
-from existing candidate sources and score-part families; trace collection does
-not infer provenance from display reasons. `variant_ids` comes from existing
-`SemanticMatch` records and retains original-before-planner ordering.
+`sources` is a canonical deduplicated union across all origin chunks using the
+fixed mapping above. It derives from existing candidate sources and positive
+score-part evidence; trace collection does not infer provenance from display
+reasons. `variant_ids` comes from the overlap-merged result's already ordered
+`SemanticMatch` records, not from `origin_chunk_ids`, and retains
+original-before-planner ordering.
 
 ### Rank History
 
@@ -481,13 +531,27 @@ that order.
 
 ### Adjustments
 
-Adjustments are non-zero score parts whose existing names end in `_boost`,
-`_penalty`, or `_match`, plus a synthetic `planner_ceiling_clamp` equal to the
-final minus pre-ceiling rerank score. They are ordered by descending absolute
-value and then name, capped at twenty-four. This is a diagnostic factor list, not
-an additive reconciliation of the final score: existing scorer branches that do
-not materialize a named score part remain visible through rank-history score
-movement. P3.1 does not rewrite ranking policy merely to manufacture a ledger.
+Adjustments are typed, non-zero score transitions recorded at the exact statement
+that changes a candidate's rerank score. Each event has exactly `stage`, `name`,
+`score_before`, `value`, and `score_after`; `value` equals
+`score_after - score_before` within a fixed floating tolerance. Legal stages are
+`ranking` and `cohort_rerank`.
+
+The scorer records stable names for currently unnamed applications, including
+`original_direct_boost`, `endpoint_controller_boost`, and
+`implementation_chain_boost`. The ceiling records
+`planner_ceiling_clamp` at the clamp itself; project-cohort penalty and frontend
+import support record separate events where they execute. A score-part key alone
+does not prove an adjustment occurred and is never converted into an event after
+the fact.
+
+Events retain execution order and the first twenty-four are serialized with an
+omitted count. For an overlap-merged result, only the winner origin whose score
+and reasons survive contributes adjustment events; losing origins contribute
+provenance but never adjustments. Consecutive retained events must form a valid
+score chain. Rank movement remains useful context, but it is not a substitute for
+an unrecorded score mutation. This instrumentation observes existing arithmetic
+and must not change ranking policy.
 
 ## Timing
 
@@ -512,7 +576,8 @@ Schema v1 has these fixed structural limits:
 | stages | 16 | collector rejects an invalid implementation |
 | candidate previews per stage | 5 | retain actual first five and full counts |
 | final selection previews | 20 | retain first twenty and omitted count |
-| adjustments per selection | 24 | retain strongest twenty-four and omitted count |
+| origin chunk IDs per selection | 16 | retain first sixteen, total count, and omitted count |
+| adjustments per selection | 24 | retain first twenty-four in execution order and omitted count |
 
 Additional invariants:
 
@@ -526,15 +591,24 @@ Additional invariants:
 - JSON serialization uses `allow_nan=False`;
 - `final_selection_count` equals the uncapped result-plus-anchor selection count;
 - `final_selection_omitted_count` equals count minus serialized preview length;
+- `origin_chunk_count` equals serialized origin IDs plus
+  `origin_chunk_id_omitted_count` for every selection;
+- every stage candidate preview is no longer than `stage_top_k`;
+- every candidate/selection source is in canonical order and belongs to the
+  fixed eleven-value vocabulary;
+- every adjustment is an applied finite transition and retained transitions are
+  in execution order; when none are omitted, the final transition ends at the
+  selection score;
 - a completed trace has a `final_selection` stage;
 - ordinary retrieval does not depend on any trace object or field.
 
 The serialized stage and selection structures are bounded independently of the
-number of retrieval candidates. Request-local collection still retains a
-lightweight rank/score history for candidates that reach rank-bearing stages, so
-collector working memory is O(N) within the retrieval engine's existing
-candidate limits. Query and repository-relative path strings retain their actual
-values, so schema v1 does not claim a fixed global byte ceiling.
+number of retrieval candidates, including overlap-origin lists. Request-local
+collection still retains lightweight rank/score and adjustment history for
+candidates that reach rank-bearing stages, so collector working memory is O(N)
+within the retrieval engine's existing candidate limits. Query and
+repository-relative path strings retain their actual values, so schema v1 does
+not claim a fixed global byte ceiling.
 
 ## Data Flow
 
@@ -581,12 +655,12 @@ and compares canonical bytes.
 
 Handled early returns produce a valid trace:
 
-| condition | outcome | termination reason |
-| --- | --- | --- |
-| missing `index.sqlite` | `empty` | `missing_index` |
-| handled `deleted_chunk_ids()` SQLite error | `partial` | `store_read_error` |
-| merged candidate set empty | `empty` | `no_candidates` |
-| final selection reached | `complete` | `completed` |
+| condition | outcome | termination reason | exact recorded-stage suffix |
+| --- | --- | --- | --- |
+| missing `index.sqlite` | `empty` | `missing_index` | no stages |
+| handled `deleted_chunk_ids()` SQLite error | `partial` | `store_read_error` | no stages |
+| merged candidate set empty | `empty` | `no_candidates` | stages 1-11, ending at `candidate_merge` |
+| final selection reached | `complete` | `completed` | stages 1-15, ending at `final_selection` |
 
 Existing query/config `ValueError` and `requests.HTTPError` behavior remains
 unchanged. Trace-only invariant, collection, and formatting failures use
@@ -675,8 +749,11 @@ Add focused tests for:
 - canonical source/stage ordering;
 - non-negative count and finite-score validation;
 - injected-clock stage and total timings;
-- stage, candidate, final-selection, and adjustment bounds;
+- stage, candidate, final-selection, origin-ID, and adjustment bounds;
 - duplicate/out-of-order stage rejection;
+- exact per-stage count/identity semantics and empty preview rules;
+- canonical public-source mapping and rejection of internal producer names;
+- adjustment transition arithmetic and score-chain validation;
 - JSON rejection of NaN and infinity;
 - no source-content fields.
 
@@ -686,10 +763,15 @@ Use deterministic indexed fixtures to prove:
 
 - the fifteen stages appear in order on a full retrieval;
 - raw source counts precede merge deduplication;
+- top-level source counts equal the per-family sum of reached recall and
+  expansion stage contribution counts;
 - original and planner semantic variants retain provenance;
 - relation and anchor candidates retain their sources;
 - ranking and cohort movement produce rank history;
-- overlap-merged results retain every origin chunk ID;
+- overlap-merged results retain every origin ID below the fixed cap and report
+  exact total/omitted counts above it;
+- overlap-merged variants remain original-before-planner independently of span
+  order, while adjustments come only from the winner origin;
 - final decision counts distinguish result/anchor limits and duplicates;
 - trace and non-trace bundles have identical raw query payloads;
 - trace and non-trace bundles build identical ContextPack v2 bytes;
@@ -708,7 +790,10 @@ Prove:
 - planner flag resolution matches `query` and `context`;
 - MCP tool registration and argument forwarding are exact;
 - trace failures return stable public errors with no partial payload;
-- the feedback file is never created or modified by a trace call.
+- source sentinels are absent, while query and planner-variant sentinels appear
+  only in their explicitly allowed query fields;
+- the feedback file is never created or modified by a trace call, whether or not
+  it existed before the call.
 
 ### Deterministic P3.1 Acceptance
 
@@ -771,8 +856,8 @@ copies or immutable values, and is protected by full payload parity tests.
 
 Risk: full candidates, score parts, or content make the trace too large.
 
-Mitigation: fixed previews, no source content, full counts, final-only detailed
-adjustments, and explicit omitted counts.
+Mitigation: fixed previews, bounded origin IDs, no source content, full counts,
+final-only detailed adjustments, and explicit omitted counts.
 
 ### Trace Schema Couples To Private Classes
 
@@ -803,11 +888,12 @@ P3.1 is complete only when all of the following are true:
 1. `RetrievalTrace` schema version 1 has exact typed models and serialization.
 2. `cst trace` and `context_search_trace` execute exactly one retrieval pass.
 3. The canonical fifteen stages and raw source counts are present when reached.
-4. Stage candidate previews, final selections, and adjustments obey fixed limits;
-   stages retain uncapped counts, while final and adjustment previews report
-   omitted counts.
-5. Every serialized final selection has provenance, rank history, a selection
-   reason, and finite values for any materialized adjustments.
+4. Stage candidate previews, final selections, origin chunk IDs, and adjustments
+   obey fixed limits; stages retain uncapped counts, while final, origin-ID, and
+   adjustment previews report omitted counts.
+5. Every serialized final selection has canonical provenance, rank history, a
+   selection reason, and finite applied score-transition adjustments from the
+   winner origin only.
 6. Trace output contains no source content and is never written to MCP feedback.
 7. Deterministic trace/non-trace raw query payloads are identical.
 8. Deterministic trace/non-trace ContextPack v2 canonical bytes are identical.

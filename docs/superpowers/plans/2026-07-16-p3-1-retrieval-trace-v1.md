@@ -25,6 +25,8 @@ Execution assumptions:
 5. Do not move retrieval functions into new execution modules. Only the trace package is new in P3.1.
 6. Do not add a trace configuration section, persistence, generic event dictionaries, multi-round retrieval, or a quality catalog mode.
 7. Every implementation task follows red-green-refactor discipline and ends in a focused commit.
+8. Schema v1 key sets and legal values are frozen. Any public-field, stage, or semantic extension requires schema v2; do not weaken exact-key tests.
+9. Public provenance uses only the fixed eleven source families, and adjustments come only from applied score transitions, never suffix inference.
 
 ## File Responsibility Map
 
@@ -32,10 +34,10 @@ Execution assumptions:
 | --- | --- |
 | src/context_search_tool/retrieval_trace/models.py | Frozen schema-v1 contract types and invariant validation |
 | src/context_search_tool/retrieval_trace/collector.py | Canonical stages, fixed limits, timing, bounds, and internal rank history |
-| src/context_search_tool/retrieval_trace/serialization.py | Exact schema-v1 dictionaries and success envelope |
+| src/context_search_tool/retrieval_trace/serialization.py | Exact schema-v1 trace-object dictionaries |
 | src/context_search_tool/retrieval_trace/__init__.py | Supported trace exports |
 | src/context_search_tool/retrieval.py | One-pass traced wrapper and instrumentation around existing operations |
-| src/context_search_tool/formatters.py | Trace JSON and Markdown rendering |
+| src/context_search_tool/formatters.py | Shared trace success envelope plus JSON and Markdown rendering |
 | src/context_search_tool/cli.py | cst trace command |
 | src/context_search_tool/mcp_tools.py | context_search_trace_tool with no feedback persistence |
 | src/context_search_tool/mcp_server.py | FastMCP trace registration |
@@ -132,11 +134,44 @@ def _source_counts(**values: int) -> tuple[tuple[str, int], ...]:
     return tuple((key, values.get(key, 0)) for key in SOURCE_COUNT_KEYS)
 
 
+def _selection(
+    rank: int = 1,
+    *,
+    origin_chunk_ids: tuple[str, ...] = ("chunk-1",),
+    adjustments: tuple[TraceAdjustment, ...] = (),
+) -> TraceSelection:
+    score = adjustments[-1].score_after if adjustments else 1.1
+    return TraceSelection(
+        rank=rank,
+        selection_kind="result",
+        selection_reason="selected_within_result_limit",
+        file_path=f"src/Result{rank}.java",
+        start_line=1,
+        end_line=20,
+        score=score,
+        origin_chunk_count=len(origin_chunk_ids),
+        origin_chunk_ids=origin_chunk_ids,
+        origin_chunk_id_omitted_count=0,
+        sources=("semantic",),
+        variant_ids=("original",),
+        rank_history=(
+            TraceRank("ranking", rank, score),
+            TraceRank("cohort_rerank", rank, score),
+            TraceRank("context_expansion", rank, score),
+            TraceRank("final_selection", rank, score),
+        ),
+        adjustments=adjustments,
+        adjustment_omitted_count=0,
+        reasons=("semantic match",),
+    )
+
+
 def test_trace_contract_uses_frozen_tuples_and_exact_limits() -> None:
     limits = TraceLimits()
     assert limits.max_stages == 16
     assert limits.stage_top_k == 5
     assert limits.final_selection_top_k == 20
+    assert limits.origin_chunk_id_top_k == 16
     assert limits.adjustment_top_k == 24
 
     stage = TraceStage(
@@ -156,16 +191,20 @@ def test_trace_contract_uses_frozen_tuples_and_exact_limits() -> None:
         start_line=1,
         end_line=20,
         score=1.1,
+        origin_chunk_count=1,
         origin_chunk_ids=("chunk-1",),
+        origin_chunk_id_omitted_count=0,
         sources=("semantic", "direct_text"),
         variant_ids=("original",),
         rank_history=(
-            TraceRank("ranking", 1, 1.0),
+            TraceRank("ranking", 1, 1.1),
             TraceRank("cohort_rerank", 1, 1.1),
             TraceRank("context_expansion", 1, 1.1),
             TraceRank("final_selection", 1, 1.1),
         ),
-        adjustments=(TraceAdjustment("role_boost", 0.2),),
+        adjustments=(
+            TraceAdjustment("ranking", "role_boost", 0.9, 0.2, 1.1),
+        ),
         adjustment_omitted_count=0,
         reasons=("semantic match",),
     )
@@ -205,12 +244,28 @@ def test_trace_contract_uses_frozen_tuples_and_exact_limits() -> None:
             "file_path must be repository-relative",
         ),
         (
-            lambda: TraceAdjustment("bad", math.inf),
+            lambda: TraceAdjustment("ranking", "bad", 0.0, math.inf, math.inf),
             "value must be finite",
+        ),
+        (
+            lambda: TraceAdjustment("ranking", "bad", 1.0, 0.2, 2.0),
+            "adjustment transition is inconsistent",
         ),
         (
             lambda: TraceLimits(stage_top_k=1),
             "schema-v1 limits are fixed",
+        ),
+        (
+            lambda: TraceCandidate(
+                rank=1,
+                chunk_id="chunk",
+                file_path="src/Anchor.java",
+                start_line=1,
+                end_line=1,
+                score=1.0,
+                sources=("anchored_relation",),
+            ),
+            "sources must match canonical public order",
         ),
         (
             lambda: TraceStage(
@@ -227,6 +282,98 @@ def test_trace_contract_uses_frozen_tuples_and_exact_limits() -> None:
 def test_trace_models_reject_invalid_public_values(factory, message: str) -> None:
     with pytest.raises(RetrievalTraceError, match=message):
         factory()
+
+
+def test_typed_trace_rejects_each_preview_above_its_fixed_limit() -> None:
+    limits = TraceLimits()
+    six_candidates = tuple(_candidate(rank) for rank in range(1, 7))
+    oversized_stage = TraceStage(
+        name="semantic_recall",
+        input_count=1,
+        output_count=6,
+        unique_output_count=6,
+        duration_ms=0,
+        top_candidates=six_candidates,
+    )
+    with pytest.raises(
+        RetrievalTraceError,
+        match="stage candidate preview exceeds limit",
+    ):
+        RetrievalTrace(
+            schema_version=1,
+            outcome="empty",
+            termination_reason="no_candidates",
+            duration_ms=0,
+            limits=limits,
+            query=_query(),
+            source_counts=_source_counts(),
+            stages=(oversized_stage,),
+        )
+
+    origins = tuple(f"chunk-{index}" for index in range(17))
+    too_many_origins = _selection(origin_chunk_ids=origins)
+    final_stage = TraceStage(
+        name="final_selection",
+        input_count=1,
+        output_count=1,
+        unique_output_count=1,
+        duration_ms=0,
+    )
+    with pytest.raises(
+        RetrievalTraceError,
+        match="selection origin preview exceeds limit",
+    ):
+        RetrievalTrace(
+            schema_version=1,
+            outcome="complete",
+            termination_reason="completed",
+            duration_ms=0,
+            limits=limits,
+            query=_query(),
+            source_counts=_source_counts(),
+            stages=(final_stage,),
+            final_selection_count=1,
+            final_selections=(too_many_origins,),
+        )
+
+    adjustments = tuple(
+        TraceAdjustment("ranking", f"step_{index}", float(index), 1.0, float(index + 1))
+        for index in range(25)
+    )
+    with pytest.raises(
+        RetrievalTraceError,
+        match="selection adjustment preview exceeds limit",
+    ):
+        RetrievalTrace(
+            schema_version=1,
+            outcome="complete",
+            termination_reason="completed",
+            duration_ms=0,
+            limits=limits,
+            query=_query(),
+            source_counts=_source_counts(),
+            stages=(final_stage,),
+            final_selection_count=1,
+            final_selections=(_selection(adjustments=adjustments),),
+        )
+
+    twenty_one = tuple(_selection(rank) for rank in range(1, 22))
+    with pytest.raises(
+        RetrievalTraceError,
+        match="final selection preview exceeds limit",
+    ):
+        RetrievalTrace(
+            schema_version=1,
+            outcome="complete",
+            termination_reason="completed",
+            duration_ms=0,
+            limits=limits,
+            query=_query(),
+            source_counts=_source_counts(),
+            stages=(final_stage,),
+            final_selection_count=21,
+            final_selections=twenty_one,
+        )
 ~~~
 
 - [ ] **Step 2: Run the contract tests and verify the import fails**
@@ -279,6 +426,8 @@ SOURCE_COUNT_KEYS = (
     "relation",
 )
 
+TraceAdjustmentStage = Literal["ranking", "cohort_rerank"]
+
 
 class RetrievalTraceError(RuntimeError):
     """Raised when trace-only state violates the schema-v1 contract."""
@@ -312,24 +461,37 @@ def _relative_path(value: str) -> None:
         raise RetrievalTraceError("file_path must be repository-relative")
 
 
+def _canonical_sources(values: tuple[str, ...]) -> None:
+    if not values:
+        raise RetrievalTraceError("sources must not be empty")
+    if len(values) != len(set(values)):
+        raise RetrievalTraceError("sources must be unique")
+    expected = tuple(key for key in SOURCE_COUNT_KEYS if key in values)
+    if values != expected:
+        raise RetrievalTraceError("sources must match canonical public order")
+
+
 @dataclass(frozen=True)
 class TraceLimits:
     max_stages: int = 16
     stage_top_k: int = 5
     final_selection_top_k: int = 20
+    origin_chunk_id_top_k: int = 16
     adjustment_top_k: int = 24
 
     def __post_init__(self) -> None:
         _positive_int("max_stages", self.max_stages)
         _positive_int("stage_top_k", self.stage_top_k)
         _positive_int("final_selection_top_k", self.final_selection_top_k)
+        _positive_int("origin_chunk_id_top_k", self.origin_chunk_id_top_k)
         _positive_int("adjustment_top_k", self.adjustment_top_k)
         if (
             self.max_stages,
             self.stage_top_k,
             self.final_selection_top_k,
+            self.origin_chunk_id_top_k,
             self.adjustment_top_k,
-        ) != (16, 5, 20, 24):
+        ) != (16, 5, 20, 16, 24):
             raise RetrievalTraceError("schema-v1 limits are fixed")
 
 
@@ -394,8 +556,7 @@ class TraceCandidate:
             raise RetrievalTraceError("chunk_id must not be empty")
         _relative_path(self.file_path)
         _finite("score", self.score)
-        if not self.sources or any(not source for source in self.sources):
-            raise RetrievalTraceError("sources must not be empty")
+        _canonical_sources(self.sources)
         if any(not variant_id for variant_id in self.variant_ids):
             raise RetrievalTraceError("variant_ids must not contain empty values")
 
@@ -444,15 +605,29 @@ class TraceStage:
 
 @dataclass(frozen=True)
 class TraceAdjustment:
+    stage: TraceAdjustmentStage
     name: str
+    score_before: float
     value: float
+    score_after: float
 
     def __post_init__(self) -> None:
+        if self.stage not in {"ranking", "cohort_rerank"}:
+            raise RetrievalTraceError("invalid adjustment stage")
         if not self.name:
             raise RetrievalTraceError("adjustment name must not be empty")
+        _finite("score_before", self.score_before)
         _finite("value", self.value)
+        _finite("score_after", self.score_after)
         if float(self.value) == 0.0:
             raise RetrievalTraceError("adjustment value must be non-zero")
+        if not math.isclose(
+            float(self.score_before) + float(self.value),
+            float(self.score_after),
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise RetrievalTraceError("adjustment transition is inconsistent")
 
 
 @dataclass(frozen=True)
@@ -477,7 +652,9 @@ class TraceSelection:
     start_line: int
     end_line: int
     score: float
+    origin_chunk_count: int
     origin_chunk_ids: tuple[str, ...]
+    origin_chunk_id_omitted_count: int
     sources: tuple[str, ...]
     variant_ids: tuple[str, ...]
     rank_history: tuple[TraceRank, ...]
@@ -492,6 +669,11 @@ class TraceSelection:
         _non_negative_int(
             "adjustment_omitted_count",
             self.adjustment_omitted_count,
+        )
+        _positive_int("origin_chunk_count", self.origin_chunk_count)
+        _non_negative_int(
+            "origin_chunk_id_omitted_count",
+            self.origin_chunk_id_omitted_count,
         )
         if self.end_line < self.start_line:
             raise RetrievalTraceError("end_line must not precede start_line")
@@ -508,8 +690,13 @@ class TraceSelection:
             not chunk_id for chunk_id in self.origin_chunk_ids
         ):
             raise RetrievalTraceError("origin_chunk_ids must not be empty")
-        if not self.sources or any(not source for source in self.sources):
-            raise RetrievalTraceError("sources must not be empty")
+        if len(self.origin_chunk_ids) != len(set(self.origin_chunk_ids)):
+            raise RetrievalTraceError("origin_chunk_ids must be unique")
+        if self.origin_chunk_count != (
+            len(self.origin_chunk_ids) + self.origin_chunk_id_omitted_count
+        ):
+            raise RetrievalTraceError("origin chunk counts are inconsistent")
+        _canonical_sources(self.sources)
         if not self.rank_history:
             raise RetrievalTraceError("rank_history must not be empty")
         if tuple(item.stage for item in self.rank_history) != (
@@ -521,6 +708,30 @@ class TraceSelection:
             raise RetrievalTraceError(
                 "rank_history stages must match canonical order"
             )
+        adjustment_stage_order = {"ranking": 0, "cohort_rerank": 1}
+        if [adjustment_stage_order[item.stage] for item in self.adjustments] != sorted(
+            adjustment_stage_order[item.stage] for item in self.adjustments
+        ):
+            raise RetrievalTraceError("adjustments must retain execution order")
+        for previous, current in zip(self.adjustments, self.adjustments[1:]):
+            if not math.isclose(
+                float(previous.score_after),
+                float(current.score_before),
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            ):
+                raise RetrievalTraceError("adjustment score chain is inconsistent")
+        if (
+            self.adjustments
+            and self.adjustment_omitted_count == 0
+            and not math.isclose(
+                float(self.adjustments[-1].score_after),
+                float(self.score),
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+        ):
+            raise RetrievalTraceError("adjustment chain must end at selection score")
 
 
 @dataclass(frozen=True)
@@ -558,6 +769,17 @@ class RetrievalTrace:
             raise RetrievalTraceError("stage count exceeds max_stages")
         if len(self.final_selections) > self.limits.final_selection_top_k:
             raise RetrievalTraceError("final selection preview exceeds limit")
+        if any(
+            len(stage.top_candidates) > self.limits.stage_top_k
+            for stage in self.stages
+        ):
+            raise RetrievalTraceError("stage candidate preview exceeds limit")
+        if any(
+            stage.top_candidates
+            for stage in self.stages
+            if stage.name in {"query_understanding", "final_selection"}
+        ):
+            raise RetrievalTraceError("stage does not allow candidate previews")
         if tuple(item.rank for item in self.final_selections) != tuple(
             range(1, len(self.final_selections) + 1)
         ):
@@ -569,6 +791,11 @@ class RetrievalTrace:
             for item in self.final_selections
         ):
             raise RetrievalTraceError("selection adjustment preview exceeds limit")
+        if any(
+            len(item.origin_chunk_ids) > self.limits.origin_chunk_id_top_k
+            for item in self.final_selections
+        ):
+            raise RetrievalTraceError("selection origin preview exceeds limit")
         if (
             self.final_selection_count
             != len(self.final_selections) + self.final_selection_omitted_count
@@ -591,6 +818,7 @@ from context_search_tool.retrieval_trace.models import (
     RetrievalTraceError,
     SOURCE_COUNT_KEYS,
     TraceAdjustment,
+    TraceAdjustmentStage,
     TraceCandidate,
     TraceLimits,
     TraceOutcome,
@@ -609,6 +837,7 @@ __all__ = [
     "RetrievalTraceError",
     "SOURCE_COUNT_KEYS",
     "TraceAdjustment",
+    "TraceAdjustmentStage",
     "TraceCandidate",
     "TraceLimits",
     "TraceOutcome",
@@ -675,6 +904,16 @@ class TickClock:
         return next(self.values)
 
 
+class IncrementingClock:
+    def __init__(self) -> None:
+        self.value = 0
+
+    def __call__(self) -> int:
+        value = self.value
+        self.value += 1_000_000
+        return value
+
+
 def test_collector_enforces_stage_order_and_bounds_candidate_previews() -> None:
     clock = TickClock(
         0,
@@ -717,6 +956,30 @@ def test_collector_enforces_stage_order_and_bounds_candidate_previews() -> None:
     assert trace.stages[1].duration_ms == 4
     assert [item.rank for item in trace.stages[1].top_candidates] == [1, 2, 3, 4, 5]
     assert trace.duration_ms == 10
+
+
+def test_collector_bounds_final_selection_preview_and_reports_omission() -> None:
+    collector = RetrievalTraceCollector(clock_ns=IncrementingClock())
+    collector.record_query(_query())
+    for name in CANONICAL_TRACE_STAGES:
+        token = collector.start_stage(name, input_count=21)
+        stopped = collector.stop_stage(token)
+        count = 21 if name == "final_selection" else 0
+        collector.finish_stage(
+            stopped,
+            output_count=count,
+            unique_output_count=count,
+        )
+
+    trace = collector.finish(
+        outcome="complete",
+        termination_reason="completed",
+        final_selections=tuple(_selection(rank) for rank in range(1, 22)),
+    )
+
+    assert [item.rank for item in trace.final_selections] == list(range(1, 21))
+    assert trace.final_selection_count == 21
+    assert trace.final_selection_omitted_count == 1
 
 
 def test_collector_rejects_duplicate_or_out_of_order_stages() -> None:
@@ -763,6 +1026,7 @@ def test_serializer_emits_exact_schema_and_no_source_content() -> None:
         "max_stages",
         "stage_top_k",
         "final_selection_top_k",
+        "origin_chunk_id_top_k",
         "adjustment_top_k",
     )
     assert tuple(payload["source_counts"]) == SOURCE_COUNT_KEYS
@@ -773,6 +1037,64 @@ def test_serializer_emits_exact_schema_and_no_source_content() -> None:
         "query": "audit status",
         "trace": payload,
     }
+
+
+def test_serializer_emits_exact_selection_and_adjustment_keys() -> None:
+    adjustment = TraceAdjustment(
+        "ranking",
+        "role_boost",
+        0.9,
+        0.2,
+        1.1,
+    )
+    selection = _selection(adjustments=(adjustment,))
+    trace = RetrievalTrace(
+        schema_version=1,
+        outcome="complete",
+        termination_reason="completed",
+        duration_ms=0,
+        limits=TraceLimits(),
+        query=_query(),
+        source_counts=_source_counts(semantic=1),
+        stages=(
+            TraceStage(
+                name="final_selection",
+                input_count=1,
+                output_count=1,
+                unique_output_count=1,
+                duration_ms=0,
+            ),
+        ),
+        final_selection_count=1,
+        final_selections=(selection,),
+    )
+
+    serialized = retrieval_trace_payload(trace)["final_selections"][0]
+    assert tuple(serialized) == (
+        "rank",
+        "selection_kind",
+        "selection_reason",
+        "file_path",
+        "start_line",
+        "end_line",
+        "score",
+        "origin_chunk_count",
+        "origin_chunk_ids",
+        "origin_chunk_id_omitted_count",
+        "sources",
+        "variant_ids",
+        "rank_history",
+        "adjustments",
+        "adjustment_omitted_count",
+        "reasons",
+    )
+    assert tuple(serialized["adjustments"][0]) == (
+        "stage",
+        "name",
+        "score_before",
+        "value",
+        "score_after",
+    )
 ~~~
 
 - [ ] **Step 2: Run the focused tests and verify the new symbols are missing**
@@ -1019,6 +1341,7 @@ def retrieval_trace_payload(trace: RetrievalTrace) -> dict[str, Any]:
             "max_stages": trace.limits.max_stages,
             "stage_top_k": trace.limits.stage_top_k,
             "final_selection_top_k": trace.limits.final_selection_top_k,
+            "origin_chunk_id_top_k": trace.limits.origin_chunk_id_top_k,
             "adjustment_top_k": trace.limits.adjustment_top_k,
         },
         "query": _query_payload(trace.query),
@@ -1096,7 +1419,11 @@ def _selection_payload(selection: TraceSelection) -> dict[str, Any]:
         "start_line": selection.start_line,
         "end_line": selection.end_line,
         "score": float(selection.score),
+        "origin_chunk_count": selection.origin_chunk_count,
         "origin_chunk_ids": list(selection.origin_chunk_ids),
+        "origin_chunk_id_omitted_count": (
+            selection.origin_chunk_id_omitted_count
+        ),
         "sources": list(selection.sources),
         "variant_ids": list(selection.variant_ids),
         "rank_history": [
@@ -1117,7 +1444,13 @@ def _rank_payload(rank: TraceRank) -> dict[str, Any]:
 
 
 def _adjustment_payload(adjustment: TraceAdjustment) -> dict[str, Any]:
-    return {"name": adjustment.name, "value": float(adjustment.value)}
+    return {
+        "stage": adjustment.stage,
+        "name": adjustment.name,
+        "score_before": float(adjustment.score_before),
+        "value": float(adjustment.value),
+        "score_after": float(adjustment.score_after),
+    }
 ~~~
 
 Export the collector constants, collector class, and serializer functions from
@@ -1152,7 +1485,7 @@ from context_search_tool.retrieval_trace import (
 )
 
 try:
-    TraceAdjustment("bad", float("nan"))
+    TraceAdjustment("ranking", "bad", 0.0, float("nan"), float("nan"))
 except RetrievalTraceError:
     print("non-finite adjustment rejected")
 else:
@@ -1188,6 +1521,7 @@ Create tests/test_retrieval_trace_pipeline.py:
 ~~~python
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -1286,6 +1620,30 @@ def test_trace_repository_reports_missing_index_without_changing_bundle(
     assert traced.trace.outcome == "empty"
     assert traced.trace.termination_reason == "missing_index"
     assert traced.trace.stages == ()
+
+
+def test_trace_repository_reports_store_read_error_with_exact_cutoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, config = _indexed_repo(tmp_path)
+
+    def fail_deleted_ids(self):
+        raise sqlite3.OperationalError("PRIVATE_STORE_DETAIL")
+
+    monkeypatch.setattr(
+        retrieval.SQLiteStore,
+        "deleted_chunk_ids",
+        fail_deleted_ids,
+    )
+    plain = retrieval.query_repository(repo, "audit", config)
+    traced = retrieval.trace_repository(repo, "audit", config)
+
+    assert traced.bundle == plain
+    assert traced.trace.outcome == "partial"
+    assert traced.trace.termination_reason == "store_read_error"
+    assert traced.trace.stages == ()
+    assert "PRIVATE_STORE_DETAIL" not in repr(traced.trace)
 ~~~
 
 - [ ] **Step 2: Run the new tests and verify trace_repository is missing**
@@ -1600,7 +1958,7 @@ git commit -m "feat: add one-pass traced retrieval wrapper"
 
 - [ ] **Step 1: Write failing canonical-stage and source-count tests**
 
-Append:
+Import `SOURCE_COUNT_KEYS` from `context_search_tool.retrieval_trace`, then append:
 
 ~~~python
 def test_trace_records_query_understanding_and_all_recall_sources_in_order(
@@ -1644,6 +2002,15 @@ def test_trace_records_query_understanding_and_all_recall_sources_in_order(
         "anchor_expansion",
         "relation",
     )
+    expected_raw_counts = dict.fromkeys(SOURCE_COUNT_KEYS, 0)
+    for stage in traced.trace.stages:
+        for source, count in stage.source_counts:
+            expected_raw_counts[source] += count
+    assert dict(traced.trace.source_counts) == expected_raw_counts
+    final_stage = traced.trace.stages[-1]
+    assert sum(dict(final_stage.decision_counts).values()) == (
+        final_stage.input_count
+    )
     assert all(
         len(stage.top_candidates) <= traced.trace.limits.stage_top_k
         for stage in traced.trace.stages
@@ -1665,12 +2032,35 @@ def test_recall_previews_have_relative_paths_and_no_content(tmp_path: Path) -> N
         for candidate in candidates
     )
     assert "INVOLVED_BY_ME" not in repr(trace)
+
+
+def test_public_sources_map_internal_producers_and_score_families_exactly() -> None:
+    candidate = RetrievalCandidate(
+        chunk_id="chunk-anchor",
+        score=1.0,
+        source="planner_hint,anchored_relation",
+        score_parts={
+            "planner_lexical": 0.7,
+            "anchored_relation": 0.6,
+            "original_relation": 0.5,
+        },
+    )
+
+    assert retrieval._trace_public_sources(candidate) == (
+        "planner_lexical",
+        "anchor_expansion",
+        "relation",
+    )
+    assert "planner_hint" not in repr(retrieval._trace_public_sources(candidate))
+    assert "anchored_relation" not in repr(
+        retrieval._trace_public_sources(candidate)
+    )
 ~~~
 
 Add a planner provenance test using the existing QueryPlan model:
 
 ~~~python
-from context_search_tool.models import QueryPlan
+from context_search_tool.models import QueryPlan, RetrievalCandidate
 
 
 class FixedPlanner:
@@ -1726,7 +2116,8 @@ Expected: the new stage assertions fail because only final outcomes exist.
 - [ ] **Step 3: Add trace-only observation conversion helpers**
 
 Add these helpers to retrieval.py. They are called only when collector is not
-None.
+None. Add `SOURCE_COUNT_KEYS` to the existing
+`context_search_tool.retrieval_trace` import block at the same time.
 
 ~~~python
 def _trace_stage_start(
@@ -1740,7 +2131,7 @@ def _trace_stage_start(
     return collector.start_stage(name, input_count=input_count)
 
 
-def _trace_sources(candidate: RetrievalCandidate) -> tuple[str, ...]:
+def _trace_internal_sources(candidate: RetrievalCandidate) -> tuple[str, ...]:
     seen: set[str] = set()
     values: list[str] = []
     for raw in candidate.source.split(","):
@@ -1749,6 +2140,56 @@ def _trace_sources(candidate: RetrievalCandidate) -> tuple[str, ...]:
             seen.add(source)
             values.append(source)
     return tuple(values)
+
+
+_TRACE_PUBLIC_SOURCE_FAMILY = {
+    "semantic": "semantic",
+    "planner_semantic": "planner_semantic",
+    "lexical": "lexical",
+    "fts": "lexical",
+    "path_symbol": "path_symbol",
+    "direct_text": "direct_text",
+    "signal": "signal",
+    "planner_lexical": "planner_lexical",
+    "planner_path_symbol": "planner_path_symbol",
+    "planner_signal": "planner_signal",
+    "anchor_expansion": "anchor_expansion",
+    "anchored_relation": "anchor_expansion",
+    "same_file_anchor": "anchor_expansion",
+    "directory_anchor": "anchor_expansion",
+    "relation": "relation",
+    "original_relation": "relation",
+    "planner_relation": "relation",
+}
+
+
+def _trace_public_sources(candidate: RetrievalCandidate) -> tuple[str, ...]:
+    present: set[str] = set()
+    for internal in _trace_internal_sources(candidate):
+        public = _TRACE_PUBLIC_SOURCE_FAMILY.get(internal)
+        if public is not None:
+            present.add(public)
+    for score_key, value in candidate.score_parts.items():
+        public = _TRACE_PUBLIC_SOURCE_FAMILY.get(score_key)
+        if public is not None and float(value) > 0.0:
+            present.add(public)
+    return tuple(key for key in SOURCE_COUNT_KEYS if key in present)
+
+
+def _trace_public_source_union(
+    candidates: list[RetrievalCandidate],
+) -> tuple[str, ...]:
+    present = {
+        source
+        for candidate in candidates
+        for source in _trace_public_sources(candidate)
+    }
+    return tuple(key for key in SOURCE_COUNT_KEYS if key in present)
+
+
+def _trace_variant_ids(matches: list[SemanticMatch]) -> tuple[str, ...]:
+    ordered = sorted(matches, key=_semantic_match_sort_key)
+    return tuple(_ordered_unique([match.variant_id for match in ordered]))
 
 
 def _trace_candidate_observations(
@@ -1771,22 +2212,11 @@ def _trace_candidate_observations(
                 start_line=chunk.start_line,
                 end_line=chunk.end_line,
                 score=float(candidate.score),
-                sources=_trace_sources(candidate),
-                variant_ids=tuple(
-                    match.variant_id
-                    for match in candidate.semantic_matches
-                ),
+                sources=_trace_public_sources(candidate),
+                variant_ids=_trace_variant_ids(candidate.semantic_matches),
             )
         )
     return tuple(observations)
-
-
-_TRACE_PUBLIC_SOURCE_FAMILY = {
-    "anchor_expansion": "anchor_expansion",
-    "anchored_relation": "anchor_expansion",
-    "same_file_anchor": "anchor_expansion",
-    "directory_anchor": "anchor_expansion",
-}
 
 
 def _trace_source_counts(
@@ -1795,8 +2225,7 @@ def _trace_source_counts(
 ) -> tuple[tuple[str, int], ...]:
     counts = {key: 0 for key in allowed}
     for candidate in candidates:
-        for source in _trace_sources(candidate):
-            public_source = _TRACE_PUBLIC_SOURCE_FAMILY.get(source, source)
+        for public_source in _trace_public_sources(candidate):
             if public_source in counts:
                 counts[public_source] += 1
     return tuple(counts.items())
@@ -2088,7 +2517,13 @@ def test_complete_trace_has_all_canonical_stages_and_final_provenance(
     )
     assert traced.trace.final_selections
     for selection in traced.trace.final_selections:
-        assert selection.origin_chunk_ids
+        assert selection.origin_chunk_count == (
+            len(selection.origin_chunk_ids)
+            + selection.origin_chunk_id_omitted_count
+        )
+        assert len(selection.origin_chunk_ids) <= (
+            traced.trace.limits.origin_chunk_id_top_k
+        )
         assert selection.sources
         assert selection.rank_history
         assert selection.selection_reason in {
@@ -2096,36 +2531,132 @@ def test_complete_trace_has_all_canonical_stages_and_final_provenance(
             "selected_within_anchor_limit",
         }
         assert all(adjustment.value != 0 for adjustment in selection.adjustments)
+        for previous, current in zip(
+            selection.adjustments,
+            selection.adjustments[1:],
+        ):
+            assert previous.score_after == pytest.approx(current.score_before)
+
+    expected_raw_counts = dict.fromkeys(SOURCE_COUNT_KEYS, 0)
+    for stage in traced.trace.stages:
+        for source, count in stage.source_counts:
+            expected_raw_counts[source] += count
+    assert dict(traced.trace.source_counts) == expected_raw_counts
 
 
-def test_final_selection_stage_explains_limits_and_anchor_duplicates(
+def _trace_expanded_item(chunk_id: str, path: str) -> retrieval._ExpandedResult:
+    return retrieval._ExpandedResult(
+        chunk_ids=[chunk_id],
+        file_path=Path(path),
+        start_line=1,
+        end_line=3,
+        content="SOURCE_CONTENT_SENTINEL\nline 2\nline 3",
+        score=1.0,
+        score_parts={"semantic": 1.0, "rerank_score": 1.0},
+        reasons=["semantic match"],
+        followup_keywords=[],
+        rank_tier=0,
+        rerank_score=1.0,
+        evidence_class="original_direct",
+        evidence_priority=0,
+        semantic_matches=[],
+        winner_chunk_id=chunk_id,
+        trace_adjustments=(),
+    )
+
+
+def test_overlap_merge_keeps_winner_events_and_original_variant_order() -> None:
+    winner_events = (
+        TraceAdjustment("ranking", "winner_boost", 1.0, 0.2, 1.2),
+    )
+    losing_events = (
+        TraceAdjustment("ranking", "loser_penalty", 0.9, -0.1, 0.8),
+    )
+    planner_winner = replace(
+        _trace_expanded_item("planner", "src/Merged.java"),
+        rerank_score=1.2,
+        semantic_matches=[SemanticMatch("planner:0", 1.0)],
+        trace_adjustments=winner_events,
+    )
+    original_loser = replace(
+        _trace_expanded_item("original", "src/Merged.java"),
+        rerank_score=0.8,
+        semantic_matches=[SemanticMatch("original", 0.8)],
+        trace_adjustments=losing_events,
+    )
+
+    merged = retrieval._merge_expanded_result(planner_winner, original_loser)
+
+    assert merged.winner_chunk_id == "planner"
+    assert merged.trace_adjustments == winner_events
+    assert retrieval._trace_variant_ids(merged.semantic_matches) == (
+        "original",
+        "planner:0",
+    )
+
+
+def test_final_selection_decisions_execute_all_five_branches() -> None:
+    code_selected = _trace_expanded_item("code-1", "src/One.java")
+    code_limited = _trace_expanded_item("code-2", "src/Two.java")
+    anchor_selected = _trace_expanded_item("readme-1", "README.md")
+    anchor_duplicate = _trace_expanded_item("readme-2", "README.md")
+    anchor_limited = _trace_expanded_item("risks-1", "RISKS.md")
+
+    _, _, decisions = retrieval._split_code_results_and_evidence_anchors(
+        [
+            code_selected,
+            code_limited,
+            anchor_selected,
+            anchor_duplicate,
+            anchor_limited,
+        ],
+        final_top_k=1,
+        anchor_top_k=1,
+        collect_trace=True,
+    )
+
+    assert decisions.counts == (
+        ("selected_result", 1),
+        ("selected_anchor", 1),
+        ("duplicate_anchor", 1),
+        ("result_limit", 1),
+        ("anchor_limit", 1),
+    )
+    assert [item.kind for item in decisions.selected] == [
+        "result",
+        "evidence_anchor",
+    ]
+
+
+def test_trace_repository_reports_no_candidates_after_candidate_merge(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo, config = _indexed_repo(tmp_path)
-    traced = retrieval.trace_repository(repo, "audit", config)
-    selection = traced.trace.stages[-1]
+    monkeypatch.setattr(retrieval, "_merge_candidates", lambda *args, **kwargs: {})
 
-    assert selection.name == "final_selection"
-    assert tuple(dict(selection.decision_counts)) == (
-        "selected_result",
-        "selected_anchor",
-        "duplicate_anchor",
-        "result_limit",
-        "anchor_limit",
+    plain = retrieval.query_repository(repo, "audit", config)
+    traced = retrieval.trace_repository(repo, "audit", config)
+
+    assert traced.bundle == plain
+    assert traced.trace.outcome == "empty"
+    assert traced.trace.termination_reason == "no_candidates"
+    assert [stage.name for stage in traced.trace.stages] == list(
+        CANONICAL_TRACE_STAGES[:11]
     )
-    assert sum(dict(selection.decision_counts).values()) == selection.input_count
 
 
-def test_adjustments_are_strongest_first_and_bounded(tmp_path: Path) -> None:
+def test_plain_query_does_not_construct_adjustment_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     repo, config = _indexed_repo(tmp_path)
-    traced = retrieval.trace_repository(repo, "audit", config)
 
-    for selection in traced.trace.final_selections:
-        assert len(selection.adjustments) <= traced.trace.limits.adjustment_top_k
-        assert list(selection.adjustments) == sorted(
-            selection.adjustments,
-            key=lambda item: (-abs(item.value), item.name),
-        )
+    def forbidden(*args, **kwargs):
+        raise AssertionError("ordinary query constructed trace adjustment")
+
+    monkeypatch.setattr(retrieval, "TraceAdjustment", forbidden)
+    assert retrieval.query_repository(repo, "audit", config).results
 ~~~
 
 Append this final-state invariant test to tests/test_retrieval_trace.py:
@@ -2150,11 +2681,12 @@ def test_completed_trace_requires_final_selection_stage() -> None:
 Add these imports and the focused overlap/ceiling test:
 
 ~~~python
+from dataclasses import replace
+
 from context_search_tool.models import (
-    RetrievalCandidate,
     SemanticMatch,
 )
-from context_search_tool.retrieval_trace import TraceLimits
+from context_search_tool.retrieval_trace import TraceAdjustment, TraceLimits
 
 
 class FinalSelectionCollector:
@@ -2186,16 +2718,32 @@ def test_merged_final_selection_keeps_origins_best_ranks_and_clamp() -> None:
             "combined_score": 1.2,
             "role_boost": 0.2,
             "test_penalty": -0.1,
+            "losing_origin_only_boost": 0.7,
         },
         reasons=["semantic match", "business role boost"],
         followup_keywords=[],
         rank_tier=0,
-        rerank_score=1.0,
+        rerank_score=0.75,
         evidence_class="original_direct",
         evidence_priority=0,
-        semantic_matches=[],
-        pre_ceiling_rerank_score=1.25,
+        semantic_matches=[
+            SemanticMatch("planner:0", 0.9),
+            SemanticMatch("original", 0.8),
+        ],
+        pre_ceiling_rerank_score=0.8,
         was_ceiling_clamped=True,
+        winner_chunk_id="chunk-a",
+        trace_adjustments=(
+            TraceAdjustment("ranking", "role_boost", 0.7, 0.2, 0.9),
+            TraceAdjustment("ranking", "test_penalty", 0.9, -0.1, 0.8),
+            TraceAdjustment(
+                "ranking",
+                "planner_ceiling_clamp",
+                0.8,
+                -0.05,
+                0.75,
+            ),
+        ),
     )
     decisions = retrieval._FinalTraceDecisions(
         selected=(
@@ -2236,6 +2784,9 @@ def test_merged_final_selection_keeps_origins_best_ranks_and_clamp() -> None:
     )[0]
 
     assert selection.origin_chunk_ids == ("chunk-a", "chunk-b")
+    assert selection.origin_chunk_count == 2
+    assert selection.origin_chunk_id_omitted_count == 0
+    assert selection.variant_ids == ("original", "planner:0")
     assert [(item.stage, item.rank) for item in selection.rank_history] == [
         ("ranking", 2),
         ("cohort_rerank", 3),
@@ -2244,14 +2795,85 @@ def test_merged_final_selection_keeps_origins_best_ranks_and_clamp() -> None:
     ]
     adjustment_names = [item.name for item in selection.adjustments]
     assert adjustment_names == [
-        "planner_ceiling_clamp",
         "role_boost",
         "test_penalty",
+        "planner_ceiling_clamp",
     ]
     assert "semantic" not in adjustment_names
     assert "combined_score" not in adjustment_names
+    assert "losing_origin_only_boost" not in adjustment_names
     assert "SOURCE_CONTENT_SENTINEL" not in repr(selection)
+
+
+def test_final_selection_bounds_origins_and_applied_adjustments() -> None:
+    origin_ids = [f"chunk-{index}" for index in range(18)]
+    events = tuple(
+        TraceAdjustment(
+            "ranking",
+            f"applied_{index}",
+            float(index),
+            1.0,
+            float(index + 1),
+        )
+        for index in range(25)
+    )
+    item = replace(
+        _trace_expanded_item(origin_ids[0], "src/Bounded.java"),
+        chunk_ids=origin_ids,
+        rerank_score=25.0,
+        semantic_matches=[SemanticMatch("original", 1.0)],
+        winner_chunk_id=origin_ids[0],
+        trace_adjustments=events,
+    )
+    decisions = retrieval._FinalTraceDecisions(
+        selected=(
+            retrieval._FinalTraceInput(
+                kind="result",
+                reason="selected_within_result_limit",
+                item=item,
+            ),
+        ),
+        counts=(
+            ("selected_result", 1),
+            ("selected_anchor", 0),
+            ("duplicate_anchor", 0),
+            ("result_limit", 0),
+            ("anchor_limit", 0),
+        ),
+    )
+    candidates = {
+        chunk_id: RetrievalCandidate(
+            chunk_id=chunk_id,
+            score=1.0,
+            source="semantic",
+            score_parts={"semantic": 1.0},
+            semantic_matches=[SemanticMatch("original", 1.0)],
+        )
+        for chunk_id in origin_ids
+    }
+    collector = FinalSelectionCollector()
+    collector.rank_history = {
+        chunk_id: (
+            ("ranking", index + 1, 25.0),
+            ("cohort_rerank", index + 1, 25.0),
+            ("context_expansion", 1, 25.0),
+        )
+        for index, chunk_id in enumerate(origin_ids)
+    }
+
+    selection = retrieval._trace_final_selections(
+        decisions,
+        candidates,
+        collector,
+    )[0]
+
+    assert selection.origin_chunk_count == 18
+    assert selection.origin_chunk_ids == tuple(origin_ids[:16])
+    assert selection.origin_chunk_id_omitted_count == 2
+    assert selection.adjustments == events[:24]
+    assert selection.adjustment_omitted_count == 1
 ~~~
+
 
 - [ ] **Step 2: Run the new tests and verify stages 9-15 are missing**
 
@@ -2329,11 +2951,71 @@ _finish_candidate_stage(
 )
 ~~~
 
-The _TRACE_PUBLIC_SOURCE_FAMILY mapping counts anchor_expansion,
-anchored_relation, same_file_anchor, and directory_anchor as the single public
-anchor_expansion family without renaming live candidates.
+The single `_trace_public_sources()` policy maps all internal producer and
+score-part names into the fixed eleven-value public vocabulary. In particular,
+`anchored_relation`, `same_file_anchor`, and `directory_anchor` become
+`anchor_expansion`; `original_relation` and `planner_relation` become
+`relation`. No live candidate is renamed.
 
-- [ ] **Step 4: Add ranked and expanded observation converters**
+- [ ] **Step 4: Capture applied score transitions and add observation converters**
+
+Add `trace_adjustments: tuple[TraceAdjustment, ...] = ()` to `_RankedChunk`.
+Add `winner_chunk_id: str = ""` and the same `trace_adjustments` field to
+`_ExpandedResult`. The ranked-to-expanded conversion sets `winner_chunk_id` to
+the ranked chunk ID and copies its events. `_merge_expanded_result()` copies both
+fields only from the existing `winner`; losing origins contribute merged
+provenance but never adjustment events. Every `_ExpandedResult` copy/cap helper
+must preserve both fields.
+
+Add `TraceAdjustment` to the existing
+`context_search_tool.retrieval_trace` import block before using these fields.
+
+Add an optional `adjustments: list[TraceAdjustment] | None = None` keyword to
+`_rerank_score()`. Preserve each existing arithmetic statement exactly. Around
+every statement that actually changes `rerank_score`, capture `score_before` and
+append a `TraceAdjustment` only when the optional list exists and the applied
+delta is non-zero. For example:
+
+~~~python
+if _has_strong_original_direct_evidence(score_parts):
+    score_before = rerank_score if adjustments is not None else 0.0
+    rerank_score += 0.2
+    if adjustments is not None:
+        adjustments.append(
+            TraceAdjustment(
+                "ranking",
+                "original_direct_boost",
+                score_before,
+                rerank_score - score_before,
+                rerank_score,
+            )
+        )
+~~~
+
+Use stable call-site names, including `original_direct_boost`,
+`endpoint_controller_boost`, `implementation_chain_boost`,
+`route_rerank_adjustment`, `spring_path_rerank_adjustment`,
+`project_scope_rerank_adjustment`, `query_intent_rerank_adjustment`,
+`planner_hint_only_penalty`, `relation_only_penalty`, and
+`generic_hint_penalty`. Existing named role/artifact adjustments retain their
+existing names, but a score-part key that is merely present and not applied
+creates no event.
+
+`_rank_chunks()` accepts `collect_trace_adjustments: bool = False`, allocates an
+event list per candidate only when true, passes it to `_rerank_score()`, and
+stores the resulting tuple on `_RankedChunk`. Record
+`planner_ceiling_clamp` immediately around the clamp and
+`project_cohort_penalty` immediately around the cohort subtraction.
+`_apply_frontend_import_cohort_rerank()` receives the same boolean and appends a
+`cohort_rerank` event only for the actually applied, ceiling-limited frontend
+boost. Ordinary retrieval takes the false path and allocates no event list.
+
+Add focused `_rerank_score` tests for the three previously unnamed boosts, a
+score part that is present but gated to zero, the ceiling clamp, project cohort
+penalty, and frontend import boost. Assert exact before/value/after transitions
+and unchanged final scores. Also inspect every `rerank_score` mutation in these
+functions during review; no applied mutation may lack an adjacent trace event on
+the trace-enabled branch.
 
 Add:
 
@@ -2354,11 +3036,8 @@ def _trace_ranked_observations(
                 start_line=item.chunk.start_line,
                 end_line=item.chunk.end_line,
                 score=float(item.rerank_score),
-                sources=_trace_sources(candidate),
-                variant_ids=tuple(
-                    match.variant_id
-                    for match in candidate.semantic_matches
-                ),
+                sources=_trace_public_sources(candidate),
+                variant_ids=_trace_variant_ids(candidate.semantic_matches),
             )
         )
     return tuple(observations)
@@ -2376,30 +3055,16 @@ def _trace_expanded_observations(
             for chunk_id in item.chunk_ids
             if chunk_id in candidates
         ]
-        sources = _ordered_unique(
-            [
-                source
-                for candidate in source_candidates
-                for source in _trace_sources(candidate)
-            ]
-        )
-        variant_ids = _ordered_unique(
-            [
-                match.variant_id
-                for candidate in source_candidates
-                for match in candidate.semantic_matches
-            ]
-        )
         observations.append(
             TraceCandidate(
                 rank=rank,
-                chunk_id=item.chunk_ids[0],
+                chunk_id=item.winner_chunk_id,
                 file_path=item.file_path.as_posix(),
                 start_line=item.start_line,
                 end_line=item.end_line,
                 score=float(item.rerank_score),
-                sources=tuple(sources),
-                variant_ids=tuple(variant_ids),
+                sources=_trace_public_source_union(source_candidates),
+                variant_ids=_trace_variant_ids(item.semantic_matches),
             )
         )
     return tuple(observations)
@@ -2418,7 +3083,13 @@ token = _trace_stage_start(
     "ranking",
     input_count=len(candidates),
 )
-ranked_chunks = _rank_chunks(store, candidates, original_tokens, query)
+ranked_chunks = _rank_chunks(
+    store,
+    candidates,
+    original_tokens,
+    query,
+    collect_trace_adjustments=trace_collector is not None,
+)
 if trace_collector is not None and token is not None:
     stopped = trace_collector.stop_stage(token)
     observations = _trace_ranked_observations(
@@ -2446,6 +3117,7 @@ ranked_chunks = _apply_frontend_import_cohort_rerank(
     repo,
     ranked_chunks,
     query,
+    collect_trace_adjustments=trace_collector is not None,
 )
 if trace_collector is not None and token is not None:
     stopped = trace_collector.stop_stage(token)
@@ -2644,37 +3316,18 @@ The default path preserves the current two-item return and code/anchor lists;
 existing direct callers and tests remain unchanged. Trace-only lists and counters
 are allocated only when collect_trace is true.
 
-- [ ] **Step 7: Build bounded final selections from existing values**
+- [ ] **Step 7: Build bounded final selections from applied values**
 
-Define the exact materialized-adjustment policy. It intentionally observes
-existing named score parts and does not refactor the scorer into a second ledger:
-
-~~~python
-_TRACE_ADJUSTMENT_SUFFIXES = ("_boost", "_penalty", "_match")
-
-
-def _is_trace_adjustment(name: str) -> bool:
-    return name.endswith(_TRACE_ADJUSTMENT_SUFFIXES)
-~~~
-
-Implement:
+Use only the winner events propagated in Step 4. Do not reconstruct adjustments
+from merged `score_parts`:
 
 ~~~python
 def _trace_adjustments(
     item: _ExpandedResult,
     limit: int,
 ) -> tuple[tuple[TraceAdjustment, ...], int]:
-    values = [
-        TraceAdjustment(name, float(value))
-        for name, value in item.score_parts.items()
-        if _is_trace_adjustment(name) and float(value) != 0.0
-    ]
-    if item.was_ceiling_clamped:
-        clamp = item.rerank_score - item.pre_ceiling_rerank_score
-        if clamp:
-            values.append(TraceAdjustment("planner_ceiling_clamp", float(clamp)))
-    values.sort(key=lambda adjustment: (-abs(adjustment.value), adjustment.name))
-    return tuple(values[:limit]), max(0, len(values) - limit)
+    values = item.trace_adjustments
+    return values[:limit], max(0, len(values) - limit)
 
 
 def _trace_final_selections(
@@ -2691,24 +3344,8 @@ def _trace_final_selections(
             for chunk_id in item.chunk_ids
             if chunk_id in candidates
         ]
-        sources = tuple(
-            _ordered_unique(
-                [
-                    source
-                    for candidate in source_candidates
-                    for source in _trace_sources(candidate)
-                ]
-            )
-        )
-        variant_ids = tuple(
-            _ordered_unique(
-                [
-                    match.variant_id
-                    for candidate in source_candidates
-                    for match in candidate.semantic_matches
-                ]
-            )
-        )
+        sources = _trace_public_source_union(source_candidates)
+        variant_ids = _trace_variant_ids(item.semantic_matches)
         ranks: list[TraceRank] = []
         for stage in ("ranking", "cohort_rerank", "context_expansion"):
             positions = [
@@ -2728,6 +3365,10 @@ def _trace_final_selections(
             item,
             collector.limits.adjustment_top_k,
         )
+        origin_count = len(item.chunk_ids)
+        origin_ids = tuple(
+            item.chunk_ids[: collector.limits.origin_chunk_id_top_k]
+        )
         selections.append(
             TraceSelection(
                 rank=rank,
@@ -2737,7 +3378,9 @@ def _trace_final_selections(
                 start_line=item.start_line,
                 end_line=item.end_line,
                 score=float(item.rerank_score),
-                origin_chunk_ids=tuple(item.chunk_ids),
+                origin_chunk_count=origin_count,
+                origin_chunk_ids=origin_ids,
+                origin_chunk_id_omitted_count=origin_count - len(origin_ids),
                 sources=sources,
                 variant_ids=variant_ids,
                 rank_history=tuple(ranks),
@@ -2749,12 +3392,11 @@ def _trace_final_selections(
     return tuple(selections)
 ~~~
 
-Add TraceAdjustment and TraceRank to the existing
-context_search_tool.retrieval_trace import block:
+Add `TraceRank` to the existing `context_search_tool.retrieval_trace` import
+block:
 
 ~~~python
 from context_search_tool.retrieval_trace import (
-    TraceAdjustment,
     TraceRank,
 )
 ~~~
@@ -2922,16 +3564,20 @@ def _trace() -> RetrievalTrace:
         start_line=1,
         end_line=20,
         score=1.1,
+        origin_chunk_count=1,
         origin_chunk_ids=("chunk-audit",),
+        origin_chunk_id_omitted_count=0,
         sources=("semantic",),
         variant_ids=("original",),
         rank_history=(
-            TraceRank("ranking", 1, 1.0),
+            TraceRank("ranking", 1, 1.1),
             TraceRank("cohort_rerank", 1, 1.1),
             TraceRank("context_expansion", 1, 1.1),
             TraceRank("final_selection", 1, 1.1),
         ),
-        adjustments=(TraceAdjustment("role_boost", 0.2),),
+        adjustments=(
+            TraceAdjustment("ranking", "role_boost", 0.9, 0.2, 1.1),
+        ),
         adjustment_omitted_count=0,
         reasons=("semantic match",),
     )
@@ -3117,6 +3763,7 @@ _TRACE_LIMIT_KEYS = {
     "max_stages",
     "stage_top_k",
     "final_selection_top_k",
+    "origin_chunk_id_top_k",
     "adjustment_top_k",
 }
 _TRACE_QUERY_KEYS = {
@@ -3170,7 +3817,9 @@ _TRACE_SELECTION_KEYS = {
     "start_line",
     "end_line",
     "score",
+    "origin_chunk_count",
     "origin_chunk_ids",
+    "origin_chunk_id_omitted_count",
     "sources",
     "variant_ids",
     "rank_history",
@@ -3178,6 +3827,12 @@ _TRACE_SELECTION_KEYS = {
     "adjustment_omitted_count",
     "reasons",
 }
+
+
+def _valid_public_sources(value: Any) -> bool:
+    if type(value) is not list or not value or len(value) != len(set(value)):
+        return False
+    return tuple(value) == tuple(key for key in SOURCE_COUNT_KEYS if key in value)
 
 
 def _validated_trace(envelope: dict[str, Any]) -> dict[str, Any]:
@@ -3225,6 +3880,7 @@ def _validated_trace(envelope: dict[str, Any]) -> dict[str, Any]:
             type(stage["source_counts"]) is not dict
             or type(stage["decision_counts"]) is not dict
             or type(stage["top_candidates"]) is not list
+            or len(stage["top_candidates"]) > trace["limits"]["stage_top_k"]
         ):
             raise ValueError("invalid trace stage details")
         stage_source_keys = tuple(stage["source_counts"])
@@ -3241,20 +3897,47 @@ def _validated_trace(envelope: dict[str, Any]) -> dict[str, Any]:
             if (
                 type(candidate) is not dict
                 or set(candidate) != _TRACE_CANDIDATE_KEYS
+                or not _valid_public_sources(candidate["sources"])
             ):
                 raise ValueError("invalid trace candidate")
-    if type(trace["final_selections"]) is not list:
+    if (
+        type(trace["final_selections"]) is not list
+        or len(trace["final_selections"])
+        > trace["limits"]["final_selection_top_k"]
+        or trace["final_selection_count"]
+        != len(trace["final_selections"])
+        + trace["final_selection_omitted_count"]
+    ):
         raise ValueError("invalid trace selections")
     for selection in trace["final_selections"]:
-        if type(selection) is not dict or set(selection) != _TRACE_SELECTION_KEYS:
+        if (
+            type(selection) is not dict
+            or set(selection) != _TRACE_SELECTION_KEYS
+            or not _valid_public_sources(selection["sources"])
+        ):
             raise ValueError("invalid trace selection")
+        if (
+            type(selection["origin_chunk_ids"]) is not list
+            or not selection["origin_chunk_ids"]
+            or len(selection["origin_chunk_ids"])
+            > trace["limits"]["origin_chunk_id_top_k"]
+            or selection["origin_chunk_count"]
+            != len(selection["origin_chunk_ids"])
+            + selection["origin_chunk_id_omitted_count"]
+            or type(selection["adjustments"]) is not list
+            or len(selection["adjustments"])
+            > trace["limits"]["adjustment_top_k"]
+        ):
+            raise ValueError("invalid trace selection bounds")
         if any(
             type(item) is not dict or set(item) != {"stage", "rank", "score"}
             for item in selection["rank_history"]
         ):
             raise ValueError("invalid trace rank history")
         if any(
-            type(item) is not dict or set(item) != {"name", "value"}
+            type(item) is not dict
+            or set(item)
+            != {"stage", "name", "score_before", "value", "score_after"}
             for item in selection["adjustments"]
         ):
             raise ValueError("invalid trace adjustments")
@@ -3372,6 +4055,11 @@ def format_trace_markdown(envelope: dict[str, Any]) -> str:
                         "- Origin chunks: "
                         + ", ".join(selection["origin_chunk_ids"])
                     ),
+                    (
+                        "- Origin count: "
+                        f"{selection['origin_chunk_count']}; omitted="
+                        f"{selection['origin_chunk_id_omitted_count']}"
+                    ),
                     f"- Sources: {', '.join(selection['sources'])}",
                     f"- Variants: {', '.join(selection['variant_ids']) or '(none)'}",
                     "- Rank history: "
@@ -3386,7 +4074,9 @@ def format_trace_markdown(envelope: dict[str, Any]) -> str:
                     "- Adjustments: "
                     + (
                         ", ".join(
-                            f"{item['name']}={item['value']}"
+                            f"{item['stage']}:{item['name']} "
+                            f"{item['score_before']} -> {item['score_after']} "
+                            f"({item['value']:+})"
                             for item in selection["adjustments"]
                         )
                         or "(none)"
@@ -3649,8 +4339,8 @@ git commit -m "feat: add retrieval trace cli command"
 
 - [ ] **Step 1: Write failing MCP success, one-pass, error, and privacy tests**
 
-Import context_search_trace_tool and RetrievalTraceError in
-tests/test_mcp_tools.py, then add:
+Import `retrieval`, `QueryPlan`, `context_search_trace_tool`, and
+`RetrievalTraceError` in tests/test_mcp_tools.py, then add:
 
 ~~~python
 def test_mcp_trace_returns_shared_schema_without_source_content(
@@ -3700,14 +4390,59 @@ def test_mcp_trace_executes_one_retrieval_pass(
     assert calls == 1
 
 
-def test_mcp_trace_never_creates_or_modifies_feedback_log(
+class FixedPrivacyPlanner:
+    def plan(self, query: str, repo_profile=None) -> QueryPlan:
+        return QueryPlan(
+            original_query=query,
+            rewritten_queries=["TRACE_PLANNER_VARIANT_SECRET"],
+            status="ok",
+            provider="test",
+            model="fixed",
+            intent="implementation",
+            latency_ms=1,
+        )
+
+
+def _string_leaf_paths(value, path=()):
+    if isinstance(value, str):
+        yield path, value
+    elif isinstance(value, dict):
+        for key, child in value.items():
+            yield from _string_leaf_paths(child, (*path, key))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from _string_leaf_paths(child, (*path, index))
+
+
+@pytest.mark.parametrize("preexisting_log", [False, True])
+def test_mcp_trace_privacy_sentinels_and_feedback_isolation(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    preexisting_log: bool,
 ) -> None:
     repo = tmp_path / "repo"
     _write_java_repo(repo)
+    (repo / "TraceSecret.java").write_text(
+        "class TraceSecret { String value = \"TRACE_SOURCE_SECRET\"; }\n",
+        encoding="utf-8",
+    )
     assert context_search_index_tool(str(repo))["ok"] is True
     log_path = repo / ".context-search" / "mcp_calls.jsonl"
-    log_path.write_text("PREEXISTING_FEEDBACK\n", encoding="utf-8")
+    if preexisting_log:
+        log_path.write_text("PREEXISTING_FEEDBACK\n", encoding="utf-8")
+
+    config = mcp_tools._load_query_config(repo, None)
+    traced = retrieval.trace_repository(
+        repo,
+        "TRACE_QUERY_SECRET",
+        config,
+        planner=FixedPrivacyPlanner(),
+    )
+    monkeypatch.setattr(
+        mcp_tools,
+        "trace_repository",
+        lambda *args, **kwargs: traced,
+    )
 
     payload = context_search_trace_tool(
         repo=str(repo),
@@ -3715,7 +4450,27 @@ def test_mcp_trace_never_creates_or_modifies_feedback_log(
     )
 
     assert payload["ok"] is True
-    assert log_path.read_text(encoding="utf-8") == "PREEXISTING_FEEDBACK\n"
+    leaves = list(_string_leaf_paths(payload))
+    assert all("TRACE_SOURCE_SECRET" not in value for _, value in leaves)
+    assert {
+        path for path, value in leaves if "TRACE_QUERY_SECRET" in value
+    } == {
+        ("query",),
+        ("trace", "query", "variants", 0, "text"),
+    }
+    assert {
+        path
+        for path, value in leaves
+        if "TRACE_PLANNER_VARIANT_SECRET" in value
+    } == {
+        ("trace", "query", "variants", 1, "text"),
+    }
+    if preexisting_log:
+        assert log_path.read_text(encoding="utf-8") == (
+            "PREEXISTING_FEEDBACK\n"
+        )
+    else:
+        assert not log_path.exists()
 
 
 @pytest.mark.parametrize(
@@ -3921,8 +4676,10 @@ PYTHONPATH="$PWD/src" conda run -n base python -m pytest \
   -q
 ~~~
 
-Expected: all tests pass. Verify that the trace privacy test leaves the feedback
-sentinel byte-for-byte unchanged.
+Expected: all tests pass. The trace privacy test proves the source sentinel is
+absent, query/planner sentinels occur only at their allowed paths, an existing
+feedback sentinel is byte-for-byte unchanged, and an absent feedback file is not
+created.
 
 - [ ] **Step 7: Commit the MCP surface**
 
@@ -4054,7 +4811,12 @@ MCP list and add this text:
 Retrieval trace is an explicitly requested diagnostic surface. It runs the same
 existing retrieval pipeline once and returns schema version 1 without source
 content. Each stage previews at most five candidates and the final-selection
-preview contains at most twenty entries while full counts remain visible.
+preview contains at most twenty entries while full counts remain visible. Each
+selection previews at most sixteen origin chunk IDs and twenty-four applied score
+transitions, with exact total and omitted counts.
+
+Schema v1 uses frozen exact keys and a fixed public source vocabulary. A future
+public field, stage, or semantic change requires schema version 2.
 
 Trace responses are request-local: CST does not persist them or append them to MCP
 feedback. Existing query and ContextPack response contracts remain unchanged.
@@ -4083,10 +4845,11 @@ TraceCoverage is the number of serialized final selections with non-empty source
 provenance, rank history, and a selection reason divided by all serialized final
 selections. Every non-empty committed P3.1 case requires TraceCoverage 1.0.
 
-Stage and selection counts describe uncapped work, not preview length. Timings are
-informational in end-to-end tests; collector unit tests use an injected clock. P3.1
-does not add a quality-catalog mode. Phase 1 model acceptance remains independent
-and pending until its own required 7/7 gate passes.
+Stage and selection counts describe uncapped work, not preview length. Origin-ID
+and adjustment omitted counts expose their independent caps. Timings are
+informational in end-to-end tests; collector unit tests use an injected clock.
+P3.1 does not add a quality-catalog mode. Phase 1 model acceptance remains
+independent and pending until its own required 7/7 gate passes.
 ~~~
 
 - [ ] **Step 5: Run documentation-linked focused tests and check commands**
@@ -4095,7 +4858,7 @@ Run the exact documented command, then:
 
 ~~~bash
 rg -n \
-  "cst trace|context_search_trace|schema version 1|TraceCoverage|feedback" \
+  "cst trace|context_search_trace|schema version 1|origin chunk|score transition|TraceCoverage|feedback" \
   README.md \
   docs/retrieval-quality.md
 git diff --check
@@ -4325,12 +5088,12 @@ changed line maps to the approved P3.1 spec.
 | --- | --- | --- |
 | Exact schema version 1 | test_retrieval_trace.py exact-key tests | CLI/MCP envelope identity |
 | Fixed stages and source counts | collector order/source unit tests | three offline quality cases |
-| Bounded previews and adjustments | collector/model boundary tests | serialized count/omission checks |
-| Candidate provenance | planner/original/relation focused tests | TraceCoverage 1.0 |
-| Rank movement and adjustments | ranking/cohort/ceiling tests | final selections all have history |
-| Final selection reasons | limit/duplicate decision tests | exact result-plus-anchor counts |
+| Bounded stage/final/origin/adjustment previews | 6/21/17/25-item boundary tests | serialized count/omission checks |
+| Canonical candidate provenance | exact internal-to-public mapping and variant-order tests | TraceCoverage 1.0 |
+| Rank movement and applied score transitions | unnamed/gated/clamp/cohort/frontend tests | final selections all have valid transition chains |
+| Final selection reasons | direct test executes all five decision branches | exact result-plus-anchor counts |
 | No source content | serializer/formatter sentinels | CLI/MCP payload scans |
-| No implicit persistence | MCP feedback sentinel | call-chain grep and unchanged log |
+| No implicit persistence | existing/absent MCP feedback sentinel cases | call-chain grep and unchanged/no-created log |
 | One retrieval pass | semantic-call counter | CLI/MCP integration |
 | Raw query compatibility | complete payload equality | ci 8/8 |
 | ContextPack compatibility | canonical byte equality | p2_context_pack 5/5 |
