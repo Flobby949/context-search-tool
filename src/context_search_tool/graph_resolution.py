@@ -55,6 +55,23 @@ class ResolutionSession(Protocol):
         language: str | None,
     ) -> tuple[CodeSignal, ...]: ...
 
+    def find_python_declarations(
+        self,
+        *,
+        project_unit_key: str,
+        qualified_name: str,
+        file_path: str,
+    ) -> tuple[CodeSignal, ...]: ...
+
+    def has_exact_python_module_relation(
+        self,
+        *,
+        relation_id: str,
+        source_signal_id: str,
+        target_file_path: str,
+        target_project_unit_key: str,
+    ) -> bool: ...
+
     def update_relation(self, relation: CodeRelation) -> None: ...
 
 
@@ -100,6 +117,23 @@ def _classify_relation(
         return replace(cleared, resolution="external")
     if selector_state in {"escape", "unresolved"}:
         return cleared
+
+    if relation.target_kind == "python_declaration":
+        if not _is_exact_python_imported_symbol_selector(relation, source):
+            return cleared
+        if not session.has_exact_python_module_relation(
+            relation_id=str(relation.metadata["module_relation_id"]),
+            source_signal_id=relation.source_signal_id,
+            target_file_path=str(relation.metadata["target_file_path"]),
+            target_project_unit_key=relation.target_project_unit_key,
+        ):
+            return cleared
+        matches = session.find_python_declarations(
+            project_unit_key=relation.target_project_unit_key,
+            qualified_name=relation.target_qualified_name,
+            file_path=str(relation.metadata["target_file_path"]),
+        )
+        return _from_matches(cleared, matches, exact=True)
 
     if relation.target_kind == "module":
         candidate_value = relation.metadata.get("candidates")
@@ -177,6 +211,40 @@ def _classify_relation(
             exact_confidence=0.95,
         )
     return _from_matches(cleared, matches, exact=False)
+
+
+def _is_exact_python_imported_symbol_selector(
+    relation: CodeRelation,
+    source: CodeSignal,
+) -> bool:
+    target_file_path = relation.metadata.get("target_file_path")
+    module_relation_id = relation.metadata.get("module_relation_id")
+    module_selector = relation.metadata.get("module_selector")
+    return (
+        relation.kind == "imports"
+        and relation.producer == "python_ast"
+        and relation.target_kind == "python_declaration"
+        and relation.target_signature == ""
+        and relation.target_arity is None
+        and relation.target_project_unit_key == source.project_unit_key
+        and relation.metadata.get("resolution_basis")
+        == "exact_python_imported_symbol"
+        and relation.metadata.get("selector_state") == "exact"
+        and relation.metadata.get("target_signal_kinds")
+        == ["type", "function", "variable"]
+        and isinstance(target_file_path, str)
+        and bool(target_file_path)
+        and isinstance(module_relation_id, str)
+        and bool(module_relation_id)
+        and isinstance(module_selector, dict)
+        and module_selector.get("state") == "exact"
+        and isinstance(module_selector.get("specifier"), str)
+        and bool(module_selector.get("specifier"))
+        and module_selector.get("target_file_path") == target_file_path
+        and source.kind == "module"
+        and source.producer == "core_module"
+        and source.language == "python"
+    )
 
 
 def _find_signal_matches(

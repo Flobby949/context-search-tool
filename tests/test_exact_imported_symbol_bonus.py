@@ -388,7 +388,7 @@ def test_source_hints_promote_at_most_two_actual_admissible_targets_into_top12()
         original_query="trace source modules",
         status="ok",
         dependency_intent="follow_imports",
-        symbol_hints=["source_12", "source_13", "source_14", "source_15"],
+        source_symbol_hints=["source_12", "source_13", "source_14", "source_15"],
     )
 
     promoted = ranking.apply_planner_dependency_hint_promotions(
@@ -414,6 +414,53 @@ def test_source_hints_promote_at_most_two_actual_admissible_targets_into_top12()
         assert by_path[path].reasons.count("planner exact dependency target") == 1
 
 
+def test_dedicated_source_module_hints_activate_dependency_promotion() -> None:
+    ranked = [_dependency_ranked(index) for index in range(13)]
+    plan = QueryPlan(
+        original_query="trace imports",
+        status="ok",
+        dependency_intent="follow_imports",
+        source_module_hints=["source_12"],
+    )
+
+    promoted = ranking.apply_planner_dependency_hint_promotions(
+        ranked,
+        {"chunk-12": _dependency_candidate(12)},
+        plan,
+        "trace imports",
+        _SignalLookup(_dependency_signals(12)),
+        final_top_k=12,
+    )
+
+    promoted_target = next(
+        item for item in promoted if item.chunk.file_path == Path("src/module_12.py")
+    )
+    assert promoted_target in promoted[:12]
+    assert promoted_target.score_parts["planner_dependency_hint_promotion"] > 0
+
+
+def test_generic_hints_do_not_activate_dependency_promotion() -> None:
+    ranked = [_dependency_ranked(index) for index in range(13)]
+    plan = QueryPlan(
+        original_query="trace imports",
+        status="ok",
+        dependency_intent="follow_imports",
+        symbol_hints=["source_12"],
+        grep_keywords=["src.source_12"],
+    )
+
+    unchanged = ranking.apply_planner_dependency_hint_promotions(
+        ranked,
+        {"chunk-12": _dependency_candidate(12)},
+        plan,
+        "trace imports",
+        _SignalLookup(_dependency_signals(12)),
+        final_top_k=12,
+    )
+
+    assert unchanged == ranked
+
+
 def test_source_hint_matching_is_exact_and_does_not_use_substrings() -> None:
     ranked = [_dependency_ranked(index) for index in range(13)]
     candidate = _dependency_candidate(12)
@@ -421,8 +468,8 @@ def test_source_hint_matching_is_exact_and_does_not_use_substrings() -> None:
         original_query="trace imports",
         status="ok",
         dependency_intent="follow_imports",
-        symbol_hints=["source_1"],
-        grep_keywords=["source_120"],
+        source_symbol_hints=["source_1"],
+        source_module_hints=["source_120"],
     )
 
     unchanged = ranking.apply_planner_dependency_hint_promotions(
@@ -435,6 +482,26 @@ def test_source_hint_matching_is_exact_and_does_not_use_substrings() -> None:
     )
 
     assert unchanged == ranked
+
+
+@pytest.mark.parametrize(
+    ("file_path", "hint"),
+    [
+        ("src/anyio/_core/_fileio.py", "anyio._core._fileio"),
+        ("multidict/__init__.py", "multidict"),
+    ],
+)
+def test_source_hint_matching_uses_python_module_identity(
+    file_path: str,
+    hint: str,
+) -> None:
+    signal = replace(
+        _dependency_source_signal(12),
+        file_path=Path(file_path),
+        project_unit_key="",
+    )
+
+    assert ranking._dependency_source_signal_matches(signal, {hint}) is True
 
 
 @pytest.mark.parametrize(
@@ -454,7 +521,7 @@ def test_corrupt_source_identity_fails_closed(source_signal: CodeSignal) -> None
         original_query="trace imports",
         status="ok",
         dependency_intent="follow_imports",
-        symbol_hints=["source_12"],
+        source_symbol_hints=["source_12"],
     )
 
     unchanged = ranking.apply_planner_dependency_hint_promotions(
@@ -490,7 +557,7 @@ def test_corrupt_target_identity_fails_closed(target_signal: CodeSignal) -> None
         original_query="trace imports",
         status="ok",
         dependency_intent="follow_imports",
-        grep_keywords=["source_12"],
+        source_module_hints=["source_12"],
     )
 
     unchanged = ranking.apply_planner_dependency_hint_promotions(
@@ -532,6 +599,77 @@ def test_target_only_dependency_hints_do_not_trigger_promotion() -> None:
     assert unchanged == ranked
 
 
+def test_exact_target_hint_recovers_from_misclassified_source_hint() -> None:
+    source = _ranked("source-chunk-12", "src/source_12.py", 0.80)
+    ranked = [source, *[_dependency_ranked(index) for index in range(13)]]
+    plan = QueryPlan(
+        original_query="trace exact imported target",
+        status="ok",
+        dependency_intent="follow_imports",
+        source_module_hints=["wrong_source"],
+        imported_symbol_hints=["Target12"],
+    )
+
+    promoted = ranking.apply_planner_dependency_hint_promotions(
+        ranked,
+        {"chunk-12": _dependency_candidate(12)},
+        plan,
+        "trace exact imported target",
+        _SignalLookup(_dependency_signals(12)),
+        final_top_k=12,
+    )
+
+    target = next(item for item in promoted if item.chunk.chunk_id == "chunk-12")
+    assert target in promoted[:12]
+    assert target.score_parts["planner_dependency_hint_promotion"] > 0
+
+
+def test_semantic_import_hint_uses_strong_direct_source_target_pair_fallback() -> None:
+    source = _ranked("source-chunk-12", "src/source_12.py", 0.80)
+    ranked = [source, *[_dependency_ranked(index) for index in range(13)]]
+    plan = QueryPlan(
+        original_query="trace runtime fallback",
+        status="ok",
+        dependency_intent="follow_imports",
+        imported_symbol_hints=["runtime_fallback"],
+    )
+
+    promoted = ranking.apply_planner_dependency_hint_promotions(
+        ranked,
+        {"chunk-12": _dependency_candidate(12)},
+        plan,
+        "trace runtime fallback",
+        _SignalLookup(_dependency_signals(12)),
+        final_top_k=12,
+    )
+
+    target = next(item for item in promoted if item.chunk.chunk_id == "chunk-12")
+    assert target in promoted[:12]
+    assert target.score_parts["planner_dependency_hint_promotion"] > 0
+
+
+def test_semantic_import_hint_fallback_rejects_weak_source_target_pair() -> None:
+    source = _ranked("source-chunk-12", "src/source_12.py", -0.25)
+    ranked = [source, *[_dependency_ranked(index) for index in range(13)]]
+    plan = QueryPlan(
+        original_query="trace runtime fallback",
+        status="ok",
+        dependency_intent="follow_imports",
+        imported_symbol_hints=["runtime_fallback"],
+    )
+
+    unchanged = ranking.apply_planner_dependency_hint_promotions(
+        ranked,
+        {"chunk-12": _dependency_candidate(12)},
+        plan,
+        "trace runtime fallback",
+        _SignalLookup(_dependency_signals(12)),
+        final_top_k=12,
+    )
+
+    assert unchanged == sorted(ranked, key=ranking._ranked_chunk_sort_key)
+
+
 def test_source_hint_promotion_is_input_order_independent_and_idempotent() -> None:
     ranked = [_dependency_ranked(index) for index in range(16)]
     candidate_items = [
@@ -542,8 +680,8 @@ def test_source_hint_promotion_is_input_order_independent_and_idempotent() -> No
         original_query="trace imports",
         status="ok",
         dependency_intent="follow_imports",
-        symbol_hints=["SOURCE_12", "source_14"],
-        grep_keywords=[" src/source_13 ", "source_15"],
+        source_symbol_hints=["SOURCE_12", "source_14"],
+        source_module_hints=["source_13", "source_15"],
     )
     signal_lookup = _SignalLookup(_dependency_signals(12, 13, 14, 15))
 

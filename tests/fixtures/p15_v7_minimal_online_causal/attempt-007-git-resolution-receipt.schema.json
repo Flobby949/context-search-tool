@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "p15-v7-attempt-007-git-resolution-receipt-v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "attempt_id",
+    "contract_projection_sha256",
+    "catalog_receipt_sha256",
+    "storage_mode",
+    "transport_contract",
+    "entries",
+    "entries_count",
+    "entries_tail_sha256",
+    "projection_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "p15-v7-attempt-007-git-resolution-receipt-v1"},
+    "attempt_id": {"const": "p15-v7-attempt-007"},
+    "contract_projection_sha256": {"$ref": "#/$defs/sha256"},
+    "catalog_receipt_sha256": {"$ref": "#/$defs/sha256"},
+    "storage_mode": {"const": "append_only"},
+    "transport_contract": {"$ref": "#/$defs/transportContract"},
+    "entries": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/entry"}},
+    "entries_count": {"const": 2},
+    "entries_tail_sha256": {"$ref": "#/$defs/sha256"},
+    "projection_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "transportContract": {
+      "const": {
+        "protocol": "git_ls_remote_https_identity_only_v1",
+        "argv_template": ["git", "-c", "credential.helper=", "ls-remote", "--refs", "https://github.com/{owner}/{repository}.git", "refs/heads/{default_branch_literal}"],
+        "default_branch_encoding": "literal_separate_argv_no_url_encoding",
+        "environment": {"GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "LC_ALL": "C"},
+        "timeout_seconds": 30,
+        "attempts_per_repository": 3,
+        "backoff_schedule_seconds": [0, 2, 5],
+        "checkout_allowed": false,
+        "repository_failure_policy": "retry_same_selected_repository_then_inconclusive",
+        "global_failure_policy": "stop_inconclusive_no_fallback_beyond_canonical_prefix2",
+        "order": "sealed_catalog_canonical_prefix2"
+      }
+    },
+    "entry": {
+      "type": "object",
+      "required": ["ordinal", "canonical_repository", "owner", "repository", "default_branch", "request", "observation", "resolution", "previous_entry_sha256", "entry_sha256"],
+      "properties": {
+        "ordinal": {"type": "integer", "minimum": 1},
+        "canonical_repository": {"type": "string"},
+        "owner": {"type": "string"},
+        "repository": {"type": "string"},
+        "default_branch": {"type": "string"},
+        "request": {
+          "type": "object",
+          "required": ["argv", "environment", "timeout_seconds", "attempt_count", "shell"],
+          "properties": {
+            "argv": {"type": "array", "items": {"type": "string"}},
+            "environment": {"type": "object"},
+            "timeout_seconds": {"const": 30},
+            "attempt_count": {"type": "integer", "minimum": 1, "maximum": 3},
+            "shell": {"const": false}
+          },
+          "additionalProperties": false
+        },
+        "observation": {
+          "type": "object",
+          "required": ["transport_status", "exit_code", "stdout", "stdout_sha256", "stderr_sha256"],
+          "properties": {
+            "transport_status": {"enum": ["exited", "spawn_error", "timeout"]},
+            "exit_code": {"type": ["integer", "null"]},
+            "stdout": {"type": "string"},
+            "stdout_sha256": {"$ref": "#/$defs/sha256"},
+            "stderr_sha256": {"$ref": "#/$defs/sha256"}
+          },
+          "additionalProperties": false
+        },
+        "resolution": {
+          "type": "object",
+          "required": ["status", "reason", "immutable_revision"],
+          "properties": {
+            "status": {"enum": ["resolved", "unresolved", "global_failure"]},
+            "reason": {"enum": ["exact_single_ref", "process_nonzero", "empty_stdout", "multiple_lines", "malformed_stdout", "wrong_ref", "spawn_error", "timeout"]},
+            "immutable_revision": {"type": ["string", "null"]}
+          },
+          "additionalProperties": false
+        },
+        "previous_entry_sha256": {"$ref": "#/$defs/sha256"},
+        "entry_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

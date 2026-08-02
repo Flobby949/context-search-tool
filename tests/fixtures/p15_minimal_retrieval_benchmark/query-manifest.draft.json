@@ -1,0 +1,394 @@
+{
+  "schema_version": "p15-minimal-retrieval-query-manifest-draft-v1",
+  "status": "DRAFT",
+  "user_approval_required": true,
+  "execution_eligible": false,
+  "benchmark_calls": 0,
+  "retrieval_calls": 0,
+  "model_calls": 0,
+  "selection": {
+    "method": "stdlib AST import-edge inventory followed by direct source reading",
+    "retrieval_assistance": "forbidden_and_not_used",
+    "repository_order": ["anyio", "multidict"],
+    "mechanical_candidate_sort": [
+      "repository_order",
+      "source.path",
+      "import.line",
+      "reference.line",
+      "gold.path"
+    ],
+    "selection_rule": "Within the mechanical candidate inventory, retain six natural source-behavior questions per repository after rejecting name-only, ambiguous, duplicate-pattern, and query-leaking candidates. Question naturalness takes priority over raw AST position.",
+    "gold_cardinality": "exactly_one_repo_relative_file_per_query"
+  },
+  "repositories": [
+    {
+      "rank": 1,
+      "name": "anyio",
+      "url": "https://github.com/agronholm/anyio.git",
+      "commit": "003e5d6bc3eba8f4e75bf2b2b5fb3f7dd11e6330",
+      "read_only_checkout_verified": true,
+      "case_count": 6,
+      "source_file_count": 6
+    },
+    {
+      "rank": 2,
+      "name": "multidict",
+      "url": "https://github.com/aio-libs/multidict.git",
+      "commit": "41c1b9144b13dcdfa4c18085aedc874cc9d24006",
+      "read_only_checkout_verified": true,
+      "case_count": 6,
+      "source_file_count": 4
+    }
+  ],
+  "queries": [
+    {
+      "ordinal": 1,
+      "id": "anyio-q01",
+      "repository": "anyio",
+      "query": "Which async helper does the file wrapper use to move blocking close and read calls off the event-loop thread while preserving its per-file capacity limiter?",
+      "source": {
+        "path": "src/anyio/_core/_fileio.py",
+        "line": 117,
+        "context": "AsyncFile.aclose() delegates the wrapped file object's close call and passes self._limiter."
+      },
+      "import": {
+        "path": "src/anyio/_core/_fileio.py",
+        "line": 28,
+        "statement": "from .. import to_thread",
+        "imported_symbols": ["to_thread"]
+      },
+      "reference": {
+        "path": "src/anyio/_core/_fileio.py",
+        "line": 117,
+        "expression": "await to_thread.run_sync(self._fp.close, limiter=self._limiter)"
+      },
+      "gold": {
+        "path": "src/anyio/to_thread.py",
+        "resolution_evidence": "The relative package import binds the to_thread submodule; this file defines async run_sync() at line 27.",
+        "definition_line": 27,
+        "uniqueness": "This is the sole same-name package submodule and it owns the referenced async helper."
+      }
+    },
+    {
+      "ordinal": 2,
+      "id": "anyio-q02",
+      "repository": "anyio",
+      "query": "Which task-orchestration primitives let the TCP connector launch address attempts concurrently and bound each stagger by the happy-eyeballs delay?",
+      "source": {
+        "path": "src/anyio/_core/_sockets.py",
+        "line": 252,
+        "context": "The connector starts one task per address and waits only for the configured stagger before trying the next address."
+      },
+      "import": {
+        "path": "src/anyio/_core/_sockets.py",
+        "line": 34,
+        "statement": "from ._tasks import create_task_group, move_on_after",
+        "imported_symbols": ["create_task_group", "move_on_after"]
+      },
+      "reference": {
+        "path": "src/anyio/_core/_sockets.py",
+        "line": 252,
+        "additional_lines": [256],
+        "expression": "async with create_task_group() as tg; with move_on_after(happy_eyeballs_delay)"
+      },
+      "gold": {
+        "path": "src/anyio/_core/_tasks.py",
+        "resolution_evidence": "The direct relative import resolves here; move_on_after() is defined at line 201 and create_task_group() at line 240.",
+        "definition_line": 201,
+        "additional_definition_lines": [240],
+        "uniqueness": "Both referenced orchestration primitives are defined together in this one module."
+      }
+    },
+    {
+      "ordinal": 3,
+      "id": "anyio-q03",
+      "repository": "anyio",
+      "query": "Where are the stream errors defined that let buffered reads translate a premature end-of-stream into an incomplete-read failure?",
+      "source": {
+        "path": "src/anyio/streams/buffered.py",
+        "line": 113,
+        "context": "receive_exactly() catches the underlying stream termination and raises the more specific short-read failure."
+      },
+      "import": {
+        "path": "src/anyio/streams/buffered.py",
+        "line": 14,
+        "statement": "from .. import ClosedResourceError, DelimiterNotFound, EndOfStream, IncompleteRead",
+        "imported_symbols": ["EndOfStream", "IncompleteRead"]
+      },
+      "reference": {
+        "path": "src/anyio/streams/buffered.py",
+        "line": 113,
+        "additional_lines": [114],
+        "expression": "except EndOfStream as exc: raise IncompleteRead from exc"
+      },
+      "gold": {
+        "path": "src/anyio/_core/_exceptions.py",
+        "resolution_evidence": "src/anyio/__init__.py re-exports both names from this module at lines 20-21; their classes are defined here at lines 106 and 112.",
+        "definition_line": 106,
+        "additional_definition_lines": [112],
+        "uniqueness": "The package-level import is a re-export, while both concrete exception definitions live in this file."
+      }
+    },
+    {
+      "ordinal": 4,
+      "id": "anyio-q04",
+      "repository": "anyio",
+      "query": "Which hostname-normalization helper does the TLS wrapper call so international names use IDNA 2008 before the in-memory handshake is configured?",
+      "source": {
+        "path": "src/anyio/streams/tls.py",
+        "line": 149,
+        "context": "TLSStream.wrap() converts a non-null hostname before passing it to the SSL memory-BIO setup."
+      },
+      "import": {
+        "path": "src/anyio/streams/tls.py",
+        "line": 147,
+        "statement": "from .._core._sockets import idna2008_resolve",
+        "imported_symbols": ["idna2008_resolve"]
+      },
+      "reference": {
+        "path": "src/anyio/streams/tls.py",
+        "line": 149,
+        "expression": "server_hostname: bytes | None = idna2008_resolve(hostname)"
+      },
+      "gold": {
+        "path": "src/anyio/_core/_sockets.py",
+        "resolution_evidence": "The direct relative import resolves here, where idna2008_resolve() is defined at line 62.",
+        "definition_line": 62,
+        "uniqueness": "The locally imported helper has one repository definition."
+      }
+    },
+    {
+      "ordinal": 5,
+      "id": "anyio-q05",
+      "repository": "anyio",
+      "query": "Which buffering component lets a worker-process client read a newline-delimited reply header followed by exactly the announced payload length?",
+      "source": {
+        "path": "src/anyio/to_process.py",
+        "line": 125,
+        "context": "A process stdout stream is wrapped once, then receive_until() and receive_exactly() frame each reply at lines 73 and 80."
+      },
+      "import": {
+        "path": "src/anyio/to_process.py",
+        "line": 26,
+        "statement": "from .streams.buffered import BufferedByteReceiveStream",
+        "imported_symbols": ["BufferedByteReceiveStream"]
+      },
+      "reference": {
+        "path": "src/anyio/to_process.py",
+        "line": 125,
+        "expression": "buffered = BufferedByteReceiveStream(cast(ByteReceiveStream, process.stdout))"
+      },
+      "gold": {
+        "path": "src/anyio/streams/buffered.py",
+        "resolution_evidence": "The direct import resolves here; BufferedByteReceiveStream is defined at line 31 and provides receive_exactly() at line 91 and receive_until() at line 118.",
+        "definition_line": 31,
+        "additional_definition_lines": [91, 118],
+        "uniqueness": "The imported class and both framing methods are implemented in this file."
+      }
+    },
+    {
+      "ordinal": 6,
+      "id": "anyio-q06",
+      "repository": "anyio",
+      "query": "Which event-loop entry point does the blocking-portal worker thread invoke to host the async portal and propagate startup failures through its future?",
+      "source": {
+        "path": "src/anyio/from_thread.py",
+        "line": 538,
+        "context": "run_blocking_portal() invokes the event-loop entry point and stores an exception in the future if startup fails."
+      },
+      "import": {
+        "path": "src/anyio/from_thread.py",
+        "line": 38,
+        "statement": "from ._core._eventloop import run as run_eventloop",
+        "imported_symbols": ["run", "run_eventloop"]
+      },
+      "reference": {
+        "path": "src/anyio/from_thread.py",
+        "line": 538,
+        "expression": "run_eventloop(run_portal, backend=backend, backend_options=backend_options)"
+      },
+      "gold": {
+        "path": "src/anyio/_core/_eventloop.py",
+        "resolution_evidence": "The aliased direct import resolves here, where run() is defined at line 38.",
+        "definition_line": 38,
+        "uniqueness": "The import names its defining module and the referenced alias has one origin."
+      }
+    },
+    {
+      "ordinal": 7,
+      "id": "multidict-q01",
+      "repository": "multidict",
+      "query": "When acceleration is allowed, how is an unavailable extension import converted into a clean pure-Python fallback instead of propagating the import failure?",
+      "source": {
+        "path": "multidict/__init__.py",
+        "line": 29,
+        "context": "The package chooses the pure-Python imports for type checking or when the extension feature flag is false."
+      },
+      "import": {
+        "path": "multidict/__init__.py",
+        "line": 12,
+        "statement": "from ._compat import USE_EXTENSIONS",
+        "imported_symbols": ["USE_EXTENSIONS"]
+      },
+      "reference": {
+        "path": "multidict/__init__.py",
+        "line": 29,
+        "expression": "if TYPE_CHECKING or not USE_EXTENSIONS"
+      },
+      "gold": {
+        "path": "multidict/_compat.py",
+        "resolution_evidence": "The direct relative import resolves here; line 8 computes the feature flag from the environment and interpreter and lines 10-15 disable it when the extension import fails.",
+        "definition_line": 8,
+        "uniqueness": "This file is the only definition of the imported backend-selection flag."
+      }
+    },
+    {
+      "ordinal": 8,
+      "id": "multidict-q02",
+      "repository": "multidict",
+      "query": "Which abstract contracts provide duplicate-key lookup plus mutation operations before accelerated concrete types are registered against them?",
+      "source": {
+        "path": "multidict/__init__.py",
+        "line": 53,
+        "context": "After loading the accelerated backend, the package registers its proxy and mutable container with two public mapping contracts."
+      },
+      "import": {
+        "path": "multidict/__init__.py",
+        "line": 11,
+        "statement": "from ._abc import MultiMapping, MutableMultiMapping",
+        "imported_symbols": ["MultiMapping", "MutableMultiMapping"]
+      },
+      "reference": {
+        "path": "multidict/__init__.py",
+        "line": 53,
+        "additional_lines": [54],
+        "expression": "MultiMapping.register(MultiDictProxy); MutableMultiMapping.register(MultiDict)"
+      },
+      "gold": {
+        "path": "multidict/_abc.py",
+        "resolution_evidence": "The direct import resolves here; the read-only and mutable contracts are defined at lines 28 and 46.",
+        "definition_line": 28,
+        "additional_definition_lines": [46],
+        "uniqueness": "Both imported contracts are defined together in this module."
+      }
+    },
+    {
+      "ordinal": 9,
+      "id": "multidict-q03",
+      "repository": "multidict",
+      "query": "After backend selection, which initialization code makes the accelerated mutable container satisfy both mapping interfaces while its read-only proxy satisfies only the non-mutating one?",
+      "source": {
+        "path": "tests/test_abc.py",
+        "line": 18,
+        "context": "The runtime inheritance tests require mutable implementations to satisfy both interfaces and proxies to satisfy only the read-only interface."
+      },
+      "import": {
+        "path": "tests/test_abc.py",
+        "line": 3,
+        "statement": "from multidict import MultiDict, MultiDictProxy, MultiMapping, MutableMultiMapping",
+        "imported_symbols": ["MultiDict", "MultiDictProxy", "MultiMapping", "MutableMultiMapping"]
+      },
+      "reference": {
+        "path": "tests/test_abc.py",
+        "line": 18,
+        "additional_lines": [19, 20, 23, 26, 27],
+        "expression": "issubclass(any_multidict_class, MultiMapping); issubclass(any_multidict_class, MutableMultiMapping); proxy checks"
+      },
+      "gold": {
+        "path": "multidict/__init__.py",
+        "resolution_evidence": "The test's direct package import resolves here; after loading the accelerated branch, lines 53-54 register the proxy with the read-only interface and the container with the mutable interface.",
+        "definition_line": 53,
+        "additional_definition_lines": [54],
+        "uniqueness": "The query asks for post-selection registration behavior, which occurs only in package initialization."
+      }
+    },
+    {
+      "ordinal": 10,
+      "id": "multidict-q04",
+      "repository": "multidict",
+      "query": "When static type checking is active, which concrete string subtype supplies the key type for both keyed-protocol methods while runtime execution falls back to plain strings?",
+      "source": {
+        "path": "multidict/_abc.py",
+        "line": 21,
+        "context": "The keyed protocol annotates both key iteration and indexed access with a type-only concrete subtype, while line 8 binds plain str at runtime."
+      },
+      "import": {
+        "path": "multidict/_abc.py",
+        "line": 6,
+        "statement": "from ._multidict_py import istr",
+        "imported_symbols": ["istr"]
+      },
+      "reference": {
+        "path": "multidict/_abc.py",
+        "line": 21,
+        "additional_lines": [22],
+        "expression": "def keys(self) -> Iterable[istr]; def __getitem__(self, key: istr, /)"
+      },
+      "gold": {
+        "path": "multidict/_multidict_py.py",
+        "resolution_evidence": "The TYPE_CHECKING-only direct import resolves here, where the case-insensitive str subclass is defined at line 34.",
+        "definition_line": 34,
+        "uniqueness": "The conditional import identifies one concrete source definition for static typing; the runtime fallback is local plain str."
+      }
+    },
+    {
+      "ordinal": 11,
+      "id": "multidict-q05",
+      "repository": "multidict",
+      "query": "Which extension implementation supplies the three view types that package initialization registers with the standard keys, items, and values ABCs?",
+      "source": {
+        "path": "multidict/__init__.py",
+        "line": 55,
+        "context": "After importing the accelerated backend, package initialization registers its keys, items, and values views with the corresponding standard-library ABCs."
+      },
+      "import": {
+        "path": "multidict/__init__.py",
+        "line": 41,
+        "statement": "from ._multidict import CIMultiDict, CIMultiDictProxy, MultiDict, MultiDictProxy, _ItemsView, _KeysView, _ValuesView, getversion, istr",
+        "imported_symbols": ["_ItemsView", "_KeysView", "_ValuesView"]
+      },
+      "reference": {
+        "path": "multidict/__init__.py",
+        "line": 55,
+        "additional_lines": [56, 57],
+        "expression": "KeysView.register(_KeysView); ItemsView.register(_ItemsView); ValuesView.register(_ValuesView)"
+      },
+      "gold": {
+        "path": "multidict/_multidict.c",
+        "resolution_evidence": "The direct extension-module import resolves to this C source; module_exec() exports the items, keys, and values view types at lines 1549-1555 and PyInit__multidict() initializes the module at line 1588.",
+        "definition_line": 1549,
+        "additional_definition_lines": [1552, 1555, 1588],
+        "uniqueness": "The imported extension module has one repository source file and it exports all three referenced view types."
+      }
+    },
+    {
+      "ordinal": 12,
+      "id": "multidict-q06",
+      "repository": "multidict",
+      "query": "Which implementation is exercised by the regression test that verifies positional items plus keyword arguments yield an exact size hint without over-allocation?",
+      "source": {
+        "path": "tests/test_update.py",
+        "line": 162,
+        "context": "The regression test constructs the explicitly pure-Python container before inspecting its private argument parser's size hint."
+      },
+      "import": {
+        "path": "tests/test_update.py",
+        "line": 4,
+        "statement": "from multidict._multidict_py import MultiDict as PyMultiDict",
+        "imported_symbols": ["MultiDict", "PyMultiDict"]
+      },
+      "reference": {
+        "path": "tests/test_update.py",
+        "line": 162,
+        "expression": "md: PyMultiDict[int] = PyMultiDict()"
+      },
+      "gold": {
+        "path": "multidict/_multidict_py.py",
+        "resolution_evidence": "The direct aliased import resolves here; the pure-Python container is defined at line 611 and its constructor begins at line 616.",
+        "definition_line": 611,
+        "additional_definition_lines": [616],
+        "uniqueness": "The test deliberately bypasses the public backend selector and imports this implementation directly."
+      }
+    }
+  ]
+}

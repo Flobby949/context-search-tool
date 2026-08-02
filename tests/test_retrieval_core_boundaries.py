@@ -43,7 +43,8 @@ EXPECTED_BUNDLE_REPR = (
     "followup_keywords=[], summary=RetrievalSummary(entry_points=[], "
     "implementation=[], related_types=[], possibly_legacy=[]), "
     "planner=QueryPlan(original_query='', rewritten_queries=[], "
-    "grep_keywords=[], symbol_hints=[], dependency_intent='none', "
+    "grep_keywords=[], symbol_hints=[], source_symbol_hints=[], "
+    "source_module_hints=[], dependency_intent='none', "
     "imported_symbol_hints=[], imported_module_hints=[], intent='unknown', "
     "status='disabled', provider='', model='', prompt_version='', prompt_hash='', "
     "latency_ms=None, error=None, repo_profile_hash='', "
@@ -242,11 +243,19 @@ OPENAI_COMPATIBLE_PLANNER_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/query_planner.py",
 }
 
+P15_DEPENDENCY_REPLAY_REVIEWED_PRODUCTION_CHANGES = {
+    "src/context_search_tool/dependency_replay.py",
+}
+
 P14_DIRECT_REFERENCE_COUNT_DELTAS = {
     (
         "trace_repository",
         "tests/test_retrieval_trace_pipeline.py",
     ): 2,
+}
+
+P15_PRODUCTION_REFERENCE_COUNT_DELTAS = {
+    "evidence_anchor_top_k": 1,
 }
 
 REVIEWED_PRODUCTION_CHANGES = (
@@ -262,6 +271,7 @@ REVIEWED_PRODUCTION_CHANGES = (
     | P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES
     | P14_DEFINITION_OWNER_REVIEWED_PRODUCTION_CHANGES
     | OPENAI_COMPATIBLE_PLANNER_REVIEWED_PRODUCTION_CHANGES
+    | P15_DEPENDENCY_REPLAY_REVIEWED_PRODUCTION_CHANGES
 )
 
 P4_IMPLEMENTATION_BASELINE = "b827707325d0ee4e9c6b2bcb3dee39955c263822"
@@ -387,9 +397,11 @@ def _normalize_current_test_reference(
 def _normalize_current_production_calls(
     current: dict[str, object],
     frozen: dict[str, object],
+    *,
+    count_delta: int = 0,
 ) -> dict[str, object]:
     assert current["file"] == frozen["file"]
-    assert current["count"] == frozen["count"]
+    assert current["count"] == frozen["count"] + count_delta
     return frozen
 
 
@@ -913,6 +925,10 @@ def test_migration_ledger_matches_complete_ast_and_dynamic_inventory() -> None:
         actual_row["production_call_sites"] = _normalize_current_production_calls(
             actual_row["production_call_sites"],
             frozen_row["production_call_sites"],
+            count_delta=P15_PRODUCTION_REFERENCE_COUNT_DELTAS.get(
+                actual_row["old_symbol"],
+                0,
+            ),
         )
         actual_row["monkeypatch_references"] = [
             _normalize_current_test_reference(
@@ -1013,6 +1029,12 @@ def test_p14_definition_owner_reviewed_production_overlay_is_exact() -> None:
 def test_openai_compatible_planner_reviewed_production_overlay_is_exact() -> None:
     assert OPENAI_COMPATIBLE_PLANNER_REVIEWED_PRODUCTION_CHANGES == {
         "src/context_search_tool/query_planner.py",
+    }
+
+
+def test_p15_dependency_replay_reviewed_production_overlay_is_exact() -> None:
+    assert P15_DEPENDENCY_REPLAY_REVIEWED_PRODUCTION_CHANGES == {
+        "src/context_search_tool/dependency_replay.py",
     }
 
 

@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import time
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import requests
 
@@ -18,11 +18,14 @@ from context_search_tool.repo_profile import (
 )
 from context_search_tool.tokenizer import tokenize_query
 
-PROMPT_VERSION = "qwen-query-planner-v3-import-dependency-v1"
+PROMPT_VERSION = "qwen-query-planner-v4-source-identity-v1"
 MAX_PLANNER_QUERY_VARIANT_CODEPOINTS = 256
 MAX_IMPORTED_HINT_CODEPOINTS = 128
 MAX_IMPORTED_SYMBOL_HINTS = 4
 MAX_IMPORTED_MODULE_HINTS = 4
+MAX_SOURCE_HINT_CODEPOINTS = 128
+MAX_SOURCE_SYMBOL_HINTS = 4
+MAX_SOURCE_MODULE_HINTS = 4
 _EXACT_CODE_IDENTIFIER_RE = re.compile(
     r"(?:"
     r"[A-Z]{2,}(?=[A-Z][a-z])[A-Za-z0-9]*"
@@ -45,6 +48,8 @@ PLANNER_JSON_FIELDS = {
     "rewritten_queries",
     "grep_keywords",
     "symbol_hints",
+    "source_symbol_hints",
+    "source_module_hints",
     "intent",
     "dependency_intent",
     "imported_symbol_hints",
@@ -56,6 +61,8 @@ Required fields:
 - rewritten_queries: string[]
 - grep_keywords: string[]
 - symbol_hints: string[]
+- source_symbol_hints: string[]
+- source_module_hints: string[]
 - intent: feature_lookup | endpoint_lookup | bug_trace | data_flow | symbol_lookup | unknown
 - dependency_intent: follow_imports | none
 - imported_symbol_hints: string[]
@@ -69,6 +76,10 @@ Only return hints that would plausibly exist in this repository.
 Use an empty array when a list has no useful values.
 Set dependency_intent to follow_imports only when the query asks to trace imported
 symbols, module dependencies, or a cross-file implementation flow. Otherwise use none.
+Source hints identify the importing/source module explicitly named by the query.
+source_symbol_hints contains source-side module basename identifiers, while
+source_module_hints contains source-side dotted module identifiers. Derive both only
+from the query; never copy generic search terms into them or guess repository names.
 Imported symbol and module hints must be identifiers derived from the query. Never
 invent repository-specific names. Module hints use dotted identifier form, never paths.
 
@@ -101,16 +112,21 @@ class OllamaQueryPlanner:
         self,
         config: QueryPlannerConfig,
         session: requests.Session | None = None,
+        request_observer: Callable[[str], None] | None = None,
     ) -> None:
         self.config = config
         self.session = session or requests.Session()
         self.session.trust_env = config.use_system_proxy
+        self.request_observer = request_observer
 
     def plan(self, query: str, repo_profile: RepoProfile | None = None) -> QueryPlan:
         start = time.perf_counter()
         try:
+            endpoint = f"{self.config.base_url.rstrip('/')}/api/chat"
+            if self.request_observer is not None:
+                self.request_observer(endpoint)
             response = self.session.post(
-                f"{self.config.base_url.rstrip('/')}/api/chat",
+                endpoint,
                 json={
                     "model": self.config.model,
                     "stream": False,
@@ -180,10 +196,12 @@ class OpenAICompatibleQueryPlanner:
         self,
         config: QueryPlannerConfig,
         session: requests.Session | None = None,
+        request_observer: Callable[[str], None] | None = None,
     ) -> None:
         self.config = config
         self.session = session or requests.Session()
         self.session.trust_env = config.use_system_proxy
+        self.request_observer = request_observer
 
     def plan(self, query: str, repo_profile: RepoProfile | None = None) -> QueryPlan:
         start = time.perf_counter()
@@ -204,8 +222,11 @@ class OpenAICompatibleQueryPlanner:
             request_kwargs["headers"] = {"Authorization": f"Bearer {api_key}"}
 
         try:
+            endpoint = f"{self.config.base_url.rstrip('/')}/chat/completions"
+            if self.request_observer is not None:
+                self.request_observer(endpoint)
             response = self.session.post(
-                f"{self.config.base_url.rstrip('/')}/chat/completions",
+                endpoint,
                 **request_kwargs,
             )
             response.raise_for_status()
@@ -362,6 +383,20 @@ def clean_planner_payload(
             "symbol_hints",
             config.max_symbol_hints,
         )
+        source_symbol_hints = _clean_import_hint_list(
+            payload,
+            "source_symbol_hints",
+            MAX_SOURCE_SYMBOL_HINTS,
+            max_codepoints=MAX_SOURCE_HINT_CODEPOINTS,
+            dotted=False,
+        )
+        source_module_hints = _clean_import_hint_list(
+            payload,
+            "source_module_hints",
+            MAX_SOURCE_MODULE_HINTS,
+            max_codepoints=MAX_SOURCE_HINT_CODEPOINTS,
+            dotted=True,
+        )
         dependency_intent = payload.get("dependency_intent", "none")
         if not isinstance(dependency_intent, str) or dependency_intent not in {
             "follow_imports",
@@ -372,12 +407,14 @@ def clean_planner_payload(
             payload,
             "imported_symbol_hints",
             MAX_IMPORTED_SYMBOL_HINTS,
+            max_codepoints=MAX_IMPORTED_HINT_CODEPOINTS,
             dotted=False,
         )
         imported_module_hints = _clean_import_hint_list(
             payload,
             "imported_module_hints",
             MAX_IMPORTED_MODULE_HINTS,
+            max_codepoints=MAX_IMPORTED_HINT_CODEPOINTS,
             dotted=True,
         )
     except ValueError as exc:
@@ -426,6 +463,8 @@ def clean_planner_payload(
         else "unknown"
     )
     if dependency_intent == "none":
+        source_symbol_hints = []
+        source_module_hints = []
         imported_symbol_hints = []
         imported_module_hints = []
     return QueryPlan(
@@ -433,6 +472,8 @@ def clean_planner_payload(
         rewritten_queries=rewritten_queries,
         grep_keywords=grep_keywords,
         symbol_hints=symbol_hints,
+        source_symbol_hints=source_symbol_hints,
+        source_module_hints=source_module_hints,
         dependency_intent=dependency_intent,
         imported_symbol_hints=imported_symbol_hints,
         imported_module_hints=imported_module_hints,
@@ -460,13 +501,20 @@ def _prepend_bounded(value: str, values: list[str], limit: int) -> list[str]:
     ][:limit]
 
 
-def planner_from_config(config: QueryPlannerConfig) -> QueryPlanner:
+def planner_from_config(
+    config: QueryPlannerConfig,
+    *,
+    request_observer: Callable[[str], None] | None = None,
+) -> QueryPlanner:
     if not config.enabled:
         return DisabledQueryPlanner()
     if config.provider == "ollama":
-        return OllamaQueryPlanner(config)
+        return OllamaQueryPlanner(config, request_observer=request_observer)
     if config.provider == "openai-compatible":
-        return OpenAICompatibleQueryPlanner(config)
+        return OpenAICompatibleQueryPlanner(
+            config,
+            request_observer=request_observer,
+        )
     return DisabledQueryPlanner()
 
 
@@ -500,6 +548,8 @@ def _user_payload(
         "max_rewritten_queries": config.max_rewritten_queries,
         "max_keywords": config.max_keywords,
         "max_symbol_hints": config.max_symbol_hints,
+        "max_source_symbol_hints": MAX_SOURCE_SYMBOL_HINTS,
+        "max_source_module_hints": MAX_SOURCE_MODULE_HINTS,
         "max_imported_symbol_hints": MAX_IMPORTED_SYMBOL_HINTS,
         "max_imported_module_hints": MAX_IMPORTED_MODULE_HINTS,
     }
@@ -566,6 +616,7 @@ def _clean_import_hint_list(
     key: str,
     limit: int,
     *,
+    max_codepoints: int,
     dotted: bool,
 ) -> list[str]:
     value = payload.get(key, [])
@@ -577,7 +628,7 @@ def _clean_import_hint_list(
         if not isinstance(item, str):
             raise ValueError(f"{key} must contain only strings")
         stripped = item.strip()
-        if not stripped or len(stripped) > MAX_IMPORTED_HINT_CODEPOINTS:
+        if not stripped or len(stripped) > max_codepoints:
             continue
         parts = stripped.split(".") if dotted else [stripped]
         if any(not part.isidentifier() for part in parts):

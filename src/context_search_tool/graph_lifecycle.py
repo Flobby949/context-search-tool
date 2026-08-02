@@ -8,7 +8,7 @@ from context_search_tool.graph_contract import RESOLUTION_STATES
 
 TARGET_SIGNAL_SCHEMA_VERSION = 5
 TARGET_GRAPH_RESOLUTION_VERSION = 1
-TARGET_GRAPH_PRODUCER_VERSION = 1
+TARGET_GRAPH_PRODUCER_VERSION = 3
 TARGET_OPERATIONAL_SCHEMA_VERSION = 1
 
 SIGNAL_SCHEMA_VERSION_KEY = "signal_schema_version"
@@ -166,6 +166,7 @@ def read_graph_capability(metadata: MetadataReader) -> GraphCapability:
             if (
                 producer_version < 0
                 or producer_version > TARGET_GRAPH_PRODUCER_VERSION
+                or str(producer_version) != raw_producer
             ):
                 raise IncompatibleSignalSchemaError(raw_producer)
         status = (

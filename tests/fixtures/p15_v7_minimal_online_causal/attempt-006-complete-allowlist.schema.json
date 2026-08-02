@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "p15-v7-attempt-006-complete-allowlist-v1",
+  "type": "object",
+  "required": ["schema_version", "attempt_id", "catalog_capture_sha256", "entries", "projection_sha256"],
+  "properties": {
+    "schema_version": {"const": "p15-v7-attempt-006-complete-allowlist-v1"},
+    "attempt_id": {"const": "p15-v7-attempt-006"},
+    "catalog_capture_sha256": {"$ref": "#/$defs/sha256"},
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ordinal", "provider", "owner", "repository", "default_branch", "immutable_revision", "canonical_repository"],
+        "properties": {
+          "ordinal": {"type": "integer", "minimum": 1},
+          "provider": {"type": "string"},
+          "owner": {"type": "string"},
+          "repository": {"type": "string"},
+          "default_branch": {"type": "string"},
+          "immutable_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "canonical_repository": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "projection_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -475,9 +475,14 @@ def test_ready_explain_projects_python_signals_and_import_relations(
         for relation in graph["outgoing"]
         if relation["kind"] == "imports"
     ]
-    assert len(imports) == 1
-    assert imports[0]["resolution"] == "resolved_exact"
-    assert imports[0]["confidence"] == 1.0
-    assert imports[0]["target_signal_id"]
-    assert imports[0]["target_path"] == "app/engine.py"
+    assert len(imports) == 2
+    assert [relation["target_name"] for relation in imports] == [
+        "app/engine.py",
+        "Dispatcher",
+    ]
+    for relation in imports:
+        assert relation["resolution"] == "resolved_exact"
+        assert relation["confidence"] == 1.0
+        assert relation["target_signal_id"]
+        assert relation["target_path"] == "app/engine.py"
     assert graph["omitted_outgoing_count"] == 0

@@ -701,7 +701,9 @@ def _chunk_has_relation_support(
                         neighbor = graph_session.signal_for_id(neighbor_id)
                         if (
                             neighbor is None
-                            or graph_session.chunk_for_id(neighbor.chunk_id) is None
+                            or not graph_session.active_chunk_exists(
+                                neighbor.chunk_id
+                            )
                         ):
                             graph_session.record_graph_fault("dangling_target")
                             return False

@@ -1,0 +1,100 @@
+{
+  "attempt_id": "p15-v7-attempt-004",
+  "canonical_projection": {
+    "accounting": {
+      "catalog_requests": 1,
+      "ref_requests": 0
+    },
+    "attempt_id": "p15-v7-attempt-004",
+    "audit_projection_created_at_utc": "2026-08-02T06:50:18Z",
+    "authoritative_contract": {
+      "file_sha256": "e14bd7edaaf9e35f2b0268982a45171adefd62b206bad4c46437e8ce86c70db5",
+      "modified": false,
+      "projection_sha256": "ae7ed9afed9799a4783261a7b9bbfe16901a8480da96a4adf6c604e071fb6130"
+    },
+    "body_observation": {
+      "body_byte_length": "not_recorded",
+      "body_bytes_materialized_in_http_client_process_memory": true,
+      "body_bytes_persisted": false,
+      "body_json_parsed": true,
+      "body_sha256": "not_established",
+      "content_identity_observed": false,
+      "content_identity_status": "not_established",
+      "incomplete_results_read": true,
+      "item_identity_fields_accessed": false,
+      "items_iterated": false,
+      "items_list_type_checked": true,
+      "repository_identity_observed_by_agent": false,
+      "repository_identity_observed_in_tool_output": false,
+      "response_body_recoverable": false,
+      "total_count_observed": true,
+      "validation_stop_order": "body_bytes_read_then_json_parsed_then_top_level_shape_checked_then_total_count_limit_checked_then_exit_before_page_projection_or_item_iteration"
+    },
+    "catalog_result": {
+      "accepted_page_counts": [
+        0,
+        0
+      ],
+      "allowlist_artifact_created": false,
+      "capture_artifact_created": false,
+      "drift": "not_established",
+      "eligible_count": "not_established",
+      "excluded_count": "not_established",
+      "ordered_allowlist": [],
+      "prefix2": [],
+      "raw_total": 1903,
+      "ref_count": 0,
+      "stop_reason": "first_catalog_response_total_count_exceeds_frozen_maximum_before_page_acceptance"
+    },
+    "exact_catalog_request": {
+      "attempt_count": 1,
+      "endpoint": "https://api.github.com/search/repositories",
+      "headers": {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      },
+      "issued_at_utc": "not_established",
+      "method": "GET",
+      "params": {
+        "order": "asc",
+        "page": 1,
+        "per_page": 100,
+        "q": "language:Python is:public created:2026-07-03T06:00:00Z..2026-07-03T06:59:59Z",
+        "sort": "updated"
+      },
+      "wire_request_projection_sha256": "not_established"
+    },
+    "exposure_closure": {
+      "canonical_repositories": [],
+      "newly_exposed_canonical_repository_count": 0,
+      "reason": "no_item_was_iterated_and_no_repository_identity_field_was_accessed_or_emitted"
+    },
+    "observed_response": {
+      "Date": "not_established",
+      "etag": "not_established",
+      "etag_present": "not_established",
+      "status": 200,
+      "total_count": 1903
+    },
+    "schema_version": "p15-v7-attempt-004-catalog-failure-audit-projection-v1",
+    "zero_state": {
+      "checkout_attempts": 0,
+      "clone_attempts": 0,
+      "corpus_generations": 0,
+      "effect_observations": 0,
+      "embedding_calls": 0,
+      "heldout_content_accesses": 0,
+      "ollama_calls": 0,
+      "online_model_calls": 0,
+      "planner_calls": 0,
+      "source_content_accesses": 0,
+      "source_tree_accesses": 0,
+      "treatment_executions": 0
+    }
+  },
+  "canonical_projection_sha256": "c19909843d24a69a629465d1865742445bd0dbd8d730b796fd7d6cdd060eddc0",
+  "disposition": "external-catalog-universe-over-limit-before-allowlist-source",
+  "execution_eligible": false,
+  "schema_version": "p15-v7-attempt-004-catalog-failure-audit-artifact-v1",
+  "status": "INCONCLUSIVE"
+}

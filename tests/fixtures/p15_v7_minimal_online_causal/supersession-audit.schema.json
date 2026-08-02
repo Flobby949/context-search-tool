@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "p15-v7-supersession-audit-v2",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "attempt_id",
+    "status",
+    "disposition",
+    "execution_eligible",
+    "old_contract",
+    "old_allowlist",
+    "exclusion_projection",
+    "timeline",
+    "source_evidence",
+    "execution_observations"
+  ],
+  "properties": {
+    "schema_version": {"const": "p15-v7-supersession-audit-v2"},
+    "attempt_id": {"const": "p15-v7-attempt-001"},
+    "status": {"const": "INCONCLUSIVE"},
+    "disposition": {"const": "superseded-before-execution"},
+    "execution_eligible": {"const": false},
+    "old_contract": {
+      "type": "object",
+      "required": ["sha256", "audit_only"],
+      "properties": {
+        "path": {"type": "string"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "audit_only": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "old_allowlist": {
+      "type": "object",
+      "required": ["identity_only_sha256", "audit_only"],
+      "properties": {
+        "path": {"type": "string"},
+        "identity_only_sha256": {"$ref": "#/$defs/sha256"},
+        "audit_only": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "exclusion_projection": {
+      "type": "object",
+      "required": ["sha256", "identity_only", "contract_exclusion_input"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "identity_only": {"const": true},
+        "contract_exclusion_input": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "timeline": {
+      "type": "object",
+      "required": [
+        "allowlist_recorded_at",
+        "source_materialized_at",
+        "audit_created_at"
+      ],
+      "properties": {
+        "allowlist_recorded_at": {
+          "const": "2026-08-02T11:24:52+08:00"
+        },
+        "source_materialized_at": {
+          "const": "2026-08-02T11:25:22+08:00"
+        },
+        "audit_created_at": {
+          "const": "2026-08-02T12:58:47+08:00"
+        }
+      },
+      "additionalProperties": false
+    },
+    "source_evidence": {
+      "type": "object",
+      "required": [
+        "checkout_identity",
+        "checkout_root",
+        "observed_paths",
+        "source_materialized",
+        "source_touched",
+        "materialized_checkout_count_minimum",
+        "source_content_observed"
+      ],
+      "properties": {
+        "checkout_identity": {
+          "const": "agronholm/anyio@003e5d6bc3eba8f4e75bf2b2b5fb3f7dd11e6330"
+        },
+        "checkout_root": {
+          "const": ".quality/p15-v7-attempt-001/stage2/sources/rank-01-anyio"
+        },
+        "observed_paths": {
+          "const": [
+            ".git/index",
+            "src/anyio/__init__.py"
+          ]
+        },
+        "source_materialized": {"const": true},
+        "source_touched": {"const": true},
+        "materialized_checkout_count_minimum": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_content_observed": {"const": "not_established"}
+      },
+      "additionalProperties": false
+    },
+    "execution_observations": {
+      "type": "object",
+      "required": [
+        "corpus_generated",
+        "planner_calls",
+        "embedding_calls",
+        "online_calls",
+        "control_executions",
+        "treatment_executions",
+        "effect_observations",
+        "ollama_calls",
+        "held_out_accesses"
+      ],
+      "properties": {
+        "corpus_generated": {"const": false},
+        "planner_calls": {"const": 0},
+        "embedding_calls": {"const": 0},
+        "online_calls": {"const": 0},
+        "control_executions": {"const": 0},
+        "treatment_executions": {"const": 0},
+        "effect_observations": {"const": 0},
+        "ollama_calls": {"const": 0},
+        "held_out_accesses": {"const": 0}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

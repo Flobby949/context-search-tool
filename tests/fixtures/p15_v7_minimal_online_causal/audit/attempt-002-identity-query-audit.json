@@ -1,0 +1,181 @@
+{
+  "attempt_id": "p15-v7-attempt-002",
+  "canonical_projection": {
+    "attempt_id": "p15-v7-attempt-002",
+    "audit_projection_created_at_utc": "2026-08-02T05:41:37Z",
+    "authoritative_contract": {
+      "file_sha256": "b373c86c724b8d441c6af88d294282049dc693e52cb04bbbc9a8e88655f8f15d",
+      "modified": false,
+      "projection_sha256": "1f61888bcf47f49dc485c648a66c2f745983ca6fae00878779f15f772d9e9cc9"
+    },
+    "catalog_request": {
+      "catalog_query_request_count": 1,
+      "endpoint": "/search/repositories",
+      "exact_request_time_recorded": false,
+      "method": "GET",
+      "params": {
+        "order": "desc",
+        "page": 1,
+        "per_page": 100,
+        "q": "language:Python stars:1000..1002 size:100..5000 archived:false fork:false",
+        "sort": "stars"
+      },
+      "provider": "github",
+      "request_completed_before_utc": "2026-08-02T05:36:05Z",
+      "response_incomplete_results": false,
+      "response_total_count": 7
+    },
+    "disposition": "INCONCLUSIVE",
+    "identity_network_accounting": {
+      "catalog_query_requests": 1,
+      "git_ls_remote_invocations": 14,
+      "git_ls_remote_successful": 7,
+      "github_rate_limit_preflight_requests": 1,
+      "malformed_url_invocations_rejected_before_remote": 7,
+      "successful_remote_ref_requests": 7
+    },
+    "next_attempt_exclusion_candidate": {
+      "canonical_repositories": [
+        "github/agronholm/anyio",
+        "github/aio-libs/multidict",
+        "github/django/asgiref",
+        "github/hynek/structlog",
+        "github/pallets/markupsafe",
+        "github/pycqa/flake8",
+        "github/pydantic/pydantic",
+        "github/pytest-dev/pytest",
+        "github/python-attrs/attrs",
+        "github/python-trio/trio",
+        "github/textualize/rich",
+        "github/tox-dev/tox",
+        "github/pallets/click",
+        "github/tarpas/pytest-testmon",
+        "github/aws-samples/bedrock-access-gateway",
+        "github/model-bakers/model_bakery",
+        "github/octimot/storytoolkitai",
+        "github/jomingyu/google-play-scraper",
+        "github/naver/splade",
+        "github/doccker/cc-use-exp"
+      ],
+      "canonical_repository_count": 20,
+      "intersection_count": 0,
+      "newly_exposed_canonical_repository_count": 7,
+      "prior_canonical_repository_count": 13,
+      "prior_exclusion_projection_sha256": "c916efd99c66681aab7f339c60be0cbeba873ab668dcedd2ed84a6e7651eb599"
+    },
+    "raw_query_order": [
+      {
+        "canonical_identity": "github/tarpas/pytest-testmon@dccc58d2ed8edec98096ff1974acb7c07d3e3482",
+        "canonical_repository": "github/tarpas/pytest-testmon",
+        "default_branch": "main",
+        "identity_sha256": "1ae980bbf85681ac59c99f8532af7b27b8c104f29203614536073b329c04979c",
+        "immutable_revision": "dccc58d2ed8edec98096ff1974acb7c07d3e3482",
+        "owner": "tarpas",
+        "provider": "github",
+        "raw_rank": 1,
+        "repository": "pytest-testmon"
+      },
+      {
+        "canonical_identity": "github/aws-samples/bedrock-access-gateway@274b794e2ef6a163327b5dc0720ea2be9bef720e",
+        "canonical_repository": "github/aws-samples/bedrock-access-gateway",
+        "default_branch": "main",
+        "identity_sha256": "1470130fe5273dcc064fa5cc66034826112528fc0913afee2eb28e494f595ff1",
+        "immutable_revision": "274b794e2ef6a163327b5dc0720ea2be9bef720e",
+        "owner": "aws-samples",
+        "provider": "github",
+        "raw_rank": 2,
+        "repository": "bedrock-access-gateway"
+      },
+      {
+        "canonical_identity": "github/model-bakers/model_bakery@a3d6514e60a39dadc72ebefcf951737854835300",
+        "canonical_repository": "github/model-bakers/model_bakery",
+        "default_branch": "main",
+        "identity_sha256": "5772c780fc1c94db0af173c1dd9fef9a850ecf9aab07de22d3f3c10d31beefa2",
+        "immutable_revision": "a3d6514e60a39dadc72ebefcf951737854835300",
+        "owner": "model-bakers",
+        "provider": "github",
+        "raw_rank": 3,
+        "repository": "model_bakery"
+      },
+      {
+        "canonical_identity": "github/octimot/storytoolkitai@91ab42b11f509aa84bb3801a5a1ba31cf5cf74cb",
+        "canonical_repository": "github/octimot/storytoolkitai",
+        "default_branch": "main",
+        "identity_sha256": "886b449822a48d723fa206873ac020c2b81148514f509356ee7921ddd611df83",
+        "immutable_revision": "91ab42b11f509aa84bb3801a5a1ba31cf5cf74cb",
+        "owner": "octimot",
+        "provider": "github",
+        "raw_rank": 4,
+        "repository": "StoryToolkitAI"
+      },
+      {
+        "canonical_identity": "github/jomingyu/google-play-scraper@ce1df6d67e6d8c39826daac2f668808fc025f284",
+        "canonical_repository": "github/jomingyu/google-play-scraper",
+        "default_branch": "master",
+        "identity_sha256": "da3446308ace34fecad977176d84f1fe19ba6ecfd69cb0ed0175d1316f92f0d7",
+        "immutable_revision": "ce1df6d67e6d8c39826daac2f668808fc025f284",
+        "owner": "JoMingyu",
+        "provider": "github",
+        "raw_rank": 5,
+        "repository": "google-play-scraper"
+      },
+      {
+        "canonical_identity": "github/naver/splade@8dcd33a054d790e74aceda25b128c1b188c5d9c1",
+        "canonical_repository": "github/naver/splade",
+        "default_branch": "main",
+        "identity_sha256": "fa656068315b7262d5d0bdddc56bf062db086ce803cddfbbfcbb272e83019584",
+        "immutable_revision": "8dcd33a054d790e74aceda25b128c1b188c5d9c1",
+        "owner": "naver",
+        "provider": "github",
+        "raw_rank": 6,
+        "repository": "splade"
+      },
+      {
+        "canonical_identity": "github/doccker/cc-use-exp@448997909221b18dc45b3deced1c4c4f2039aa36",
+        "canonical_repository": "github/doccker/cc-use-exp",
+        "default_branch": "main",
+        "identity_sha256": "53fd024f229f9f0e329292144f848f080e6157a3e8feac142530e45119908ab7",
+        "immutable_revision": "448997909221b18dc45b3deced1c4c4f2039aa36",
+        "owner": "doccker",
+        "provider": "github",
+        "raw_rank": 7,
+        "repository": "cc-use-exp"
+      }
+    ],
+    "schema_version": "p15-v7-attempt-002-identity-query-audit-projection-v1",
+    "selection_result": {
+      "allowlist_frozen": false,
+      "eligible_count": 7,
+      "excluded_count": 0,
+      "raw_count": 7,
+      "receipt_written": false,
+      "stop_reason": "upstream_catalog_boundary_not_frozen_by_authoritative_contract",
+      "unauthorized_filter_evidence": {
+        "catalog_snapshot_or_query_bound_before_request": false,
+        "query_contains_size_filter": true,
+        "query_contains_stars_filter": true,
+        "stars_filter_in_contract_permitted_filters": false
+      }
+    },
+    "supersession_point": "after_identity_query_before_source",
+    "zero_state": {
+      "checkout_attempts": 0,
+      "clone_attempts": 0,
+      "corpus_generations": 0,
+      "effect_observations": 0,
+      "embedding_calls": 0,
+      "heldout_content_accesses": 0,
+      "ollama_calls": 0,
+      "online_model_calls": 0,
+      "planner_calls": 0,
+      "source_content_accesses": 0,
+      "source_tree_accesses": 0,
+      "treatment_executions": 0
+    }
+  },
+  "canonical_projection_sha256": "98525a2ee4be026f020892967e4eec4b3752a4dd27fe139c4e427e3633e94866",
+  "disposition": "noncompliant-catalog-observed-before-allowlist-and-source",
+  "execution_eligible": false,
+  "schema_version": "p15-v7-attempt-002-identity-query-audit-artifact-v1",
+  "status": "INCONCLUSIVE"
+}

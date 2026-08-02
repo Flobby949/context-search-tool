@@ -1,0 +1,3675 @@
+{
+  "attempt_id": "p15-v7-attempt-006",
+  "contract_projection_sha256": "74ac868812404ca83b23eab82571b264cd9e4d8a822202a77276cae2bc3e3afc",
+  "ordered_catalog": [
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "seeyouqiuqiqu",
+      "provider": "github",
+      "repository": "knowledge_forge",
+      "updated_at": "2026-07-05T07:14:56Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "healerHK",
+      "provider": "github",
+      "repository": "ResearchAI",
+      "updated_at": "2026-07-24T14:50:30Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "keerthana-b-v",
+      "provider": "github",
+      "repository": "yugmai",
+      "updated_at": "2026-07-05T07:01:41Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "RaayaSP",
+      "provider": "github",
+      "repository": "Computer-price",
+      "updated_at": "2026-07-05T07:01:56Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "yuvrajkaurav28",
+      "provider": "github",
+      "repository": "JobPilot-AI",
+      "updated_at": "2026-07-05T07:02:08Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "varshithapidugu",
+      "provider": "github",
+      "repository": "Basic-Chatbot.py",
+      "updated_at": "2026-07-05T07:02:16Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "rushithareddy05",
+      "provider": "github",
+      "repository": "Major-Project",
+      "updated_at": "2026-07-05T07:02:20Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "master",
+      "language": "Python",
+      "owner": "lingqiqi854-star",
+      "provider": "github",
+      "repository": "astrbot_plugin_starlinememory",
+      "updated_at": "2026-07-05T07:02:47Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "cymarlboro",
+      "provider": "github",
+      "repository": "mainstream-gridded-products-data-processing",
+      "updated_at": "2026-07-05T07:05:20Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "jr5530",
+      "provider": "github",
+      "repository": "exercises",
+      "updated_at": "2026-07-05T07:02:50Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "tarikk786786",
+      "provider": "github",
+      "repository": "agentic-gpt-researcher",
+      "updated_at": "2026-07-05T07:03:04Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "tjgit2026",
+      "provider": "github",
+      "repository": "Age-Counter",
+      "updated_at": "2026-07-05T07:03:18Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Pavan0760",
+      "provider": "github",
+      "repository": "Loan-Default-Risk-Predictor",
+      "updated_at": "2026-07-05T07:03:28Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Zibuyu111",
+      "provider": "github",
+      "repository": "NetEase_music_lyrics",
+      "updated_at": "2026-07-05T07:03:32Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Issho-lin",
+      "provider": "github",
+      "repository": "agent-platform",
+      "updated_at": "2026-07-05T07:03:59Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "master",
+      "language": "Python",
+      "owner": "backstract-apps",
+      "provider": "github",
+      "repository": "jovial-bhabha-3e296ff238",
+      "updated_at": "2026-07-05T07:04:00Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "master",
+      "language": "Python",
+      "owner": "King-dot935",
+      "provider": "github",
+      "repository": "llm-api-test",
+      "updated_at": "2026-07-05T07:04:09Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "soybean82-netizen",
+      "provider": "github",
+      "repository": "Restaurant",
+      "updated_at": "2026-07-05T07:04:14Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "KALYAN-2006",
+      "provider": "github",
+      "repository": "HDI-predictor",
+      "updated_at": "2026-07-05T07:04:19Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "magnus-c",
+      "provider": "github",
+      "repository": "151-deeplearning",
+      "updated_at": "2026-07-05T07:05:30Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "fatimaattaria1981-a11y",
+      "provider": "github",
+      "repository": "titanic-workshop-app",
+      "updated_at": "2026-07-05T07:05:00Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "ruproshanjha",
+      "provider": "github",
+      "repository": "Bank-Management",
+      "updated_at": "2026-07-05T07:05:03Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Benjaminjacob443",
+      "provider": "github",
+      "repository": "alina-voice-assistant",
+      "updated_at": "2026-07-05T07:07:19Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "ganashree03",
+      "provider": "github",
+      "repository": "Ai-based-admission-predictor-and-college-recommendation",
+      "updated_at": "2026-07-05T07:05:08Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "aniketpatel786078-a11y",
+      "provider": "github",
+      "repository": "Ace-OS-Navigator",
+      "updated_at": "2026-07-05T07:05:15Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "hamadali236236",
+      "provider": "github",
+      "repository": "ab-testing-analytics-dashboard",
+      "updated_at": "2026-07-05T07:05:48Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Dayan-18",
+      "provider": "github",
+      "repository": "sql-ai-demo",
+      "updated_at": "2026-07-05T07:06:19Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "master",
+      "language": "Python",
+      "owner": "mohammad-mohammadi-cs-iust",
+      "provider": "github",
+      "repository": "spotify_studio",
+      "updated_at": "2026-07-05T07:06:20Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "lhjackgod",
+      "provider": "github",
+      "repository": "cloth_sds",
+      "updated_at": "2026-07-05T07:06:21Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "sifatcx",
+      "provider": "github",
+      "repository": "otp",
+      "updated_at": "2026-07-05T07:06:55Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Shivanshidubey1799",
+      "provider": "github",
+      "repository": "shivanshi-corrosion.streamlit.app.",
+      "updated_at": "2026-07-05T07:06:54Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "zerx-lab",
+      "provider": "github",
+      "repository": "casaos-appstore",
+      "updated_at": "2026-07-05T07:07:11Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "XekoFrontend",
+      "provider": "github",
+      "repository": "manga-truyentranhvuinet-downloader",
+      "updated_at": "2026-07-05T07:07:12Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "rahulxsingh07",
+      "provider": "github",
+      "repository": "Resume-matcher-project",
+      "updated_at": "2026-07-05T07:07:24Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Akash4077",
+      "provider": "github",
+      "repository": "student-marks-calculator-",
+      "updated_at": "2026-07-05T07:07:28Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "akrati-codes",
+      "provider": "github",
+      "repository": "My-Teachable-Machine",
+      "updated_at": "2026-07-05T07:07:32Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Abdul9082",
+      "provider": "github",
+      "repository": "Retail-Analytics-Trial-Store-Analysis",
+      "updated_at": "2026-07-05T07:07:36Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "amrutahegde26-ship-it",
+      "provider": "github",
+      "repository": "CodeAlpha-Object-detection",
+      "updated_at": "2026-07-24T18:22:25Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "nagarjunareddybijjam2812",
+      "provider": "github",
+      "repository": "LLM_Assignments",
+      "updated_at": "2026-07-05T07:08:12Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "AkashSingh0021",
+      "provider": "github",
+      "repository": "ai-resume-analyzer",
+      "updated_at": "2026-07-05T07:08:38Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "nithin-53",
+      "provider": "github",
+      "repository": "sqliproject",
+      "updated_at": "2026-07-05T07:08:55Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "navienpotheri",
+      "provider": "github",
+      "repository": "MOE-models-and-Free-Energy-Principle",
+      "updated_at": "2026-07-05T07:08:57Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "HariomRajChauhan",
+      "provider": "github",
+      "repository": "Nea_Pipeline",
+      "updated_at": "2026-07-05T07:09:13Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "nathdadu26",
+      "provider": "github",
+      "repository": "TG-Media-Forwarder-Bot",
+      "updated_at": "2026-07-05T07:09:38Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "EsraaAshraf-pharmacist",
+      "provider": "github",
+      "repository": "Employees_syetem",
+      "updated_at": "2026-07-05T07:10:34Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Manoj-Tiwari8394",
+      "provider": "github",
+      "repository": "k8s-agentic-ops",
+      "updated_at": "2026-07-05T07:10:40Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Jourlaina",
+      "provider": "github",
+      "repository": "-",
+      "updated_at": "2026-07-05T07:10:47Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "aditya006bec",
+      "provider": "github",
+      "repository": "smartcrop",
+      "updated_at": "2026-07-05T07:11:10Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "mirzagulfam6565-max",
+      "provider": "github",
+      "repository": "comparison-tool",
+      "updated_at": "2026-07-05T07:12:55Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "master",
+      "language": "Python",
+      "owner": "anandsalunkhe",
+      "provider": "github",
+      "repository": "pdf-qa-chatbot",
+      "updated_at": "2026-07-05T07:13:29Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "guptadelisha16-ai",
+      "provider": "github",
+      "repository": "akg-1",
+      "updated_at": "2026-07-05T07:14:11Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "LuoHuacheng",
+      "provider": "github",
+      "repository": "opencode-bootstrap",
+      "updated_at": "2026-07-05T07:14:22Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "inndhu-09",
+      "provider": "github",
+      "repository": "AI-Buddy",
+      "updated_at": "2026-07-05T07:16:09Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Vivaan-coder1",
+      "provider": "github",
+      "repository": "Lesson-7-Activity-1",
+      "updated_at": "2026-07-05T07:17:01Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "siddarthpatil17",
+      "provider": "github",
+      "repository": "-Fix-the-Broken-Terminal-Bench-Task",
+      "updated_at": "2026-07-05T07:17:09Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Syahrul83",
+      "provider": "github",
+      "repository": "streamlit_hactivis",
+      "updated_at": "2026-07-05T07:20:26Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "itssalemkhan-collab",
+      "provider": "github",
+      "repository": "Current-gk",
+      "updated_at": "2026-07-05T07:21:38Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Shravani-Chaudhari-394",
+      "provider": "github",
+      "repository": "Complete-Weather-Data-Pipeline-System",
+      "updated_at": "2026-07-05T07:24:09Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "master",
+      "language": "Python",
+      "owner": "redcarrotha",
+      "provider": "github",
+      "repository": "TMDC",
+      "updated_at": "2026-07-05T07:25:09Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "mgubuan",
+      "provider": "github",
+      "repository": "AccountingVoice",
+      "updated_at": "2026-07-05T07:26:18Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "ronnyfaslah",
+      "provider": "github",
+      "repository": "satuobat_app",
+      "updated_at": "2026-07-05T07:26:36Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Techmasternikhil",
+      "provider": "github",
+      "repository": "Fact-Check-Live-AI",
+      "updated_at": "2026-07-05T07:26:45Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "mridulsaklani",
+      "provider": "github",
+      "repository": "Basic-Chat-Bot",
+      "updated_at": "2026-07-05T07:26:58Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "muzhis",
+      "provider": "github",
+      "repository": "screen-recorder",
+      "updated_at": "2026-07-05T07:27:43Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "tristan-com",
+      "provider": "github",
+      "repository": "algo-visualizer",
+      "updated_at": "2026-07-05T07:29:42Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Dipanshu8750",
+      "provider": "github",
+      "repository": "Customer_Behaviour_Analysis_Project",
+      "updated_at": "2026-07-05T07:32:12Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "iamgagan07",
+      "provider": "github",
+      "repository": "Customer-Churn-Prediction-Project",
+      "updated_at": "2026-07-05T07:33:19Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "sourabha-h",
+      "provider": "github",
+      "repository": "milvus-industrial-rag",
+      "updated_at": "2026-07-05T07:34:38Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Aabddg",
+      "provider": "github",
+      "repository": "OpenTutor",
+      "updated_at": "2026-07-05T07:33:44Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Rajan8795",
+      "provider": "github",
+      "repository": "Loan_prediction",
+      "updated_at": "2026-07-05T07:39:04Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Nouraldeen004",
+      "provider": "github",
+      "repository": "Learning-RAG-projects",
+      "updated_at": "2026-07-05T08:04:01Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "angelkcc",
+      "provider": "github",
+      "repository": "MimicMe-Challenge",
+      "updated_at": "2026-07-05T07:43:01Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "arayellie-prog",
+      "provider": "github",
+      "repository": "python-automation-projects",
+      "updated_at": "2026-07-05T07:49:20Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "ramasahu13112006",
+      "provider": "github",
+      "repository": "Virtual-painter-ai",
+      "updated_at": "2026-07-05T07:59:40Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Zuxas",
+      "provider": "github",
+      "repository": "bob",
+      "updated_at": "2026-07-05T08:03:16Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "feature/frontend-pages",
+      "language": "Python",
+      "owner": "Shreetikashrestha",
+      "provider": "github",
+      "repository": "SaanAI",
+      "updated_at": "2026-07-05T08:04:04Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "master",
+      "language": "Python",
+      "owner": "bilalk",
+      "provider": "github",
+      "repository": "ComfyBranch",
+      "updated_at": "2026-07-05T08:55:31Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "aysuh021004",
+      "provider": "github",
+      "repository": "student_management_system",
+      "updated_at": "2026-07-05T09:12:30Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "ZCZHAO-1999",
+      "provider": "github",
+      "repository": "wechat-shakespeare-article-studio",
+      "updated_at": "2026-07-05T09:36:23Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "SDineshwaran-pro",
+      "provider": "github",
+      "repository": "lettertosound",
+      "updated_at": "2026-07-05T11:49:32Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "CY-Sparrow",
+      "provider": "github",
+      "repository": "Snivy---Hotel-Virtual-Assistant",
+      "updated_at": "2026-07-05T14:28:24Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "solomonj479-rgb",
+      "provider": "github",
+      "repository": "LinkedScrape",
+      "updated_at": "2026-07-05T14:36:58Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "NivinLouis",
+      "provider": "github",
+      "repository": "neetcode-submissions",
+      "updated_at": "2026-07-05T14:46:12Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Guilty233",
+      "provider": "github",
+      "repository": "Numerai",
+      "updated_at": "2026-07-05T14:59:36Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "zhouh007",
+      "provider": "github",
+      "repository": "ai_music_traffic_system",
+      "updated_at": "2026-07-05T15:47:35Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "krishnaM-byte",
+      "provider": "github",
+      "repository": "sat-mentor-AI",
+      "updated_at": "2026-07-05T17:16:33Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Aadarsh0905",
+      "provider": "github",
+      "repository": "AI-MODEL",
+      "updated_at": "2026-07-05T17:50:29Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Obito1037",
+      "provider": "github",
+      "repository": "shuangsheng",
+      "updated_at": "2026-07-05T19:05:21Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "arash6507",
+      "provider": "github",
+      "repository": "ehsan-price-bot2",
+      "updated_at": "2026-07-05T19:42:46Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "andanawarih",
+      "provider": "github",
+      "repository": "churn-project",
+      "updated_at": "2026-07-06T03:18:49Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "martinavilauc",
+      "provider": "github",
+      "repository": "La-Piton",
+      "updated_at": "2026-07-06T03:48:02Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "ethnn-b",
+      "provider": "github",
+      "repository": "aigen-image-detector",
+      "updated_at": "2026-07-06T05:42:02Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Nishiw28",
+      "provider": "github",
+      "repository": "student-career-concierge",
+      "updated_at": "2026-07-06T05:53:40Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "JohnPhm",
+      "provider": "github",
+      "repository": "ai201-project4-provenance-guard",
+      "updated_at": "2026-07-06T06:40:30Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Xing-Heyu",
+      "provider": "github",
+      "repository": "puredata",
+      "updated_at": "2026-07-06T15:59:21Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "vennapusavijayamani",
+      "provider": "github",
+      "repository": "Hospital-management-system--django",
+      "updated_at": "2026-07-06T11:07:39Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "nizzcodes",
+      "provider": "github",
+      "repository": "Games",
+      "updated_at": "2026-07-06T11:38:38Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Zsh205",
+      "provider": "github",
+      "repository": "Chilly-Bay",
+      "updated_at": "2026-07-06T15:01:22Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "master",
+      "language": "Python",
+      "owner": "hewanxia200512",
+      "provider": "github",
+      "repository": "shuqishixun",
+      "updated_at": "2026-07-07T02:00:39Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "nakadzho777-dot",
+      "provider": "github",
+      "repository": "AI-Video-Craft",
+      "updated_at": "2026-07-07T04:54:16Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Wineryzh",
+      "provider": "github",
+      "repository": "Smart-Interactive-Guiding-Humanoid-Robot",
+      "updated_at": "2026-07-07T06:58:18Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "mandapakasaisandeep",
+      "provider": "github",
+      "repository": "Airline",
+      "updated_at": "2026-07-07T12:47:10Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "aimanawad57",
+      "provider": "github",
+      "repository": "IAI",
+      "updated_at": "2026-07-07T15:23:51Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "AbhayMunjewar",
+      "provider": "github",
+      "repository": "Conversation_agent",
+      "updated_at": "2026-07-07T16:31:50Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "master",
+      "language": "Python",
+      "owner": "toruhashimoto",
+      "provider": "github",
+      "repository": "GaussianWrapping-GUI",
+      "updated_at": "2026-07-08T04:36:01Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "batman230-sai",
+      "provider": "github",
+      "repository": "Vehicle-Insurance",
+      "updated_at": "2026-07-08T05:18:20Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "0Asylum",
+      "provider": "github",
+      "repository": "ganggang-htb",
+      "updated_at": "2026-07-08T23:14:52Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Kushagra3355",
+      "provider": "github",
+      "repository": "cold_email_automation",
+      "updated_at": "2026-07-14T10:51:06Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "heikalhidayat",
+      "provider": "github",
+      "repository": "fishing-game-python",
+      "updated_at": "2026-07-11T09:41:46Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Carlo-Broschi",
+      "provider": "github",
+      "repository": "bio-c_sm-fold-genome-reduction",
+      "updated_at": "2026-07-09T15:01:44Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "master",
+      "language": "Python",
+      "owner": "iinasir",
+      "provider": "github",
+      "repository": "dealspulse",
+      "updated_at": "2026-07-09T16:24:54Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "tanusrixh",
+      "provider": "github",
+      "repository": "mcp-adjudicator",
+      "updated_at": "2026-07-10T06:09:10Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "PlatAid",
+      "provider": "github",
+      "repository": "naver-searchad-mcp",
+      "updated_at": "2026-07-10T08:55:49Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Anniina-55",
+      "provider": "github",
+      "repository": "request-logger-proxy",
+      "updated_at": "2026-07-11T19:26:45Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "marvellearner",
+      "provider": "github",
+      "repository": "Gen_ai_series_by_sm",
+      "updated_at": "2026-07-12T08:13:32Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "shreeramsworks",
+      "provider": "github",
+      "repository": "Job-Search",
+      "updated_at": "2026-07-12T09:33:16Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "master",
+      "language": "Python",
+      "owner": "KociTomas03",
+      "provider": "github",
+      "repository": "volleyball-tracker",
+      "updated_at": "2026-07-12T15:24:32Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "BachhalaVenkatasrikrishna",
+      "provider": "github",
+      "repository": "VBCUA",
+      "updated_at": "2026-07-14T07:16:54Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "MonongahelaHellbender",
+      "provider": "github",
+      "repository": "stat-shield",
+      "updated_at": "2026-07-19T05:16:14Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "VaishaliMadoori",
+      "provider": "github",
+      "repository": "cubesat-fault-detection",
+      "updated_at": "2026-07-19T08:28:18Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "JudithWLee",
+      "provider": "github",
+      "repository": "task-whetstone",
+      "updated_at": "2026-07-19T14:51:16Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "nyalakondasheshankadesai-jpg",
+      "provider": "github",
+      "repository": "Prompt-Based-text-classification-",
+      "updated_at": "2026-07-19T17:19:55Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "junanshi0510",
+      "provider": "github",
+      "repository": "stock-assistant",
+      "updated_at": "2026-07-27T13:59:47Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "openclawby",
+      "provider": "github",
+      "repository": "openclawby-skills",
+      "updated_at": "2026-07-28T18:18:56Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "ribalba",
+      "provider": "github",
+      "repository": "meerail",
+      "updated_at": "2026-07-30T13:57:46Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "Wildannn123-web",
+      "provider": "github",
+      "repository": "Uasml",
+      "updated_at": "2026-07-30T18:40:22Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "waterfirst",
+      "provider": "github",
+      "repository": "ax_hackerton",
+      "updated_at": "2026-07-31T01:32:02Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "gsharko",
+      "provider": "github",
+      "repository": "t400-llm-bench",
+      "updated_at": "2026-07-31T09:42:11Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "r1149969-lgtm",
+      "provider": "github",
+      "repository": "To-Do-App",
+      "updated_at": "2026-08-02T04:34:05Z",
+      "visibility": "public"
+    },
+    {
+      "default_branch": "main",
+      "language": "Python",
+      "owner": "katthikrishnaveni-playwright",
+      "provider": "github",
+      "repository": "Ecommerce_Automation",
+      "updated_at": "2026-08-02T05:13:24Z",
+      "visibility": "public"
+    }
+  ],
+  "ordered_catalog_count": 130,
+  "ordered_catalog_sha256": "d78bbf42781a47c9b440945352bee900e8fe3cd1a88f21d1402c453d3304b567",
+  "passes": [
+    {
+      "canonical_projection_sha256": "ceb858e0eba1b5ba311586478b20e9aadfa01a5d4001a81bbf9fc2c86d2af2af",
+      "pages": [
+        {
+          "page": 1,
+          "request": {
+            "attempt_count": 1,
+            "endpoint": "https://api.github.com/search/repositories",
+            "headers": {
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28"
+            },
+            "issued_at_utc": "2026-08-02T07:26:06Z",
+            "method": "GET",
+            "params": {
+              "order": "asc",
+              "page": 1,
+              "per_page": 100,
+              "q": "language:Python is:public created:2026-07-05T07:00:00Z..2026-07-05T07:04:59Z",
+              "sort": "updated"
+            },
+            "projection_sha256": "cb043d59ce2c634d71d89fac0290c6a207ed4ae7ce35dbfd34c4b94d761263ea"
+          },
+          "response": {
+            "headers": {
+              "Date": "Sun, 02 Aug 2026 07:26:10 GMT",
+              "etag": null,
+              "etag_present": false
+            },
+            "incomplete_results": false,
+            "items": [
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "seeyouqiuqiqu",
+                "provider": "github",
+                "repository": "knowledge_forge",
+                "updated_at": "2026-07-05T07:14:56Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "healerHK",
+                "provider": "github",
+                "repository": "ResearchAI",
+                "updated_at": "2026-07-24T14:50:30Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "keerthana-b-v",
+                "provider": "github",
+                "repository": "yugmai",
+                "updated_at": "2026-07-05T07:01:41Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "RaayaSP",
+                "provider": "github",
+                "repository": "Computer-price",
+                "updated_at": "2026-07-05T07:01:56Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "yuvrajkaurav28",
+                "provider": "github",
+                "repository": "JobPilot-AI",
+                "updated_at": "2026-07-05T07:02:08Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "varshithapidugu",
+                "provider": "github",
+                "repository": "Basic-Chatbot.py",
+                "updated_at": "2026-07-05T07:02:16Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "rushithareddy05",
+                "provider": "github",
+                "repository": "Major-Project",
+                "updated_at": "2026-07-05T07:02:20Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "lingqiqi854-star",
+                "provider": "github",
+                "repository": "astrbot_plugin_starlinememory",
+                "updated_at": "2026-07-05T07:02:47Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "cymarlboro",
+                "provider": "github",
+                "repository": "mainstream-gridded-products-data-processing",
+                "updated_at": "2026-07-05T07:05:20Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "jr5530",
+                "provider": "github",
+                "repository": "exercises",
+                "updated_at": "2026-07-05T07:02:50Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "tarikk786786",
+                "provider": "github",
+                "repository": "agentic-gpt-researcher",
+                "updated_at": "2026-07-05T07:03:04Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "tjgit2026",
+                "provider": "github",
+                "repository": "Age-Counter",
+                "updated_at": "2026-07-05T07:03:18Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Pavan0760",
+                "provider": "github",
+                "repository": "Loan-Default-Risk-Predictor",
+                "updated_at": "2026-07-05T07:03:28Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Zibuyu111",
+                "provider": "github",
+                "repository": "NetEase_music_lyrics",
+                "updated_at": "2026-07-05T07:03:32Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Issho-lin",
+                "provider": "github",
+                "repository": "agent-platform",
+                "updated_at": "2026-07-05T07:03:59Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "backstract-apps",
+                "provider": "github",
+                "repository": "jovial-bhabha-3e296ff238",
+                "updated_at": "2026-07-05T07:04:00Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "King-dot935",
+                "provider": "github",
+                "repository": "llm-api-test",
+                "updated_at": "2026-07-05T07:04:09Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "soybean82-netizen",
+                "provider": "github",
+                "repository": "Restaurant",
+                "updated_at": "2026-07-05T07:04:14Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "KALYAN-2006",
+                "provider": "github",
+                "repository": "HDI-predictor",
+                "updated_at": "2026-07-05T07:04:19Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "magnus-c",
+                "provider": "github",
+                "repository": "151-deeplearning",
+                "updated_at": "2026-07-05T07:05:30Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "fatimaattaria1981-a11y",
+                "provider": "github",
+                "repository": "titanic-workshop-app",
+                "updated_at": "2026-07-05T07:05:00Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "ruproshanjha",
+                "provider": "github",
+                "repository": "Bank-Management",
+                "updated_at": "2026-07-05T07:05:03Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Benjaminjacob443",
+                "provider": "github",
+                "repository": "alina-voice-assistant",
+                "updated_at": "2026-07-05T07:07:19Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "ganashree03",
+                "provider": "github",
+                "repository": "Ai-based-admission-predictor-and-college-recommendation",
+                "updated_at": "2026-07-05T07:05:08Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "aniketpatel786078-a11y",
+                "provider": "github",
+                "repository": "Ace-OS-Navigator",
+                "updated_at": "2026-07-05T07:05:15Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "hamadali236236",
+                "provider": "github",
+                "repository": "ab-testing-analytics-dashboard",
+                "updated_at": "2026-07-05T07:05:48Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Dayan-18",
+                "provider": "github",
+                "repository": "sql-ai-demo",
+                "updated_at": "2026-07-05T07:06:19Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "mohammad-mohammadi-cs-iust",
+                "provider": "github",
+                "repository": "spotify_studio",
+                "updated_at": "2026-07-05T07:06:20Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "lhjackgod",
+                "provider": "github",
+                "repository": "cloth_sds",
+                "updated_at": "2026-07-05T07:06:21Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "sifatcx",
+                "provider": "github",
+                "repository": "otp",
+                "updated_at": "2026-07-05T07:06:55Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Shivanshidubey1799",
+                "provider": "github",
+                "repository": "shivanshi-corrosion.streamlit.app.",
+                "updated_at": "2026-07-05T07:06:54Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "zerx-lab",
+                "provider": "github",
+                "repository": "casaos-appstore",
+                "updated_at": "2026-07-05T07:07:11Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "XekoFrontend",
+                "provider": "github",
+                "repository": "manga-truyentranhvuinet-downloader",
+                "updated_at": "2026-07-05T07:07:12Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "rahulxsingh07",
+                "provider": "github",
+                "repository": "Resume-matcher-project",
+                "updated_at": "2026-07-05T07:07:24Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Akash4077",
+                "provider": "github",
+                "repository": "student-marks-calculator-",
+                "updated_at": "2026-07-05T07:07:28Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "akrati-codes",
+                "provider": "github",
+                "repository": "My-Teachable-Machine",
+                "updated_at": "2026-07-05T07:07:32Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Abdul9082",
+                "provider": "github",
+                "repository": "Retail-Analytics-Trial-Store-Analysis",
+                "updated_at": "2026-07-05T07:07:36Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "amrutahegde26-ship-it",
+                "provider": "github",
+                "repository": "CodeAlpha-Object-detection",
+                "updated_at": "2026-07-24T18:22:25Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "nagarjunareddybijjam2812",
+                "provider": "github",
+                "repository": "LLM_Assignments",
+                "updated_at": "2026-07-05T07:08:12Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "AkashSingh0021",
+                "provider": "github",
+                "repository": "ai-resume-analyzer",
+                "updated_at": "2026-07-05T07:08:38Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "nithin-53",
+                "provider": "github",
+                "repository": "sqliproject",
+                "updated_at": "2026-07-05T07:08:55Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "navienpotheri",
+                "provider": "github",
+                "repository": "MOE-models-and-Free-Energy-Principle",
+                "updated_at": "2026-07-05T07:08:57Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "HariomRajChauhan",
+                "provider": "github",
+                "repository": "Nea_Pipeline",
+                "updated_at": "2026-07-05T07:09:13Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "nathdadu26",
+                "provider": "github",
+                "repository": "TG-Media-Forwarder-Bot",
+                "updated_at": "2026-07-05T07:09:38Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "EsraaAshraf-pharmacist",
+                "provider": "github",
+                "repository": "Employees_syetem",
+                "updated_at": "2026-07-05T07:10:34Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Manoj-Tiwari8394",
+                "provider": "github",
+                "repository": "k8s-agentic-ops",
+                "updated_at": "2026-07-05T07:10:40Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Jourlaina",
+                "provider": "github",
+                "repository": "-",
+                "updated_at": "2026-07-05T07:10:47Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "aditya006bec",
+                "provider": "github",
+                "repository": "smartcrop",
+                "updated_at": "2026-07-05T07:11:10Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "mirzagulfam6565-max",
+                "provider": "github",
+                "repository": "comparison-tool",
+                "updated_at": "2026-07-05T07:12:55Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "anandsalunkhe",
+                "provider": "github",
+                "repository": "pdf-qa-chatbot",
+                "updated_at": "2026-07-05T07:13:29Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "guptadelisha16-ai",
+                "provider": "github",
+                "repository": "akg-1",
+                "updated_at": "2026-07-05T07:14:11Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "LuoHuacheng",
+                "provider": "github",
+                "repository": "opencode-bootstrap",
+                "updated_at": "2026-07-05T07:14:22Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "inndhu-09",
+                "provider": "github",
+                "repository": "AI-Buddy",
+                "updated_at": "2026-07-05T07:16:09Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Vivaan-coder1",
+                "provider": "github",
+                "repository": "Lesson-7-Activity-1",
+                "updated_at": "2026-07-05T07:17:01Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "siddarthpatil17",
+                "provider": "github",
+                "repository": "-Fix-the-Broken-Terminal-Bench-Task",
+                "updated_at": "2026-07-05T07:17:09Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Syahrul83",
+                "provider": "github",
+                "repository": "streamlit_hactivis",
+                "updated_at": "2026-07-05T07:20:26Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "itssalemkhan-collab",
+                "provider": "github",
+                "repository": "Current-gk",
+                "updated_at": "2026-07-05T07:21:38Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Shravani-Chaudhari-394",
+                "provider": "github",
+                "repository": "Complete-Weather-Data-Pipeline-System",
+                "updated_at": "2026-07-05T07:24:09Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "redcarrotha",
+                "provider": "github",
+                "repository": "TMDC",
+                "updated_at": "2026-07-05T07:25:09Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "mgubuan",
+                "provider": "github",
+                "repository": "AccountingVoice",
+                "updated_at": "2026-07-05T07:26:18Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "ronnyfaslah",
+                "provider": "github",
+                "repository": "satuobat_app",
+                "updated_at": "2026-07-05T07:26:36Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Techmasternikhil",
+                "provider": "github",
+                "repository": "Fact-Check-Live-AI",
+                "updated_at": "2026-07-05T07:26:45Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "mridulsaklani",
+                "provider": "github",
+                "repository": "Basic-Chat-Bot",
+                "updated_at": "2026-07-05T07:26:58Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "muzhis",
+                "provider": "github",
+                "repository": "screen-recorder",
+                "updated_at": "2026-07-05T07:27:43Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "tristan-com",
+                "provider": "github",
+                "repository": "algo-visualizer",
+                "updated_at": "2026-07-05T07:29:42Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Dipanshu8750",
+                "provider": "github",
+                "repository": "Customer_Behaviour_Analysis_Project",
+                "updated_at": "2026-07-05T07:32:12Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "iamgagan07",
+                "provider": "github",
+                "repository": "Customer-Churn-Prediction-Project",
+                "updated_at": "2026-07-05T07:33:19Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "sourabha-h",
+                "provider": "github",
+                "repository": "milvus-industrial-rag",
+                "updated_at": "2026-07-05T07:34:38Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Aabddg",
+                "provider": "github",
+                "repository": "OpenTutor",
+                "updated_at": "2026-07-05T07:33:44Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Rajan8795",
+                "provider": "github",
+                "repository": "Loan_prediction",
+                "updated_at": "2026-07-05T07:39:04Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Nouraldeen004",
+                "provider": "github",
+                "repository": "Learning-RAG-projects",
+                "updated_at": "2026-07-05T08:04:01Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "angelkcc",
+                "provider": "github",
+                "repository": "MimicMe-Challenge",
+                "updated_at": "2026-07-05T07:43:01Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "arayellie-prog",
+                "provider": "github",
+                "repository": "python-automation-projects",
+                "updated_at": "2026-07-05T07:49:20Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "ramasahu13112006",
+                "provider": "github",
+                "repository": "Virtual-painter-ai",
+                "updated_at": "2026-07-05T07:59:40Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Zuxas",
+                "provider": "github",
+                "repository": "bob",
+                "updated_at": "2026-07-05T08:03:16Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "feature/frontend-pages",
+                "language": "Python",
+                "owner": "Shreetikashrestha",
+                "provider": "github",
+                "repository": "SaanAI",
+                "updated_at": "2026-07-05T08:04:04Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "bilalk",
+                "provider": "github",
+                "repository": "ComfyBranch",
+                "updated_at": "2026-07-05T08:55:31Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "aysuh021004",
+                "provider": "github",
+                "repository": "student_management_system",
+                "updated_at": "2026-07-05T09:12:30Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "ZCZHAO-1999",
+                "provider": "github",
+                "repository": "wechat-shakespeare-article-studio",
+                "updated_at": "2026-07-05T09:36:23Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "SDineshwaran-pro",
+                "provider": "github",
+                "repository": "lettertosound",
+                "updated_at": "2026-07-05T11:49:32Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "CY-Sparrow",
+                "provider": "github",
+                "repository": "Snivy---Hotel-Virtual-Assistant",
+                "updated_at": "2026-07-05T14:28:24Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "solomonj479-rgb",
+                "provider": "github",
+                "repository": "LinkedScrape",
+                "updated_at": "2026-07-05T14:36:58Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "NivinLouis",
+                "provider": "github",
+                "repository": "neetcode-submissions",
+                "updated_at": "2026-07-05T14:46:12Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Guilty233",
+                "provider": "github",
+                "repository": "Numerai",
+                "updated_at": "2026-07-05T14:59:36Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "zhouh007",
+                "provider": "github",
+                "repository": "ai_music_traffic_system",
+                "updated_at": "2026-07-05T15:47:35Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "krishnaM-byte",
+                "provider": "github",
+                "repository": "sat-mentor-AI",
+                "updated_at": "2026-07-05T17:16:33Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Aadarsh0905",
+                "provider": "github",
+                "repository": "AI-MODEL",
+                "updated_at": "2026-07-05T17:50:29Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Obito1037",
+                "provider": "github",
+                "repository": "shuangsheng",
+                "updated_at": "2026-07-05T19:05:21Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "arash6507",
+                "provider": "github",
+                "repository": "ehsan-price-bot2",
+                "updated_at": "2026-07-05T19:42:46Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "andanawarih",
+                "provider": "github",
+                "repository": "churn-project",
+                "updated_at": "2026-07-06T03:18:49Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "martinavilauc",
+                "provider": "github",
+                "repository": "La-Piton",
+                "updated_at": "2026-07-06T03:48:02Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "ethnn-b",
+                "provider": "github",
+                "repository": "aigen-image-detector",
+                "updated_at": "2026-07-06T05:42:02Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Nishiw28",
+                "provider": "github",
+                "repository": "student-career-concierge",
+                "updated_at": "2026-07-06T05:53:40Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "JohnPhm",
+                "provider": "github",
+                "repository": "ai201-project4-provenance-guard",
+                "updated_at": "2026-07-06T06:40:30Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Xing-Heyu",
+                "provider": "github",
+                "repository": "puredata",
+                "updated_at": "2026-07-06T15:59:21Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "vennapusavijayamani",
+                "provider": "github",
+                "repository": "Hospital-management-system--django",
+                "updated_at": "2026-07-06T11:07:39Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "nizzcodes",
+                "provider": "github",
+                "repository": "Games",
+                "updated_at": "2026-07-06T11:38:38Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Zsh205",
+                "provider": "github",
+                "repository": "Chilly-Bay",
+                "updated_at": "2026-07-06T15:01:22Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "hewanxia200512",
+                "provider": "github",
+                "repository": "shuqishixun",
+                "updated_at": "2026-07-07T02:00:39Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "nakadzho777-dot",
+                "provider": "github",
+                "repository": "AI-Video-Craft",
+                "updated_at": "2026-07-07T04:54:16Z",
+                "visibility": "public"
+              }
+            ],
+            "projection_sha256": "844be2470444be118feb142e0420d85dfa0b576c742c91ed5de8c294f3b93600",
+            "status": 200,
+            "total_count": 130
+          }
+        },
+        {
+          "page": 2,
+          "request": {
+            "attempt_count": 1,
+            "endpoint": "https://api.github.com/search/repositories",
+            "headers": {
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28"
+            },
+            "issued_at_utc": "2026-08-02T07:26:10Z",
+            "method": "GET",
+            "params": {
+              "order": "asc",
+              "page": 2,
+              "per_page": 100,
+              "q": "language:Python is:public created:2026-07-05T07:00:00Z..2026-07-05T07:04:59Z",
+              "sort": "updated"
+            },
+            "projection_sha256": "f15cf4889398a171e8f0bafd5424e41d898a1925f2b22929ec5c1b2b865a7179"
+          },
+          "response": {
+            "headers": {
+              "Date": "Sun, 02 Aug 2026 07:26:12 GMT",
+              "etag": null,
+              "etag_present": false
+            },
+            "incomplete_results": false,
+            "items": [
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Wineryzh",
+                "provider": "github",
+                "repository": "Smart-Interactive-Guiding-Humanoid-Robot",
+                "updated_at": "2026-07-07T06:58:18Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "mandapakasaisandeep",
+                "provider": "github",
+                "repository": "Airline",
+                "updated_at": "2026-07-07T12:47:10Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "aimanawad57",
+                "provider": "github",
+                "repository": "IAI",
+                "updated_at": "2026-07-07T15:23:51Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "AbhayMunjewar",
+                "provider": "github",
+                "repository": "Conversation_agent",
+                "updated_at": "2026-07-07T16:31:50Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "toruhashimoto",
+                "provider": "github",
+                "repository": "GaussianWrapping-GUI",
+                "updated_at": "2026-07-08T04:36:01Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "batman230-sai",
+                "provider": "github",
+                "repository": "Vehicle-Insurance",
+                "updated_at": "2026-07-08T05:18:20Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "0Asylum",
+                "provider": "github",
+                "repository": "ganggang-htb",
+                "updated_at": "2026-07-08T23:14:52Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Kushagra3355",
+                "provider": "github",
+                "repository": "cold_email_automation",
+                "updated_at": "2026-07-14T10:51:06Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "heikalhidayat",
+                "provider": "github",
+                "repository": "fishing-game-python",
+                "updated_at": "2026-07-11T09:41:46Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Carlo-Broschi",
+                "provider": "github",
+                "repository": "bio-c_sm-fold-genome-reduction",
+                "updated_at": "2026-07-09T15:01:44Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "iinasir",
+                "provider": "github",
+                "repository": "dealspulse",
+                "updated_at": "2026-07-09T16:24:54Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "tanusrixh",
+                "provider": "github",
+                "repository": "mcp-adjudicator",
+                "updated_at": "2026-07-10T06:09:10Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "PlatAid",
+                "provider": "github",
+                "repository": "naver-searchad-mcp",
+                "updated_at": "2026-07-10T08:55:49Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Anniina-55",
+                "provider": "github",
+                "repository": "request-logger-proxy",
+                "updated_at": "2026-07-11T19:26:45Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "marvellearner",
+                "provider": "github",
+                "repository": "Gen_ai_series_by_sm",
+                "updated_at": "2026-07-12T08:13:32Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "shreeramsworks",
+                "provider": "github",
+                "repository": "Job-Search",
+                "updated_at": "2026-07-12T09:33:16Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "KociTomas03",
+                "provider": "github",
+                "repository": "volleyball-tracker",
+                "updated_at": "2026-07-12T15:24:32Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "BachhalaVenkatasrikrishna",
+                "provider": "github",
+                "repository": "VBCUA",
+                "updated_at": "2026-07-14T07:16:54Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "MonongahelaHellbender",
+                "provider": "github",
+                "repository": "stat-shield",
+                "updated_at": "2026-07-19T05:16:14Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "VaishaliMadoori",
+                "provider": "github",
+                "repository": "cubesat-fault-detection",
+                "updated_at": "2026-07-19T08:28:18Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "JudithWLee",
+                "provider": "github",
+                "repository": "task-whetstone",
+                "updated_at": "2026-07-19T14:51:16Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "nyalakondasheshankadesai-jpg",
+                "provider": "github",
+                "repository": "Prompt-Based-text-classification-",
+                "updated_at": "2026-07-19T17:19:55Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "junanshi0510",
+                "provider": "github",
+                "repository": "stock-assistant",
+                "updated_at": "2026-07-27T13:59:47Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "openclawby",
+                "provider": "github",
+                "repository": "openclawby-skills",
+                "updated_at": "2026-07-28T18:18:56Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "ribalba",
+                "provider": "github",
+                "repository": "meerail",
+                "updated_at": "2026-07-30T13:57:46Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Wildannn123-web",
+                "provider": "github",
+                "repository": "Uasml",
+                "updated_at": "2026-07-30T18:40:22Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "waterfirst",
+                "provider": "github",
+                "repository": "ax_hackerton",
+                "updated_at": "2026-07-31T01:32:02Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "gsharko",
+                "provider": "github",
+                "repository": "t400-llm-bench",
+                "updated_at": "2026-07-31T09:42:11Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "r1149969-lgtm",
+                "provider": "github",
+                "repository": "To-Do-App",
+                "updated_at": "2026-08-02T04:34:05Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "katthikrishnaveni-playwright",
+                "provider": "github",
+                "repository": "Ecommerce_Automation",
+                "updated_at": "2026-08-02T05:13:24Z",
+                "visibility": "public"
+              }
+            ],
+            "projection_sha256": "0fb8bf8c70ef5a8d5602e14b0554b26b575d5c48ab10c88c75d9617f5e4fdc79",
+            "status": 200,
+            "total_count": 130
+          }
+        }
+      ],
+      "pass_number": 1,
+      "total_count": 130
+    },
+    {
+      "canonical_projection_sha256": "ceb858e0eba1b5ba311586478b20e9aadfa01a5d4001a81bbf9fc2c86d2af2af",
+      "pages": [
+        {
+          "page": 1,
+          "request": {
+            "attempt_count": 1,
+            "endpoint": "https://api.github.com/search/repositories",
+            "headers": {
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28"
+            },
+            "issued_at_utc": "2026-08-02T07:26:13Z",
+            "method": "GET",
+            "params": {
+              "order": "asc",
+              "page": 1,
+              "per_page": 100,
+              "q": "language:Python is:public created:2026-07-05T07:00:00Z..2026-07-05T07:04:59Z",
+              "sort": "updated"
+            },
+            "projection_sha256": "250984f4d2cfa285cb2895415350d41a5a4378e2195d4365b162196a8f43304c"
+          },
+          "response": {
+            "headers": {
+              "Date": "Sun, 02 Aug 2026 07:26:10 GMT",
+              "etag": null,
+              "etag_present": false
+            },
+            "incomplete_results": false,
+            "items": [
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "seeyouqiuqiqu",
+                "provider": "github",
+                "repository": "knowledge_forge",
+                "updated_at": "2026-07-05T07:14:56Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "healerHK",
+                "provider": "github",
+                "repository": "ResearchAI",
+                "updated_at": "2026-07-24T14:50:30Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "keerthana-b-v",
+                "provider": "github",
+                "repository": "yugmai",
+                "updated_at": "2026-07-05T07:01:41Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "RaayaSP",
+                "provider": "github",
+                "repository": "Computer-price",
+                "updated_at": "2026-07-05T07:01:56Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "yuvrajkaurav28",
+                "provider": "github",
+                "repository": "JobPilot-AI",
+                "updated_at": "2026-07-05T07:02:08Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "varshithapidugu",
+                "provider": "github",
+                "repository": "Basic-Chatbot.py",
+                "updated_at": "2026-07-05T07:02:16Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "rushithareddy05",
+                "provider": "github",
+                "repository": "Major-Project",
+                "updated_at": "2026-07-05T07:02:20Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "lingqiqi854-star",
+                "provider": "github",
+                "repository": "astrbot_plugin_starlinememory",
+                "updated_at": "2026-07-05T07:02:47Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "cymarlboro",
+                "provider": "github",
+                "repository": "mainstream-gridded-products-data-processing",
+                "updated_at": "2026-07-05T07:05:20Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "jr5530",
+                "provider": "github",
+                "repository": "exercises",
+                "updated_at": "2026-07-05T07:02:50Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "tarikk786786",
+                "provider": "github",
+                "repository": "agentic-gpt-researcher",
+                "updated_at": "2026-07-05T07:03:04Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "tjgit2026",
+                "provider": "github",
+                "repository": "Age-Counter",
+                "updated_at": "2026-07-05T07:03:18Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Pavan0760",
+                "provider": "github",
+                "repository": "Loan-Default-Risk-Predictor",
+                "updated_at": "2026-07-05T07:03:28Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Zibuyu111",
+                "provider": "github",
+                "repository": "NetEase_music_lyrics",
+                "updated_at": "2026-07-05T07:03:32Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Issho-lin",
+                "provider": "github",
+                "repository": "agent-platform",
+                "updated_at": "2026-07-05T07:03:59Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "backstract-apps",
+                "provider": "github",
+                "repository": "jovial-bhabha-3e296ff238",
+                "updated_at": "2026-07-05T07:04:00Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "King-dot935",
+                "provider": "github",
+                "repository": "llm-api-test",
+                "updated_at": "2026-07-05T07:04:09Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "soybean82-netizen",
+                "provider": "github",
+                "repository": "Restaurant",
+                "updated_at": "2026-07-05T07:04:14Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "KALYAN-2006",
+                "provider": "github",
+                "repository": "HDI-predictor",
+                "updated_at": "2026-07-05T07:04:19Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "magnus-c",
+                "provider": "github",
+                "repository": "151-deeplearning",
+                "updated_at": "2026-07-05T07:05:30Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "fatimaattaria1981-a11y",
+                "provider": "github",
+                "repository": "titanic-workshop-app",
+                "updated_at": "2026-07-05T07:05:00Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "ruproshanjha",
+                "provider": "github",
+                "repository": "Bank-Management",
+                "updated_at": "2026-07-05T07:05:03Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Benjaminjacob443",
+                "provider": "github",
+                "repository": "alina-voice-assistant",
+                "updated_at": "2026-07-05T07:07:19Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "ganashree03",
+                "provider": "github",
+                "repository": "Ai-based-admission-predictor-and-college-recommendation",
+                "updated_at": "2026-07-05T07:05:08Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "aniketpatel786078-a11y",
+                "provider": "github",
+                "repository": "Ace-OS-Navigator",
+                "updated_at": "2026-07-05T07:05:15Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "hamadali236236",
+                "provider": "github",
+                "repository": "ab-testing-analytics-dashboard",
+                "updated_at": "2026-07-05T07:05:48Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Dayan-18",
+                "provider": "github",
+                "repository": "sql-ai-demo",
+                "updated_at": "2026-07-05T07:06:19Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "mohammad-mohammadi-cs-iust",
+                "provider": "github",
+                "repository": "spotify_studio",
+                "updated_at": "2026-07-05T07:06:20Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "lhjackgod",
+                "provider": "github",
+                "repository": "cloth_sds",
+                "updated_at": "2026-07-05T07:06:21Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "sifatcx",
+                "provider": "github",
+                "repository": "otp",
+                "updated_at": "2026-07-05T07:06:55Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Shivanshidubey1799",
+                "provider": "github",
+                "repository": "shivanshi-corrosion.streamlit.app.",
+                "updated_at": "2026-07-05T07:06:54Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "zerx-lab",
+                "provider": "github",
+                "repository": "casaos-appstore",
+                "updated_at": "2026-07-05T07:07:11Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "XekoFrontend",
+                "provider": "github",
+                "repository": "manga-truyentranhvuinet-downloader",
+                "updated_at": "2026-07-05T07:07:12Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "rahulxsingh07",
+                "provider": "github",
+                "repository": "Resume-matcher-project",
+                "updated_at": "2026-07-05T07:07:24Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Akash4077",
+                "provider": "github",
+                "repository": "student-marks-calculator-",
+                "updated_at": "2026-07-05T07:07:28Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "akrati-codes",
+                "provider": "github",
+                "repository": "My-Teachable-Machine",
+                "updated_at": "2026-07-05T07:07:32Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Abdul9082",
+                "provider": "github",
+                "repository": "Retail-Analytics-Trial-Store-Analysis",
+                "updated_at": "2026-07-05T07:07:36Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "amrutahegde26-ship-it",
+                "provider": "github",
+                "repository": "CodeAlpha-Object-detection",
+                "updated_at": "2026-07-24T18:22:25Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "nagarjunareddybijjam2812",
+                "provider": "github",
+                "repository": "LLM_Assignments",
+                "updated_at": "2026-07-05T07:08:12Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "AkashSingh0021",
+                "provider": "github",
+                "repository": "ai-resume-analyzer",
+                "updated_at": "2026-07-05T07:08:38Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "nithin-53",
+                "provider": "github",
+                "repository": "sqliproject",
+                "updated_at": "2026-07-05T07:08:55Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "navienpotheri",
+                "provider": "github",
+                "repository": "MOE-models-and-Free-Energy-Principle",
+                "updated_at": "2026-07-05T07:08:57Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "HariomRajChauhan",
+                "provider": "github",
+                "repository": "Nea_Pipeline",
+                "updated_at": "2026-07-05T07:09:13Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "nathdadu26",
+                "provider": "github",
+                "repository": "TG-Media-Forwarder-Bot",
+                "updated_at": "2026-07-05T07:09:38Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "EsraaAshraf-pharmacist",
+                "provider": "github",
+                "repository": "Employees_syetem",
+                "updated_at": "2026-07-05T07:10:34Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Manoj-Tiwari8394",
+                "provider": "github",
+                "repository": "k8s-agentic-ops",
+                "updated_at": "2026-07-05T07:10:40Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Jourlaina",
+                "provider": "github",
+                "repository": "-",
+                "updated_at": "2026-07-05T07:10:47Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "aditya006bec",
+                "provider": "github",
+                "repository": "smartcrop",
+                "updated_at": "2026-07-05T07:11:10Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "mirzagulfam6565-max",
+                "provider": "github",
+                "repository": "comparison-tool",
+                "updated_at": "2026-07-05T07:12:55Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "anandsalunkhe",
+                "provider": "github",
+                "repository": "pdf-qa-chatbot",
+                "updated_at": "2026-07-05T07:13:29Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "guptadelisha16-ai",
+                "provider": "github",
+                "repository": "akg-1",
+                "updated_at": "2026-07-05T07:14:11Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "LuoHuacheng",
+                "provider": "github",
+                "repository": "opencode-bootstrap",
+                "updated_at": "2026-07-05T07:14:22Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "inndhu-09",
+                "provider": "github",
+                "repository": "AI-Buddy",
+                "updated_at": "2026-07-05T07:16:09Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Vivaan-coder1",
+                "provider": "github",
+                "repository": "Lesson-7-Activity-1",
+                "updated_at": "2026-07-05T07:17:01Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "siddarthpatil17",
+                "provider": "github",
+                "repository": "-Fix-the-Broken-Terminal-Bench-Task",
+                "updated_at": "2026-07-05T07:17:09Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Syahrul83",
+                "provider": "github",
+                "repository": "streamlit_hactivis",
+                "updated_at": "2026-07-05T07:20:26Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "itssalemkhan-collab",
+                "provider": "github",
+                "repository": "Current-gk",
+                "updated_at": "2026-07-05T07:21:38Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Shravani-Chaudhari-394",
+                "provider": "github",
+                "repository": "Complete-Weather-Data-Pipeline-System",
+                "updated_at": "2026-07-05T07:24:09Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "redcarrotha",
+                "provider": "github",
+                "repository": "TMDC",
+                "updated_at": "2026-07-05T07:25:09Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "mgubuan",
+                "provider": "github",
+                "repository": "AccountingVoice",
+                "updated_at": "2026-07-05T07:26:18Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "ronnyfaslah",
+                "provider": "github",
+                "repository": "satuobat_app",
+                "updated_at": "2026-07-05T07:26:36Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Techmasternikhil",
+                "provider": "github",
+                "repository": "Fact-Check-Live-AI",
+                "updated_at": "2026-07-05T07:26:45Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "mridulsaklani",
+                "provider": "github",
+                "repository": "Basic-Chat-Bot",
+                "updated_at": "2026-07-05T07:26:58Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "muzhis",
+                "provider": "github",
+                "repository": "screen-recorder",
+                "updated_at": "2026-07-05T07:27:43Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "tristan-com",
+                "provider": "github",
+                "repository": "algo-visualizer",
+                "updated_at": "2026-07-05T07:29:42Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Dipanshu8750",
+                "provider": "github",
+                "repository": "Customer_Behaviour_Analysis_Project",
+                "updated_at": "2026-07-05T07:32:12Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "iamgagan07",
+                "provider": "github",
+                "repository": "Customer-Churn-Prediction-Project",
+                "updated_at": "2026-07-05T07:33:19Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "sourabha-h",
+                "provider": "github",
+                "repository": "milvus-industrial-rag",
+                "updated_at": "2026-07-05T07:34:38Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Aabddg",
+                "provider": "github",
+                "repository": "OpenTutor",
+                "updated_at": "2026-07-05T07:33:44Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Rajan8795",
+                "provider": "github",
+                "repository": "Loan_prediction",
+                "updated_at": "2026-07-05T07:39:04Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Nouraldeen004",
+                "provider": "github",
+                "repository": "Learning-RAG-projects",
+                "updated_at": "2026-07-05T08:04:01Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "angelkcc",
+                "provider": "github",
+                "repository": "MimicMe-Challenge",
+                "updated_at": "2026-07-05T07:43:01Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "arayellie-prog",
+                "provider": "github",
+                "repository": "python-automation-projects",
+                "updated_at": "2026-07-05T07:49:20Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "ramasahu13112006",
+                "provider": "github",
+                "repository": "Virtual-painter-ai",
+                "updated_at": "2026-07-05T07:59:40Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Zuxas",
+                "provider": "github",
+                "repository": "bob",
+                "updated_at": "2026-07-05T08:03:16Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "feature/frontend-pages",
+                "language": "Python",
+                "owner": "Shreetikashrestha",
+                "provider": "github",
+                "repository": "SaanAI",
+                "updated_at": "2026-07-05T08:04:04Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "bilalk",
+                "provider": "github",
+                "repository": "ComfyBranch",
+                "updated_at": "2026-07-05T08:55:31Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "aysuh021004",
+                "provider": "github",
+                "repository": "student_management_system",
+                "updated_at": "2026-07-05T09:12:30Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "ZCZHAO-1999",
+                "provider": "github",
+                "repository": "wechat-shakespeare-article-studio",
+                "updated_at": "2026-07-05T09:36:23Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "SDineshwaran-pro",
+                "provider": "github",
+                "repository": "lettertosound",
+                "updated_at": "2026-07-05T11:49:32Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "CY-Sparrow",
+                "provider": "github",
+                "repository": "Snivy---Hotel-Virtual-Assistant",
+                "updated_at": "2026-07-05T14:28:24Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "solomonj479-rgb",
+                "provider": "github",
+                "repository": "LinkedScrape",
+                "updated_at": "2026-07-05T14:36:58Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "NivinLouis",
+                "provider": "github",
+                "repository": "neetcode-submissions",
+                "updated_at": "2026-07-05T14:46:12Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Guilty233",
+                "provider": "github",
+                "repository": "Numerai",
+                "updated_at": "2026-07-05T14:59:36Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "zhouh007",
+                "provider": "github",
+                "repository": "ai_music_traffic_system",
+                "updated_at": "2026-07-05T15:47:35Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "krishnaM-byte",
+                "provider": "github",
+                "repository": "sat-mentor-AI",
+                "updated_at": "2026-07-05T17:16:33Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Aadarsh0905",
+                "provider": "github",
+                "repository": "AI-MODEL",
+                "updated_at": "2026-07-05T17:50:29Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Obito1037",
+                "provider": "github",
+                "repository": "shuangsheng",
+                "updated_at": "2026-07-05T19:05:21Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "arash6507",
+                "provider": "github",
+                "repository": "ehsan-price-bot2",
+                "updated_at": "2026-07-05T19:42:46Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "andanawarih",
+                "provider": "github",
+                "repository": "churn-project",
+                "updated_at": "2026-07-06T03:18:49Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "martinavilauc",
+                "provider": "github",
+                "repository": "La-Piton",
+                "updated_at": "2026-07-06T03:48:02Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "ethnn-b",
+                "provider": "github",
+                "repository": "aigen-image-detector",
+                "updated_at": "2026-07-06T05:42:02Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Nishiw28",
+                "provider": "github",
+                "repository": "student-career-concierge",
+                "updated_at": "2026-07-06T05:53:40Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "JohnPhm",
+                "provider": "github",
+                "repository": "ai201-project4-provenance-guard",
+                "updated_at": "2026-07-06T06:40:30Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Xing-Heyu",
+                "provider": "github",
+                "repository": "puredata",
+                "updated_at": "2026-07-06T15:59:21Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "vennapusavijayamani",
+                "provider": "github",
+                "repository": "Hospital-management-system--django",
+                "updated_at": "2026-07-06T11:07:39Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "nizzcodes",
+                "provider": "github",
+                "repository": "Games",
+                "updated_at": "2026-07-06T11:38:38Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Zsh205",
+                "provider": "github",
+                "repository": "Chilly-Bay",
+                "updated_at": "2026-07-06T15:01:22Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "hewanxia200512",
+                "provider": "github",
+                "repository": "shuqishixun",
+                "updated_at": "2026-07-07T02:00:39Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "nakadzho777-dot",
+                "provider": "github",
+                "repository": "AI-Video-Craft",
+                "updated_at": "2026-07-07T04:54:16Z",
+                "visibility": "public"
+              }
+            ],
+            "projection_sha256": "844be2470444be118feb142e0420d85dfa0b576c742c91ed5de8c294f3b93600",
+            "status": 200,
+            "total_count": 130
+          }
+        },
+        {
+          "page": 2,
+          "request": {
+            "attempt_count": 1,
+            "endpoint": "https://api.github.com/search/repositories",
+            "headers": {
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28"
+            },
+            "issued_at_utc": "2026-08-02T07:26:14Z",
+            "method": "GET",
+            "params": {
+              "order": "asc",
+              "page": 2,
+              "per_page": 100,
+              "q": "language:Python is:public created:2026-07-05T07:00:00Z..2026-07-05T07:04:59Z",
+              "sort": "updated"
+            },
+            "projection_sha256": "5b0543b275155ccce8a82f746c87025cf711d1d9cfb4bbf0b3cc63c6f4a970d0"
+          },
+          "response": {
+            "headers": {
+              "Date": "Sun, 02 Aug 2026 07:26:12 GMT",
+              "etag": null,
+              "etag_present": false
+            },
+            "incomplete_results": false,
+            "items": [
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Wineryzh",
+                "provider": "github",
+                "repository": "Smart-Interactive-Guiding-Humanoid-Robot",
+                "updated_at": "2026-07-07T06:58:18Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "mandapakasaisandeep",
+                "provider": "github",
+                "repository": "Airline",
+                "updated_at": "2026-07-07T12:47:10Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "aimanawad57",
+                "provider": "github",
+                "repository": "IAI",
+                "updated_at": "2026-07-07T15:23:51Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "AbhayMunjewar",
+                "provider": "github",
+                "repository": "Conversation_agent",
+                "updated_at": "2026-07-07T16:31:50Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "toruhashimoto",
+                "provider": "github",
+                "repository": "GaussianWrapping-GUI",
+                "updated_at": "2026-07-08T04:36:01Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "batman230-sai",
+                "provider": "github",
+                "repository": "Vehicle-Insurance",
+                "updated_at": "2026-07-08T05:18:20Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "0Asylum",
+                "provider": "github",
+                "repository": "ganggang-htb",
+                "updated_at": "2026-07-08T23:14:52Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Kushagra3355",
+                "provider": "github",
+                "repository": "cold_email_automation",
+                "updated_at": "2026-07-14T10:51:06Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "heikalhidayat",
+                "provider": "github",
+                "repository": "fishing-game-python",
+                "updated_at": "2026-07-11T09:41:46Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Carlo-Broschi",
+                "provider": "github",
+                "repository": "bio-c_sm-fold-genome-reduction",
+                "updated_at": "2026-07-09T15:01:44Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "iinasir",
+                "provider": "github",
+                "repository": "dealspulse",
+                "updated_at": "2026-07-09T16:24:54Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "tanusrixh",
+                "provider": "github",
+                "repository": "mcp-adjudicator",
+                "updated_at": "2026-07-10T06:09:10Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "PlatAid",
+                "provider": "github",
+                "repository": "naver-searchad-mcp",
+                "updated_at": "2026-07-10T08:55:49Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Anniina-55",
+                "provider": "github",
+                "repository": "request-logger-proxy",
+                "updated_at": "2026-07-11T19:26:45Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "marvellearner",
+                "provider": "github",
+                "repository": "Gen_ai_series_by_sm",
+                "updated_at": "2026-07-12T08:13:32Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "shreeramsworks",
+                "provider": "github",
+                "repository": "Job-Search",
+                "updated_at": "2026-07-12T09:33:16Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "master",
+                "language": "Python",
+                "owner": "KociTomas03",
+                "provider": "github",
+                "repository": "volleyball-tracker",
+                "updated_at": "2026-07-12T15:24:32Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "BachhalaVenkatasrikrishna",
+                "provider": "github",
+                "repository": "VBCUA",
+                "updated_at": "2026-07-14T07:16:54Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "MonongahelaHellbender",
+                "provider": "github",
+                "repository": "stat-shield",
+                "updated_at": "2026-07-19T05:16:14Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "VaishaliMadoori",
+                "provider": "github",
+                "repository": "cubesat-fault-detection",
+                "updated_at": "2026-07-19T08:28:18Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "JudithWLee",
+                "provider": "github",
+                "repository": "task-whetstone",
+                "updated_at": "2026-07-19T14:51:16Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "nyalakondasheshankadesai-jpg",
+                "provider": "github",
+                "repository": "Prompt-Based-text-classification-",
+                "updated_at": "2026-07-19T17:19:55Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "junanshi0510",
+                "provider": "github",
+                "repository": "stock-assistant",
+                "updated_at": "2026-07-27T13:59:47Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "openclawby",
+                "provider": "github",
+                "repository": "openclawby-skills",
+                "updated_at": "2026-07-28T18:18:56Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "ribalba",
+                "provider": "github",
+                "repository": "meerail",
+                "updated_at": "2026-07-30T13:57:46Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "Wildannn123-web",
+                "provider": "github",
+                "repository": "Uasml",
+                "updated_at": "2026-07-30T18:40:22Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "waterfirst",
+                "provider": "github",
+                "repository": "ax_hackerton",
+                "updated_at": "2026-07-31T01:32:02Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "gsharko",
+                "provider": "github",
+                "repository": "t400-llm-bench",
+                "updated_at": "2026-07-31T09:42:11Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "r1149969-lgtm",
+                "provider": "github",
+                "repository": "To-Do-App",
+                "updated_at": "2026-08-02T04:34:05Z",
+                "visibility": "public"
+              },
+              {
+                "default_branch": "main",
+                "language": "Python",
+                "owner": "katthikrishnaveni-playwright",
+                "provider": "github",
+                "repository": "Ecommerce_Automation",
+                "updated_at": "2026-08-02T05:13:24Z",
+                "visibility": "public"
+              }
+            ],
+            "projection_sha256": "0fb8bf8c70ef5a8d5602e14b0554b26b575d5c48ab10c88c75d9617f5e4fdc79",
+            "status": 200,
+            "total_count": 130
+          }
+        }
+      ],
+      "pass_number": 2,
+      "total_count": 130
+    }
+  ],
+  "projection_sha256": "5974cb5b74708608a4ecc8b328367c025cb7f9b117ba78961edb67e88cceab72",
+  "schema_version": "p15-v7-attempt-006-sealed-catalog-receipt-v1",
+  "sealed": true,
+  "sealed_at_utc": "2026-08-02T07:26:15Z",
+  "storage_mode": "append_only"
+}

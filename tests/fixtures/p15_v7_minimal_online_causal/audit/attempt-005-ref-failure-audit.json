@@ -1,0 +1,109 @@
+{
+  "attempt_id": "p15-v7-attempt-005",
+  "canonical_projection": {
+    "accounting": {
+      "catalog_requests_exact": "not_established",
+      "catalog_requests_minimum": 2,
+      "failing_ref_request_included": true,
+      "ref_requests_exact": "not_established",
+      "ref_requests_minimum": 1
+    },
+    "attempt_id": "p15-v7-attempt-005",
+    "audit_projection_created_at_utc": "2026-08-02T07:01:44Z",
+    "authoritative_contract": {
+      "file_sha256": "d7654b360eeab83c4bd456adf33bfd7c690c56515fb906a60f5948e707b642d0",
+      "modified": false,
+      "projection_sha256": "5f4207c2dc54590dcf694f9504f3907c85fad8ce0aa14d1b3f845a817d555bf7"
+    },
+    "catalog_observation": {
+      "complete_identity_set_persisted": false,
+      "double_pass_body_projection_equal": true,
+      "double_pass_complete": true,
+      "double_pass_total_equal": true,
+      "drift": false,
+      "identity_fields_parsed_and_iterated_by_code": true,
+      "ordered_catalog": "not_established",
+      "pass_page_counts": "not_established",
+      "raw_total": "not_established",
+      "recoverable_from_existing_process_memory": false,
+      "temporary_result_written": false
+    },
+    "catalog_result": {
+      "allowlist_artifact_created": false,
+      "capture_artifact_created": false,
+      "eligible_count": "not_established",
+      "excluded_count": "not_established",
+      "ordered_allowlist": [],
+      "prefix2": [],
+      "stop_reason": "http_403_during_exact_default_branch_ref_resolution"
+    },
+    "failed_ref_request": {
+      "attempt_count": 1,
+      "canonical_repository": "github/coinhubmedia/melt-calculator-domains",
+      "default_branch": "main",
+      "endpoint": "https://api.github.com/repos/coinhubmedia/melt-calculator-domains/git/ref/heads/main",
+      "headers": {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      },
+      "issued_at_utc": "2026-08-02T06:59:49Z",
+      "method": "GET",
+      "projection_algorithm": "sha256_of_canonical_json_request_and_identity_context_without_projection_metadata_sort_keys_compact_ascii",
+      "projection_sha256": "7c11787818f77e9c28d3d5b92c6ba57cb97dab4d9c31e10b080bbb9cf948db70"
+    },
+    "failed_ref_response_observation": {
+      "body_materialized": "not_established",
+      "body_read_by_handler": false,
+      "etag": null,
+      "etag_present": false,
+      "headers_accessed_by_handler": [
+        "Date",
+        "ETag"
+      ],
+      "message": "not_established",
+      "projection_algorithm": "sha256_of_canonical_json_status_and_observed_headers_sort_keys_compact_ascii",
+      "projection_sha256": "864f782b9f37d6184306dec81222b89d6f243ef180784fc4c2260e1bf6feaf77",
+      "rate_limit_evidence": "not_established",
+      "retry_after_evidence": "not_established",
+      "server_date": "Sun, 02 Aug 2026 06:59:49 GMT",
+      "status": 403
+    },
+    "identity_exposure": {
+      "closure_complete": false,
+      "known_exposed_canonical_repositories": [
+        "github/coinhubmedia/melt-calculator-domains"
+      ],
+      "known_exposed_canonical_repository_count": 1,
+      "status": "full_catalog_identity_exposure_not_established_and_not_recoverable_without_forbidden_requery"
+    },
+    "phase_1": {
+      "contract_file_sha256": "d7654b360eeab83c4bd456adf33bfd7c690c56515fb906a60f5948e707b642d0",
+      "contract_projection_sha256": "5f4207c2dc54590dcf694f9504f3907c85fad8ce0aa14d1b3f845a817d555bf7",
+      "focused_tests": 216,
+      "focused_tests_passed": true,
+      "governance_tests": 78,
+      "governance_tests_passed": true,
+      "status": "PASS"
+    },
+    "schema_version": "p15-v7-attempt-005-ref-failure-audit-projection-v1",
+    "zero_state": {
+      "checkout_attempts": 0,
+      "clone_attempts": 0,
+      "corpus_generations": 0,
+      "effect_observations": 0,
+      "embedding_calls": 0,
+      "heldout_content_accesses": 0,
+      "ollama_calls": 0,
+      "online_model_calls": 0,
+      "planner_calls": 0,
+      "source_content_accesses": 0,
+      "source_tree_accesses": 0,
+      "treatment_executions": 0
+    }
+  },
+  "canonical_projection_sha256": "543a28c19d1f933048f0de994e9c881b40a634ea0d17fc70998b4b400fcf06ed",
+  "disposition": "ref-resolution-403-after-catalog-consistency-before-allowlist-source",
+  "execution_eligible": false,
+  "schema_version": "p15-v7-attempt-005-ref-failure-audit-artifact-v1",
+  "status": "INCONCLUSIVE"
+}

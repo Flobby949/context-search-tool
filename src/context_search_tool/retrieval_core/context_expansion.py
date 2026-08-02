@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Any, Callable
 
 from context_search_tool import chunker
 from context_search_tool.config import ToolConfig
@@ -55,6 +56,8 @@ def expand_ranked_chunks(
     full_file: bool,
     *,
     protect_direct_graph: bool = False,
+    layout_observer: Callable[[list[core_types._ExpandedResult]], None]
+    | None = None,
 ) -> list[core_types._ExpandedResult]:
     expanded: list[core_types._ExpandedResult] = []
     for ranked in ranked_chunks:
@@ -139,6 +142,8 @@ def expand_ranked_chunks(
             )
         )
 
+    if layout_observer is not None:
+        layout_observer(expanded)
     merged = _merge_overlapping_results(
         expanded,
         protect_direct_graph=protect_direct_graph,
@@ -149,6 +154,112 @@ def expand_ranked_chunks(
         _cap_expanded_result(result, config.index.max_full_file_bytes)
         for result in merged
     ]
+
+
+def capture_expansion_layouts(
+    expanded: list[core_types._ExpandedResult],
+) -> list[dict[str, Any]]:
+    layouts: list[dict[str, Any]] = []
+    for item in expanded:
+        if len(item.chunk_ids) != 1:
+            raise ValueError("expansion layout must precede overlap merging")
+        context_lines = _expanded_result_lines(item)
+        while len(context_lines) > 1 and not context_lines[-1].strip():
+            context_lines.pop()
+        content_lines = item.content.splitlines()
+        if not content_lines:
+            content_lines = [""]
+        while len(content_lines) > 1 and not content_lines[-1].strip():
+            content_lines.pop()
+        if len(content_lines) != len(context_lines):
+            raise ValueError("expanded result content does not match its line range")
+        layouts.append(
+            {
+                "chunk_id": item.chunk_ids[0],
+                "file_path": item.file_path.as_posix(),
+                "start_line": item.start_line,
+                "end_line": item.start_line + len(content_lines) - 1,
+                "content_line_byte_lengths": [
+                    len(line.encode("utf-8")) for line in content_lines
+                ],
+                "context_line_byte_lengths": [
+                    len(line.encode("utf-8")) for line in context_lines
+                ],
+                "followup_keywords": list(item.followup_keywords),
+            }
+        )
+    return layouts
+
+
+def replay_expansion_layouts(
+    ranked_chunks: list[core_types._RankedChunk],
+    layouts: list[dict[str, Any]],
+    *,
+    protect_direct_graph: bool,
+) -> list[core_types._ExpandedResult]:
+    ranked_by_id = {
+        ranked.chunk.chunk_id: ranked for ranked in ranked_chunks
+    }
+    if len(ranked_by_id) != len(ranked_chunks):
+        raise ValueError("replay expansion ranked chunk duplicate")
+    raw: list[core_types._ExpandedResult] = []
+    for layout in layouts:
+        ranked = ranked_by_id.get(layout["chunk_id"])
+        if ranked is None:
+            raise ValueError("replay expansion layout chunk missing")
+        start_line = layout["start_line"]
+        end_line = layout["end_line"]
+        content = _placeholder_content(layout["content_line_byte_lengths"])
+        context_content = _placeholder_content(
+            layout["context_line_byte_lengths"]
+        )
+        raw.append(
+            core_types._ExpandedResult(
+                chunk_ids=[ranked.chunk.chunk_id],
+                file_path=Path(layout["file_path"]),
+                start_line=start_line,
+                end_line=end_line,
+                content=content,
+                score=ranked.score,
+                score_parts=ranked.score_parts,
+                reasons=ranked.reasons,
+                followup_keywords=layout["followup_keywords"],
+                rank_tier=ranked.rank_tier,
+                rerank_score=ranked.rerank_score,
+                evidence_class=ranked.evidence_class,
+                evidence_priority=ranked.evidence_priority,
+                semantic_matches=ranked.semantic_matches,
+                pre_ceiling_rerank_score=ranked.pre_ceiling_rerank_score,
+                was_ceiling_clamped=ranked.was_ceiling_clamped,
+                spans=_normalize_spans(
+                    (
+                        RetrievalSpan(
+                            start_line=ranked.chunk.start_line,
+                            end_line=ranked.chunk.end_line,
+                            score=(
+                                ranked.rerank_score
+                                if math.isfinite(ranked.rerank_score)
+                                else 0.0
+                            ),
+                            sources=_span_sources(ranked.score_parts),
+                        ),
+                    ),
+                    start_line,
+                    end_line,
+                ),
+                _context_content=context_content,
+            )
+        )
+    return _merge_overlapping_results(
+        raw,
+        protect_direct_graph=protect_direct_graph,
+    )
+
+
+def _placeholder_content(line_byte_lengths: list[int]) -> str:
+    return _join_expanded_result_lines(
+        ["x" * length for length in line_byte_lengths]
+    )
 
 
 def _cap_content_bytes(

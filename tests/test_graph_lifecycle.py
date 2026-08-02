@@ -81,7 +81,7 @@ def _task6_refresh_entry():
                 "signal_schema_version": "5",
                 "graph_resolution_state": "ready",
                 "graph_resolution_version": "1",
-                "graph_producer_version": "1",
+                "graph_producer_version": "3",
             },
             "ready",
             True,
@@ -1255,7 +1255,7 @@ def test_quick_refresh_source_rename_replaces_path_bound_state_atomically(
 def test_graph_producer_version_contract_constants() -> None:
     from context_search_tool import graph_lifecycle as lifecycle
 
-    assert lifecycle.TARGET_GRAPH_PRODUCER_VERSION == 1
+    assert lifecycle.TARGET_GRAPH_PRODUCER_VERSION == 3
     assert lifecycle.GRAPH_PRODUCER_VERSION_KEY == "graph_producer_version"
 
 
@@ -1276,13 +1276,20 @@ def test_graph_producer_version_read_rules() -> None:
         assert capability.signal_evidence_allowed is False
         assert capability.relation_evidence_allowed is False
 
+    for previous_value in ("1", "2"):
+        previous = read_graph_capability(
+            _Metadata({**ready_base, "graph_producer_version": previous_value})
+        )
+        assert previous.status == "stale"
+        assert previous.stale_reason == "producer_contract_changed"
+
     current = read_graph_capability(
-        _Metadata({**ready_base, "graph_producer_version": "1"})
+        _Metadata({**ready_base, "graph_producer_version": "3"})
     )
     assert current.status == "ready"
     assert current.signal_evidence_allowed is True
 
-    for bad in ("-1", "x", "2"):
+    for bad in ("-1", "x", "4", "+3", "03", " 3"):
         with pytest.raises(IncompatibleSignalSchemaError):
             read_graph_capability(
                 _Metadata({**ready_base, "graph_producer_version": bad})

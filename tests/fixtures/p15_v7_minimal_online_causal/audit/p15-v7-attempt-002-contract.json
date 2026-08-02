@@ -1,0 +1,334 @@
+{
+  "schema_version": "p15-v7-minimal-online-causal-attempt-v2",
+  "attempt_id": "p15-v7-attempt-002",
+  "execution_role": "authoritative_pre_corpus",
+  "status": "pre_corpus_frozen_before_allowlist",
+  "documents": {
+    "design_path": "docs/superpowers/specs/2026-08-02-p15-v7-minimal-online-causal-acceptance-design.md",
+    "design_sha256": "7aa82f162269c295d37f34ec233897a83a8cf50202fdf73e2a4fc7854b7e54cb",
+    "plan_path": "docs/superpowers/plans/2026-08-02-p15-v7-minimal-online-causal-acceptance-plan.md",
+    "plan_sha256": "77da1fcab845705aa8df633fa796220883fdd7b5b0fa660e18acbc6c3337d716"
+  },
+  "baseline": {
+    "commit": "10ab7ab0cd4c32012293e16d37a46fa9af7a2c97",
+    "description": "p15-v6-generic-source-hint-activation"
+  },
+  "candidate": {
+    "only_treatment_factor": "consume_dependency_hints_false_to_true",
+    "control_consume_dependency_hints": false,
+    "treatment_consume_dependency_hints": true,
+    "prompt_version": "qwen-query-planner-v4-source-identity-v1",
+    "prompt_sha256": "e4a6692519fdaa4397d3f64fac525e5de008c11b0b1b6053df099276bf88b206",
+    "response_fields": [
+      "dependency_intent",
+      "grep_keywords",
+      "imported_module_hints",
+      "imported_symbol_hints",
+      "intent",
+      "rewritten_queries",
+      "source_module_hints",
+      "source_symbol_hints",
+      "symbol_hints"
+    ],
+    "response_schema_sha256": "96b90e50d7c9c114cd3090f6e8610eb820aa93767c20152280abdcd58b51a982",
+    "strict_response_contract": "one_complete_json_object_with_exact_fields_or_fallback",
+    "source_hint_inputs": [
+      "source_symbol_hints",
+      "source_module_hints"
+    ],
+    "generic_hint_inputs_for_promotion": [],
+    "target_only_hints_activate_promotion": false,
+    "maximum_promotions": 2,
+    "rank_one_protected": true,
+    "idempotent": true,
+    "product_projection_algorithm": "sha256_of_canonical_json_path_to_file_sha256_sort_keys_compact_ascii",
+    "product_projection_sha256": "eadf3fd4e7b94d2be28d742d4bf4fc234902aee5be44009cef6fcf06d899a030",
+    "product_files_sha256": {
+      "src/context_search_tool/dependency_replay.py": "72dd90814b3ae47e3158ecc78ad30473e14d0c16b7a1d686bf3786884d9bf0b9",
+      "src/context_search_tool/models.py": "737d288dc2169d331d28eba991c2f29a429e9e3cb43f073cd829161418754bf2",
+      "src/context_search_tool/query_planner.py": "e680a301dbba74a72b0520ee27b61224c93f8e278ee51cfb8e2c8fb6adffc727",
+      "src/context_search_tool/retrieval.py": "3309188431a0b182f99b096c8dba143be7914ecdab7eec85925375a555d55a13",
+      "src/context_search_tool/retrieval_core/candidates.py": "453210f757910a03ccb590fc48fb665da3aa1ecb3124d9e7f73370701eb0051d",
+      "src/context_search_tool/retrieval_core/context_expansion.py": "23ba1050f29cb997488fc3aed9f6a994ef7c94e5f0e5d1dcf54b94c070bf27c4",
+      "src/context_search_tool/retrieval_core/ranking.py": "5088e240014fdda1e156f50892d4fe54bdde5b1c34f04f249dfcb944d1caa92b"
+    },
+    "runner_and_tests_sha256": {
+      ".quality/p15-v7-attempt-001/stage2/stage2_runner.py": "66c470212b60a93f647d169f9971e4624331a7a4394385060feae9c2c03928d4",
+      ".quality/p15-v7-attempt-001/stage2/stage2_selftest.py": "031f8601a56be496b61c394ce08137047be7da70981abbf7816500956708b1d1",
+      "tests/fixtures/p15_v7_minimal_online_causal/attempt-contract.schema.json": "bc8a9e615252e35eefe2a6a0ea577b66d54ac44b8db6cdcec9a1748cea36ed13",
+      "tests/fixtures/p15_v7_minimal_online_causal/supersession-audit.schema.json": "ccf9ece3e4abca2c5bef7bc70c9a4eb5d617f4c33a21a640b919e0341616196e",
+      "tests/p15_metric_replay.py": "ac6862d104b805c29af4e979f1e070f855b579a036cbb2eb330b05262ec5caea",
+      "tests/p15_pre_corpus_governance.py": "b980c2db9a738f67543ac7d177b291c507dc24496023a0db08dd3502d064e74f",
+      "tests/test_dependency_replay.py": "35726f7237482031802b39fea94bae09b8659dec63ebc06d3d0dd114c52b60dc",
+      "tests/test_exact_imported_symbol_bonus.py": "31fd219d8c6bd2e94e681a734953b4255bc3daf00ffffccce1bd6f70395bcb30",
+      "tests/test_p15_metric_replay.py": "c18bb25326ef93fa769b2086a85eb716b3504510ec39450968ac6c9063e912f2",
+      "tests/test_p15_pre_corpus_governance.py": "e504e9c03d066535f4ceacca9a783496c3b849f5a3ed93646a5fb40eea66fc5f",
+      "tests/test_query_planner.py": "b53790cfe2578829d5d3edf0d6faa9f99730e2ca8067407c5f5c399db8d76912",
+      "tests/test_retrieval_core_boundaries.py": "afa0b855f271a72ebff851270d4e8eded3550b0f1a627372fb52e8839121d4f5"
+    }
+  },
+  "online": {
+    "planner_provider": "openai-compatible",
+    "planner_domain": "api.siliconflow.cn",
+    "planner_endpoint": "https://api.siliconflow.cn/v1/chat/completions",
+    "planner_model": "Qwen/Qwen2.5-14B-Instruct",
+    "planner_temperature": 0,
+    "planner_seed": 0,
+    "planner_calls_per_case_sample": 1,
+    "embedding_provider": "openai-compatible",
+    "embedding_domain": "api.siliconflow.cn",
+    "embedding_endpoint": "https://api.siliconflow.cn/v1/embeddings",
+    "embedding_model": "Pro/BAAI/bge-m3",
+    "treatment_additional_planner_calls": 0,
+    "treatment_additional_embedding_calls": 0,
+    "localhost_calls": 0,
+    "ollama_calls": 0,
+    "planner_payload": "query_and_frozen_numeric_limits_only"
+  },
+  "corpus": {
+    "fresh_repositories": [],
+    "fresh_cases": [],
+    "fixed_denominators": {
+      "repositories": 2,
+      "cases": 12,
+      "efficacy_targets": 8,
+      "guard_cases": 4,
+      "planner_samples": 24,
+      "local_arm_replays": 96
+    },
+    "per_repository": {
+      "efficacy_cases": 4,
+      "guard_cases": 2
+    },
+    "gold_derivation": "independent_stdlib_ast_direct_from_import_unique_top_level_owner",
+    "query_policy": "source_only_no_target_alias_module_path_signal_or_gold_terms",
+    "selection_inputs": [
+      "repository_structure",
+      "independent_direct_import_gold",
+      "two_normalized_control_top12_path_lists",
+      "gold_target_absent_boolean"
+    ],
+    "selection_forbidden_inputs": [
+      "treatment_output",
+      "imported_target_hints",
+      "exact_source_hint_match",
+      "planner_status_case_deletion",
+      "candidate_admissible_roster_or_rank",
+      "gold_among_first_two_or_any_candidate_winners",
+      "private_candidate_helpers",
+      "promotion_decision_reimplementation"
+    ],
+    "planner_fallback_retained": true,
+    "held_out": {
+      "identity_selected": false,
+      "public_contract_sha256": "",
+      "sealed_payload_sha256": "",
+      "opened": false,
+      "opening_requires_fresh_outcome_pass_and_explicit_authorization": true
+    }
+  },
+  "identity_selection": {
+    "contract_binding": {
+      "projection_algorithm": "sha256_of_canonical_contract_excluding_future_binding_and_receipt_fields",
+      "projection_sha256": "1f61888bcf47f49dc485c648a66c2f745983ca6fae00878779f15f772d9e9cc9",
+      "expected_allowlist_sha256": ""
+    },
+    "selector": {
+      "rule_version": "p15-v7-identity-selector-v1",
+      "input": "identity_only_repository_catalog",
+      "sort_keys": [
+        "normalized_provider",
+        "normalized_owner",
+        "normalized_repository",
+        "immutable_revision",
+        "identity_sha256"
+      ],
+      "sort_direction": "ascending",
+      "normalization": {
+        "provider_owner_repository": "unicode_nfkc_casefold",
+        "immutable_revision": "lowercase_full_commit_sha"
+      },
+      "permitted_filters": [
+        "public_repository",
+        "supported_python_repository",
+        "immutable_revision_resolved",
+        "not_in_exclusion_projection"
+      ],
+      "forbidden_inputs": [
+        "repository_source",
+        "query_text",
+        "gold_target",
+        "planner_output",
+        "embedding_output",
+        "control_output",
+        "treatment_output",
+        "held_out_payload"
+      ]
+    },
+    "exclusion_projection": {
+      "algorithm": "sha256_of_canonical_repository_identity",
+      "identity_fields": [
+        "provider",
+        "owner",
+        "repository",
+        "immutable_revision"
+      ],
+      "identity_sha256": [
+        "25ea1b2102a73a2e302e628b343e04cfd6ec5ad51d82fccddf4fb6d2cddef447",
+        "c8070ba17c43142e72ff4a54100955aad624472b7df7b06dd8a8a07fccfc6625",
+        "4ca294e0def2999fbb0602af3eade72e531d5049d1a241f66b01c6af2db6196a",
+        "2c689d1e658a7f7f6d574b5f0a20896fe5d34f57f7bfd402a049ecc2194809cf",
+        "2d3726b2b3960f10ccab423fe2fa53ef042f586ccdc29ebccc5e7274c289d927",
+        "d3e44ada08ede4794d5673544edc50d1ac85f48925ff43f8928f3bf6024e2130",
+        "380988bb876465005232471a0c9f3c8b9789d7d3a8add988e56cd137261e61b2",
+        "563c19463cc1bba42f81bba98090e3cca6a6fb9ab4045e264a48f3ec07b00b5d",
+        "31149392c857943e04e451e3bb7613ae543dce4ad45266f7402f64ec2fc3d9fd",
+        "c01bd6e6476fdb22d595183c3525a1c1bf749f7f573ac85817b8853b9b965650",
+        "645c5cc001a94d59c730a4d92bab871319b7ab8b652a7edd6c4ad2dc4838b294",
+        "d6c9b265e544e95963de93b94e26054258437d914331c41e61bebdb2a4288b7d",
+        "a1b7f040b58d13a1b28979e12e7e5abfdf0779c504246778087f3dc5142cc07f"
+      ],
+      "complete_for_superseded_attempt": "p15-v7-attempt-001",
+      "projection_sha256": "c916efd99c66681aab7f339c60be0cbeba873ab668dcedd2ed84a6e7651eb599",
+      "fresh": [
+        "agronholm/anyio@003e5d6bc3eba8f4e75bf2b2b5fb3f7dd11e6330",
+        "aio-libs/multidict@41c1b9144b13dcdfa4c18085aedc874cc9d24006",
+        "django/asgiref@a7cc976fe8a2395307834bc4aebb462b9f379d55",
+        "hynek/structlog@bf3cfd017dcccf8d97fef0c4dbdaf74b2224c470",
+        "pallets/markupsafe@b2e4d9c7687be25695fffbe93a37622302b24fb1",
+        "pycqa/flake8@01b972636056a0ed581db62e260ef8df1ce470de",
+        "pydantic/pydantic@63f2722f6bfedf0c5b645b348a62ca0ce0b5358c",
+        "pytest-dev/pytest@1d5c40392ea42db38582b096f639eb762a5527c8",
+        "python-attrs/attrs@5aa76a4450c311d87eda43946ec0ecd743572649",
+        "python-trio/trio@3349acabac5913efe0f6eb43b9b958b2917fdaa3",
+        "textualize/rich@9d8f9a372cc5916fd4781fec207ced7ddac2f08f",
+        "tox-dev/tox@9ac00812a447e11ab865fef54126ef16c8a558db"
+      ],
+      "heldout": [
+        "pallets/click@UNBOUND"
+      ],
+      "unbound_commit_sentinel": "UNBOUND",
+      "counts": {
+        "fresh": 12,
+        "heldout": 1,
+        "total": 13
+      }
+    },
+    "allowlist_permitting": {
+      "required_repository_count": 2,
+      "allowlist_minimum_entries": 2,
+      "selected_identity_count": 2,
+      "selection_rule": "first_two_eligible_identities_in_exact_selector_order",
+      "identity_comparison_fields": [
+        "provider",
+        "owner",
+        "repository"
+      ],
+      "identity_comparison_normalization": "unicode_nfkc_casefold",
+      "execution_repository_distinct_fields": [
+        "owner",
+        "repository"
+      ],
+      "execution_prefix_distinct_canonical_repositories": true,
+      "ordinals_must_be_contiguous_from_one": true,
+      "skip_forbidden": true,
+      "cherry_pick_forbidden": true,
+      "subset_copy_forbidden": true
+    },
+    "future_allowlist": {
+      "schema_version": "p15-v7-fresh-identity-allowlist-v1",
+      "attempt_id": "p15-v7-attempt-002",
+      "received": false,
+      "identity_selected": false,
+      "path": "",
+      "sha256": ""
+    }
+  },
+  "sampling": {
+    "online_samples_per_case": 2,
+    "local_replays_per_sample_arm": 2,
+    "local_replay_count_is_exact": true,
+    "order_rule": "repository_rank_then_case_ordinal_then_sample_1_control_1_control_2_treatment_1_treatment_2_then_sample_2_treatment_1_treatment_2_control_1_control_2",
+    "expanded_schedule": [],
+    "schedule_frozen_before_treatment": true,
+    "same_sample_shared_capture_fields": [
+      "validated_or_fallback_plan_sha256",
+      "embedding_sha256",
+      "base_roster_sha256",
+      "shared_state_sha256"
+    ],
+    "same_sample_local_projection_exact": true,
+    "cross_sample_top12_exact_not_required": true,
+    "early_stop_or_result_dependent_append_forbidden": true
+  },
+  "gates": {
+    "outcome": {
+      "minimum_stable_causal_new_targets": 3,
+      "minimum_distinct_efficacy_cases": 3,
+      "minimum_repositories_with_gain": 2,
+      "required_target_losses": 0,
+      "rank_one_changes": 0,
+      "credited_gain_requires_promotion_marker_and_closed_exact_witness": true,
+      "minimum_valid_plans": 22,
+      "planner_sample_denominator": 24,
+      "maximum_precision_at_12_decline": 0.02,
+      "maximum_treatment_only_irrelevant_case_sample_paths": 1,
+      "target_recall_denominator": 8,
+      "separate_recall_numeric_floor": false,
+      "complete_matrix_before_decision": true
+    },
+    "held_out": {
+      "minimum_candidate_blind_target_missing_cases": 4,
+      "minimum_stable_causal_new_targets": 2,
+      "minimum_distinct_cases": 2,
+      "required_target_losses": 0
+    },
+    "release": {
+      "treatment_additional_online_requests": 0,
+      "local_treatment_median_max_relative_regression": 0.1,
+      "local_treatment_median_max_absolute_increase_ms": 5,
+      "end_to_end_online_latency_is_report_only": true,
+      "localhost_or_ollama_requests": 0,
+      "tracked_secret_header_source_absolute_path_or_raw_exception_leaks": 0,
+      "topk_caps_budgets_increase": 0,
+      "focused_tests": "pass",
+      "full_suite": "pass",
+      "ci": "pass"
+    },
+    "governance": {
+      "single_authoritative_contract": true,
+      "pre_corpus_fields_append_only": true,
+      "no_tuning_after_seal": true,
+      "outcome_release_governance_reported_separately": true,
+      "allowed_dispositions": [
+        "ship",
+        "accept_outcome",
+        "reject_outcome",
+        "release_reject",
+        "blocked"
+      ]
+    }
+  },
+  "gate_projection_sha256": "41ac126299b6f9f9350d7dc0ef4b9cee4e8c3a396137b20f8b69be25b555322a",
+  "governance": {
+    "fresh_identity_selected": false,
+    "fresh_source_accessed": false,
+    "candidate_executed": false,
+    "online_requests_made": false,
+    "ollama_requests_made": false,
+    "held_out_opened": false,
+    "quality_artifacts_modified": false
+  },
+  "pre_corpus_counters": {
+    "planner_calls": 0,
+    "embedding_calls": 0,
+    "source_accesses": 0,
+    "treatment_executions": 0,
+    "held_out_accesses": 0
+  },
+  "supersession_audit": {
+    "path": "audit/p15-v7-attempt-001-supersession.json",
+    "sha256": "a376fc1ef33aae5ef6cc82ad96bbca85fa4c933ae3c6daf67915439d4eddf68c",
+    "execution_input": false
+  }
+}

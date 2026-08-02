@@ -2411,7 +2411,7 @@ def test_quick_refresh_100_step_scaled_churn_preserves_exact_ready_state(
     assert store.tombstone_count() <= 5_000
 
 
-def test_pre_p8_ready_index_activates_python_producer_exactly_once(
+def test_producer_v2_index_activates_assignment_targets_exactly_once(
     tmp_path: Path,
 ) -> None:
     from context_search_tool.graph_lifecycle import (
@@ -2423,11 +2423,15 @@ def test_pre_p8_ready_index_activates_python_producer_exactly_once(
     repo = tmp_path / "repo"
     (repo / "app").mkdir(parents=True)
     (repo / "app" / "api.py").write_text(
-        "from app.service import build\n\n\ndef handler():\n    return build()\n",
+        (
+            "from app.service import USE_EXTENSIONS\n\n\n"
+            "def handler():\n    return USE_EXTENSIONS\n"
+        ),
         encoding="utf-8",
     )
     (repo / "app" / "service.py").write_text(
-        "def build():\n    return 1\n", encoding="utf-8"
+        "USE_EXTENSIONS = True\n\n\ndef build():\n    return 1\n",
+        encoding="utf-8",
     )
 
     def _index():
@@ -2455,22 +2459,40 @@ def test_pre_p8_ready_index_activates_python_producer_exactly_once(
 
     signals, relations = _python_rows()
     assert signals >= 2 and relations >= 1
-    assert store.get_metadata(GRAPH_PRODUCER_VERSION_KEY) == "1"
+    assert store.get_metadata(GRAPH_PRODUCER_VERSION_KEY) == "3"
 
-    # Simulate a pre-P8 ready-v5 index: strip the producer version.
+    # Simulate a ready producer-v2 index without assignment target signals.
     with sqlite3.connect(store.db_path) as connection:
         connection.execute(
-            "DELETE FROM index_metadata WHERE key = ?",
+            "UPDATE index_metadata SET value = '2' WHERE key = ?",
             (GRAPH_PRODUCER_VERSION_KEY,),
+        )
+        connection.execute(
+            """
+            UPDATE code_relations
+            SET target_signal_id = '',
+                resolution = 'unresolved',
+                resolution_confidence = NULL,
+                metadata = json_set(
+                    metadata,
+                    '$.target_signal_kinds',
+                    json('["type", "function"]')
+                )
+            WHERE json_extract(metadata, '$.resolution_basis')
+                = 'exact_python_imported_symbol'
+            """
+        )
+        connection.execute(
+            "DELETE FROM code_signals WHERE kind = 'variable' AND producer = 'python_ast'"
         )
     capability = read_graph_capability(store)
     assert capability.status == "stale"
     assert capability.stale_reason == "producer_contract_changed"
 
-    # One authoritative run re-parses and restores ready + version 1.
+    # One authoritative run re-parses and restores ready producer-v3 rows.
     summary = _index()
     assert summary.files_indexed >= 1
-    assert store.get_metadata(GRAPH_PRODUCER_VERSION_KEY) == "1"
+    assert store.get_metadata(GRAPH_PRODUCER_VERSION_KEY) == "3"
     assert read_graph_capability(store).status == "ready"
     signals_after, relations_after = _python_rows()
     assert (signals_after, relations_after) == (signals, relations)
@@ -2482,7 +2504,11 @@ def test_pre_p8_ready_index_activates_python_producer_exactly_once(
 
     # A source change reparses; deletion removes its facts.
     (repo / "app" / "service.py").write_text(
-        "def build():\n    return 2\n\n\ndef extra():\n    return 3\n",
+        (
+            "USE_EXTENSIONS = False\n\n\n"
+            "def build():\n    return 2\n\n\n"
+            "def extra():\n    return 3\n"
+        ),
         encoding="utf-8",
     )
     changed = _index()

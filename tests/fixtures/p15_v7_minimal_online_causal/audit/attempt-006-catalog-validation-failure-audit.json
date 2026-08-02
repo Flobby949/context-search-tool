@@ -1,0 +1,52 @@
+{
+  "attempt_id": "p15-v7-attempt-006",
+  "canonical_projection": {
+    "attempt_id": "p15-v7-attempt-006",
+    "audit_projection_created_at_utc": "2026-08-02T07:40:19Z",
+    "authoritative_contract": {
+      "file_sha256": "ba8e5b5a48b8d3f5e5699db033c931eab958f851c7075d8a7d5b6354e980341b",
+      "modified": false,
+      "projection_sha256": "74ac868812404ca83b23eab82571b264cd9e4d8a822202a77276cae2bc3e3afc"
+    },
+    "catalog_observation": {
+      "catalog_requests_exact": 4,
+      "complete_identity_set_persisted": true,
+      "double_pass_body_projection_equal": true,
+      "double_pass_complete": true,
+      "double_pass_total_equal": true,
+      "incomplete_results": [false, false, false, false],
+      "page_item_counts": [[100, 30], [100, 30]],
+      "pass_canonical_projection_sha256": [
+        "ceb858e0eba1b5ba311586478b20e9aadfa01a5d4001a81bbf9fc2c86d2af2af",
+        "ceb858e0eba1b5ba311586478b20e9aadfa01a5d4001a81bbf9fc2c86d2af2af"
+      ],
+      "raw_total": 130,
+      "unique_normalized_repository_count": 130,
+      "updated_at_adjacent_descent_count": 11,
+      "validator_stop_reason": "catalog_is_not_in_updated_ascending_order"
+    },
+    "immutable_capture": {
+      "file_sha256": "c7ec58c12b3acafe8f3bd92598e28e51b47c8b70680e2719a722be5c2ae251db",
+      "ordered_catalog_sha256": "d78bbf42781a47c9b440945352bee900e8fe3cd1a88f21d1402c453d3304b567",
+      "path": "audit/attempt-006-catalog-validation-failure-capture.json",
+      "projection_sha256": "5974cb5b74708608a4ecc8b328367c025cb7f9b117ba78961edb67e88cceab72",
+      "sealed": true,
+      "storage_mode": "append_only"
+    },
+    "schema_version": "p15-v7-attempt-006-catalog-validation-failure-audit-projection-v1",
+    "zero_after_catalog": {
+      "effect_observations": 0,
+      "git_ref_requests": 0,
+      "heldout_accesses": 0,
+      "ollama_calls": 0,
+      "online_model_calls": 0,
+      "source_content_accesses": 0,
+      "source_tree_accesses": 0
+    }
+  },
+  "canonical_projection_sha256": "78c704015b05de3db4d6ce1c1ba6f46917d4426303c936789dfcd3f1589ec9fb",
+  "disposition": "provider-updated-order-nonmonotonic-after-complete-double-pass-before-refs",
+  "execution_eligible": false,
+  "schema_version": "p15-v7-attempt-006-catalog-validation-failure-audit-artifact-v1",
+  "status": "INCONCLUSIVE"
+}

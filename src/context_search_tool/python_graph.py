@@ -30,6 +30,7 @@ from context_search_tool.models import (
 )
 
 MAX_PYTHON_DECLARATION_FACTS = 4095
+MAX_PYTHON_ASSIGNMENT_FACTS = 4095
 
 _GRAPH_PRODUCER = "python_ast"
 _PYTHON_SUFFIXES = (".py", ".pyw")
@@ -75,6 +76,21 @@ class PythonImportFact:
 
 
 @dataclass(frozen=True)
+class PythonImportedSymbolFact:
+    module: str
+    relative_level: int
+    imported_name: str
+    local_name: str
+    range: PythonSourceRange
+
+
+@dataclass(frozen=True)
+class PythonAssignmentFact:
+    name: str
+    range: PythonSourceRange
+
+
+@dataclass(frozen=True)
 class PythonFactDiagnostic:
     code: str
     count: int
@@ -85,9 +101,12 @@ class PythonFactSet:
     file_path: str
     parse_status: str
     declarations: tuple[PythonDeclarationFact, ...]
+    assignments: tuple[PythonAssignmentFact, ...]
     imports: tuple[PythonImportFact, ...]
+    imported_symbols: tuple[PythonImportedSymbolFact, ...]
     diagnostics: tuple[PythonFactDiagnostic, ...]
     omitted_declaration_count: int
+    omitted_assignment_count: int
 
 
 def _range(node: ast.AST) -> PythonSourceRange:
@@ -170,6 +189,24 @@ def _collect_declarations(
             _collect_declarations(child, owner, owner_is_class, out)
 
 
+def _collect_module_assignments(
+    node: ast.AST,
+    out: list[PythonAssignmentFact],
+) -> None:
+    for child in ast.iter_child_nodes(node):
+        target: ast.expr | None = None
+        if isinstance(child, ast.Assign) and len(child.targets) == 1:
+            target = child.targets[0]
+        elif isinstance(child, ast.AnnAssign) and child.value is not None:
+            target = child.target
+        if isinstance(target, ast.Name):
+            out.append(PythonAssignmentFact(name=target.id, range=_range(child)))
+            continue
+        if isinstance(child, (ast.ClassDef, *_FUNCTION_SCOPES)):
+            continue
+        _collect_module_assignments(child, out)
+
+
 def _collect_imports(tree: ast.AST, out: list[PythonImportFact]) -> None:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -211,6 +248,28 @@ def _collect_imports(tree: ast.AST, out: list[PythonImportFact]) -> None:
                     )
 
 
+def _collect_imported_symbols(
+    tree: ast.AST,
+    out: list[PythonImportedSymbolFact],
+) -> None:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or not node.module:
+            continue
+        location = _range(node)
+        for alias in node.names:
+            if alias.name == "*" or not alias.name.isidentifier():
+                continue
+            out.append(
+                PythonImportedSymbolFact(
+                    module=node.module,
+                    relative_level=node.level or 0,
+                    imported_name=alias.name,
+                    local_name=alias.asname or alias.name,
+                    range=location,
+                )
+            )
+
+
 def _declaration_sort_key(
     fact: PythonDeclarationFact,
 ) -> tuple[int, int, int, int, str, str, str]:
@@ -239,6 +298,33 @@ def _import_sort_key(
     )
 
 
+def _imported_symbol_sort_key(
+    fact: PythonImportedSymbolFact,
+) -> tuple[int, int, int, int, str, int, str, str]:
+    return (
+        fact.range.start_line,
+        fact.range.start_col,
+        fact.range.end_line,
+        fact.range.end_col,
+        fact.module,
+        fact.relative_level,
+        fact.imported_name,
+        fact.local_name,
+    )
+
+
+def _assignment_sort_key(
+    fact: PythonAssignmentFact,
+) -> tuple[int, int, int, int, str]:
+    return (
+        fact.range.start_line,
+        fact.range.start_col,
+        fact.range.end_line,
+        fact.range.end_col,
+        fact.name,
+    )
+
+
 def extract_python_facts(file_path: str, content: bytes) -> PythonFactSet:
     try:
         tree = compile(
@@ -259,9 +345,12 @@ def extract_python_facts(file_path: str, content: bytes) -> PythonFactSet:
             file_path=file_path,
             parse_status=code,
             declarations=(),
+            assignments=(),
             imports=(),
+            imported_symbols=(),
             diagnostics=(PythonFactDiagnostic(code=code, count=1),),
             omitted_declaration_count=0,
+            omitted_assignment_count=0,
         )
 
     declarations: list[PythonDeclarationFact] = []
@@ -270,17 +359,37 @@ def extract_python_facts(file_path: str, content: bytes) -> PythonFactSet:
     omitted = max(0, len(declarations) - MAX_PYTHON_DECLARATION_FACTS)
     declarations = declarations[:MAX_PYTHON_DECLARATION_FACTS]
 
+    assignment_candidates: list[PythonAssignmentFact] = []
+    _collect_module_assignments(tree, assignment_candidates)
+    assignment_candidates.sort(key=_assignment_sort_key)
+    first_assignments: dict[str, PythonAssignmentFact] = {}
+    for fact in assignment_candidates:
+        first_assignments.setdefault(fact.name, fact)
+    assignments = list(first_assignments.values())
+    assignments.sort(key=_assignment_sort_key)
+    omitted_assignments = max(
+        0, len(assignments) - MAX_PYTHON_ASSIGNMENT_FACTS
+    )
+    assignments = assignments[:MAX_PYTHON_ASSIGNMENT_FACTS]
+
     imports: list[PythonImportFact] = []
     _collect_imports(tree, imports)
     imports.sort(key=_import_sort_key)
+
+    imported_symbols: list[PythonImportedSymbolFact] = []
+    _collect_imported_symbols(tree, imported_symbols)
+    imported_symbols.sort(key=_imported_symbol_sort_key)
 
     return PythonFactSet(
         file_path=file_path,
         parse_status="ok",
         declarations=tuple(declarations),
+        assignments=tuple(assignments),
         imports=tuple(imports),
+        imported_symbols=tuple(imported_symbols),
         diagnostics=(),
         omitted_declaration_count=omitted,
+        omitted_assignment_count=omitted_assignments,
     )
 
 
@@ -326,6 +435,8 @@ class PythonGraphProducer:
             metadata["graph_omitted_declarations"] = (
                 facts.omitted_declaration_count
             )
+        if facts.omitted_assignment_count:
+            metadata["graph_omitted_assignments"] = facts.omitted_assignment_count
         symbols = tuple(
             SymbolRef(
                 name=fact.name,
@@ -393,6 +504,22 @@ class PythonGraphProducer:
                 metadata["graph_materialize_status"] = "missing_chunk"
                 return MaterializedGraph(metadata=metadata)
             signals.append(_declaration_signal(context, fact, chunk))
+        for fact in facts.assignments:
+            chunk = next(
+                (
+                    candidate
+                    for candidate in ordered_chunks
+                    if candidate.start_line
+                    <= fact.range.start_line
+                    <= candidate.end_line
+                ),
+                None,
+            )
+            if chunk is None:
+                metadata = dict(parsed.metadata)
+                metadata["graph_materialize_status"] = "missing_chunk"
+                return MaterializedGraph(metadata=metadata)
+            signals.append(_assignment_signal(context, fact, chunk))
         signals.sort(
             key=lambda signal: (
                 signal.start_line,
@@ -403,31 +530,65 @@ class PythonGraphProducer:
             )
         )
 
-        merged: dict[str, CodeRelation] = {}
+        module_relations: dict[str, CodeRelation] = {}
         for fact in facts.imports:
             selector = python_module_selector(context, fact)
             _merge_python_relation(
-                merged,
+                module_relations,
                 _python_import_relation(context, module_signal, fact, selector),
             )
-        relations = sorted(
-            merged.values(),
-            key=lambda relation: (
-                int(relation.metadata.get("first_source_line", 0)),
-                int(relation.metadata.get("first_source_column", 0)),
-                relation.target_qualified_name,
-                relation.relation_id,
-            ),
-        )
+        relations = sorted(module_relations.values(), key=_python_relation_sort_key)
         metadata = dict(parsed.metadata)
         if len(relations) > MAX_PYTHON_IMPORTS_PER_FILE:
             metadata["graph_omitted_imports"] = (
                 len(relations) - MAX_PYTHON_IMPORTS_PER_FILE
             )
             relations = relations[:MAX_PYTHON_IMPORTS_PER_FILE]
+        retained_module_relations = {
+            relation.relation_id: relation for relation in relations
+        }
+        exact_relations: dict[str, CodeRelation] = {}
+        for fact in facts.imported_symbols:
+            module_fact = PythonImportFact(
+                import_form="from",
+                module=fact.module,
+                relative_level=fact.relative_level,
+                is_star=False,
+                range=fact.range,
+            )
+            selector = python_module_selector(context, module_fact)
+            if selector.state != "exact" or len(selector.candidates) != 1:
+                continue
+            module_relation = _python_import_relation(
+                context,
+                module_signal,
+                module_fact,
+                selector,
+            )
+            retained_module_relation = retained_module_relations.get(
+                module_relation.relation_id
+            )
+            if retained_module_relation is None:
+                continue
+            _merge_python_relation(
+                exact_relations,
+                _python_imported_symbol_relation(
+                    context,
+                    module_signal,
+                    fact,
+                    selector,
+                    retained_module_relation,
+                ),
+            )
+        exact = sorted(exact_relations.values(), key=_python_relation_sort_key)
+        if len(exact) > MAX_PYTHON_IMPORTS_PER_FILE:
+            metadata["graph_omitted_imported_symbols"] = (
+                len(exact) - MAX_PYTHON_IMPORTS_PER_FILE
+            )
+            exact = exact[:MAX_PYTHON_IMPORTS_PER_FILE]
         return MaterializedGraph(
             signals=tuple(signals),
-            relations=tuple(relations),
+            relations=tuple((*relations, *exact)),
             metadata=metadata,
         )
 
@@ -480,6 +641,48 @@ def _declaration_signal(
         start_column=fact.range.start_col,
         end_column=fact.range.end_col,
         recallable=True,
+    )
+
+
+def _assignment_signal(
+    context: PluginContext,
+    fact: PythonAssignmentFact,
+    chunk: DocumentChunk,
+) -> CodeSignal:
+    qualified_name = (
+        f"{python_module_name(context.file_path, context.project_unit_key)}."
+        f"{fact.name}"
+    )
+    signal_id = generate_v5_signal_id(
+        file_path=context.file_path.as_posix(),
+        kind="variable",
+        qualified_name=qualified_name,
+        signature="",
+        start_line=fact.range.start_line,
+        start_column=fact.range.start_col,
+        end_line=fact.range.end_line,
+        end_column=fact.range.end_col,
+        producer=_GRAPH_PRODUCER,
+    )
+    return CodeSignal(
+        signal_id=signal_id,
+        chunk_id=chunk.chunk_id,
+        file_path=context.file_path,
+        kind="variable",
+        name=fact.name,
+        start_line=fact.range.start_line,
+        end_line=fact.range.end_line,
+        language="python",
+        tokens=[],
+        metadata={"binding_kind": "assignment"},
+        qualified_name=qualified_name,
+        signature="",
+        arity=None,
+        project_unit_key=context.project_unit_key,
+        producer=_GRAPH_PRODUCER,
+        start_column=fact.range.start_col,
+        end_column=fact.range.end_col,
+        recallable=False,
     )
 
 
@@ -632,6 +835,73 @@ def _python_import_relation(
     )
 
 
+def _python_imported_symbol_relation(
+    context: PluginContext,
+    module_signal: CodeSignal,
+    fact: PythonImportedSymbolFact,
+    selector: PythonModuleSelector,
+    module_relation: CodeRelation,
+) -> CodeRelation:
+    target_file_path = selector.candidates[0]
+    target_project_unit_key = context.project_unit_for_path(target_file_path)
+    target_qualified_name = (
+        f"{python_module_name(Path(target_file_path), target_project_unit_key)}."
+        f"{fact.imported_name}"
+    )
+    relation_id = generate_v5_relation_id(
+        source_signal_id=module_signal.signal_id,
+        kind="imports",
+        target_kind="python_declaration",
+        target_qualified_name=target_qualified_name,
+        target_signature="",
+        target_arity=None,
+        target_project_unit_key=target_project_unit_key,
+        producer=_GRAPH_PRODUCER,
+    )
+    return CodeRelation(
+        relation_id=relation_id,
+        source_signal_id=module_signal.signal_id,
+        target_name=fact.imported_name,
+        kind="imports",
+        confidence=1.0,
+        metadata={
+            "resolution_basis": "exact_python_imported_symbol",
+            "selector_state": "exact",
+            "target_file_path": target_file_path,
+            "target_signal_kinds": ["type", "function", "variable"],
+            "imported_name": fact.imported_name,
+            "local_names": [fact.local_name],
+            "relative_level": fact.relative_level,
+            "first_source_line": fact.range.start_line,
+            "first_source_column": fact.range.start_col,
+            "occurrence_count": 1,
+            "module_relation_id": module_relation.relation_id,
+            "module_selector": {
+                "state": selector.state,
+                "specifier": selector.specifier,
+                "target_file_path": target_file_path,
+            },
+        },
+        target_kind="python_declaration",
+        target_qualified_name=target_qualified_name,
+        target_project_unit_key=target_project_unit_key,
+        resolution="unresolved",
+        producer=_GRAPH_PRODUCER,
+        producer_confidence=1.0,
+    )
+
+
+def _python_relation_sort_key(
+    relation: CodeRelation,
+) -> tuple[int, int, str, str]:
+    return (
+        int(relation.metadata.get("first_source_line", 0)),
+        int(relation.metadata.get("first_source_column", 0)),
+        relation.target_qualified_name,
+        relation.relation_id,
+    )
+
+
 def _merge_python_relation(
     relations: dict[str, CodeRelation], relation: CodeRelation
 ) -> None:
@@ -656,4 +926,19 @@ def _merge_python_relation(
     metadata["occurrence_count"] = int(
         existing.metadata.get("occurrence_count", 1)
     ) + int(relation.metadata.get("occurrence_count", 1))
+    if "local_names" in existing.metadata or "local_names" in relation.metadata:
+        metadata["local_names"] = sorted(
+            {
+                *(
+                    item
+                    for item in existing.metadata.get("local_names", [])
+                    if isinstance(item, str)
+                ),
+                *(
+                    item
+                    for item in relation.metadata.get("local_names", [])
+                    if isinstance(item, str)
+                ),
+            }
+        )
     relations[relation.relation_id] = replace(existing, metadata=metadata)

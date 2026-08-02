@@ -13699,7 +13699,7 @@ def test_ready_v5_spring_path_scores_only_the_exact_endpoint(
     store, candidates = _spring_path_graph_case(tmp_path)
     store.set_metadata("signal_schema_version", "5")
     store.set_metadata("graph_resolution_state", "ready")
-    store.set_metadata("graph_producer_version", "1")
+    store.set_metadata("graph_producer_version", "3")
     store.set_metadata("graph_resolution_version", "1")
 
     with store.graph_read_session() as graph_session:

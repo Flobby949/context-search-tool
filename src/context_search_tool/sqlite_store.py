@@ -3905,6 +3905,15 @@ class GraphReadSession:
                 WHEN 'tests' THEN 8
                 ELSE 9
               END,
+              CASE
+                WHEN relations.kind = 'imports'
+                 AND json_extract(
+                       relations.metadata,
+                       '$.resolution_basis'
+                     ) = 'exact_python_imported_symbol'
+                THEN 1
+                ELSE 0
+              END,
               relations.source_signal_id, relations.target_signal_id,
               COALESCE(targets.chunk_id, ''), relations.relation_id
             LIMIT ?
@@ -4278,6 +4287,68 @@ class _SQLiteResolutionSession:
             values,
         ).fetchall()
         return tuple(_signal_from_row(row) for row in rows)
+
+    def find_python_declarations(
+        self,
+        *,
+        project_unit_key: str,
+        qualified_name: str,
+        file_path: str,
+    ) -> tuple[CodeSignal, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM code_signals
+            WHERE project_unit_key = ?
+              AND qualified_name = ?
+              AND file_path = ?
+              AND kind IN ('type', 'function', 'variable')
+              AND producer = 'python_ast'
+              AND language = 'python'
+              AND deleted_at IS NULL
+            ORDER BY kind, start_line, start_column, signal_id
+            LIMIT 2
+            """,
+            (project_unit_key, qualified_name, file_path),
+        ).fetchall()
+        return tuple(_signal_from_row(row) for row in rows)
+
+    def has_exact_python_module_relation(
+        self,
+        *,
+        relation_id: str,
+        source_signal_id: str,
+        target_file_path: str,
+        target_project_unit_key: str,
+    ) -> bool:
+        row = self.connection.execute(
+            """
+            SELECT 1
+            FROM code_relations AS relations
+            JOIN code_signals AS targets
+              ON targets.signal_id = relations.target_signal_id
+             AND targets.deleted_at IS NULL
+            WHERE relations.relation_id = ?
+              AND relations.source_signal_id = ?
+              AND relations.kind = 'imports'
+              AND relations.target_kind = 'module'
+              AND relations.target_project_unit_key = ?
+              AND relations.resolution = 'resolved_exact'
+              AND relations.producer = 'python_ast'
+              AND relations.deleted_at IS NULL
+              AND targets.kind = 'module'
+              AND targets.producer = 'core_module'
+              AND targets.file_path = ?
+            LIMIT 1
+            """,
+            (
+                relation_id,
+                source_signal_id,
+                target_project_unit_key,
+                target_file_path,
+            ),
+        ).fetchone()
+        return row is not None
 
     def update_relation(self, relation: CodeRelation) -> None:
         self.connection.execute(
@@ -5657,7 +5728,81 @@ def _graph_integrity(connection: sqlite3.Connection) -> GraphIntegrityResult:
                   AND (
                     targets.project_unit_key
                         <> relations.target_project_unit_key
-                    OR targets.kind <> relations.target_kind
+                    OR (
+                      targets.kind <> relations.target_kind
+                      AND NOT (
+                        relations.kind = 'imports'
+                        AND relations.producer = 'python_ast'
+                        AND relations.target_kind = 'python_declaration'
+                        AND relations.target_signature = ''
+                        AND relations.target_arity IS NULL
+                        AND relations.resolution = 'resolved_exact'
+                        AND sources.kind = 'module'
+                        AND sources.producer = 'core_module'
+                        AND sources.language = 'python'
+                        AND sources.project_unit_key
+                            = relations.target_project_unit_key
+                        AND targets.kind IN ('type', 'function', 'variable')
+                        AND targets.producer = 'python_ast'
+                        AND targets.language = 'python'
+                        AND targets.file_path
+                            = json_extract(
+                                relations.metadata,
+                                '$.target_file_path'
+                              )
+                        AND json_extract(
+                              relations.metadata,
+                              '$.resolution_basis'
+                            ) = 'exact_python_imported_symbol'
+                        AND json_extract(
+                              relations.metadata,
+                              '$.selector_state'
+                            ) = 'exact'
+                        AND json_extract(
+                              relations.metadata,
+                              '$.target_signal_kinds[0]'
+                            ) = 'type'
+                        AND json_extract(
+                              relations.metadata,
+                              '$.target_signal_kinds[1]'
+                            ) = 'function'
+                        AND json_extract(
+                              relations.metadata,
+                              '$.target_signal_kinds[2]'
+                            ) = 'variable'
+                        AND json_array_length(
+                              json_extract(
+                                relations.metadata,
+                                '$.target_signal_kinds'
+                              )
+                            ) = 3
+                        AND EXISTS (
+                          SELECT 1
+                          FROM code_relations AS module_relations
+                          JOIN code_signals AS module_targets
+                            ON module_targets.signal_id
+                                = module_relations.target_signal_id
+                           AND module_targets.deleted_at IS NULL
+                          WHERE module_relations.relation_id
+                              = json_extract(
+                                  relations.metadata,
+                                  '$.module_relation_id'
+                                )
+                            AND module_relations.source_signal_id
+                                = relations.source_signal_id
+                            AND module_relations.kind = 'imports'
+                            AND module_relations.target_kind = 'module'
+                            AND module_relations.target_project_unit_key
+                                = relations.target_project_unit_key
+                            AND module_relations.resolution = 'resolved_exact'
+                            AND module_relations.producer = 'python_ast'
+                            AND module_relations.deleted_at IS NULL
+                            AND module_targets.kind = 'module'
+                            AND module_targets.producer = 'core_module'
+                            AND module_targets.file_path = targets.file_path
+                        )
+                      )
+                    )
                     OR (
                       relations.target_kind <> 'module'
                       AND targets.qualified_name

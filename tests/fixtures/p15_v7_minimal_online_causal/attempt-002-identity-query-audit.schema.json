@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "p15-v7-attempt-002-identity-query-audit-artifact-v1",
+  "type": "object",
+  "required": ["attempt_id", "canonical_projection", "canonical_projection_sha256", "disposition", "execution_eligible", "schema_version", "status"],
+  "properties": {
+    "attempt_id": {"const": "p15-v7-attempt-002"},
+    "canonical_projection": {"type": "object"},
+    "canonical_projection_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "disposition": {"const": "noncompliant-catalog-observed-before-allowlist-and-source"},
+    "execution_eligible": {"const": false},
+    "schema_version": {"const": "p15-v7-attempt-002-identity-query-audit-artifact-v1"},
+    "status": {"const": "INCONCLUSIVE"}
+  },
+  "additionalProperties": false
+}

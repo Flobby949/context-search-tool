@@ -1,0 +1,339 @@
+{
+  "schema_version": "p15-v7-minimal-online-causal-attempt-v4",
+  "attempt_id": "p15-v7-attempt-004",
+  "execution_role": "authoritative_pre_catalog",
+  "status": "pre_catalog_frozen",
+  "documents": {
+    "design_path": "docs/superpowers/specs/2026-08-02-p15-v7-minimal-online-causal-acceptance-design.md",
+    "design_sha256": "7aa82f162269c295d37f34ec233897a83a8cf50202fdf73e2a4fc7854b7e54cb",
+    "plan_path": "docs/superpowers/plans/2026-08-02-p15-v7-minimal-online-causal-acceptance-plan.md",
+    "plan_sha256": "77da1fcab845705aa8df633fa796220883fdd7b5b0fa660e18acbc6c3337d716"
+  },
+  "baseline": {
+    "commit": "10ab7ab0cd4c32012293e16d37a46fa9af7a2c97",
+    "description": "p15-v6-generic-source-hint-activation"
+  },
+  "candidate": {
+    "only_treatment_factor": "consume_dependency_hints_false_to_true",
+    "control_consume_dependency_hints": false,
+    "treatment_consume_dependency_hints": true,
+    "prompt_version": "qwen-query-planner-v4-source-identity-v1",
+    "prompt_sha256": "e4a6692519fdaa4397d3f64fac525e5de008c11b0b1b6053df099276bf88b206",
+    "response_fields": [
+      "dependency_intent",
+      "grep_keywords",
+      "imported_module_hints",
+      "imported_symbol_hints",
+      "intent",
+      "rewritten_queries",
+      "source_module_hints",
+      "source_symbol_hints",
+      "symbol_hints"
+    ],
+    "response_schema_sha256": "96b90e50d7c9c114cd3090f6e8610eb820aa93767c20152280abdcd58b51a982",
+    "strict_response_contract": "one_complete_json_object_with_exact_fields_or_fallback",
+    "source_hint_inputs": [
+      "source_symbol_hints",
+      "source_module_hints"
+    ],
+    "generic_hint_inputs_for_promotion": [],
+    "target_only_hints_activate_promotion": false,
+    "maximum_promotions": 2,
+    "rank_one_protected": true,
+    "idempotent": true,
+    "product_projection_algorithm": "sha256_of_canonical_json_path_to_file_sha256_sort_keys_compact_ascii",
+    "product_projection_sha256": "eadf3fd4e7b94d2be28d742d4bf4fc234902aee5be44009cef6fcf06d899a030",
+    "product_files_sha256": {
+      "src/context_search_tool/dependency_replay.py": "72dd90814b3ae47e3158ecc78ad30473e14d0c16b7a1d686bf3786884d9bf0b9",
+      "src/context_search_tool/models.py": "737d288dc2169d331d28eba991c2f29a429e9e3cb43f073cd829161418754bf2",
+      "src/context_search_tool/query_planner.py": "e680a301dbba74a72b0520ee27b61224c93f8e278ee51cfb8e2c8fb6adffc727",
+      "src/context_search_tool/retrieval.py": "3309188431a0b182f99b096c8dba143be7914ecdab7eec85925375a555d55a13",
+      "src/context_search_tool/retrieval_core/candidates.py": "453210f757910a03ccb590fc48fb665da3aa1ecb3124d9e7f73370701eb0051d",
+      "src/context_search_tool/retrieval_core/context_expansion.py": "23ba1050f29cb997488fc3aed9f6a994ef7c94e5f0e5d1dcf54b94c070bf27c4",
+      "src/context_search_tool/retrieval_core/ranking.py": "5088e240014fdda1e156f50892d4fe54bdde5b1c34f04f249dfcb944d1caa92b"
+    },
+    "runner_and_tests_sha256": {
+      ".quality/p15-v7-attempt-001/stage2/stage2_runner.py": "66c470212b60a93f647d169f9971e4624331a7a4394385060feae9c2c03928d4",
+      ".quality/p15-v7-attempt-001/stage2/stage2_selftest.py": "031f8601a56be496b61c394ce08137047be7da70981abbf7816500956708b1d1",
+      "tests/fixtures/p15_v7_minimal_online_causal/attempt-contract.schema.json": "66852856f1b7d2a6e6d53e0334161d8c03adaa8de10f5224249a060768716a3b",
+      "tests/fixtures/p15_v7_minimal_online_causal/supersession-audit.schema.json": "ccf9ece3e4abca2c5bef7bc70c9a4eb5d617f4c33a21a640b919e0341616196e",
+      "tests/p15_metric_replay.py": "ac6862d104b805c29af4e979f1e070f855b579a036cbb2eb330b05262ec5caea",
+      "tests/p15_pre_corpus_governance.py": "ac81eca5e7d4f5d90329425180cbe06db0487a99c22212562cd9f6b780108ef3",
+      "tests/test_dependency_replay.py": "35726f7237482031802b39fea94bae09b8659dec63ebc06d3d0dd114c52b60dc",
+      "tests/test_exact_imported_symbol_bonus.py": "31fd219d8c6bd2e94e681a734953b4255bc3daf00ffffccce1bd6f70395bcb30",
+      "tests/test_p15_metric_replay.py": "896d3347ac83c4079c2d380745def6fa2553a2fb3fd852ebadd8c4e1ae8d4915",
+      "tests/test_p15_pre_corpus_governance.py": "22ab408fe7eb9a02ea12c5330aa44b2a8b29ae3ce166d7e1b88911d4fb51a6b9",
+      "tests/test_query_planner.py": "b53790cfe2578829d5d3edf0d6faa9f99730e2ca8067407c5f5c399db8d76912",
+      "tests/test_retrieval_core_boundaries.py": "afa0b855f271a72ebff851270d4e8eded3550b0f1a627372fb52e8839121d4f5",
+      "tests/p15_attempt_004_governance.py": "02e2ce16bd2be2a847b57ec3742ad805e57c70f60f7fecfc161e721bfe8fe556",
+      "tests/test_p15_attempt_004_governance.py": "6644d494373062b0cfc997b776c90d60971bb04b324a0e26e53fcbd313956c59",
+      "tests/fixtures/p15_v7_minimal_online_causal/attempt-004-catalog-capture.schema.json": "79c51772595e02dc2d1793f78fa408b221f3976f9829f908632ea8a213cc00e2",
+      "tests/fixtures/p15_v7_minimal_online_causal/attempt-004-complete-allowlist.schema.json": "e86b5a44660142a9392c1b1f66580a1c5f4385f2320538106b5b7d8b3523aad0",
+      "tests/fixtures/p15_v7_minimal_online_causal/attempt-002-identity-query-audit.schema.json": "ecc44a5b14909207fb50bbe1326c11d4a60bab8ab69f99780fbc43f145d59c62",
+      "tests/fixtures/p15_v7_minimal_online_causal/audit/p15-v7-attempt-002-contract.schema.json": "bfbe57a36b76d409fa37438bc8bd3f51122f941d485a512b8b16fce54b6d318f"
+    }
+  },
+  "online": {
+    "planner_provider": "openai-compatible",
+    "planner_domain": "api.siliconflow.cn",
+    "planner_endpoint": "https://api.siliconflow.cn/v1/chat/completions",
+    "planner_model": "Qwen/Qwen2.5-14B-Instruct",
+    "planner_temperature": 0,
+    "planner_seed": 0,
+    "planner_calls_per_case_sample": 1,
+    "embedding_provider": "openai-compatible",
+    "embedding_domain": "api.siliconflow.cn",
+    "embedding_endpoint": "https://api.siliconflow.cn/v1/embeddings",
+    "embedding_model": "Pro/BAAI/bge-m3",
+    "treatment_additional_planner_calls": 0,
+    "treatment_additional_embedding_calls": 0,
+    "localhost_calls": 0,
+    "ollama_calls": 0,
+    "planner_payload": "query_and_frozen_numeric_limits_only"
+  },
+  "corpus": {
+    "fresh_repositories": [],
+    "fresh_cases": [],
+    "fixed_denominators": {
+      "repositories": 2,
+      "cases": 12,
+      "efficacy_targets": 8,
+      "guard_cases": 4,
+      "planner_samples": 24,
+      "local_arm_replays": 96
+    },
+    "per_repository": {
+      "efficacy_cases": 4,
+      "guard_cases": 2
+    },
+    "gold_derivation": "independent_stdlib_ast_direct_from_import_unique_top_level_owner",
+    "query_policy": "source_only_no_target_alias_module_path_signal_or_gold_terms",
+    "selection_inputs": [
+      "repository_structure",
+      "independent_direct_import_gold",
+      "two_normalized_control_top12_path_lists",
+      "gold_target_absent_boolean"
+    ],
+    "selection_forbidden_inputs": [
+      "treatment_output",
+      "imported_target_hints",
+      "exact_source_hint_match",
+      "planner_status_case_deletion",
+      "candidate_admissible_roster_or_rank",
+      "gold_among_first_two_or_any_candidate_winners",
+      "private_candidate_helpers",
+      "promotion_decision_reimplementation"
+    ],
+    "planner_fallback_retained": true,
+    "held_out": {
+      "identity_selected": false,
+      "public_contract_sha256": "",
+      "sealed_payload_sha256": "",
+      "opened": false,
+      "opening_requires_fresh_outcome_pass_and_explicit_authorization": true
+    }
+  },
+  "sampling": {
+    "online_samples_per_case": 2,
+    "local_replays_per_sample_arm": 2,
+    "local_replay_count_is_exact": true,
+    "order_rule": "repository_rank_then_case_ordinal_then_sample_1_control_1_control_2_treatment_1_treatment_2_then_sample_2_treatment_1_treatment_2_control_1_control_2",
+    "expanded_schedule": [],
+    "schedule_frozen_before_treatment": true,
+    "same_sample_shared_capture_fields": [
+      "validated_or_fallback_plan_sha256",
+      "embedding_sha256",
+      "base_roster_sha256",
+      "shared_state_sha256"
+    ],
+    "same_sample_local_projection_exact": true,
+    "cross_sample_top12_exact_not_required": true,
+    "early_stop_or_result_dependent_append_forbidden": true
+  },
+  "gates": {
+    "outcome": {
+      "minimum_stable_causal_new_targets": 3,
+      "minimum_distinct_efficacy_cases": 3,
+      "minimum_repositories_with_gain": 2,
+      "required_target_losses": 0,
+      "rank_one_changes": 0,
+      "credited_gain_requires_promotion_marker_and_closed_exact_witness": true,
+      "minimum_valid_plans": 22,
+      "planner_sample_denominator": 24,
+      "maximum_precision_at_12_decline": 0.02,
+      "maximum_treatment_only_irrelevant_case_sample_paths": 1,
+      "target_recall_denominator": 8,
+      "separate_recall_numeric_floor": false,
+      "complete_matrix_before_decision": true
+    },
+    "held_out": {
+      "minimum_candidate_blind_target_missing_cases": 4,
+      "minimum_stable_causal_new_targets": 2,
+      "minimum_distinct_cases": 2,
+      "required_target_losses": 0
+    },
+    "release": {
+      "treatment_additional_online_requests": 0,
+      "local_treatment_median_max_relative_regression": 0.1,
+      "local_treatment_median_max_absolute_increase_ms": 5,
+      "end_to_end_online_latency_is_report_only": true,
+      "localhost_or_ollama_requests": 0,
+      "tracked_secret_header_source_absolute_path_or_raw_exception_leaks": 0,
+      "topk_caps_budgets_increase": 0,
+      "focused_tests": "pass",
+      "full_suite": "pass",
+      "ci": "pass"
+    },
+    "governance": {
+      "single_authoritative_contract": true,
+      "pre_corpus_fields_append_only": true,
+      "no_tuning_after_seal": true,
+      "outcome_release_governance_reported_separately": true,
+      "allowed_dispositions": [
+        "ship",
+        "accept_outcome",
+        "reject_outcome",
+        "release_reject",
+        "blocked"
+      ]
+    }
+  },
+  "gate_projection_sha256": "41ac126299b6f9f9350d7dc0ef4b9cee4e8c3a396137b20f8b69be25b555322a",
+  "governance": {
+    "fresh_identity_selected": false,
+    "fresh_source_accessed": false,
+    "candidate_executed": false,
+    "online_requests_made": false,
+    "ollama_requests_made": false,
+    "held_out_opened": false,
+    "quality_artifacts_modified": false
+  },
+  "pre_corpus_counters": {
+    "planner_calls": 0,
+    "embedding_calls": 0,
+    "source_accesses": 0,
+    "treatment_executions": 0,
+    "held_out_accesses": 0
+  },
+  "contract_frozen_at_utc": "2026-08-02T06:40:40Z",
+  "contract_binding": {
+    "projection_algorithm": "sha256_of_canonical_contract_with_empty_catalog_and_allowlist_receipts",
+    "projection_sha256": "ae7ed9afed9799a4783261a7b9bbfe16901a8480da96a4adf6c604e071fb6130"
+  },
+  "catalog_contract": {
+    "provider": "github",
+    "transport": "GitHub REST",
+    "api_version": "2022-11-28",
+    "window_derivation": "floor_utc_hour(contract_frozen_at_utc)-P30D_to_plus_1h_minus_1s",
+    "window_start_utc": "2026-07-03T06:00:00Z",
+    "window_end_utc": "2026-07-03T06:59:59Z",
+    "search_endpoint": "https://api.github.com/search/repositories",
+    "q": "language:Python is:public created:2026-07-03T06:00:00Z..2026-07-03T06:59:59Z",
+    "sort": "updated",
+    "order": "asc",
+    "per_page": 100,
+    "max_total_count": 1000,
+    "required_full_passes": 2,
+    "catalog_integrity_rule": "two_full_passes_exact_total_and_canonical_body_projection",
+    "page_receipt_etag_rule": "hash_bound_nullable_observation_not_integrity_evidence",
+    "page_attempts": 1,
+    "request_headers": {
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28"
+    },
+    "ref_endpoint_template": "https://api.github.com/repos/{owner}/{repository}/git/ref/heads/{default_branch_urlencoded}",
+    "ref_object_type": "commit",
+    "failure_policy": "fail_attempt_without_query_change_retry_replacement_skip_or_cherry_pick"
+  },
+  "exclusion_projection": {
+    "normalization": "provider_owner_repository_unicode_nfkc_casefold",
+    "canonical_repositories": [
+      "github/agronholm/anyio",
+      "github/aio-libs/multidict",
+      "github/django/asgiref",
+      "github/hynek/structlog",
+      "github/pallets/markupsafe",
+      "github/pycqa/flake8",
+      "github/pydantic/pydantic",
+      "github/pytest-dev/pytest",
+      "github/python-attrs/attrs",
+      "github/python-trio/trio",
+      "github/textualize/rich",
+      "github/tox-dev/tox",
+      "github/pallets/click",
+      "github/tarpas/pytest-testmon",
+      "github/aws-samples/bedrock-access-gateway",
+      "github/model-bakers/model_bakery",
+      "github/octimot/storytoolkitai",
+      "github/jomingyu/google-play-scraper",
+      "github/naver/splade",
+      "github/doccker/cc-use-exp"
+    ],
+    "count": 20,
+    "canonical_repository_list_algorithm": "sha256_of_canonical_json_canonical_repositories_array_sort_keys_compact_ascii",
+    "canonical_repository_list_sha256": "ecb00aca80993583e1c041afe3e234aa0290ab04ddd8ee4a5ecb3aec603755f3",
+    "projection_algorithm": "sha256_of_canonical_json_normalization_canonical_repositories_count_sort_keys_compact_ascii",
+    "projection_sha256": "c668246cbfdbafbf47222d4adad4e8d6815ca9b3b7ca8e72152930d116d2cf9a",
+    "source_audits": [
+      {
+        "attempt_id": "p15-v7-attempt-001",
+        "path": "audit/p15-v7-attempt-001-supersession.json",
+        "sha256": "a376fc1ef33aae5ef6cc82ad96bbca85fa4c933ae3c6daf67915439d4eddf68c",
+        "audit_only_hashes": true
+      },
+      {
+        "attempt_id": "p15-v7-attempt-002",
+        "path": "audit/attempt-002-identity-query-audit.json",
+        "sha256": "378eb98cec636c8a65955bf44d20e5c35d675a085689f82842f3aa7de14ae5a5",
+        "audit_only_hashes": true
+      },
+      {
+        "attempt_id": "p15-v7-attempt-003",
+        "path": "audit/attempt-003-catalog-failure-audit.json",
+        "sha256": "ec6093181adabdd64f767691bd5113984f1cf08f128d3d7569c972a967292426",
+        "audit_only_hashes": true
+      }
+    ]
+  },
+  "eligibility": {
+    "only": [
+      "public",
+      "language_python",
+      "default_branch_commit_resolved",
+      "not_excluded"
+    ]
+  },
+  "allowlist_rule": {
+    "contents": "complete_eligible_catalog",
+    "order": "canonical_repository_ascending"
+  },
+  "execution_rule": {
+    "repository_count": 2,
+    "selection": "first_two_allowlist_entries",
+    "distinct_canonical_repositories": true
+  },
+  "catalog_receipt": {
+    "received": false,
+    "path": "",
+    "sha256": ""
+  },
+  "future_allowlist": {
+    "received": false,
+    "path": "",
+    "sha256": "",
+    "identity_selected": false
+  },
+  "zero_state": {
+    "catalog_requests": 0,
+    "ref_requests": 0,
+    "source_accesses": 0,
+    "planner_calls": 0,
+    "embedding_calls": 0,
+    "control_executions": 0,
+    "treatment_executions": 0,
+    "effect_observations": 0,
+    "online_model_calls": 0,
+    "ollama_calls": 0,
+    "held_out_accesses": 0
+  }
+}

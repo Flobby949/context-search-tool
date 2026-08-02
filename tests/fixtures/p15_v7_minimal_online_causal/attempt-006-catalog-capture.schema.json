@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "p15-v7-attempt-006-catalog-capture-v1",
+  "type": "object",
+  "required": ["schema_version", "attempt_id", "contract_projection_sha256", "passes", "ref_resolutions"],
+  "properties": {
+    "schema_version": {"const": "p15-v7-attempt-006-catalog-capture-v1"},
+    "attempt_id": {"const": "p15-v7-attempt-006"},
+    "contract_projection_sha256": {"$ref": "#/$defs/sha256"},
+    "passes": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {"$ref": "#/$defs/catalogPass"}
+    },
+    "ref_resolutions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/refResolution"}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "catalogHeaders": {
+      "type": "object",
+      "required": ["Date", "etag_present", "etag"],
+      "properties": {
+        "Date": {"type": "string", "minLength": 1},
+        "etag_present": {"type": "boolean"},
+        "etag": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "refHeaders": {
+      "type": "object",
+      "required": ["Date", "ETag"],
+      "properties": {"Date": {"type": "string", "minLength": 1}, "ETag": {"type": "string", "minLength": 1}},
+      "additionalProperties": false
+    },
+    "repository": {
+      "type": "object",
+      "required": ["provider", "owner", "repository", "visibility", "language", "default_branch", "updated_at"],
+      "properties": {
+        "provider": {"type": "string"},
+        "owner": {"type": "string"},
+        "repository": {"type": "string"},
+        "visibility": {"type": "string"},
+        "language": {"type": ["string", "null"]},
+        "default_branch": {"type": "string"},
+        "updated_at": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "required": ["method", "endpoint", "issued_at_utc", "headers", "attempt_count", "projection_sha256"],
+      "properties": {
+        "method": {"const": "GET"},
+        "endpoint": {"type": "string"},
+        "issued_at_utc": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "headers": {"type": "object"},
+        "params": {"type": "object"},
+        "attempt_count": {"type": "integer", "minimum": 1},
+        "projection_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "page": {
+      "type": "object",
+      "required": ["page", "request", "response"],
+      "properties": {
+        "page": {"type": "integer", "minimum": 1},
+        "request": {"$ref": "#/$defs/request"},
+        "response": {
+          "type": "object",
+          "required": ["status", "headers", "total_count", "incomplete_results", "items", "projection_sha256"],
+          "properties": {
+            "status": {"type": "integer"},
+            "headers": {"$ref": "#/$defs/catalogHeaders"},
+            "total_count": {"type": "integer", "minimum": 0},
+            "incomplete_results": {"type": "boolean"},
+            "items": {"type": "array", "items": {"$ref": "#/$defs/repository"}},
+            "projection_sha256": {"$ref": "#/$defs/sha256"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "catalogPass": {
+      "type": "object",
+      "required": ["pass_number", "total_count", "pages", "canonical_projection_sha256"],
+      "properties": {
+        "pass_number": {"type": "integer"},
+        "total_count": {"type": "integer", "minimum": 0},
+        "pages": {"type": "array", "items": {"$ref": "#/$defs/page"}},
+        "canonical_projection_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "refResolution": {
+      "type": "object",
+      "required": ["canonical_repository", "default_branch", "request", "response"],
+      "properties": {
+        "canonical_repository": {"type": "string"},
+        "default_branch": {"type": "string"},
+        "request": {"$ref": "#/$defs/request"},
+        "response": {
+          "type": "object",
+          "required": ["status", "headers", "object", "projection_sha256"],
+          "properties": {
+            "status": {"type": "integer"},
+            "headers": {"$ref": "#/$defs/refHeaders"},
+            "object": {
+              "type": "object",
+              "required": ["type", "sha"],
+              "properties": {"type": {"type": "string"}, "sha": {"type": "string"}},
+              "additionalProperties": false
+            },
+            "projection_sha256": {"$ref": "#/$defs/sha256"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

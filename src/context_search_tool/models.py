@@ -92,6 +92,8 @@ class QueryPlan:
     rewritten_queries: list[str] = field(default_factory=list)
     grep_keywords: list[str] = field(default_factory=list)
     symbol_hints: list[str] = field(default_factory=list)
+    source_symbol_hints: list[str] = field(default_factory=list)
+    source_module_hints: list[str] = field(default_factory=list)
     dependency_intent: str = "none"
     imported_symbol_hints: list[str] = field(default_factory=list)
     imported_module_hints: list[str] = field(default_factory=list)

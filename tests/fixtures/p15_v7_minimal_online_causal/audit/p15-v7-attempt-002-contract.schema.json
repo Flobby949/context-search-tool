@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "p15-v7-minimal-online-causal-attempt-v2-audit",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "attempt_id",
+    "execution_role",
+    "status",
+    "candidate",
+    "identity_selection",
+    "corpus",
+    "sampling",
+    "governance",
+    "pre_corpus_counters",
+    "supersession_audit"
+  ],
+  "properties": {
+    "schema_version": {"const": "p15-v7-minimal-online-causal-attempt-v2"},
+    "attempt_id": {"const": "p15-v7-attempt-002"},
+    "execution_role": {"const": "authoritative_pre_corpus"},
+    "status": {"const": "pre_corpus_frozen_before_allowlist"},
+    "candidate": {
+      "type": "object",
+      "required": ["product_projection_sha256"],
+      "properties": {
+        "product_projection_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    },
+    "identity_selection": {"type": "object"},
+    "corpus": {"type": "object"},
+    "sampling": {"type": "object"},
+    "governance": {"type": "object"},
+    "pre_corpus_counters": {"type": "object"},
+    "supersession_audit": {"type": "object"}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

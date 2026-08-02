@@ -1,0 +1,465 @@
+{
+  "schema_version": "p15-v7-minimal-online-causal-attempt-v7",
+  "attempt_id": "p15-v7-attempt-007",
+  "execution_role": "two_repository_acceptance_draft",
+  "status": "DRAFT",
+  "execution_eligible": false,
+  "user_approval_required": true,
+  "approval_receipt": {
+    "received": false,
+    "path": "",
+    "sha256": ""
+  },
+  "approval_rule": {
+    "scope": "single_receipt_authorizes_two_refs_then_source_then_fresh_then_if_fresh_passes_heldout_and_release",
+    "reapproval_triggers": [
+      "plan_field_change",
+      "threshold_change",
+      "query_change",
+      "model_change",
+      "case_rule_change"
+    ]
+  },
+  "documents": {
+    "design_path": "docs/superpowers/specs/2026-08-02-p15-v7-minimal-online-causal-acceptance-design.md",
+    "design_sha256": "cc048396157f58855ed4844f40d489e9063354e04d9bd361457475904e7a6e97",
+    "plan_path": "docs/superpowers/plans/2026-08-02-p15-v7-minimal-online-causal-acceptance-plan.md",
+    "plan_sha256": "33a9ab58d318e6404acd15aa8872aeccc867ae6e9d064b7d744ab44dcd3e8776"
+  },
+  "baseline": {
+    "commit": "10ab7ab0cd4c32012293e16d37a46fa9af7a2c97",
+    "description": "p15-v6-generic-source-hint-activation"
+  },
+  "candidate": {
+    "only_treatment_factor": "consume_dependency_hints_false_to_true",
+    "control_consume_dependency_hints": false,
+    "treatment_consume_dependency_hints": true,
+    "prompt_version": "qwen-query-planner-v4-source-identity-v1",
+    "prompt_sha256": "e4a6692519fdaa4397d3f64fac525e5de008c11b0b1b6053df099276bf88b206",
+    "response_fields": [
+      "dependency_intent",
+      "grep_keywords",
+      "imported_module_hints",
+      "imported_symbol_hints",
+      "intent",
+      "rewritten_queries",
+      "source_module_hints",
+      "source_symbol_hints",
+      "symbol_hints"
+    ],
+    "response_schema_sha256": "96b90e50d7c9c114cd3090f6e8610eb820aa93767c20152280abdcd58b51a982",
+    "strict_response_contract": "one_complete_json_object_with_exact_fields_or_fallback",
+    "source_hint_inputs": [
+      "source_symbol_hints",
+      "source_module_hints"
+    ],
+    "generic_hint_inputs_for_promotion": [],
+    "target_only_hints_activate_promotion": false,
+    "maximum_promotions": 2,
+    "rank_one_protected": true,
+    "idempotent": true,
+    "product_projection_algorithm": "sha256_of_canonical_json_path_to_file_sha256_sort_keys_compact_ascii",
+    "product_projection_sha256": "eadf3fd4e7b94d2be28d742d4bf4fc234902aee5be44009cef6fcf06d899a030",
+    "product_files_sha256": {
+      "src/context_search_tool/dependency_replay.py": "72dd90814b3ae47e3158ecc78ad30473e14d0c16b7a1d686bf3786884d9bf0b9",
+      "src/context_search_tool/models.py": "737d288dc2169d331d28eba991c2f29a429e9e3cb43f073cd829161418754bf2",
+      "src/context_search_tool/query_planner.py": "e680a301dbba74a72b0520ee27b61224c93f8e278ee51cfb8e2c8fb6adffc727",
+      "src/context_search_tool/retrieval.py": "3309188431a0b182f99b096c8dba143be7914ecdab7eec85925375a555d55a13",
+      "src/context_search_tool/retrieval_core/candidates.py": "453210f757910a03ccb590fc48fb665da3aa1ecb3124d9e7f73370701eb0051d",
+      "src/context_search_tool/retrieval_core/context_expansion.py": "23ba1050f29cb997488fc3aed9f6a994ef7c94e5f0e5d1dcf54b94c070bf27c4",
+      "src/context_search_tool/retrieval_core/ranking.py": "5088e240014fdda1e156f50892d4fe54bdde5b1c34f04f249dfcb944d1caa92b"
+    },
+    "runner_and_tests_sha256": {
+      ".quality/p15-v7-attempt-001/stage2/stage2_runner.py": "66c470212b60a93f647d169f9971e4624331a7a4394385060feae9c2c03928d4",
+      ".quality/p15-v7-attempt-001/stage2/stage2_selftest.py": "031f8601a56be496b61c394ce08137047be7da70981abbf7816500956708b1d1",
+      "tests/fixtures/p15_v7_minimal_online_causal/attempt-contract.schema.json": "cdbae4a4fc0227e4241b0a0deec2b4865d3001dc5991c856d0a08d4cc4e8a10f",
+      "tests/fixtures/p15_v7_minimal_online_causal/supersession-audit.schema.json": "ccf9ece3e4abca2c5bef7bc70c9a4eb5d617f4c33a21a640b919e0341616196e",
+      "tests/p15_metric_replay.py": "94a0e7a2b41aaef1c643f0b279ea0b3071be4ec1478c607da7a2a6a447c7255e",
+      "tests/p15_pre_corpus_governance.py": "ac81eca5e7d4f5d90329425180cbe06db0487a99c22212562cd9f6b780108ef3",
+      "tests/test_dependency_replay.py": "35726f7237482031802b39fea94bae09b8659dec63ebc06d3d0dd114c52b60dc",
+      "tests/test_exact_imported_symbol_bonus.py": "31fd219d8c6bd2e94e681a734953b4255bc3daf00ffffccce1bd6f70395bcb30",
+      "tests/test_p15_metric_replay.py": "f49c42548f87320c0261e4b75c6740ae5386189767c82119a6ef2b358d180d8f",
+      "tests/test_p15_pre_corpus_governance.py": "22ab408fe7eb9a02ea12c5330aa44b2a8b29ae3ce166d7e1b88911d4fb51a6b9",
+      "tests/test_query_planner.py": "b53790cfe2578829d5d3edf0d6faa9f99730e2ca8067407c5f5c399db8d76912",
+      "tests/test_retrieval_core_boundaries.py": "afa0b855f271a72ebff851270d4e8eded3550b0f1a627372fb52e8839121d4f5",
+      "tests/p15_attempt_007_governance.py": "837708d2473930e1e004cab963430debab13aa2b57f4c8bc032e0df2cc718be7",
+      "tests/test_p15_attempt_007_governance.py": "7b640a3cf81810019f99a96fc915b7569c4d9555ae9dcaa655a26767e1b2de9d",
+      "tests/fixtures/p15_v7_minimal_online_causal/attempt-007-catalog-capture.schema.json": "933354bcf7afa5b390334283a0d7da0c9e09c8bf1ea01356c1cf69e0f9567657",
+      "tests/fixtures/p15_v7_minimal_online_causal/attempt-007-complete-allowlist.schema.json": "a180c9c1a8c0f82c55d7632d13eeb86e2398a3ca38f768b086ef67bb8fc68ceb",
+      "tests/fixtures/p15_v7_minimal_online_causal/attempt-007-sealed-catalog-receipt.schema.json": "dc488fdf935db89c8fc78c406269aa0cb9fc8124119e210cc4505c293477203c",
+      "tests/fixtures/p15_v7_minimal_online_causal/attempt-007-git-resolution-receipt.schema.json": "5c2d4b7a13d9989be581bf4b4a1b8bcee036924d73e14917b125674ad140fb71",
+      "tests/fixtures/p15_v7_minimal_online_causal/attempt-007-git-complete-allowlist.schema.json": "0d377c829361ad80f44dc2ee8e7c35b51b82c123d0aba4550b3daadac7e4d79a",
+      "tests/fixtures/p15_v7_minimal_online_causal/attempt-006-sealed-catalog-receipt.schema.json": "6f812a6fa66358a7e39897c8cac427cdf9ab5c7fdab92b88c8770117b29c212e",
+      "tests/fixtures/p15_v7_minimal_online_causal/attempt-002-identity-query-audit.schema.json": "ecc44a5b14909207fb50bbe1326c11d4a60bab8ab69f99780fbc43f145d59c62",
+      "tests/fixtures/p15_v7_minimal_online_causal/audit/p15-v7-attempt-002-contract.schema.json": "bfbe57a36b76d409fa37438bc8bd3f51122f941d485a512b8b16fce54b6d318f"
+    }
+  },
+  "online": {
+    "planner_provider": "openai-compatible",
+    "planner_domain": "api.siliconflow.cn",
+    "planner_endpoint": "https://api.siliconflow.cn/v1/chat/completions",
+    "planner_model": "Qwen/Qwen2.5-14B-Instruct",
+    "planner_temperature": 0,
+    "planner_seed": 0,
+    "planner_calls_per_case_sample": 1,
+    "embedding_provider": "openai-compatible",
+    "embedding_domain": "api.siliconflow.cn",
+    "embedding_endpoint": "https://api.siliconflow.cn/v1/embeddings",
+    "embedding_model": "Pro/BAAI/bge-m3",
+    "treatment_additional_planner_calls": 0,
+    "treatment_additional_embedding_calls": 0,
+    "localhost_calls": 0,
+    "ollama_calls": 0,
+    "planner_payload": "query_and_frozen_numeric_limits_only"
+  },
+  "corpus": {
+    "fresh_repositories": [],
+    "fresh_cases": [],
+    "fixed_denominators": {
+      "repositories": 2,
+      "cases": 12,
+      "efficacy_targets": 8,
+      "guard_cases": 4,
+      "planner_samples": 24,
+      "local_arm_replays": 96
+    },
+    "per_repository": {
+      "efficacy_cases": 4,
+      "guard_cases": 2
+    },
+    "selection_contract": {
+      "stage": "before_any_online_request",
+      "repository_order": "resolved_canonical_prefix2",
+      "structural_order": "frozen_independent_ast_order",
+      "per_repository_indices": [1, 2, 3, 4, 5, 6],
+      "guard_indices": [1, 2],
+      "efficacy_candidate_indices": [3, 4, 5, 6],
+      "cases_per_repository": 6,
+      "repository_count": 2,
+      "total_cases": 12,
+      "scan_beyond_index_6_allowed": false,
+      "case_replacement_allowed": false,
+      "repository_replacement_allowed": false,
+      "qualification_online_requests": 0,
+      "efficacy_control_requirement": "gold_missing_in_both_complete_frozen_samples_else_INCONCLUSIVE_CORPUS"
+    },
+    "gold_derivation": "independent_stdlib_ast_direct_from_import_unique_top_level_owner",
+    "query_policy": "source_only_no_target_alias_module_path_signal_or_gold_terms",
+    "selection_inputs": [
+      "repository_structure",
+      "independent_direct_import_gold",
+      "frozen_structural_order_indices_1_through_6"
+    ],
+    "selection_forbidden_inputs": [
+      "treatment_output",
+      "imported_target_hints",
+      "exact_source_hint_match",
+      "planner_status_case_deletion",
+      "candidate_admissible_roster_or_rank",
+      "gold_among_first_two_or_any_candidate_winners",
+      "private_candidate_helpers",
+      "promotion_decision_reimplementation",
+      "qualification_online_requests",
+      "structural_index_greater_than_6",
+      "case_replacement",
+      "repository_replacement"
+    ],
+    "planner_fallback_retained": true,
+    "held_out": {
+      "identity_selected": false,
+      "public_contract_sha256": "",
+      "sealed_payload_sha256": "",
+      "opened": false,
+      "opening_requires_fresh_outcome_pass_and_explicit_authorization": true
+    }
+  },
+  "sampling": {
+    "online_samples_per_case": 2,
+    "local_replays_per_sample_arm": 2,
+    "local_replay_count_is_exact": true,
+    "order_rule": "repository_rank_then_case_ordinal_then_sample_1_control_1_control_2_treatment_1_treatment_2_then_sample_2_treatment_1_treatment_2_control_1_control_2",
+    "expanded_schedule": [],
+    "schedule_frozen_before_treatment": true,
+    "same_sample_shared_capture_fields": [
+      "validated_or_fallback_plan_sha256",
+      "embedding_sha256",
+      "base_roster_sha256",
+      "shared_state_sha256"
+    ],
+    "same_sample_local_projection_exact": true,
+    "cross_sample_top12_exact_not_required": true,
+    "early_stop_or_result_dependent_append_forbidden": true
+  },
+  "gates": {
+    "outcome": {
+      "minimum_stable_causal_new_targets": 3,
+      "minimum_distinct_efficacy_cases": 3,
+      "minimum_repositories_with_gain": 2,
+      "required_target_losses": 0,
+      "rank_one_changes": 0,
+      "credited_gain_requires_promotion_marker_and_closed_exact_witness": true,
+      "minimum_valid_plans": 22,
+      "planner_sample_denominator": 24,
+      "maximum_precision_at_12_decline": 0.02,
+      "maximum_treatment_only_irrelevant_case_sample_paths": 1,
+      "target_recall_denominator": 8,
+      "separate_recall_numeric_floor": false,
+      "complete_matrix_before_decision": true
+    },
+    "held_out": {
+      "minimum_candidate_blind_target_missing_cases": 4,
+      "minimum_stable_causal_new_targets": 2,
+      "minimum_distinct_cases": 2,
+      "required_target_losses": 0
+    },
+    "release": {
+      "treatment_additional_online_requests": 0,
+      "local_treatment_median_max_relative_regression": 0.1,
+      "local_treatment_median_max_absolute_increase_ms": 5,
+      "end_to_end_online_latency_is_report_only": true,
+      "localhost_or_ollama_requests": 0,
+      "tracked_secret_header_source_absolute_path_or_raw_exception_leaks": 0,
+      "topk_caps_budgets_increase": 0,
+      "focused_tests": "pass",
+      "full_suite": "pass",
+      "ci": "pass"
+    },
+    "governance": {
+      "single_authoritative_contract": true,
+      "pre_corpus_fields_append_only": true,
+      "no_tuning_after_seal": true,
+      "outcome_release_governance_reported_separately": true,
+      "allowed_dispositions": [
+        "ship",
+        "accept_outcome",
+        "reject_outcome",
+        "release_reject",
+        "blocked"
+      ]
+    }
+  },
+  "gate_projection_sha256": "41ac126299b6f9f9350d7dc0ef4b9cee4e8c3a396137b20f8b69be25b555322a",
+  "governance": {
+    "fresh_identity_selected": false,
+    "fresh_source_accessed": false,
+    "candidate_executed": false,
+    "online_requests_made": false,
+    "ollama_requests_made": false,
+    "held_out_opened": false,
+    "quality_artifacts_modified": false
+  },
+  "pre_corpus_counters": {
+    "planner_calls": 0,
+    "embedding_calls": 0,
+    "source_accesses": 0,
+    "treatment_executions": 0,
+    "held_out_accesses": 0
+  },
+  "contract_frozen_at_utc": "2026-08-02T07:49:39Z",
+  "contract_binding": {
+    "projection_algorithm": "sha256_of_canonical_contract_with_empty_catalog_allowlist_and_approval_receipts",
+    "projection_sha256": "16d13a350fa8a20789709926fd6206228226f6fdcb8efc5e7f645a5449b093b0"
+  },
+  "catalog_contract": {
+    "provider": "github",
+    "transport": "GitHub REST",
+    "api_version": "2022-11-28",
+    "window_derivation": "window_start=floor_utc_hour(contract_frozen_at_utc)-P28D;duration=PT5M;window_end=window_start+PT5M-PT1S",
+    "window_duration": "PT5M",
+    "window_start_utc": "2026-07-05T07:00:00Z",
+    "window_end_utc": "2026-07-05T07:04:59Z",
+    "prior_universe_exclusion": {
+      "rule": "closed_interval_disjoint_from_attempt_005_catalog_window",
+      "attempt_id": "p15-v7-attempt-005",
+      "window_start_utc": "2026-07-04T06:00:00Z",
+      "window_end_utc": "2026-07-04T06:04:59Z"
+    },
+    "search_endpoint": "https://api.github.com/search/repositories",
+    "q": "language:Python is:public created:2026-07-05T07:00:00Z..2026-07-05T07:04:59Z",
+    "sort": "updated",
+    "order": "asc",
+    "per_page": 100,
+    "max_total_count": 1000,
+    "required_full_passes": 2,
+    "catalog_integrity_rule": "two_full_passes_exact_total_and_canonical_body_projection",
+    "page_receipt_etag_rule": "hash_bound_nullable_observation_not_integrity_evidence",
+    "catalog_receipt_rule": "append_only_full_ordered_catalog_and_page_evidence_sealed_before_refs",
+    "max_server_date_lag_seconds": 5,
+    "page_attempts": 1,
+    "request_headers": {
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28"
+    },
+    "ref_resolution_protocol": {
+      "protocol": "git_ls_remote_https_identity_only_v1",
+      "argv_template": [
+        "git",
+        "-c",
+        "credential.helper=",
+        "ls-remote",
+        "--refs",
+        "https://github.com/{owner}/{repository}.git",
+        "refs/heads/{default_branch_literal}"
+      ],
+      "default_branch_encoding": "literal_separate_argv_no_url_encoding",
+      "environment": {
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "LC_ALL": "C"
+      },
+      "timeout_seconds": 30,
+      "attempts_per_repository": 3,
+      "backoff_schedule_seconds": [0, 2, 5],
+      "checkout_allowed": false,
+      "repository_failure_policy": "retry_same_selected_repository_then_inconclusive",
+      "global_failure_policy": "stop_inconclusive_no_fallback_beyond_canonical_prefix2",
+      "order": "sealed_catalog_canonical_prefix2"
+    },
+    "resolution_receipt_rule": "append_only_all_attempts_for_canonical_prefix2_only",
+    "failure_policy": "resolution_exhaustion_inconclusive_no_third_repository_or_substitution"
+  },
+  "offline_catalog_source": {
+    "mode": "immutable_attempt_006_capture_no_requery",
+    "attempt_id": "p15-v7-attempt-006",
+    "archived_contract_path": "audit/p15-v7-attempt-006-contract.json",
+    "archived_contract_sha256": "ba8e5b5a48b8d3f5e5699db033c931eab958f851c7075d8a7d5b6354e980341b",
+    "archived_contract_projection_sha256": "74ac868812404ca83b23eab82571b264cd9e4d8a822202a77276cae2bc3e3afc",
+    "audit_path": "audit/attempt-006-catalog-validation-failure-audit.json",
+    "audit_sha256": "d055aed2a4b9742a4812df3be1875ff2589c1dea94284b990b4a27bf604d2691",
+    "capture_path": "audit/attempt-006-catalog-validation-failure-capture.json",
+    "capture_sha256": "c7ec58c12b3acafe8f3bd92598e28e51b47c8b70680e2719a722be5c2ae251db",
+    "capture_projection_sha256": "5974cb5b74708608a4ecc8b328367c025cb7f9b117ba78961edb67e88cceab72",
+    "catalog_requests_exact": 0
+  },
+  "catalog_ordering": {
+    "pre_ref": {
+      "tuple": ["NFKC(provider).casefold()", "NFKC(owner).casefold()", "NFKC(repository).casefold()"],
+      "order": "unicode_lex_ascending",
+      "tie_policy": "duplicate_normalized_repository_fail_no_input_or_api_tie"
+    },
+    "post_ref": {
+      "tuple": ["NFKC(provider).casefold()", "NFKC(owner).casefold()", "NFKC(repository).casefold()", "immutable_revision.lower()", "identity_sha256.lower()"],
+      "identity_fields": ["provider", "owner", "repository", "default_branch", "immutable_revision"],
+      "identity_sha256_algorithm": "sha256_of_canonical_json_identity_sort_keys_compact_ascii",
+      "order": "unicode_lex_ascending",
+      "tie_policy": "duplicate_repository_or_tuple_fail"
+    },
+    "updated_at_role": "evidence_only_forbidden_from_eligibility_and_sort"
+  },
+  "exclusion_projection": {
+    "normalization": "provider_owner_repository_unicode_nfkc_casefold",
+    "canonical_repositories": [
+      "github/agronholm/anyio",
+      "github/aio-libs/multidict",
+      "github/django/asgiref",
+      "github/hynek/structlog",
+      "github/pallets/markupsafe",
+      "github/pycqa/flake8",
+      "github/pydantic/pydantic",
+      "github/pytest-dev/pytest",
+      "github/python-attrs/attrs",
+      "github/python-trio/trio",
+      "github/textualize/rich",
+      "github/tox-dev/tox",
+      "github/pallets/click",
+      "github/tarpas/pytest-testmon",
+      "github/aws-samples/bedrock-access-gateway",
+      "github/model-bakers/model_bakery",
+      "github/octimot/storytoolkitai",
+      "github/jomingyu/google-play-scraper",
+      "github/naver/splade",
+      "github/doccker/cc-use-exp",
+      "github/coinhubmedia/melt-calculator-domains"
+    ],
+    "count": 21,
+    "canonical_repository_list_algorithm": "sha256_of_canonical_json_canonical_repositories_array_sort_keys_compact_ascii",
+    "canonical_repository_list_sha256": "e65c384cb03c5fabe424e0c0f443353592429974e83f6150f0f58471102b9cd5",
+    "projection_algorithm": "sha256_of_canonical_json_normalization_canonical_repositories_count_sort_keys_compact_ascii",
+    "projection_sha256": "dd0d21d2fbfc89244cb927e01ed1390a1140cc1df315949f4cd7b92225b7624e",
+    "source_audits": [
+      {
+        "attempt_id": "p15-v7-attempt-001",
+        "path": "audit/p15-v7-attempt-001-supersession.json",
+        "sha256": "a376fc1ef33aae5ef6cc82ad96bbca85fa4c933ae3c6daf67915439d4eddf68c",
+        "audit_only_hashes": true
+      },
+      {
+        "attempt_id": "p15-v7-attempt-002",
+        "path": "audit/attempt-002-identity-query-audit.json",
+        "sha256": "378eb98cec636c8a65955bf44d20e5c35d675a085689f82842f3aa7de14ae5a5",
+        "audit_only_hashes": true
+      },
+      {
+        "attempt_id": "p15-v7-attempt-003",
+        "path": "audit/attempt-003-catalog-failure-audit.json",
+        "sha256": "ec6093181adabdd64f767691bd5113984f1cf08f128d3d7569c972a967292426",
+        "audit_only_hashes": true
+      },
+      {
+        "attempt_id": "p15-v7-attempt-004",
+        "path": "audit/attempt-004-catalog-failure-audit.json",
+        "sha256": "236a6ec2dad29c6e02a95a89f20f26ef322fb0e48a2ae2e1a1e68a2966c55e3e",
+        "audit_only_hashes": true
+      },
+      {
+        "attempt_id": "p15-v7-attempt-005",
+        "path": "audit/attempt-005-ref-failure-audit.json",
+        "sha256": "b2b3bcd850803f2192af13b6b720b42b3dd03200d7be7021d1e01fc4b91b0908",
+        "audit_only_hashes": true
+      },
+      {
+        "attempt_id": "p15-v7-attempt-006",
+        "path": "audit/attempt-006-catalog-validation-failure-audit.json",
+        "sha256": "d055aed2a4b9742a4812df3be1875ff2589c1dea94284b990b4a27bf604d2691",
+        "audit_only_hashes": true
+      }
+    ]
+  },
+  "eligibility": {
+    "only": [
+      "public",
+      "language_python",
+      "default_branch_commit_resolved",
+      "not_excluded"
+    ]
+  },
+  "allowlist_rule": {
+    "contents": "resolved_eligible_canonical_prefix2_only",
+    "order": "frozen_post_ref_five_tuple_ascending"
+  },
+  "execution_rule": {
+    "repository_count": 2,
+    "selection": "canonical_catalog_prefix2",
+    "distinct_canonical_repositories": true,
+    "fallback_beyond_prefix_forbidden": true,
+    "resolution_attempts_per_repository": 3,
+    "resolution_timeout_seconds": 30,
+    "resolution_backoff_seconds": [0, 2, 5],
+    "resolution_exhaustion_disposition": "INCONCLUSIVE"
+  },
+  "catalog_receipt": {
+    "received": true,
+    "path": "attempt-007-sealed-catalog-receipt.json",
+    "sha256": "f40c7f752082b3f73ff455dd88cdb17f468696be5cbd83ca76f4bc259c2c4ddb"
+  },
+  "future_allowlist": {
+    "received": false,
+    "path": "",
+    "sha256": "",
+    "identity_selected": false
+  },
+  "zero_state": {
+    "catalog_requests": 0,
+    "ref_requests": 0,
+    "source_accesses": 0,
+    "planner_calls": 0,
+    "embedding_calls": 0,
+    "control_executions": 0,
+    "treatment_executions": 0,
+    "effect_observations": 0,
+    "online_model_calls": 0,
+    "ollama_calls": 0,
+    "held_out_accesses": 0
+  }
+}

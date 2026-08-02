@@ -21,6 +21,9 @@ from context_search_tool.query_planner import (
     MAX_IMPORTED_HINT_CODEPOINTS,
     MAX_IMPORTED_MODULE_HINTS,
     MAX_IMPORTED_SYMBOL_HINTS,
+    MAX_SOURCE_HINT_CODEPOINTS,
+    MAX_SOURCE_MODULE_HINTS,
+    MAX_SOURCE_SYMBOL_HINTS,
     OllamaQueryPlanner,
     OpenAICompatibleQueryPlanner,
     PROMPT_VERSION,
@@ -45,6 +48,8 @@ def test_query_plan_defaults_to_disabled() -> None:
     assert plan.rewritten_queries == []
     assert plan.grep_keywords == []
     assert plan.symbol_hints == []
+    assert plan.source_symbol_hints == []
+    assert plan.source_module_hints == []
     assert plan.dependency_intent == "none"
     assert plan.imported_symbol_hints == []
     assert plan.imported_module_hints == []
@@ -69,11 +74,15 @@ def test_p15_v4_attempt_contract_binds_product_constants_before_fresh() -> None:
     assert contract["online"]["model"] == "Qwen/Qwen2.5-14B-Instruct"
     assert contract["online"]["temperature"] == 0
     assert contract["online"]["seed"] == 0
-    assert contract["planner"]["prompt_version"] == PROMPT_VERSION
-    assert contract["planner"]["prompt_sha256"] == prompt_hash().removeprefix(
-        "sha256:"
+    assert contract["planner"]["prompt_version"] == (
+        "qwen-query-planner-v3-import-dependency-v1"
     )
-    assert set(contract["planner"]["response_fields"]) == PLANNER_JSON_FIELDS
+    assert contract["planner"]["prompt_sha256"] == (
+        "47bdeb31eea13e481c9a5ddabbb444e1a5b72ca297dcc11b6d56f088e4d3f322"
+    )
+    assert set(contract["planner"]["response_fields"]) == (
+        PLANNER_JSON_FIELDS - {"source_symbol_hints", "source_module_hints"}
+    )
     assert contract["planner"]["max_imported_symbol_hints"] == MAX_IMPORTED_SYMBOL_HINTS
     assert contract["planner"]["max_imported_module_hints"] == MAX_IMPORTED_MODULE_HINTS
     assert contract["planner"]["max_imported_hint_codepoints"] == MAX_IMPORTED_HINT_CODEPOINTS
@@ -310,6 +319,16 @@ def test_clean_planner_payload_strictly_cleans_dependency_hints() -> None:
             "rewritten_queries": [],
             "grep_keywords": [],
             "symbol_hints": [],
+            "source_symbol_hints": [
+                " SourceModule ",
+                "sourcemodule",
+                "invalid source",
+            ],
+            "source_module_hints": [
+                " src.source_module ",
+                "SRC.SOURCE_MODULE",
+                "src/source_module.py",
+            ],
             "intent": "data_flow",
             "dependency_intent": "follow_imports",
             "imported_symbol_hints": [" Request ", "request", "URL", "Invalid path"],
@@ -328,14 +347,57 @@ def test_clean_planner_payload_strictly_cleans_dependency_hints() -> None:
 
     assert plan.status == "ok"
     assert plan.dependency_intent == "follow_imports"
+    assert plan.source_symbol_hints == ["SourceModule"]
+    assert plan.source_module_hints == ["src.source_module"]
     assert plan.imported_symbol_hints == ["Request", "URL"]
     assert plan.imported_module_hints == ["httpx._models", "httpx._urls"]
+
+
+def test_clean_planner_payload_bounds_and_clears_source_hints() -> None:
+    source_symbols = [f"source_{index}" for index in range(6)]
+    source_modules = [f"pkg.source_{index}" for index in range(6)]
+    plan = clean_planner_payload(
+        original_query="trace source imports",
+        payload={
+            "dependency_intent": "follow_imports",
+            "source_symbol_hints": [
+                *source_symbols,
+                "x" * (MAX_SOURCE_HINT_CODEPOINTS + 1),
+            ],
+            "source_module_hints": source_modules,
+        },
+        config=QueryPlannerConfig(),
+        provider="openai-compatible",
+        model="Qwen/Qwen2.5-14B-Instruct",
+        latency_ms=1,
+    )
+
+    assert plan.source_symbol_hints == source_symbols[:MAX_SOURCE_SYMBOL_HINTS]
+    assert plan.source_module_hints == source_modules[:MAX_SOURCE_MODULE_HINTS]
+
+    cleared = clean_planner_payload(
+        original_query="search source",
+        payload={
+            "dependency_intent": "none",
+            "source_symbol_hints": ["source"],
+            "source_module_hints": ["pkg.source"],
+        },
+        config=QueryPlannerConfig(),
+        provider="openai-compatible",
+        model="Qwen/Qwen2.5-14B-Instruct",
+        latency_ms=1,
+    )
+
+    assert cleared.source_symbol_hints == []
+    assert cleared.source_module_hints == []
 
 
 @pytest.mark.parametrize(
     "payload",
     [
         {"dependency_intent": "invented"},
+        {"dependency_intent": "follow_imports", "source_symbol_hints": "source"},
+        {"dependency_intent": "follow_imports", "source_module_hints": "src.source"},
         {"dependency_intent": "follow_imports", "imported_symbol_hints": "Request"},
         {"dependency_intent": "follow_imports", "unexpected": []},
     ],
@@ -354,6 +416,8 @@ def test_clean_planner_payload_rejects_invalid_dependency_schema(
 
     assert plan.status == "fallback"
     assert plan.dependency_intent == "none"
+    assert plan.source_symbol_hints == []
+    assert plan.source_module_hints == []
     assert plan.imported_symbol_hints == []
     assert plan.imported_module_hints == []
 
@@ -582,6 +646,8 @@ def _complete_planner_payload(**changes: object) -> dict[str, object]:
         "rewritten_queries": [],
         "grep_keywords": [],
         "symbol_hints": [],
+        "source_symbol_hints": [],
+        "source_module_hints": [],
         "intent": "unknown",
         "dependency_intent": "none",
         "imported_symbol_hints": [],
@@ -950,6 +1016,8 @@ def test_openai_compatible_planner_query_only_mode_sends_no_repo_metadata() -> N
                                     "rewritten_queries": [],
                                     "grep_keywords": [],
                                     "symbol_hints": [],
+                                    "source_symbol_hints": ["sessions"],
+                                    "source_module_hints": ["httpx.sessions"],
                                     "intent": "data_flow",
                                     "dependency_intent": "follow_imports",
                                     "imported_symbol_hints": ["Request"],
@@ -979,6 +1047,8 @@ def test_openai_compatible_planner_query_only_mode_sends_no_repo_metadata() -> N
     )
 
     assert plan.status == "ok"
+    assert plan.source_symbol_hints == ["sessions"]
+    assert plan.source_module_hints == ["httpx.sessions"]
     assert plan.imported_symbol_hints == ["Request"]
     call = session.calls[0]
     user_payload = json.loads(call["json"]["messages"][1]["content"])
@@ -987,6 +1057,8 @@ def test_openai_compatible_planner_query_only_mode_sends_no_repo_metadata() -> N
         "max_rewritten_queries",
         "max_keywords",
         "max_symbol_hints",
+        "max_source_symbol_hints",
+        "max_source_module_hints",
         "max_imported_symbol_hints",
         "max_imported_module_hints",
     }

@@ -55,15 +55,15 @@ def test_structural_counts_and_states_are_exact(
         "module": 14,
         "type": 6,
     }
-    assert counts["relations_by_kind"] == {"imports": 17, "tests": 1}
+    assert counts["relations_by_kind"] == {"imports": 26, "tests": 1}
     assert counts["relations_by_resolution"] == {
         "ambiguous": 1,
         "external": 5,
-        "resolved_exact": 7,
-        "unresolved": 5,
+        "resolved_exact": 12,
+        "unresolved": 9,
     }
     assert forward["readiness"]["state"] == "ready"
-    assert forward["readiness"]["graph_producer_version"] == 1
+    assert forward["readiness"]["graph_producer_version"] == 3
     for edge in forward["forbidden_edges"]:
         assert edge["relation_ids"] == []
 

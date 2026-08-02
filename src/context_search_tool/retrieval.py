@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import context_search_tool.retrieval_trace as retrieval_trace
 from context_search_tool import (
+    dependency_replay,
     manifest,
     query_intent,
     query_planner,
@@ -124,6 +125,8 @@ def _query_repository_v5(
     trace_collector: RetrievalTraceCollector | None = None,
     graph_session_factory=None,
     vector_snapshot_loader=None,
+    dependency_replay_collector: dependency_replay.DependencyReplayCollector
+    | None = None,
 ) -> QueryBundle:
     resolved_repo = repo.resolve()
     index_dir = index_dir_for(resolved_repo)
@@ -138,6 +141,7 @@ def _query_repository_v5(
             planner=planner,
             trace_collector=trace_collector,
             index_exists=False,
+            dependency_replay_collector=dependency_replay_collector,
         )
 
     store = sqlite_store.SQLiteStore(db_path)
@@ -158,6 +162,7 @@ def _query_repository_v5(
                 full_file=full_file,
                 planner=planner,
                 trace_collector=trace_collector,
+                dependency_replay_collector=dependency_replay_collector,
             )
         graph_session.validate_ready_targets()
         if graph_session.capability.status == "stale":
@@ -209,6 +214,7 @@ def _query_repository_v5(
                 trace_collector=trace_collector,
                 graph_session=graph_session,
                 vector_snapshot=vector_snapshot,
+                dependency_replay_collector=dependency_replay_collector,
             )
         finally:
             if isinstance(vector_snapshot, candidates.NumpyVectorStore):
@@ -238,6 +244,8 @@ def _query_repository_impl(
     graph_session: sqlite_store.GraphReadSession | None = None,
     vector_snapshot: candidates.NumpyVectorStore | None = None,
     index_exists: bool | None = None,
+    dependency_replay_collector: dependency_replay.DependencyReplayCollector
+    | None = None,
 ) -> QueryBundle:
     repo = repo.resolve()
     original_tokens = ordering.dedupe_lowered(tokenizer.tokenize_query(query))
@@ -306,16 +314,26 @@ def _query_repository_impl(
         "query_understanding",
         input_count=len(original_tokens),
     )
-    planner_instance = planner or query_planner.planner_from_config(
-        config.query_planner
-    )
+    if planner is not None:
+        planner_instance = planner
+    elif dependency_replay_collector is not None:
+        planner_instance = query_planner.planner_from_config(
+            config.query_planner,
+            request_observer=dependency_replay_collector.observe_planner_request,
+        )
+    else:
+        planner_instance = query_planner.planner_from_config(config.query_planner)
     repo_profile = (
         build_repo_profile(store)
         if config.query_planner.send_repo_profile
         and (planner is not None or config.query_planner.enabled)
         else None
     )
-    plan = planner_instance.plan(query, repo_profile=repo_profile)
+    plan = (
+        dependency_replay_collector.plan(planner_instance, query, repo_profile)
+        if dependency_replay_collector is not None
+        else planner_instance.plan(query, repo_profile=repo_profile)
+    )
     query_variants, discarded_variants = query_planner.build_query_variants(
         query,
         plan,
@@ -329,6 +347,10 @@ def _query_repository_impl(
             ),
         )
     tokens = query_planner.expand_query_plan_tokens(query, plan)
+    if dependency_replay_collector is not None:
+        dependency_replay_collector.expect_embedding_inputs(
+            [variant.text for variant in query_variants]
+        )
     hint_tokens = (
         query_planner.planner_hint_tokens(original_tokens, tokens)
         if plan.status == "ok"
@@ -357,6 +379,11 @@ def _query_repository_impl(
             query_variants,
             config,
             deleted_ids,
+            embedding_observer=(
+                dependency_replay_collector.observe_embedding
+                if dependency_replay_collector is not None
+                else None
+            ),
         )
     else:
         (
@@ -369,6 +396,11 @@ def _query_repository_impl(
             query_variants,
             config,
             deleted_ids,
+            embedding_observer=(
+                dependency_replay_collector.observe_embedding
+                if dependency_replay_collector is not None
+                else None
+            ),
         )
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_candidate_stage(
@@ -687,6 +719,16 @@ def _query_repository_impl(
         merged_candidates,
         query,
     )
+    if dependency_replay_collector is not None:
+        dependency_replay_collector.capture(
+            query=query,
+            plan=plan,
+            query_vector=semantic_query_vector,
+            ranked_chunks=ranked_chunks,
+            candidates=merged_candidates,
+            graph_session=graph_session,
+            final_top_k=config.retrieval.final_top_k,
+        )
     if config.retrieval.consume_dependency_hints:
         ranked_chunks = ranking.apply_planner_dependency_hint_promotions(
             ranked_chunks,
@@ -702,6 +744,11 @@ def _query_repository_impl(
         "context_expansion",
         input_count=len(ranked_chunks),
     )
+    expansion_capture = (
+        {}
+        if dependency_replay_collector is None
+        else {"layout_observer": dependency_replay_collector.observe_expansion_layouts}
+    )
     expanded = context_expansion.expand_ranked_chunks(
         repo,
         ranked_chunks,
@@ -709,6 +756,7 @@ def _query_repository_impl(
         context_lines,
         full_file,
         protect_direct_graph=graph_session is not None,
+        **expansion_capture,
     )
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_expanded_stage(
@@ -726,6 +774,16 @@ def _query_repository_impl(
     similarity_resolver = relation_slot_similarities(
         config, semantic_query_vector, vector_snapshot
     )
+    if dependency_replay_collector is not None:
+        similarity_resolver = dependency_replay_collector.finalize_downstream(
+            expanded=expanded,
+            store=store,
+            graph_session=graph_session,
+            test_intent=has_test_intent,
+            anchor_top_k=evidence_anchor_top_k,
+            protect_direct_graph=graph_session is not None,
+            similarity_resolver=similarity_resolver,
+        )
     trace_decisions = None
     if trace_collector is None:
         visible_results, evidence_anchors = (
@@ -771,6 +829,8 @@ def _query_repository_impl(
         query_variants=query_variants,
         variant_retrieval_status=variant_retrieval_status,
     )
+    if dependency_replay_collector is not None:
+        dependency_replay_collector.verify_control_bundle(bundle)
     tracing.finish_trace(
         trace_collector,
         original_tokens=original_tokens,

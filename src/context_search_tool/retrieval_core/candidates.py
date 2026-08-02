@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any, Callable
 
 from context_search_tool import sqlite_store, tokenizer
 from context_search_tool.config import ToolConfig
@@ -39,6 +40,9 @@ def semantic_candidates(
     variants: list[QueryVariant],
     config: ToolConfig,
     deleted_ids: set[str],
+    *,
+    embedding_observer: Callable[[list[str], list[Any] | None, str], None]
+    | None = None,
 ) -> tuple[
     list[RetrievalCandidate], list[QueryVariant], str, list[float] | None
 ]:
@@ -47,6 +51,7 @@ def semantic_candidates(
         variants,
         config,
         deleted_ids,
+        embedding_observer=embedding_observer,
     )
 
 
@@ -55,6 +60,9 @@ def semantic_candidates_from_snapshot(
     variants: list[QueryVariant],
     config: ToolConfig,
     deleted_ids: set[str],
+    *,
+    embedding_observer: Callable[[list[str], list[Any] | None, str], None]
+    | None = None,
 ) -> tuple[
     list[RetrievalCandidate], list[QueryVariant], str, list[float] | None
 ]:
@@ -65,6 +73,7 @@ def semantic_candidates_from_snapshot(
         variants,
         config,
         deleted_ids,
+        embedding_observer=embedding_observer,
     )
 
 
@@ -73,6 +82,9 @@ def _semantic_candidates_with_store(
     variants: list[QueryVariant],
     config: ToolConfig,
     deleted_ids: set[str],
+    *,
+    embedding_observer: Callable[[list[str], list[Any] | None, str], None]
+    | None = None,
 ) -> tuple[
     list[RetrievalCandidate], list[QueryVariant], str, list[float] | None
 ]:
@@ -103,7 +115,11 @@ def _semantic_candidates_with_store(
             raise _BGEQueryError("bge_runtime_mismatch")
 
     try:
-        vectors = provider.embed_texts([variant.text for variant in variants])
+        vectors = _observed_embed_texts(
+            provider,
+            [variant.text for variant in variants],
+            embedding_observer,
+        )
         if len(vectors) != len(variants):
             raise ValueError(
                 "embedding response count does not match query variant count"
@@ -114,8 +130,10 @@ def _semantic_candidates_with_store(
         if len(variants) == 1:
             raise
         executed_variants = variants[:1]
-        vectors = provider.embed_texts(
-            [variant.text for variant in executed_variants]
+        vectors = _observed_embed_texts(
+            provider,
+            [variant.text for variant in executed_variants],
+            embedding_observer,
         )
         if len(vectors) != 1:
             raise ValueError("embedding response count does not match original query")
@@ -158,6 +176,22 @@ def _semantic_candidates_with_store(
                 )
             )
     return candidates, executed_variants, status, original_query_vector
+
+
+def _observed_embed_texts(
+    provider: Any,
+    texts: list[str],
+    observer: Callable[[list[str], list[Any] | None, str], None] | None,
+) -> list[Any]:
+    try:
+        vectors = provider.embed_texts(texts)
+    except Exception:
+        if observer is not None:
+            observer(texts, None, "error")
+        raise
+    if observer is not None:
+        observer(texts, vectors, "ok")
+    return vectors
 
 
 def _valid_bge_runtime_identity(

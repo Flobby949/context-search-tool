@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "p15-v7-attempt-006-sealed-catalog-receipt-v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "attempt_id",
+    "contract_projection_sha256",
+    "storage_mode",
+    "sealed",
+    "sealed_at_utc",
+    "passes",
+    "ordered_catalog_count",
+    "ordered_catalog",
+    "ordered_catalog_sha256",
+    "projection_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": "p15-v7-attempt-006-sealed-catalog-receipt-v1"},
+    "attempt_id": {"const": "p15-v7-attempt-006"},
+    "contract_projection_sha256": {"$ref": "#/$defs/sha256"},
+    "storage_mode": {"const": "append_only"},
+    "sealed": {"const": true},
+    "sealed_at_utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "passes": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "object"}},
+    "ordered_catalog_count": {"type": "integer", "minimum": 0, "maximum": 1000},
+    "ordered_catalog": {"type": "array", "items": {"$ref": "#/$defs/repository"}},
+    "ordered_catalog_sha256": {"$ref": "#/$defs/sha256"},
+    "projection_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "repository": {
+      "type": "object",
+      "required": ["provider", "owner", "repository", "visibility", "language", "default_branch", "updated_at"],
+      "properties": {
+        "provider": {"type": "string"},
+        "owner": {"type": "string"},
+        "repository": {"type": "string"},
+        "visibility": {"type": "string"},
+        "language": {"type": ["string", "null"]},
+        "default_branch": {"type": "string"},
+        "updated_at": {"type": "string"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

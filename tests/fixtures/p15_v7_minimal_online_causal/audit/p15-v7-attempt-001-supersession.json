@@ -1,0 +1,50 @@
+{
+  "schema_version": "p15-v7-supersession-audit-v2",
+  "attempt_id": "p15-v7-attempt-001",
+  "status": "INCONCLUSIVE",
+  "disposition": "superseded-before-execution",
+  "execution_eligible": false,
+  "old_contract": {
+    "path": "audit/p15-v7-attempt-001-contract.json",
+    "sha256": "fe1964e451b34319e99b277c41d70212336e08770d5072e12daa00369a753b3f",
+    "audit_only": true
+  },
+  "old_allowlist": {
+    "path": ".quality/p15-v7-attempt-001/stage2/fresh-allowlist.json",
+    "identity_only_sha256": "0bf7ddf6f5667005df9b7d53e3be8f11bbc5c98ba9870f444bd62c28e0e875db",
+    "audit_only": true
+  },
+  "exclusion_projection": {
+    "sha256": "c916efd99c66681aab7f339c60be0cbeba873ab668dcedd2ed84a6e7651eb599",
+    "identity_only": true,
+    "contract_exclusion_input": true
+  },
+  "timeline": {
+    "allowlist_recorded_at": "2026-08-02T11:24:52+08:00",
+    "source_materialized_at": "2026-08-02T11:25:22+08:00",
+    "audit_created_at": "2026-08-02T12:58:47+08:00"
+  },
+  "source_evidence": {
+    "checkout_identity": "agronholm/anyio@003e5d6bc3eba8f4e75bf2b2b5fb3f7dd11e6330",
+    "checkout_root": ".quality/p15-v7-attempt-001/stage2/sources/rank-01-anyio",
+    "observed_paths": [
+      ".git/index",
+      "src/anyio/__init__.py"
+    ],
+    "source_materialized": true,
+    "source_touched": true,
+    "materialized_checkout_count_minimum": 1,
+    "source_content_observed": "not_established"
+  },
+  "execution_observations": {
+    "corpus_generated": false,
+    "planner_calls": 0,
+    "embedding_calls": 0,
+    "online_calls": 0,
+    "control_executions": 0,
+    "treatment_executions": 0,
+    "effect_observations": 0,
+    "ollama_calls": 0,
+    "held_out_accesses": 0
+  }
+}

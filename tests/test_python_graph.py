@@ -105,6 +105,33 @@ def test_columns_are_utf8_byte_offsets() -> None:
     assert decl.range.start_line == 3
 
 
+def test_module_assignment_facts_keep_first_static_named_binding_only() -> None:
+    facts = extract_python_facts(
+        "inline/variables.py",
+        (
+            b"USE_EXTENSIONS = True\n"
+            b"USE_EXTENSIONS = False\n"
+            b"TIMEOUT: float = 1.0\n"
+            b"UNBOUND: int\n"
+            b"left, right = (1, 2)\n"
+            b"CHAINED_LEFT = CHAINED_RIGHT = 1\n"
+            b"class Config:\n"
+            b"    CLASS_VALUE = 1\n"
+            b"def configure():\n"
+            b"    local_value = 1\n"
+            b"if enabled:\n"
+            b"    CONDITIONAL = True\n"
+        ),
+    )
+
+    assert [fact.name for fact in facts.assignments] == [
+        "USE_EXTENSIONS",
+        "TIMEOUT",
+        "CONDITIONAL",
+    ]
+    assert [fact.range.start_line for fact in facts.assignments] == [1, 3, 12]
+
+
 def test_import_syntax_forms_produce_reviewed_raw_facts() -> None:
     facts = _facts("app/service.py")
 
@@ -149,6 +176,34 @@ def test_import_star_and_aliased_forms() -> None:
     ]
 
 
+def test_named_importfrom_aliases_emit_exact_symbol_facts() -> None:
+    facts = extract_python_facts(
+        "pkg/source.py",
+        (
+            b"from .target import First, Second as LocalSecond\n"
+            b"from pkg.other import Third\n"
+            b"from . import Sibling\n"
+            b"from pkg.star import *\n"
+            b"import pkg.module as module_alias\n"
+        ),
+    )
+
+    assert [
+        (
+            fact.module,
+            fact.relative_level,
+            fact.imported_name,
+            fact.local_name,
+            fact.range.start_line,
+        )
+        for fact in facts.imported_symbols
+    ] == [
+        ("target", 1, "First", "First", 1),
+        ("target", 1, "Second", "LocalSecond", 1),
+        ("pkg.other", 0, "Third", "Third", 2),
+    ]
+
+
 def test_dynamic_imports_emit_no_fact() -> None:
     facts = _facts("app/dynamic.py")
 
@@ -178,6 +233,7 @@ def test_malformed_syntax_returns_bounded_diagnostic() -> None:
     assert facts.parse_status == "syntax_error"
     assert facts.declarations == ()
     assert facts.imports == ()
+    assert facts.imported_symbols == ()
     assert [(item.code, item.count) for item in facts.diagnostics] == [
         ("syntax_error", 1)
     ]
@@ -698,7 +754,9 @@ def test_import_relations_project_exact_v5_rows() -> None:
     graph = producer.materialize(context, parsed, chunks, module_signal)
 
     by_target = {
-        relation.metadata["specifier"]: relation for relation in graph.relations
+        relation.metadata["specifier"]: relation
+        for relation in graph.relations
+        if relation.target_kind == "module"
     }
     # `import app.service` and `from .service import ...` resolve to the same
     # target module, so they merge into one relation per the design.
@@ -731,6 +789,274 @@ def test_import_relations_project_exact_v5_rows() -> None:
     assert "aliases" not in relation.metadata
 
 
+def test_exact_imported_symbol_relation_is_materialized_beside_module_edge() -> None:
+    producer = PythonGraphProducer()
+    context = _selector_context("app/api.py")
+    parsed = producer.parse(
+        context,
+        b"from .service import build_service as build\n",
+    )
+    chunks = (_chunk_for("app/api.py", 1, 20, "chunk-all"),)
+    module_signal = _module_signal("app/api.py")
+
+    graph = producer.materialize(context, parsed, chunks, module_signal)
+
+    module_relation = next(
+        relation for relation in graph.relations if relation.target_kind == "module"
+    )
+    exact_relation = next(
+        relation
+        for relation in graph.relations
+        if relation.target_kind == "python_declaration"
+    )
+    assert module_relation.target_qualified_name == "app/service.py"
+    assert exact_relation.target_qualified_name == "app.service.build_service"
+    assert exact_relation.target_project_unit_key == ""
+    assert exact_relation.metadata == {
+        "resolution_basis": "exact_python_imported_symbol",
+        "selector_state": "exact",
+        "target_file_path": "app/service.py",
+        "target_signal_kinds": ["type", "function", "variable"],
+        "imported_name": "build_service",
+        "local_names": ["build"],
+        "relative_level": 1,
+        "first_source_line": 1,
+        "first_source_column": 0,
+        "occurrence_count": 1,
+        "module_relation_id": module_relation.relation_id,
+        "module_selector": {
+            "state": "exact",
+            "specifier": ".service",
+            "target_file_path": "app/service.py",
+        },
+    }
+
+
+def test_repeated_exact_imported_symbols_merge_aliases_and_occurrences() -> None:
+    producer = PythonGraphProducer()
+    context = _selector_context("app/api.py")
+    parsed = producer.parse(
+        context,
+        (
+            b"from .service import build_service\n"
+            b"from .service import build_service as build\n"
+        ),
+    )
+
+    graph = producer.materialize(
+        context,
+        parsed,
+        (_chunk_for("app/api.py", 1, 20, "chunk-all"),),
+        _module_signal("app/api.py"),
+    )
+
+    exact_relations = [
+        relation
+        for relation in graph.relations
+        if relation.target_kind == "python_declaration"
+    ]
+    assert len(exact_relations) == 1
+    [relation] = exact_relations
+    assert relation.metadata["occurrence_count"] == 2
+    assert relation.metadata["local_names"] == ["build", "build_service"]
+    assert relation.metadata["first_source_line"] == 1
+
+
+def test_exact_imported_symbol_cap_is_independent_of_module_cap() -> None:
+    producer = PythonGraphProducer()
+    context = _selector_context("app/api.py")
+    imported_names = ", ".join(f"Name{index:03d}" for index in range(257))
+    parsed = producer.parse(
+        context,
+        f"from .service import {imported_names}\n".encode(),
+    )
+
+    graph = producer.materialize(
+        context,
+        parsed,
+        (_chunk_for("app/api.py", 1, 20, "chunk-all"),),
+        _module_signal("app/api.py"),
+    )
+
+    module_relations = [
+        relation for relation in graph.relations if relation.target_kind == "module"
+    ]
+    exact_relations = [
+        relation
+        for relation in graph.relations
+        if relation.target_kind == "python_declaration"
+    ]
+    assert len(module_relations) == 1
+    assert len(exact_relations) == 256
+    assert graph.metadata["graph_omitted_imported_symbols"] == 1
+
+
+def test_v5_index_resolves_real_exact_imported_symbol_relation(tmp_path) -> None:
+    import sqlite3
+
+    from context_search_tool.config import DEFAULT_CONFIG
+    from context_search_tool.graph_resolution import resolve_graph_relations
+    from context_search_tool.indexer import build_v5_index_snapshot, scan_workspace_v5
+    from context_search_tool.sqlite_store import SQLiteStore
+
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    (repo / "pkg" / "source.py").write_text(
+        "from .target import Target as LocalTarget\n",
+        encoding="utf-8",
+    )
+    (repo / "pkg" / "target.py").write_text(
+        "class Target:\n    pass\n",
+        encoding="utf-8",
+    )
+
+    build_v5_index_snapshot(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[PythonGraphProducer()],
+        scanner=scan_workspace_v5,
+    )
+
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    with sqlite3.connect(store.db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT relation_id
+            FROM code_relations
+            WHERE source_file_path = 'pkg/source.py'
+              AND json_extract(metadata, '$.resolution_basis')
+                  = 'exact_python_imported_symbol'
+              AND deleted_at IS NULL
+            """
+        ).fetchall()
+    assert len(rows) == 1
+    relation = store.graph_relation_for_id(str(rows[0][0]))
+    assert relation is not None
+    assert relation.target_kind == "python_declaration"
+    assert relation.target_qualified_name == "pkg.target.Target"
+    assert relation.resolution == "resolved_exact"
+    target = store.graph_signal_for_id(relation.target_signal_id)
+    assert target is not None
+    assert target.kind == "type"
+    assert target.file_path == _P("pkg/target.py")
+    with store.graph_read_session() as graph_session:
+        outgoing = graph_session.outgoing_relations(relation.source_signal_id)
+    assert [item.target_kind for item in outgoing] == [
+        "module",
+        "python_declaration",
+    ]
+
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "DELETE FROM code_relations WHERE relation_id = ?",
+            (relation.metadata["module_relation_id"],),
+        )
+    resolve_graph_relations(store)
+    cleared = store.graph_relation_for_id(relation.relation_id)
+    assert cleared is not None
+    assert cleared.resolution == "unresolved"
+    assert cleared.target_signal_id == ""
+
+
+def test_v5_index_resolves_module_assignment_import_target(tmp_path) -> None:
+    import sqlite3
+
+    from context_search_tool.config import DEFAULT_CONFIG
+    from context_search_tool.indexer import build_v5_index_snapshot, scan_workspace_v5
+    from context_search_tool.sqlite_store import SQLiteStore
+
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    (repo / "pkg" / "source.py").write_text(
+        "from .target import USE_EXTENSIONS\n",
+        encoding="utf-8",
+    )
+    (repo / "pkg" / "target.py").write_text(
+        (
+            "USE_EXTENSIONS = True\n"
+            "if should_disable:\n"
+            "    USE_EXTENSIONS = False\n"
+        ),
+        encoding="utf-8",
+    )
+
+    build_v5_index_snapshot(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[PythonGraphProducer()],
+        scanner=scan_workspace_v5,
+    )
+
+    store = SQLiteStore(repo / ".context-search" / "index.sqlite")
+    with sqlite3.connect(store.db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT relation_id
+            FROM code_relations
+            WHERE source_file_path = 'pkg/source.py'
+              AND json_extract(metadata, '$.resolution_basis')
+                  = 'exact_python_imported_symbol'
+              AND deleted_at IS NULL
+            """
+        ).fetchone()
+    assert row is not None
+    relation = store.graph_relation_for_id(str(row[0]))
+    assert relation is not None
+    assert relation.resolution == "resolved_exact"
+    assert relation.metadata["target_signal_kinds"] == [
+        "type",
+        "function",
+        "variable",
+    ]
+    target = store.graph_signal_for_id(relation.target_signal_id)
+    assert target is not None
+    assert target.kind == "variable"
+    assert target.name == "USE_EXTENSIONS"
+    assert target.qualified_name == "pkg.target.USE_EXTENSIONS"
+    assert target.file_path == _P("pkg/target.py")
+    assert target.start_line == 1
+    assert target.recallable is False
+
+
+def test_exact_imported_symbol_relation_fails_closed_on_cross_kind_ambiguity(
+    tmp_path,
+) -> None:
+    import sqlite3
+
+    from context_search_tool.config import DEFAULT_CONFIG
+    from context_search_tool.indexer import build_v5_index_snapshot, scan_workspace_v5
+
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    (repo / "pkg" / "source.py").write_text(
+        "from .target import Target\n",
+        encoding="utf-8",
+    )
+    (repo / "pkg" / "target.py").write_text(
+        "class Target:\n    pass\n\ndef Target():\n    pass\n",
+        encoding="utf-8",
+    )
+
+    build_v5_index_snapshot(
+        repo,
+        DEFAULT_CONFIG,
+        graph_plugins=[PythonGraphProducer()],
+        scanner=scan_workspace_v5,
+    )
+
+    with sqlite3.connect(repo / ".context-search" / "index.sqlite") as connection:
+        row = connection.execute(
+            """
+            SELECT resolution, target_signal_id
+            FROM code_relations
+            WHERE json_extract(metadata, '$.resolution_basis')
+                = 'exact_python_imported_symbol'
+              AND deleted_at IS NULL
+            """
+        ).fetchone()
+    assert row == ("ambiguous", "")
+
+
 def test_repeated_imports_merge_and_distinct_targets_do_not() -> None:
     producer = PythonGraphProducer()
     context = _selector_context("app/service.py")
@@ -752,7 +1078,9 @@ def test_repeated_imports_merge_and_distinct_targets_do_not() -> None:
     assert clients[0].metadata["occurrence_count"] == 2
     assert clients[0].metadata["first_source_line"] == 2
     specs = sorted(
-        relation.metadata["specifier"] for relation in graph.relations
+        relation.metadata["specifier"]
+        for relation in graph.relations
+        if relation.target_kind == "module"
     )
     assert specs == sorted(
         ["os", "app.dupe", ".clients", "..app", "app.api", "app.clients.text"]

@@ -614,7 +614,11 @@ def apply_planner_dependency_hint_promotions(
         or plan.status != "ok"
         or plan.dependency_intent != "follow_imports"
         or final_top_k <= 0
-        or not (plan.symbol_hints or plan.grep_keywords)
+        or not (
+            plan.source_symbol_hints
+            or plan.source_module_hints
+            or plan.imported_symbol_hints
+        )
     ):
         return ordered
 
@@ -633,11 +637,25 @@ def apply_planner_dependency_hint_promotions(
 
     source_hints = {
         normalized
-        for value in (*plan.symbol_hints, *plan.grep_keywords)
+        for value in (*plan.source_symbol_hints, *plan.source_module_hints)
         if (normalized := _normalized_dependency_hint(value))
     }
-    if not source_hints:
-        return ordered
+    target_hints = {
+        normalized
+        for value in (
+            *plan.imported_symbol_hints,
+            *(
+                plan.source_symbol_hints
+                if plan.imported_symbol_hints
+                else ()
+            ),
+        )
+        if (normalized := _normalized_dependency_hint(value))
+    }
+    semantic_pair_fallback = (
+        not source_hints and bool(plan.imported_symbol_hints)
+    )
+    ranked_by_chunk_id = {ranked.chunk.chunk_id: ranked for ranked in ordered}
 
     source_signal_cache: dict[str, CodeSignal | None] = {}
     target_signal_cache: dict[str, CodeSignal | None] = {}
@@ -676,8 +694,6 @@ def apply_planner_dependency_hint_promotions(
                 source_signal,
             ):
                 continue
-            if not _dependency_source_signal_matches(source_signal, source_hints):
-                continue
             if atom.target_signal_id not in target_signal_cache:
                 try:
                     target_signal_cache[atom.target_signal_id] = (
@@ -691,6 +707,32 @@ def apply_planner_dependency_hint_promotions(
                 target_signal,
             ):
                 continue
+            source_ranked = ranked_by_chunk_id.get(atom.source_chunk_id)
+            source_is_direct = (
+                source_ranked is not None and source_ranked.evidence_priority == 0
+            )
+            identity_matches, pair_evidence_required = (
+                _dependency_hint_identity_matches(
+                    source_signal=source_signal,
+                    target_signal=target_signal,
+                    source_hints=source_hints,
+                    target_hints=target_hints,
+                    semantic_pair_fallback=semantic_pair_fallback,
+                )
+            )
+            if not identity_matches:
+                continue
+            if pair_evidence_required:
+                if not source_is_direct or source_ranked is None:
+                    continue
+                if round(
+                    source_ranked.rerank_score + ranked.rerank_score,
+                    ordering.RERANK_SORT_DECIMALS,
+                ) <= round(
+                    cutoff.rerank_score,
+                    ordering.RERANK_SORT_DECIMALS,
+                ):
+                    continue
             matched = True
             break
         if not matched:
@@ -784,13 +826,59 @@ def _dependency_source_signal_matches(
         prefix = signal.project_unit_key.rstrip("/") + "/"
         if project_relative_module_path.startswith(prefix):
             project_relative_module_path = project_relative_module_path[len(prefix) :]
-    source_identities = {
-        _normalized_dependency_hint(module_path),
-        _normalized_dependency_hint(project_relative_module_path),
-        _normalized_dependency_hint(project_relative_module_path).replace("/", "."),
-        _normalized_dependency_hint(Path(module_path).name),
-    }
+    identity_paths = {module_path, project_relative_module_path}
+    if project_relative_module_path.startswith("src/"):
+        identity_paths.add(project_relative_module_path[len("src/") :])
+    for path in tuple(identity_paths):
+        if path.endswith("/__init__"):
+            identity_paths.add(path[: -len("/__init__")])
+    source_identities = set()
+    for path in identity_paths:
+        normalized = _normalized_dependency_hint(path)
+        source_identities.update(
+            {
+                normalized,
+                normalized.replace("/", "."),
+                _normalized_dependency_hint(Path(path).name),
+            }
+        )
     return bool(source_hints.intersection(source_identities))
+
+
+def _dependency_target_signal_matches(
+    signal: CodeSignal,
+    target_hints: set[str],
+) -> bool:
+    identities = {
+        _normalized_dependency_hint(signal.name),
+        _normalized_dependency_hint(signal.qualified_name),
+    }
+    if signal.qualified_name:
+        identities.add(
+            _normalized_dependency_hint(signal.qualified_name.rsplit(".", 1)[-1])
+        )
+    return bool(target_hints.intersection(identities))
+
+
+def _dependency_hint_identity_matches(
+    *,
+    source_signal: CodeSignal,
+    target_signal: CodeSignal,
+    source_hints: set[str],
+    target_hints: set[str],
+    semantic_pair_fallback: bool,
+) -> tuple[bool, bool]:
+    source_matches = _dependency_source_signal_matches(
+        source_signal,
+        source_hints,
+    )
+    if not target_hints:
+        return source_matches, False
+    if _dependency_target_signal_matches(target_signal, target_hints):
+        return True, not source_matches
+    if semantic_pair_fallback:
+        return True, True
+    return False, False
 
 
 def _read_frontend_import_anchor(path: Path) -> str:
