@@ -13,6 +13,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import p8_real_python_graphs_acceptance as runner
 
 
+pytestmark = pytest.mark.archival_acceptance
+
+
 _HASH_CONFIG_IDENTITY = (
     "5ab1cee713aff995519814538508a44cece92c285a746094e1cab8b86c7745be"
 )

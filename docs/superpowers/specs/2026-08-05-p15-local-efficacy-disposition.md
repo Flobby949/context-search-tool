@@ -49,3 +49,98 @@ Task 1 的行为测试识别三种成功 promotion mode：**exact_source_hint**�
 ## 6. Tracked 投影
 
 [local-efficacy-summary.json](../../../tests/fixtures/p15_post_acceptance/local-efficacy-summary.json) 是本 disposition 的机器可检验投影。它冻结 attempt 状态、原始 artifact 哈希、DRAFT 输入、仓库提交、overall/per-repository 指标、fast-context 计数、门状态、候选身份限制和 promotion 复核结果。其 canonical bytes 与 closed shape 由 [test_p15_post_acceptance_disposition.py](../../../tests/test_p15_post_acceptance_disposition.py) 验证。
+
+## 7. Clean baseline 失败分类
+
+本节是 Task 3 追加的测试分类账，不改写前述 Task 2 的证据观察点。在固定
+commit **2426e5c2437a62208d723435c04bf0aefdd11390** 的 clean worktree 上，
+rooted full observation 为 **3700 passed, 112 failed, 5 skipped, 6
+deselected**。112 个失败节点各自只进入一个初始类别：
+
+| 初始类别 | 失败节点数 |
+| --- | ---: |
+| product/current | 3 |
+| archival | 105 |
+| runtime-pinned | 2 |
+| missing durable fixture | 2 |
+| contamination | 0 |
+| unsupported runtime | 0 |
+
+完整的 112 节点闭集见
+[failure-classification.json](../../../tests/fixtures/p15_post_acceptance/failure-classification.json)。
+它逐项保存 `node_id`、唯一 `category` 和非空 `disposition`，同时冻结上述 baseline
+commit、命令和结果；canonical JSON bytes 与 closed shape 由
+`tests/test_p15_failure_classification.py` 检验。
+
+### 7.1 当前产品失败及处置
+
+三个 `product/current` 节点均保留在产品门，并做了定点测试修复：
+
+| 节点 | 处置 |
+| --- | --- |
+| `tests/test_exploration_boundaries.py::test_only_reviewed_production_change_roots_are_used` | 将 `src/context_search_tool/dependency_replay.py` 加入精确、单文件的 P15 reviewed-production overlay，并新增 overlay 闭集断言。 |
+| `tests/test_p5_graph_contract.py::test_fresh_and_reverse_order_structural_projections_match_expected_bytes[p5_generic_tests]` | 重新冻结当前 producer 的 canonical generic-tests 投影；新增断言，将四个 Python module assignment 明确固定为 variable signals。 |
+| `tests/test_retrieval_trace_pipeline.py::test_trace_repository_reports_missing_index_without_changing_bundle` | 测试 seam 从旧的 `Path.stat` 对齐到当前 missing-index preflight 实际使用的 `Path.exists`；未改变产品执行路径。 |
+
+### 7.2 Archival 失败源与最终 marker 布局
+
+`archival=105` 只来自以下 5 个 archival 失败源模块，而不是来自最终 marker
+布局中的全部模块：
+
+| 失败源模块 | archival 失败节点数 |
+| --- | ---: |
+| `tests/test_p13_bge_provider_measurement.py` | 16 |
+| `tests/test_p15_python_import_symbol_acceptance.py` | 4 |
+| `tests/test_p15_v2_python_import_symbol_acceptance.py` | 48 |
+| `tests/test_p15_v3_exact_provenance_bonus_acceptance.py` | 36 |
+| `tests/test_p15_metric_replay.py` | 1 |
+
+最终 gate 使用以下 9 个最终 marker 模块；它们不属于默认产品发布门：
+
+- `tests/test_p8_real_python_graphs_acceptance.py`
+- `tests/test_p13_bge_provider_measurement.py`
+- `tests/test_p14_definition_owner_acceptance.py`
+- `tests/test_p15_python_import_symbol_acceptance.py`
+- `tests/test_p15_v2_python_import_symbol_acceptance.py`
+- `tests/test_p15_v3_exact_provenance_bonus_acceptance.py`
+- `tests/test_p15_pre_corpus_governance.py`
+- `tests/test_p15_attempt_007_governance.py`
+- `tests/test_p15_metric_replay.py`
+
+后四个非失败源模块进入 marker 布局，是因为它们整体属于历史验收或治理审计；这不改变
+clean baseline 中 105 个 archival 失败节点的来源和计数。
+
+### 7.3 Runtime 与 durable fixture 边界
+
+两个 `runtime-pinned` 失败节点位于
+`tests/test_retrieval_core_characterization.py`，只在冻结的 Python、OS 和 SQLite
+身份下有意义。
+
+P8 的两个 missing durable fixture 节点是：
+
+- `tests/test_p8_real_python_graphs_acceptance.py::test_hash_v4_requires_static_descriptor_identity_and_zero_ollama`
+- `tests/test_p8_real_python_graphs_acceptance.py::test_bge_truncation_bounds_every_embedded_text`
+
+它们在初始分类中仍唯一计为 `missing durable fixture=2`。当前 hash factory 的离线
+行为已迁移到独立产品测试
+`tests/test_embeddings_vector_store.py::test_default_hash_provider_factory_is_offline`；当前
+BGE head/tail truncation 行为也由独立产品测试
+`tests/test_embeddings_bge.py::test_bge_provider_applies_exact_head_tail_transform_at_2001`
+和
+`tests/test_embeddings_bge.py::test_bge_provider_prepares_6924_dense_cjk_by_exact_code_points`
+覆盖。随后整个 P8 历史模块转入 archival gate。因此这两个节点在门的最终布局中随模块
+执行，但不重复计入 archival=105，也不把易失 pointer 重新包装成 clean-checkout
+产品 fixture。
+
+### 7.4 修复后观察
+
+本次验证身份记录为：
+
+- verification_base_commit = `2426e5c2437a62208d723435c04bf0aefdd11390`
+- verification_candidate = `uncommitted Task 3 working tree immediately before the documentation-only observation update`
+
+candidate 当时是未提交工作树，因此没有为它虚构 commit 或 tree 标识。修复后的严格
+收集为 **3868 tests collected**。当前产品表达式
+`not slow and not archival_acceptance and not runtime_pinned` 的观察结果为
+**3342 passed, 5 skipped, 521 deselected**。这两个数字是 Task 3 的后置验证，
+不替换前文 Task 2 的 focused gate 或 attempt 证据身份。

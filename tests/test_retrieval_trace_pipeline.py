@@ -213,15 +213,15 @@ def test_trace_repository_reports_missing_index_without_changing_bundle(
     monkeypatch.setattr(sqlite_store, "SQLiteStore", forbidden)
     monkeypatch.setattr(candidates, "NumpyVectorStore", forbidden)
     monkeypatch.setattr(Path, "read_text", forbidden)
-    original_stat = Path.stat
-    stat_paths: list[Path] = []
+    original_exists = Path.exists
+    exists_paths: list[Path] = []
 
-    def preflight_stat(path: Path, *args, **kwargs):
-        stat_paths.append(path)
+    def preflight_exists(path: Path) -> bool:
+        exists_paths.append(path)
         assert path == repo / ".context-search" / "index.sqlite"
-        return original_stat(path, *args, **kwargs)
+        return original_exists(path)
 
-    monkeypatch.setattr(Path, "stat", preflight_stat)
+    monkeypatch.setattr(Path, "exists", preflight_exists)
     expected = retrieval.QueryBundle(
         query="audit",
         expanded_tokens=["audit"],
@@ -240,7 +240,7 @@ def test_trace_repository_reports_missing_index_without_changing_bundle(
     assert traced.trace.outcome == "empty"
     assert traced.trace.termination_reason == "missing_index"
     assert traced.trace.stages == ()
-    assert stat_paths == [
+    assert exists_paths == [
         repo / ".context-search" / "index.sqlite",
         repo / ".context-search" / "index.sqlite",
     ]

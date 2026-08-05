@@ -28,7 +28,8 @@ Context Search Tool 是一个本地代码检索 CLI。它会在目标项目根�
 开发安装：
 
 ```bash
-python -m pip install -e ".[dev]"
+python -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
 ```
 
 安装后会得到 `cst` 命令：
@@ -768,16 +769,30 @@ cst query /path/to/repo "query" --full-file
 安装开发依赖：
 
 ```bash
-python -m pip install -e ".[dev]"
+python -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
 ```
 
-运行测试：
+运行当前产品发布门：
 
 ```bash
-pytest -v -m "not slow"
+.venv/bin/pytest -q \
+  -m "not slow and not archival_acceptance and not runtime_pinned"
 ```
 
-已启动本机 Ollama/BGE 服务时，可去掉 marker 过滤运行包括集成项在内的完整套件。
+固定运行时 characterization 与历史证据审计是两个独立门：
+
+```bash
+.venv/bin/pytest -q -m "runtime_pinned"
+
+.venv/bin/pytest -q -m "archival_acceptance" \
+  --archival-evidence-root "$PWD"
+```
+
+archival 门必须显式提供 `--archival-evidence-root`，当前只支持仓库根目录；
+仓库根之外的 evidence root 会被拒绝，仓库内相应的封存证据也必须完整。runtime
+身份不匹配会在执行前返回 `UsageError`。`--collect-only` 只绕过 evidence/runtime
+环境绑定，不会绕过双 marker 冲突。
 
 检索质量的标准 CI、真实仓库 smoke、planner、BGE A/B、报告比较和 MCP
 反馈流程见 [Retrieval Quality Workflow](docs/retrieval-quality.md)。快速本地门禁：

@@ -33,10 +33,12 @@ requires = ["setuptools>=69.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = [".", "src"]
 testpaths = ["tests"]
 norecursedirs = ["tests/fixtures"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "integration: marks tests requiring external services"
+    "integration: marks tests requiring external services",
+    "archival_acceptance: marks superseded milestone contracts or preserved evidence; not a product release gate",
+    "runtime_pinned: marks tracked Python, OS, or SQLite identity characterization; not a product release gate"
 ]

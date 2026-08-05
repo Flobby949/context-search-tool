@@ -11,6 +11,9 @@ import pytest
 import p15_v2_python_import_symbol_acceptance as acceptance
 
 
+pytestmark = pytest.mark.archival_acceptance
+
+
 MANIFEST = (
     Path(__file__).parent
     / "fixtures/p15_v2_python_import_symbols/input_manifest.json"

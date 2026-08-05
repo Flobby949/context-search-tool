@@ -18,6 +18,9 @@ from p15_pre_corpus_governance import (
 )
 
 
+pytestmark = pytest.mark.archival_acceptance
+
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = PROJECT_ROOT / "tests/fixtures/p15_v7_minimal_online_causal"
 CONTRACT_PATH = FIXTURE_ROOT / "audit/p15-v7-attempt-002-contract.json"

@@ -12,6 +12,9 @@ import pytest
 import p15_v3_exact_provenance_bonus_acceptance as acceptance
 
 
+pytestmark = pytest.mark.archival_acceptance
+
+
 MANIFEST = Path(__file__).parent / "fixtures/p15_v3_exact_provenance_bonus/input_manifest.json"
 RUN_ROOT = Path(__file__).parents[1] / ".quality/p15-runs/p15-v3-attempt-001"
 ORIGINAL_ROOT = acceptance.ROOT

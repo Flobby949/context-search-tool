@@ -1210,6 +1210,28 @@ def test_descriptor_v2_rejects_future_schema_size_damage_and_symlink(
         NumpyVectorStore.inspect_published_descriptor(tmp_path)
 
 
+def test_default_hash_provider_factory_is_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden_session() -> object:
+        raise AssertionError("default hash provider created an HTTP session")
+
+    monkeypatch.setattr(embeddings_module.requests, "Session", forbidden_session)
+
+    provider = embeddings_module.provider_from_config(DEFAULT_CONFIG.embedding)
+
+    assert type(provider) is HashEmbeddingProvider
+    assert provider.fingerprint() == {
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384,
+    }
+    vectors = provider.embed_texts(["offline default embedding"])
+    assert len(vectors) == 1
+    assert vectors[0].shape == (384,)
+    assert float(np.linalg.norm(vectors[0])) == pytest.approx(1.0)
+
+
 def test_provider_from_config_supports_bge() -> None:
     from context_search_tool.embeddings import provider_from_config
     from context_search_tool.embeddings_bge import BGEEmbeddingProvider
