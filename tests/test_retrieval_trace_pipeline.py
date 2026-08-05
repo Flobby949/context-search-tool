@@ -190,12 +190,214 @@ def test_plain_query_does_not_construct_or_touch_trace_observations(
         "_adjustments",
         "_final_selections",
         "_trace_query",
+        "dependency_promotion_decision_counts",
     ):
         monkeypatch.setattr(tracing, name, forbidden)
     for name in ("_FinalTraceInput", "_FinalTraceDecisions"):
         monkeypatch.setattr(selection, name, forbidden)
 
     assert retrieval.query_repository(repo, "audit", config).results
+
+
+def test_dependency_promotion_stage_is_visible_when_feature_is_disabled(
+    tmp_path: Path,
+) -> None:
+    repo, config = _indexed_repo(tmp_path)
+    plain = retrieval.query_repository(repo, "INVOLVED_BY_ME", config)
+
+    traced = retrieval.trace_repository(repo, "INVOLVED_BY_ME", config)
+
+    names = [stage.name for stage in traced.trace.stages]
+    stage = traced.trace.stages[names.index("dependency_promotion")]
+    assert names[names.index("cohort_rerank") + 1] == "dependency_promotion"
+    assert names[names.index("dependency_promotion") + 1] == "context_expansion"
+    assert stage.decision_counts == (("disabled", 1),)
+    assert stage.input_count == stage.output_count
+    assert stage.unique_output_count == stage.output_count
+    assert query_payload(traced.bundle) == query_payload(plain)
+    assert all(
+        tuple(rank.stage for rank in selection.rank_history) == (
+            "ranking",
+            "cohort_rerank",
+            "dependency_promotion",
+            "context_expansion",
+            "final_selection",
+        )
+        for selection in traced.trace.final_selections
+    )
+
+
+def test_dependency_promotion_stage_uses_real_planner_disabled_callback(
+    tmp_path: Path,
+) -> None:
+    repo, config = _indexed_repo(tmp_path)
+    config = replace(
+        config,
+        retrieval=replace(
+            config.retrieval,
+            consume_dependency_hints=True,
+        ),
+    )
+    assert config.query_planner.enabled is False
+    plain = retrieval.query_repository(repo, "INVOLVED_BY_ME", config)
+
+    traced = retrieval.trace_repository(repo, "INVOLVED_BY_ME", config)
+
+    stage = next(
+        stage
+        for stage in traced.trace.stages
+        if stage.name == "dependency_promotion"
+    )
+    assert stage.decision_counts == (("planner_not_ok", 1),)
+    assert query_payload(traced.bundle) == query_payload(plain)
+
+
+@pytest.mark.parametrize(
+    ("observation", "expected_counts"),
+    [
+        pytest.param(
+            {"status": status},
+            ((status, 1),),
+            id=status,
+        )
+        for status in (
+            "graph_unavailable",
+            "planner_not_ok",
+            "intent_mismatch",
+            "missing_activation_hint",
+            "no_eligible_closed_candidate",
+        )
+    ]
+    + [
+        pytest.param(
+            {
+                "status": "promoted",
+                "exact_source_hint_promoted": 1,
+                "exact_target_hint_promoted": 0,
+                "semantic_pair_fallback_promoted": 0,
+                "promoted_path_count": 1,
+            },
+            (
+                ("exact_source_hint", 1),
+                ("exact_target_hint", 0),
+                ("semantic_pair_fallback", 0),
+                ("promoted_path_count", 1),
+            ),
+            id="exact-source",
+        ),
+        pytest.param(
+            {
+                "status": "promoted",
+                "exact_source_hint_promoted": 2,
+                "exact_target_hint_promoted": 0,
+                "semantic_pair_fallback_promoted": 0,
+                "promoted_path_count": 2,
+            },
+            (
+                ("exact_source_hint", 2),
+                ("exact_target_hint", 0),
+                ("semantic_pair_fallback", 0),
+                ("promoted_path_count", 2),
+            ),
+            id="exact-source-two-paths",
+        ),
+        pytest.param(
+            {
+                "status": "promoted",
+                "exact_source_hint_promoted": 0,
+                "exact_target_hint_promoted": 1,
+                "semantic_pair_fallback_promoted": 0,
+                "promoted_path_count": 1,
+            },
+            (
+                ("exact_source_hint", 0),
+                ("exact_target_hint", 1),
+                ("semantic_pair_fallback", 0),
+                ("promoted_path_count", 1),
+            ),
+            id="exact-target",
+        ),
+        pytest.param(
+            {
+                "status": "promoted",
+                "exact_source_hint_promoted": 0,
+                "exact_target_hint_promoted": 0,
+                "semantic_pair_fallback_promoted": 1,
+                "promoted_path_count": 1,
+            },
+            (
+                ("exact_source_hint", 0),
+                ("exact_target_hint", 0),
+                ("semantic_pair_fallback", 1),
+                ("promoted_path_count", 1),
+            ),
+            id="semantic-pair",
+        ),
+    ],
+)
+def test_dependency_promotion_stage_maps_the_task1_observation_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    observation: dict[str, object],
+    expected_counts: tuple[tuple[str, int], ...],
+) -> None:
+    repo, config = _indexed_repo(tmp_path)
+    config = replace(
+        config,
+        retrieval=replace(
+            config.retrieval,
+            consume_dependency_hints=True,
+        ),
+    )
+
+    def controlled_promotion(
+        ranked_chunks: list[core_types._RankedChunk],
+        *_args: object,
+        observation_callback=None,
+        **_kwargs: object,
+    ) -> list[core_types._RankedChunk]:
+        if observation_callback is not None:
+            observation_callback(
+                {
+                    **observation,
+                    "authorization": "Bearer PRIVATE_AUTHORIZATION",
+                    "raw_exception": "PRIVATE_RAW_EXCEPTION",
+                    "source_body": "PRIVATE_SOURCE_BODY",
+                    "absolute_path": str(repo.resolve()),
+                }
+            )
+        return ranked_chunks
+
+    monkeypatch.setattr(
+        ranking,
+        "apply_planner_dependency_hint_promotions",
+        controlled_promotion,
+    )
+    plain = retrieval.query_repository(repo, "INVOLVED_BY_ME", config)
+
+    traced = retrieval.trace_repository(repo, "INVOLVED_BY_ME", config)
+
+    stage = next(
+        stage
+        for stage in traced.trace.stages
+        if stage.name == "dependency_promotion"
+    )
+    assert stage.decision_counts == expected_counts
+    assert len(stage.top_candidates) <= traced.trace.limits.stage_top_k
+    assert all(
+        not Path(candidate.file_path).is_absolute()
+        for candidate in stage.top_candidates
+    )
+    assert query_payload(traced.bundle) == query_payload(plain)
+    assert traced.trace.schema_version == 1
+    assert "PRIVATE_AUTHORIZATION" not in repr(stage)
+    assert "PRIVATE_RAW_EXCEPTION" not in repr(stage)
+    assert "PRIVATE_SOURCE_BODY" not in repr(stage)
+    assert str(repo.resolve()) not in repr(stage)
+    formatted = format_trace_markdown(
+        trace_payload(repo, "INVOLVED_BY_ME", traced.trace)
+    )
+    assert "dependency_promotion" in formatted
 
 
 def test_trace_repository_reports_missing_index_without_changing_bundle(
@@ -578,11 +780,13 @@ class FinalSelectionCollector:
         "chunk-a": (
             ("ranking", 4, 0.9),
             ("cohort_rerank", 3, 1.0),
+            ("dependency_promotion", 3, 1.0),
             ("context_expansion", 2, 1.0),
         ),
         "chunk-b": (
             ("ranking", 2, 1.1),
             ("cohort_rerank", 5, 0.8),
+            ("dependency_promotion", 4, 0.8),
             ("context_expansion", 2, 0.8),
         ),
     }
@@ -656,6 +860,7 @@ def test_merged_final_selection_keeps_origins_best_ranks_and_clamp() -> None:
     assert [(entry.stage, entry.rank) for entry in trace_selection.rank_history] == [
         ("ranking", 2),
         ("cohort_rerank", 3),
+        ("dependency_promotion", 3),
         ("context_expansion", 2),
         ("final_selection", 1),
     ]
@@ -774,6 +979,7 @@ def test_definition_owner_trace_reports_existing_ceiling_clamp_adjustment(
     assert tuple(item.stage for item in trace_selection.rank_history) == (
         "ranking",
         "cohort_rerank",
+        "dependency_promotion",
         "context_expansion",
         "final_selection",
     )
@@ -938,6 +1144,13 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo, config = _indexed_repo(tmp_path)
+    config = replace(
+        config,
+        retrieval=replace(
+            config.retrieval,
+            consume_dependency_hints=True,
+        ),
+    )
     events: list[str] = []
     active: dict[str, str | None] = {"stage": None}
     stopped_state: dict[str, str | None] = {"stage": None}
@@ -1052,6 +1265,7 @@ def test_every_stage_orders_live_operation_stop_clock_and_observation(
     for name in (
         "rank_chunks",
         "apply_frontend_import_cohort_rerank",
+        "apply_planner_dependency_hint_promotions",
     ):
         mark_operation(ranking, name)
     for name in (

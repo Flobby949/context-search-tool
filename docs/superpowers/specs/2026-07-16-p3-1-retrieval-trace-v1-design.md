@@ -912,3 +912,26 @@ documentation, and conditional roadmap update are implemented and verified.
 
 It does not split `retrieval.py`, change ranking, execute follow-up queries, add
 multi-round exploration, persist traces, or begin P3.2 implementation.
+
+## Compatibility Amendment (2026-08-05 — Narrow P15 Extension)
+
+This dated amendment is limited to the approved P15 diagnostic extension in
+docs/superpowers/plans/2026-08-05-p15-post-acceptance-remediation-plan.md §9.2.
+It makes one named compatibility decision:
+
+- `dependency_promotion` occupies the reserved sixteenth stage, after
+  `cohort_rerank` and before `context_expansion`;
+- it uses the existing `decision_counts` and `rank_history` vocabulary to expose
+  the approved closed status/mode counts and rank transition;
+- it adds no public field to the trace, stage, candidate, or selection payload.
+
+Consequently, `schema_version` remains `1`. References above to the original
+fifteen-stage implementation describe the pre-amendment baseline; the amended
+canonical sequence contains sixteen stages within the already frozen
+`max_stages=16` bound.
+
+This amendment narrowly overrides the earlier rule that every new stage requires
+a new version only for this named, approved expansion. It does not authorize
+arbitrary stage additions or an open-ended stage vocabulary. Any future public
+field, unapproved stage or legal value, or unapproved semantic meaning requires a
+new schema version.

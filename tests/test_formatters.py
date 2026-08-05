@@ -63,6 +63,7 @@ def _trace() -> RetrievalTrace:
         rank_history=(
             TraceRank("ranking", 1, 1.0),
             TraceRank("cohort_rerank", 1, 1.1),
+            TraceRank("dependency_promotion", 1, 1.1),
             TraceRank("context_expansion", 1, 1.1),
             TraceRank("final_selection", 1, 1.1),
         ),
@@ -112,6 +113,15 @@ def _trace() -> RetrievalTrace:
                     ("semantic", 1),
                     ("planner_semantic", 0),
                 ),
+                top_candidates=(candidate,),
+            ),
+            TraceStage(
+                name="dependency_promotion",
+                input_count=1,
+                output_count=1,
+                unique_output_count=1,
+                duration_ms=1,
+                decision_counts=(("disabled", 1),),
                 top_candidates=(candidate,),
             ),
             TraceStage(
@@ -169,6 +179,108 @@ def test_trace_markdown_rejects_malformed_envelope_without_leaking_details() -> 
     ) as raised:
         format_trace_markdown(malformed)
     assert "SOURCE_CONTENT_SENTINEL" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "formatter",
+    [format_trace_json, format_trace_markdown],
+    ids=["json", "markdown"],
+)
+def test_trace_formatters_reject_unknown_schema_v1_stage_without_leakage(
+    formatter,
+) -> None:
+    malformed = trace_payload(Path("/repo"), "audit", _trace())
+    malformed["repo"] = "PRIVATE_REPO_SENTINEL"
+    malformed["trace"]["stages"][0]["name"] = "future_stage"
+
+    with pytest.raises(TraceFormatError) as raised:
+        formatter(malformed)
+
+    assert str(raised.value) == "Retrieval trace formatting failed"
+    assert "PRIVATE_REPO_SENTINEL" not in str(raised.value)
+    assert "future_stage" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "decision_counts",
+    [
+        pytest.param((), id="empty"),
+        pytest.param(
+            (("disabled", 1), ("PRIVATE_DECISION_SENTINEL", 0)),
+            id="extra-key",
+        ),
+        pytest.param(
+            (
+                ("exact_source_hint", 1),
+                ("exact_target_hint", 0),
+                ("semantic_pair_fallback", 0),
+            ),
+            id="missing-key",
+        ),
+        pytest.param(
+            (
+                ("exact_source_hint", -1),
+                ("exact_target_hint", 0),
+                ("semantic_pair_fallback", 0),
+                ("promoted_path_count", 1),
+            ),
+            id="negative",
+        ),
+        pytest.param((("disabled", True),), id="bool"),
+        pytest.param((("disabled", "1"),), id="string"),
+        pytest.param(
+            (
+                ("exact_source_hint", 1),
+                ("exact_target_hint", 0),
+                ("semantic_pair_fallback", 0),
+                ("promoted_path_count", 2),
+            ),
+            id="wrong-sum",
+        ),
+        pytest.param(
+            (
+                ("exact_source_hint", 3),
+                ("exact_target_hint", 0),
+                ("semantic_pair_fallback", 0),
+                ("promoted_path_count", 3),
+            ),
+            id="path-count-out-of-range",
+        ),
+        pytest.param(
+            (
+                ("exact_target_hint", 0),
+                ("exact_source_hint", 1),
+                ("semantic_pair_fallback", 0),
+                ("promoted_path_count", 1),
+            ),
+            id="wrong-key-order",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "formatter",
+    [format_trace_json, format_trace_markdown],
+    ids=["json", "markdown"],
+)
+def test_trace_formatters_reject_non_closed_dependency_decisions_without_leakage(
+    decision_counts: tuple[tuple[str, object], ...],
+    formatter,
+) -> None:
+    malformed = trace_payload(Path("/repo"), "audit", _trace())
+    malformed["repo"] = "PRIVATE_REPO_SENTINEL"
+    stage = next(
+        item
+        for item in malformed["trace"]["stages"]
+        if item["name"] == "dependency_promotion"
+    )
+    stage["decision_counts"] = dict(decision_counts)
+
+    with pytest.raises(TraceFormatError) as raised:
+        formatter(malformed)
+
+    assert str(raised.value) == "Retrieval trace formatting failed"
+    assert "PRIVATE_REPO_SENTINEL" not in str(raised.value)
+    assert "PRIVATE_DECISION_SENTINEL" not in str(raised.value)
 
 
 def sample_bundle() -> QueryBundle:

@@ -729,6 +729,20 @@ def _query_repository_impl(
             graph_session=graph_session,
             final_top_k=config.retrieval.final_top_k,
         )
+    token = tracing.start_stage(
+        trace_collector,
+        "dependency_promotion",
+        input_count=len(ranked_chunks),
+    )
+    promotion_observation = (
+        None
+        if trace_collector is None
+        else (
+            {}
+            if config.retrieval.consume_dependency_hints
+            else {"status": "disabled"}
+        )
+    )
     if config.retrieval.consume_dependency_hints:
         ranked_chunks = ranking.apply_planner_dependency_hint_promotions(
             ranked_chunks,
@@ -737,7 +751,26 @@ def _query_repository_impl(
             query,
             graph_session,
             final_top_k=config.retrieval.final_top_k,
+            observation_callback=(
+                None
+                if promotion_observation is None
+                else promotion_observation.update
+            ),
         )
+    stopped = tracing.stop_stage(trace_collector, token)
+    tracing.finish_ranked_stage(
+        trace_collector,
+        stopped,
+        ranked=ranked_chunks,
+        candidates=merged_candidates,
+        decision_counts=(
+            ()
+            if promotion_observation is None
+            else tracing.dependency_promotion_decision_counts(
+                promotion_observation
+            )
+        ),
+    )
 
     token = tracing.start_stage(
         trace_collector,

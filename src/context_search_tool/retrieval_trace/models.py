@@ -19,6 +19,24 @@ TraceSelectionReason = Literal[
     "selected_within_anchor_limit",
 ]
 
+CANONICAL_TRACE_STAGES = (
+    "query_understanding",
+    "semantic_recall",
+    "lexical_recall",
+    "path_symbol_recall",
+    "direct_text_recall",
+    "signal_recall",
+    "planner_hint_recall",
+    "direct_merge",
+    "anchor_expansion",
+    "relation_expansion",
+    "candidate_merge",
+    "ranking",
+    "cohort_rerank",
+    "dependency_promotion",
+    "context_expansion",
+    "final_selection",
+)
 SOURCE_COUNT_KEYS = (
     "semantic",
     "planner_semantic",
@@ -32,10 +50,51 @@ SOURCE_COUNT_KEYS = (
     "anchor_expansion",
     "relation",
 )
+DEPENDENCY_PROMOTION_NO_OP_STATUSES = (
+    "disabled",
+    "graph_unavailable",
+    "planner_not_ok",
+    "intent_mismatch",
+    "missing_activation_hint",
+    "no_eligible_closed_candidate",
+)
+DEPENDENCY_PROMOTION_DECISION_KEYS = (
+    "exact_source_hint",
+    "exact_target_hint",
+    "semantic_pair_fallback",
+    "promoted_path_count",
+)
 
 
 class RetrievalTraceError(RuntimeError):
     """Raised when trace-only state violates the schema-v1 contract."""
+
+
+def validate_dependency_promotion_decision_counts(
+    decision_counts: tuple[tuple[str, object], ...],
+) -> None:
+    if len(decision_counts) == 1:
+        key, value = decision_counts[0]
+        valid = (
+            key in DEPENDENCY_PROMOTION_NO_OP_STATUSES
+            and type(value) is int
+            and value == 1
+        )
+    elif tuple(key for key, _ in decision_counts) == (
+        DEPENDENCY_PROMOTION_DECISION_KEYS
+    ):
+        values = tuple(value for _, value in decision_counts)
+        valid = (
+            all(type(value) is int and value >= 0 for value in values)
+            and values[3] in {1, 2}
+            and sum(values[:3]) == values[3]
+        )
+    else:
+        valid = False
+    if not valid:
+        raise RetrievalTraceError(
+            "invalid dependency promotion decision counts"
+        )
 
 
 def _non_negative_int(name: str, value: int) -> None:
@@ -161,8 +220,8 @@ class TraceStage:
     top_candidates: tuple[TraceCandidate, ...] = ()
 
     def __post_init__(self) -> None:
-        if not self.name:
-            raise RetrievalTraceError("stage name must not be empty")
+        if self.name not in CANONICAL_TRACE_STAGES:
+            raise RetrievalTraceError("invalid trace stage name")
         for field_name in (
             "input_count",
             "output_count",
@@ -173,6 +232,10 @@ class TraceStage:
         if self.unique_output_count > self.output_count:
             raise RetrievalTraceError(
                 "unique_output_count must not exceed output_count"
+            )
+        if self.name == "dependency_promotion":
+            validate_dependency_promotion_decision_counts(
+                self.decision_counts
             )
         for key, value in (*self.source_counts, *self.decision_counts):
             if not key:
@@ -268,6 +331,7 @@ class TraceSelection:
         if tuple(item.stage for item in self.rank_history) != (
             "ranking",
             "cohort_rerank",
+            "dependency_promotion",
             "context_expansion",
             "final_selection",
         ):
@@ -343,6 +407,9 @@ class RetrievalTrace:
 
 
 __all__ = [
+    "CANONICAL_TRACE_STAGES",
+    "DEPENDENCY_PROMOTION_DECISION_KEYS",
+    "DEPENDENCY_PROMOTION_NO_OP_STATUSES",
     "RetrievalTrace",
     "RetrievalTraceError",
     "SOURCE_COUNT_KEYS",
@@ -358,4 +425,5 @@ __all__ = [
     "TraceSelectionReason",
     "TraceStage",
     "TraceTerminationReason",
+    "validate_dependency_promotion_decision_counts",
 ]

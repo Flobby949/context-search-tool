@@ -121,6 +121,7 @@ def _selection(
             for stage in (
                 "ranking",
                 "cohort_rerank",
+                "dependency_promotion",
                 "context_expansion",
                 "final_selection",
             )

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import context_search_tool.retrieval_trace as retrieval_trace
 from context_search_tool.retrieval_core import (
@@ -257,7 +257,12 @@ def _final_selections(
             )
         )
         ranks: list[retrieval_trace.TraceRank] = []
-        for stage in ("ranking", "cohort_rerank", "context_expansion"):
+        for stage in (
+            "ranking",
+            "cohort_rerank",
+            "dependency_promotion",
+            "context_expansion",
+        ):
             positions = [
                 value
                 for chunk_id in item.chunk_ids
@@ -374,6 +379,7 @@ def finish_ranked_stage(
     *,
     ranked: list[core_types._RankedChunk],
     candidates: dict[str, RetrievalCandidate],
+    decision_counts: tuple[tuple[str, int], ...] = (),
 ) -> None:
     if collector is None or stopped is None:
         return
@@ -387,8 +393,40 @@ def finish_ranked_stage(
         output_count=len(ranked),
         unique_output_count=len(ranked),
         candidates=observations,
+        decision_counts=decision_counts,
         rank_positions=_ranked_positions(ranked),
     )
+
+
+def dependency_promotion_decision_counts(
+    observation: dict[str, object],
+) -> tuple[tuple[str, int], ...]:
+    status = observation.get("status")
+    if status in retrieval_trace.DEPENDENCY_PROMOTION_NO_OP_STATUSES:
+        decision_counts: tuple[tuple[str, object], ...] = (
+            (str(status), 1),
+        )
+    else:
+        if status != "promoted":
+            raise retrieval_trace.RetrievalTraceError(
+                "invalid dependency promotion observation"
+            )
+        decision_counts = tuple(
+            zip(
+                retrieval_trace.DEPENDENCY_PROMOTION_DECISION_KEYS,
+                (
+                    observation.get("exact_source_hint_promoted"),
+                    observation.get("exact_target_hint_promoted"),
+                    observation.get("semantic_pair_fallback_promoted"),
+                    observation.get("promoted_path_count"),
+                ),
+                strict=True,
+            )
+        )
+    retrieval_trace.validate_dependency_promotion_decision_counts(
+        decision_counts
+    )
+    return cast(tuple[tuple[str, int], ...], decision_counts)
 
 
 def finish_expanded_stage(

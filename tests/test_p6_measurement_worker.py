@@ -420,6 +420,7 @@ def test_query_worker_captures_private_numeric_production_trace(tmp_path: Path) 
         "candidate_merge",
         "ranking",
         "cohort_rerank",
+        "dependency_promotion",
         "context_expansion",
         "final_selection",
     ]

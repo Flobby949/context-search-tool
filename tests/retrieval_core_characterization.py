@@ -975,7 +975,7 @@ class StageLedgerRecorder:
         recorder = self
 
         def wrapped(ranked: list[Any], *args: Any, **kwargs: Any) -> Any:
-            stage_name = ("ranking", "cohort_rerank")[recorder._ranked_stage_index]
+            stage_name = CANONICAL_TRACE_STAGES[11:14][recorder._ranked_stage_index]
             recorder._ranked_stage_index += 1
             recorder.live_outputs[stage_name] = [
                 _ranked_projection(item) for item in ranked
@@ -1051,7 +1051,7 @@ class StageLedgerRecorder:
         }
         trace_stages = {stage.name: stage for stage in traced.trace.stages}
         if tuple(trace_stages) != tuple(CANONICAL_TRACE_STAGES):
-            raise RuntimeError("full-stage case did not execute all fifteen stages")
+            raise RuntimeError("full-stage case did not execute all canonical stages")
         if set(self.live_outputs) != set(CANONICAL_TRACE_STAGES):
             missing = set(CANONICAL_TRACE_STAGES) - set(self.live_outputs)
             raise RuntimeError(f"full-stage wrappers missed stages: {sorted(missing)}")

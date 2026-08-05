@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import pytest
 
@@ -19,6 +20,12 @@ from context_search_tool.retrieval_trace import (
     TraceSelection,
     TraceStage,
     retrieval_trace_payload,
+)
+
+
+TRACE_V1_DESIGN = (
+    Path(__file__).parents[1]
+    / "docs/superpowers/specs/2026-07-16-p3-1-retrieval-trace-v1-design.md"
 )
 
 
@@ -72,6 +79,7 @@ def _selection(rank: int = 1) -> TraceSelection:
         rank_history=(
             TraceRank("ranking", rank, 1.0),
             TraceRank("cohort_rerank", rank, 1.1),
+            TraceRank("dependency_promotion", rank, 1.1),
             TraceRank("context_expansion", rank, 1.1),
             TraceRank("final_selection", rank, 1.1),
         ),
@@ -162,6 +170,92 @@ def test_trace_models_reject_invalid_public_values(factory, message: str) -> Non
         factory()
 
 
+def test_trace_stage_rejects_unknown_schema_v1_name() -> None:
+    with pytest.raises(RetrievalTraceError, match="invalid trace stage name"):
+        TraceStage(
+            name="future_stage",
+            input_count=0,
+            output_count=0,
+            unique_output_count=0,
+            duration_ms=0,
+        )
+
+
+@pytest.mark.parametrize(
+    "decision_counts",
+    [
+        pytest.param((), id="empty"),
+        pytest.param(
+            (("disabled", 1), ("unexpected", 0)),
+            id="extra-key",
+        ),
+        pytest.param(
+            (
+                ("exact_source_hint", 1),
+                ("exact_target_hint", 0),
+                ("semantic_pair_fallback", 0),
+            ),
+            id="missing-key",
+        ),
+        pytest.param(
+            (
+                ("exact_source_hint", -1),
+                ("exact_target_hint", 0),
+                ("semantic_pair_fallback", 0),
+                ("promoted_path_count", 1),
+            ),
+            id="negative",
+        ),
+        pytest.param((("disabled", True),), id="bool"),
+        pytest.param((("disabled", "1"),), id="string"),
+        pytest.param(
+            (
+                ("exact_source_hint", 1),
+                ("exact_target_hint", 0),
+                ("semantic_pair_fallback", 0),
+                ("promoted_path_count", 2),
+            ),
+            id="wrong-sum",
+        ),
+        pytest.param(
+            (
+                ("exact_source_hint", 3),
+                ("exact_target_hint", 0),
+                ("semantic_pair_fallback", 0),
+                ("promoted_path_count", 3),
+            ),
+            id="path-count-out-of-range",
+        ),
+        pytest.param(
+            (
+                ("exact_target_hint", 0),
+                ("exact_source_hint", 1),
+                ("semantic_pair_fallback", 0),
+                ("promoted_path_count", 1),
+            ),
+            id="wrong-key-order",
+        ),
+        pytest.param((("disabled", 2),), id="wrong-no-op-count"),
+        pytest.param((("unexpected", 1),), id="unknown-no-op-status"),
+    ],
+)
+def test_dependency_promotion_stage_rejects_non_closed_decision_counts(
+    decision_counts: tuple[tuple[str, object], ...],
+) -> None:
+    with pytest.raises(
+        RetrievalTraceError,
+        match="invalid dependency promotion decision counts",
+    ):
+        TraceStage(
+            name="dependency_promotion",
+            input_count=1,
+            output_count=1,
+            unique_output_count=1,
+            duration_ms=0,
+            decision_counts=decision_counts,  # type: ignore[arg-type]
+        )
+
+
 def test_trace_stage_rejects_preview_above_schema_v1_limit() -> None:
     with pytest.raises(
         RetrievalTraceError,
@@ -200,9 +294,32 @@ def test_canonical_trace_stage_order_is_exact() -> None:
         "candidate_merge",
         "ranking",
         "cohort_rerank",
+        "dependency_promotion",
         "context_expansion",
         "final_selection",
     )
+
+
+def test_p15_compatibility_amendment_is_narrow_and_keeps_schema_v1() -> None:
+    design = TRACE_V1_DESIGN.read_text(encoding="utf-8")
+    amendment = " ".join(
+        design.split(
+            "## Compatibility Amendment (2026-08-05 — Narrow P15 Extension)",
+            maxsplit=1,
+        )[1].split()
+    )
+
+    for statement in (
+        "docs/superpowers/plans/2026-08-05-p15-post-acceptance-remediation-plan.md §9.2",
+        "`dependency_promotion`",
+        "reserved sixteenth stage",
+        "existing `decision_counts` and `rank_history` vocabulary",
+        "adds no public field",
+        "`schema_version` remains `1`",
+        "does not authorize arbitrary stage additions",
+        "requires a new schema version",
+    ):
+        assert statement in amendment
 
 
 def test_collector_enforces_stage_order_and_bounds_candidate_previews() -> None:
@@ -276,6 +393,11 @@ def test_collector_bounds_final_selection_previews() -> None:
             stopped,
             output_count=0,
             unique_output_count=0,
+            decision_counts=(
+                (("disabled", 1),)
+                if name == "dependency_promotion"
+                else ()
+            ),
         )
     selections = tuple(_selection(rank) for rank in range(1, 23))
 

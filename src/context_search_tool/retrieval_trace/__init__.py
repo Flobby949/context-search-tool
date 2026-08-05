@@ -1,5 +1,4 @@
 from context_search_tool.retrieval_trace.collector import (
-    CANONICAL_TRACE_STAGES,
     RetrievalTraceCollector,
     StageToken,
     StoppedStage,
@@ -16,6 +15,9 @@ from context_search_tool.retrieval_trace.exploration import (
     exploration_trace_payload,
 )
 from context_search_tool.retrieval_trace.models import (
+    CANONICAL_TRACE_STAGES,
+    DEPENDENCY_PROMOTION_DECISION_KEYS,
+    DEPENDENCY_PROMOTION_NO_OP_STATUSES,
     RetrievalTrace,
     RetrievalTraceError,
     SOURCE_COUNT_KEYS,
@@ -31,12 +33,15 @@ from context_search_tool.retrieval_trace.models import (
     TraceSelectionReason,
     TraceStage,
     TraceTerminationReason,
+    validate_dependency_promotion_decision_counts,
 )
 from context_search_tool.retrieval_trace.serialization import retrieval_trace_payload
 
 
 __all__ = [
     "CANONICAL_TRACE_STAGES",
+    "DEPENDENCY_PROMOTION_DECISION_KEYS",
+    "DEPENDENCY_PROMOTION_NO_OP_STATUSES",
     "ExplorationGoalRecord",
     "ExplorationLimits",
     "ExplorationProbe",
@@ -65,4 +70,5 @@ __all__ = [
     "canonical_exploration_trace_bytes",
     "exploration_trace_payload",
     "retrieval_trace_payload",
+    "validate_dependency_promotion_decision_counts",
 ]

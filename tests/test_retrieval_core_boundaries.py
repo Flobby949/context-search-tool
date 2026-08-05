@@ -247,11 +247,31 @@ P15_DEPENDENCY_REPLAY_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/dependency_replay.py",
 }
 
+P15_ACTIVATION_DIAGNOSTICS_REVIEWED_PRODUCTION_CHANGES = {
+    "src/context_search_tool/formatters.py",
+    "src/context_search_tool/retrieval.py",
+    "src/context_search_tool/retrieval_core/tracing.py",
+    "src/context_search_tool/retrieval_trace/__init__.py",
+    "src/context_search_tool/retrieval_trace/collector.py",
+    "src/context_search_tool/retrieval_trace/models.py",
+}
+
 P14_DIRECT_REFERENCE_COUNT_DELTAS = {
     (
         "trace_repository",
         "tests/test_retrieval_trace_pipeline.py",
     ): 2,
+}
+
+P15_ACTIVATION_DIAGNOSTICS_DIRECT_REFERENCE_COUNT_DELTAS = {
+    (
+        "query_repository",
+        "tests/test_retrieval_trace_pipeline.py",
+    ): 3,
+    (
+        "trace_repository",
+        "tests/test_retrieval_trace_pipeline.py",
+    ): 3,
 }
 
 P15_PRODUCTION_REFERENCE_COUNT_DELTAS = {
@@ -272,6 +292,7 @@ REVIEWED_PRODUCTION_CHANGES = (
     | P14_DEFINITION_OWNER_REVIEWED_PRODUCTION_CHANGES
     | OPENAI_COMPATIBLE_PLANNER_REVIEWED_PRODUCTION_CHANGES
     | P15_DEPENDENCY_REPLAY_REVIEWED_PRODUCTION_CHANGES
+    | P15_ACTIVATION_DIAGNOSTICS_REVIEWED_PRODUCTION_CHANGES
 )
 
 P4_IMPLEMENTATION_BASELINE = "b827707325d0ee4e9c6b2bcb3dee39955c263822"
@@ -948,6 +969,10 @@ def test_migration_ledger_matches_complete_ast_and_dynamic_inventory() -> None:
                 count_delta=P14_DIRECT_REFERENCE_COUNT_DELTAS.get(
                     (actual_row["old_symbol"], item["file"]),
                     0,
+                )
+                + P15_ACTIVATION_DIAGNOSTICS_DIRECT_REFERENCE_COUNT_DELTAS.get(
+                    (actual_row["old_symbol"], item["file"]),
+                    0,
                 ),
             )
             for item in actual_row["direct_references"]
@@ -959,6 +984,10 @@ def test_migration_ledger_matches_complete_ast_and_dynamic_inventory() -> None:
         assert all(_is_p4_public_facade_reference(item) for item in additions)
         reviewed_count_delta = sum(
             P14_DIRECT_REFERENCE_COUNT_DELTAS.get(
+                (actual_row["old_symbol"], item["file"]),
+                0,
+            )
+            + P15_ACTIVATION_DIAGNOSTICS_DIRECT_REFERENCE_COUNT_DELTAS.get(
                 (actual_row["old_symbol"], item["file"]),
                 0,
             )
@@ -1038,6 +1067,30 @@ def test_p15_dependency_replay_reviewed_production_overlay_is_exact() -> None:
     }
 
 
+def test_p15_activation_diagnostics_reviewed_production_overlay_is_exact() -> None:
+    assert P15_ACTIVATION_DIAGNOSTICS_REVIEWED_PRODUCTION_CHANGES == {
+        "src/context_search_tool/formatters.py",
+        "src/context_search_tool/retrieval.py",
+        "src/context_search_tool/retrieval_core/tracing.py",
+        "src/context_search_tool/retrieval_trace/__init__.py",
+        "src/context_search_tool/retrieval_trace/collector.py",
+        "src/context_search_tool/retrieval_trace/models.py",
+    }
+
+
+def test_p15_activation_diagnostics_direct_reference_delta_is_exact() -> None:
+    assert P15_ACTIVATION_DIAGNOSTICS_DIRECT_REFERENCE_COUNT_DELTAS == {
+        (
+            "query_repository",
+            "tests/test_retrieval_trace_pipeline.py",
+        ): 3,
+        (
+            "trace_repository",
+            "tests/test_retrieval_trace_pipeline.py",
+        ): 3,
+    }
+
+
 def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
     changed = set(
         subprocess.run(
@@ -1087,9 +1140,7 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
                 "src/context_search_tool/context_pack/excerpts.py",
                 "src/context_search_tool/context_pack/models.py",
                 "src/context_search_tool/context_pack/serialization.py",
-            "src/context_search_tool/retrieval_trace/models.py",
             "src/context_search_tool/retrieval_trace/serialization.py",
-            "src/context_search_tool/retrieval_trace/collector.py",
             "src/context_search_tool/chunker.py",
         ),
         cwd=ROOT,

@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from context_search_tool.retrieval_trace.models import (
+    CANONICAL_TRACE_STAGES,
     RetrievalTrace,
     RetrievalTraceError,
     SOURCE_COUNT_KEYS,
@@ -15,25 +16,6 @@ from context_search_tool.retrieval_trace.models import (
     TraceSelection,
     TraceStage,
     TraceTerminationReason,
-)
-
-
-CANONICAL_TRACE_STAGES = (
-    "query_understanding",
-    "semantic_recall",
-    "lexical_recall",
-    "path_symbol_recall",
-    "direct_text_recall",
-    "signal_recall",
-    "planner_hint_recall",
-    "direct_merge",
-    "anchor_expansion",
-    "relation_expansion",
-    "candidate_merge",
-    "ranking",
-    "cohort_rerank",
-    "context_expansion",
-    "final_selection",
 )
 
 

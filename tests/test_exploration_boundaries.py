@@ -115,6 +115,15 @@ P15_DEPENDENCY_REPLAY_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/dependency_replay.py",
 }
 
+P15_ACTIVATION_DIAGNOSTICS_REVIEWED_PRODUCTION_CHANGES = {
+    "src/context_search_tool/formatters.py",
+    "src/context_search_tool/retrieval.py",
+    "src/context_search_tool/retrieval_core/tracing.py",
+    "src/context_search_tool/retrieval_trace/__init__.py",
+    "src/context_search_tool/retrieval_trace/collector.py",
+    "src/context_search_tool/retrieval_trace/models.py",
+}
+
 OPENAI_COMPATIBLE_PLANNER_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/query_planner.py",
 }
@@ -129,6 +138,7 @@ REVIEWED_PRODUCTION_CHANGES = (
     | P13_BGE_PROVIDER_REVIEWED_PRODUCTION_CHANGES
     | P14_DEFINITION_OWNER_REVIEWED_PRODUCTION_CHANGES
     | P15_DEPENDENCY_REPLAY_REVIEWED_PRODUCTION_CHANGES
+    | P15_ACTIVATION_DIAGNOSTICS_REVIEWED_PRODUCTION_CHANGES
     | OPENAI_COMPATIBLE_PLANNER_REVIEWED_PRODUCTION_CHANGES
 )
 
@@ -224,6 +234,17 @@ def test_p14_definition_owner_reviewed_production_overlay_is_exact() -> None:
 def test_p15_dependency_replay_reviewed_production_overlay_is_exact() -> None:
     assert P15_DEPENDENCY_REPLAY_REVIEWED_PRODUCTION_CHANGES == {
         "src/context_search_tool/dependency_replay.py",
+    }
+
+
+def test_p15_activation_diagnostics_reviewed_production_overlay_is_exact() -> None:
+    assert P15_ACTIVATION_DIAGNOSTICS_REVIEWED_PRODUCTION_CHANGES == {
+        "src/context_search_tool/formatters.py",
+        "src/context_search_tool/retrieval.py",
+        "src/context_search_tool/retrieval_core/tracing.py",
+        "src/context_search_tool/retrieval_trace/__init__.py",
+        "src/context_search_tool/retrieval_trace/collector.py",
+        "src/context_search_tool/retrieval_trace/models.py",
     }
 
 
