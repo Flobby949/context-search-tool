@@ -15,6 +15,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v6
         with:
@@ -37,15 +39,27 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           mkdir -p .quality/ci
+          P15_FOCUSED_TESTS=(
+            tests/test_python_graph.py
+            tests/test_exact_imported_symbol_bonus.py
+            tests/test_dependency_replay.py
+            tests/test_p15_post_acceptance_disposition.py
+            tests/test_query_planner.py
+            tests/test_retrieval_trace.py
+            tests/test_retrieval_trace_pipeline.py
+          )
+          P15_V8_CONTRACT_TEST=tests/test_p15_v8_contract.py
+          P15_V8_CONTRACT_HISTORY="$(git log -1 --format=%H HEAD -- "$P15_V8_CONTRACT_TEST")"
+          if [[ -n "$P15_V8_CONTRACT_HISTORY" ]]; then
+            if [[ ! -f "$P15_V8_CONTRACT_TEST" ]]; then
+              echo "P15 v8 contract test existed in history but is missing"
+              exit 1
+            fi
+            P15_FOCUSED_TESTS+=("$P15_V8_CONTRACT_TEST")
+          fi
           .venv/bin/pytest -q \
             --strict-markers -rs \
-            tests/test_python_graph.py \
-            tests/test_exact_imported_symbol_bonus.py \
-            tests/test_dependency_replay.py \
-            tests/test_p15_post_acceptance_disposition.py \
-            tests/test_query_planner.py \
-            tests/test_retrieval_trace.py \
-            tests/test_retrieval_trace_pipeline.py \
+            "${P15_FOCUSED_TESTS[@]}" \
             --junitxml=.quality/ci/p15-focused-junit.xml
 
       - name: Write runtime identity
