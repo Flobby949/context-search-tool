@@ -206,6 +206,8 @@ def test_capture_round_trip_replays_only_dependency_hint_factor() -> None:
         row for row in treatment["top12"] if row["path"] == "src/module_12.py"
     )
     assert promoted["planner_dependency_hint_promotion"] > 0
+    assert "planner dependency target promotion" in promoted["reasons"]
+    assert "planner exact dependency target" not in promoted["reasons"]
     assert promoted["closed_exact_witness"]["relation_id"] == "relation-12"
 
 

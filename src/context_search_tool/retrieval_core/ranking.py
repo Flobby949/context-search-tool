@@ -6,6 +6,7 @@ import math
 import unicodedata
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Callable
 
 from context_search_tool import sqlite_store, tokenizer
 from context_search_tool.frontend_roles import (
@@ -601,25 +602,54 @@ def apply_planner_dependency_hint_promotions(
     graph_session: sqlite_store.GraphReadSession | None,
     *,
     final_top_k: int,
+    observation_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> list[core_types._RankedChunk]:
     ordered = sorted(ranked_chunks, key=_ranked_chunk_sort_key)
     if any(
         ranked.score_parts.get("planner_dependency_hint_promotion", 0.0) > 0
         for ranked in ordered
     ):
+        _observe_dependency_hint_promotion(
+            observation_callback,
+            status="no_eligible_closed_candidate",
+        )
         return ordered
     if (
         graph_session is None
         or getattr(graph_session, "graph_fault", None) is not None
-        or plan.status != "ok"
-        or plan.dependency_intent != "follow_imports"
-        or final_top_k <= 0
-        or not (
-            plan.source_symbol_hints
-            or plan.source_module_hints
-            or plan.imported_symbol_hints
-        )
     ):
+        _observe_dependency_hint_promotion(
+            observation_callback,
+            status="graph_unavailable",
+        )
+        return ordered
+    if plan.status != "ok":
+        _observe_dependency_hint_promotion(
+            observation_callback,
+            status="planner_not_ok",
+        )
+        return ordered
+    if plan.dependency_intent != "follow_imports":
+        _observe_dependency_hint_promotion(
+            observation_callback,
+            status="intent_mismatch",
+        )
+        return ordered
+    if final_top_k <= 0:
+        _observe_dependency_hint_promotion(
+            observation_callback,
+            status="disabled",
+        )
+        return ordered
+    if not (
+        plan.source_symbol_hints
+        or plan.source_module_hints
+        or plan.imported_symbol_hints
+    ):
+        _observe_dependency_hint_promotion(
+            observation_callback,
+            status="missing_activation_hint",
+        )
         return ordered
 
     top_paths: list[Path] = []
@@ -629,6 +659,10 @@ def apply_planner_dependency_hint_promotions(
         if len(top_paths) >= final_top_k:
             break
     if len(top_paths) < final_top_k:
+        _observe_dependency_hint_promotion(
+            observation_callback,
+            status="no_eligible_closed_candidate",
+        )
         return ordered
     protected_paths = set(top_paths)
     cutoff = next(
@@ -668,6 +702,11 @@ def apply_planner_dependency_hint_promotions(
         / (10**ordering.RERANK_SORT_DECIMALS)
     )
     replacements: dict[str, core_types._RankedChunk] = {}
+    promotion_modes = {
+        "exact_source_hint": 0,
+        "exact_target_hint": 0,
+        "semantic_pair_fallback": 0,
+    }
     for ranked in ordered:
         if (
             ranked.chunk.file_path in protected_paths
@@ -711,7 +750,7 @@ def apply_planner_dependency_hint_promotions(
             source_is_direct = (
                 source_ranked is not None and source_ranked.evidence_priority == 0
             )
-            identity_matches, pair_evidence_required = (
+            identity_matches, pair_evidence_required, promotion_mode = (
                 _dependency_hint_identity_matches(
                     source_signal=source_signal,
                     target_signal=target_signal,
@@ -758,15 +797,54 @@ def apply_planner_dependency_hint_promotions(
             score_parts=score_parts,
             reasons=_reasons(score_parts, query),
         )
+        if promotion_mode is not None:
+            promotion_modes[promotion_mode] += 1
         selected_paths.add(ranked.chunk.file_path)
         if len(replacements) >= _PLANNER_DEPENDENCY_MAX_PROMOTIONS:
             break
     if not replacements:
+        _observe_dependency_hint_promotion(
+            observation_callback,
+            status="no_eligible_closed_candidate",
+        )
         return ordered
+    _observe_dependency_hint_promotion(
+        observation_callback,
+        status="promoted",
+        promotion_modes=promotion_modes,
+        promoted_path_count=len(replacements),
+    )
     return sorted(
         [replacements.get(item.chunk.chunk_id, item) for item in ordered],
         key=_ranked_chunk_sort_key,
     )
+
+
+def _observe_dependency_hint_promotion(
+    callback: Callable[[dict[str, object]], None] | None,
+    *,
+    status: str,
+    promotion_modes: dict[str, int] | None = None,
+    promoted_path_count: int = 0,
+) -> None:
+    if callback is None:
+        return
+    modes = promotion_modes or {}
+    observation = {
+        "status": status,
+        "exact_source_hint_promoted": modes.get("exact_source_hint", 0),
+        "exact_target_hint_promoted": modes.get("exact_target_hint", 0),
+        "semantic_pair_fallback_promoted": modes.get(
+            "semantic_pair_fallback",
+            0,
+        ),
+        "promoted_path_count": promoted_path_count,
+    }
+    try:
+        callback(observation)
+    except Exception:
+        # Diagnostics cannot change retrieval behavior or its error boundary.
+        return
 
 
 def _closed_exact_dependency_atom(
@@ -867,18 +945,26 @@ def _dependency_hint_identity_matches(
     source_hints: set[str],
     target_hints: set[str],
     semantic_pair_fallback: bool,
-) -> tuple[bool, bool]:
+) -> tuple[bool, bool, str | None]:
     source_matches = _dependency_source_signal_matches(
         source_signal,
         source_hints,
     )
     if not target_hints:
-        return source_matches, False
+        return (
+            source_matches,
+            False,
+            "exact_source_hint" if source_matches else None,
+        )
     if _dependency_target_signal_matches(target_signal, target_hints):
-        return True, not source_matches
+        return (
+            True,
+            not source_matches,
+            "exact_source_hint" if source_matches else "exact_target_hint",
+        )
     if semantic_pair_fallback:
-        return True, True
-    return False, False
+        return True, True, "semantic_pair_fallback"
+    return False, False, None
 
 
 def _read_frontend_import_anchor(path: Path) -> str:
@@ -2762,7 +2848,7 @@ def _reasons(score_parts: dict[str, float], query: str) -> list[str]:
     if score_parts.get("exact_imported_symbol", 0.0) > 0:
         reasons.append("exact imported symbol dependency")
     if score_parts.get("planner_dependency_hint_promotion", 0.0) > 0:
-        reasons.append("planner exact dependency target")
+        reasons.append("planner dependency target promotion")
     if score_parts.get("direct_text", 0.0) > 0:
         reasons.append("direct text match")
     if score_parts.get("anchored_relation", 0.0) > 0:
