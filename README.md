@@ -609,8 +609,9 @@ Git 忽略，因此不会出现在正常提交中，但不要使用 `git add -f`
 
 ### P15 Dependency Hint Promotion（experimental opt-in）
 
-P15 当前是 **experimental opt-in**，顶层 disposition 仍是
-`local_efficacy_only`；它不是 release-ready，也不是发布承诺。内置默认仍为
+P15 当前是 **experimental opt-in**；`p15-v8-attempt-003` 已完成全部 fresh
+验收并得到顶层 disposition `reject`。它不是 release-ready，也不是发布承诺；按冻结
+stop rule，fresh outcome 失败后 held-out、release 和 governance 均未执行。内置默认仍为
 `query_planner.enabled=false`、`retrieval.consume_dependency_hints=false` 和
 `embedding.model=hash-v1`，因此默认查询不会走已观察到本地收益的路径，
 也不得为了试用 P15 而把这些默认值改为 `true`。
