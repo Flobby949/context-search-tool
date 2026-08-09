@@ -398,6 +398,46 @@ def rank_chunks(
     if len(project_units) > 1:
         anchor_item = max(ranked, key=lambda item: item['rerank_score'])
         query_scope_is_mixed = _query_scope_is_mixed(query_scope)
+        if (
+            not query_scope_is_mixed
+            and identifier_intent.exact_identifier is not None
+        ):
+            max_rerank_score = anchor_item["rerank_score"]
+            max_tied_items = [
+                item
+                for item in ranked
+                if item["rerank_score"] == max_rerank_score
+            ]
+            if (
+                len(max_tied_items) >= 2
+                and any(
+                    item["score_parts"].get(
+                        "identifier_definition_owner_boost",
+                        0.0,
+                    )
+                    > 0.0
+                    for item in max_tied_items
+                )
+            ):
+                anchor_item = min(
+                    max_tied_items,
+                    key=lambda item: _ranking_sort_projection(
+                        rerank_score=item["rerank_score"],
+                        evidence_priority=item["evidence_priority"],
+                        was_ceiling_clamped=item["was_ceiling_clamped"],
+                        pre_ceiling_rerank_score=item[
+                            "pre_ceiling_rerank_score"
+                        ],
+                        role_priority=item["score_parts"].get(
+                            "role_priority",
+                            99.0,
+                        ),
+                        combined_score=item["score"],
+                        file_path=item["chunk"].file_path,
+                        start_line=item["chunk"].start_line,
+                        chunk_id=item["chunk"].chunk_id,
+                    ),
+                )
         anchor_unit = _chunk_project_unit(anchor_item["chunk"])
         if anchor_unit and not query_scope_is_mixed:
             for item in ranked:

@@ -1,7 +1,8 @@
 # P14 Exact-Identifier Definition-Owner Ranking v1 Design
 
 Date: 2026-07-30
-Status: Accepted on 2026-07-31 with an owner-approved probabilistic-model waiver
+Status: Accepted on 2026-07-31 with an owner-approved probabilistic-model waiver;
+r2 deterministic eligible-owner tie amendment approved on 2026-08-09
 Repository: `/Users/flobby/vibe_coding/context-search-tool`
 Behavior baseline: `501cf852ad54181eb823994747d2dc8555edc418`
 Predecessors: P1 query-understanding acceptance, P8-P12 retrieval
@@ -15,6 +16,56 @@ retrieval with SiliconFlow `Pro/BAAI/bge-m3` and evaluates the hybrid
 profile with SiliconFlow `Qwen/Qwen2.5-14B-Instruct`. Local Ollama is not
 an allowed live substitute. Both models, their API base URL, and
 request counts are frozen before P14 production edits.
+
+## Approved r2 Amendment: Deterministic Eligible-Owner Cohort Ties
+
+On 2026-08-09 the owner approved a narrow post-acceptance correction to
+the project-cohort anchor. The retained P14 candidate exposed a conflict
+between the existing requirement for reversed-registration determinism
+and the insertion-first anchor used for an exact top-score tie. The
+original live acceptance record remains historical evidence bound to
+`adbee96`; this amendment changes only the deterministic tie policy
+described below.
+
+R2 applies only when all of these conditions hold:
+
+1. more than one project unit is present;
+2. query scope is not mixed;
+3. `intent.exact_identifier is not None`;
+4. at least two candidates equal the maximum pre-cohort
+   `rerank_score` by exact float equality, with no rounding or epsilon;
+5. at least one maximum-tied candidate has a positive
+   `identifier_definition_owner_boost`.
+
+When the guard is false, including for a rounded near-tie, unique
+maximum, non-exact query, exact query without an applicable owner, or
+scope mismatch, the existing cohort path remains unchanged.
+
+When the guard is true, the anchor is selected from the exact
+maximum-tied set using the complete existing final-sort projection:
+
+```text
+(
+  -round(rerank_score, ordering.RERANK_SORT_DECIMALS),
+  evidence_priority,
+  0 if was_ceiling_clamped else 1,
+  -(pre_ceiling_rerank_score if was_ceiling_clamped else 0.0),
+  score_parts.get("role_priority", 99.0),
+  -rerank_score,
+  -combined_score,
+  file_path.as_posix(),
+  start_line,
+  chunk_id,
+)
+```
+
+The minimum projection wins. R2 adds no owner tier or owner-specific
+preference inside that key. Its only allowed behavioral delta is that
+an eligible exact owner-top tie uses this deterministic anchor rather
+than insertion order; the existing `-0.05` cohort penalty and bounded
+downstream membership may consequently move to the other project. All
+weights, ceilings, evidence semantics, thresholds, and work caps remain
+unchanged.
 
 ## Decision
 
@@ -170,7 +221,8 @@ weight or predicate.
 - Language-specific symbol-kind allowlists.
 - A guarantee that the definition owner is Top-1.
 - Changes to role weights, evidence classes, planner-ceiling
-  protection, project-cohort semantics, or final-selection quotas.
+  protection, project-cohort semantics outside the approved r2 anchor
+  selection, or final-selection quotas.
 - A special rule for uppercase content, enum constants, Java, or the
   P1 fixture.
 - Any online-provider, default-provider, batching, or performance
@@ -364,7 +416,7 @@ raw query
   -> owner witness from exact SymbolRef name + declaration line
   -> existing scoring + fixed owner boost
   -> existing evidence classification + planner ceiling
-  -> existing project-cohort penalty
+  -> existing project-cohort penalty, with the r2 eligible-owner exact-tie anchor
   -> existing frontend cohort rerank within Top-10 / 3 files / 50,000 bytes
   -> existing context expansion/final selection/trace
 ```
@@ -398,10 +450,14 @@ raw query
 12. Hash and BGE use the identical P14 policy. No provider-specific
     branch is permitted.
 13. Repeated calls and reversed candidate registration produce the
-    same ordered results.
-14. P14 does not change planner-ceiling, project-cohort, or frontend
-    cohort algorithms or caps. Their numeric outputs and in-cap
-    membership may change only for an eligible exact query because its
+    same ordered results for every P14-eligible query, including an
+    applicable owner participating in an exact pre-cohort maximum tie.
+    Historical generic ties outside the r2 guard are not redefined.
+14. P14 does not change planner-ceiling or frontend-cohort algorithms
+    or any work cap. Project-cohort scoring and the `-0.05` penalty are
+    unchanged except for the approved r2 anchor selection when every
+    guard condition is true. Numeric outputs and in-cap membership may
+    otherwise change only for an eligible exact query because its
     rerank scores changed.
 
 ## Verification Contract
@@ -423,12 +479,17 @@ The implementation must prove:
 - planner-only and graph-only owners remain unprotected and ceiling
   clamped when the existing contract requires it;
 - generated/test/artifact and project-scope behavior is not bypassed;
-- multi-project anchor/penalty cascades remain deterministic under the
-  existing cohort algorithm;
+- multi-project anchor/penalty cascades remain deterministic under
+  reversed registration, including an exact maximum tie with owners
+  from different project units;
 - frontend cohort scanning stays within Top-10, three files, and 50,000
   bytes per file when the owner crosses that boundary;
 - two same-name owners remain deterministic under reversed candidate
   registration;
+- an owner/reference exact maximum tie uses the same complete
+  deterministic projection without adding owner priority;
+- rounded near-ties, unique maxima, non-exact queries, no-owner cases,
+  and scope mismatches preserve the pre-r2 cohort path;
 - a non-exact prose query preserves its pre-P14 order and score parts;
 - overlapping context expansion retains winner-consistent owner score
   parts, score, and reasons;
@@ -450,6 +511,11 @@ the inventory in the implementation evidence. Delta eligibility is:
   project-scope mismatch; and
 - every non-exact query, plus every existing-family exact query without
   such an applicable owner, must remain byte-for-byte unchanged.
+
+R2 permits one additional eligible delta: when every r2 guard condition
+is true, deterministic anchor selection may move the existing cohort
+penalty and its bounded downstream effects. It does not authorize a
+generic cohort-tie rewrite.
 
 Eligibility is frozen from the baseline evidence, never inferred from a
 candidate delta.
