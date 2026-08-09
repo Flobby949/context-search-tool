@@ -65,7 +65,8 @@ def test_readme_freezes_p15_as_experimental_opt_in_with_honest_boundaries() -> N
 
     for statement in (
         "experimental opt-in",
-        "local_efficacy_only",
+        "p15-v8-attempt-003",
+        "disposition `reject`",
         "query_planner.enabled=false",
         "retrieval.consume_dependency_hints=false",
         "embedding.model=hash-v1",
