@@ -39,8 +39,8 @@ from context_search_tool.retrieval_trace import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CANDIDATE_COMMIT = "c21d4cc039f6298f89d3040a0a6879d6a82eeb32"
-CANDIDATE_TREE = "a159d5c4e025c82e12edab0f3343c0f4622a09ea"
+CANDIDATE_COMMIT = "de81202f9c94a746c661d265a592be6c6ced317a"
+CANDIDATE_TREE = "6d965e2be37462a3014c63dd8d95ccc4b26aba00"
 FIXTURE_ROOT = ROOT / "tests/fixtures/p15_v8_closure"
 CONTRACT_PATH = FIXTURE_ROOT / "attempt-contract.json"
 SCHEMA_PATH = FIXTURE_ROOT / "attempt-contract.schema.json"
@@ -86,7 +86,9 @@ EXPECTED_PROJECTION_PATHS = {
     "runner": (
         "tests/p15_metric_replay.py",
         "tests/p15_v8_closure_evaluator.py",
+        "tests/p15_v8_task7_runner.py",
         "tests/test_p15_v8_closure_evaluator.py",
+        "tests/test_p15_v8_task7_runner.py",
     ),
     "config_docs": (
         ".github/workflows/ci.yml",
@@ -107,6 +109,7 @@ EXPECTED_PROJECTION_PATHS = {
 CONTRACT_GATE_FILES = (
     "tests/test_p15_v8_contract.py",
     "tests/test_p15_v8_closure_evaluator.py",
+    "tests/test_p15_v8_task7_runner.py",
     "tests/test_p15_post_acceptance_disposition.py",
     "tests/test_exact_imported_symbol_bonus.py",
     "tests/test_dependency_replay.py",
@@ -258,9 +261,9 @@ def _schema_errors(contract: dict[str, Any]) -> list[Any]:
 
 def _assert_contract_semantics(contract: dict[str, Any]) -> None:
     assert not _schema_errors(contract)
-    assert contract["attempt_id"] == "p15-v8-attempt-002"
-    assert contract["status"] == "DRAFT"
-    assert contract["execution_eligible"] is False
+    assert contract["attempt_id"] == "p15-v8-attempt-003"
+    assert contract["status"] == "EXECUTION_AUTHORIZED"
+    assert contract["execution_eligible"] is True
     assert contract["disposition"] == "local_efficacy_only"
 
     candidate = contract["candidate"]
@@ -365,13 +368,13 @@ def _assert_contract_semantics(contract: dict[str, Any]) -> None:
 
     fresh = contract["corpus"]["fresh"]
     held_out = contract["corpus"]["held_out"]
-    assert fresh["identity_state"] == "UNSELECTED"
+    assert fresh["identity_state"] == "SELECTED_CANDIDATE_BLIND_SEAL_PENDING"
     assert fresh["repository_count"] == 2
     assert fresh["cases_per_repository"] == 6
     assert fresh["guard_ordinals"] == [1, 2]
     assert fresh["efficacy_ordinals"] == [3, 4, 5, 6]
     assert fresh["target_recall_denominator"] == 8
-    assert held_out["identity_state"] == "UNSELECTED_SEALED_INPUT_PENDING"
+    assert held_out["identity_state"] == "SELECTED_CANDIDATE_BLIND_SEAL_PENDING"
     assert held_out["repository_count"] == 1
     assert held_out["cases_per_repository"] == 4
     assert held_out["opened"] is False
@@ -428,12 +431,12 @@ def _assert_contract_semantics(contract: dict[str, Any]) -> None:
 
     verification = contract["verification"]
     assert verification["runner"] == {
-        "path": "tests/p15_v8_closure_evaluator.py",
+        "path": "tests/p15_v8_task7_runner.py",
         "sha256": _sha256_bytes(
-            _candidate_bytes("tests/p15_v8_closure_evaluator.py")
+            _candidate_bytes("tests/p15_v8_task7_runner.py")
         ),
-        "role": "tracked_offline_closure_evaluator_only",
-        "online_collection_authorized": False,
+        "role": "tracked_task7_sealer_collector_and_evaluator",
+        "online_collection_authorized": True,
     }
     assert tuple(verification["contract_gate_files"]) == CONTRACT_GATE_FILES
     assert tuple(verification["focused_gate_files"]) == FOCUSED_GATE_FILES
@@ -455,7 +458,7 @@ def _assert_contract_semantics(contract: dict[str, Any]) -> None:
     assert contract["decisions"] == {
         "outcome": "NOT_RUN",
         "release": "NOT_EVALUATED",
-        "governance": "DRAFT_UNAPPROVED",
+        "governance": "APPROVED_PENDING_EXECUTION",
         "final_disposition": "local_efficacy_only",
         "allowed_final_dispositions": [
             "ship",
@@ -476,23 +479,12 @@ def _assert_contract_semantics(contract: dict[str, Any]) -> None:
         REAPPROVAL_TRIGGERS
     )
     authorization = contract["authorization"]
-    assert authorization["task7_authorized"] is False
+    assert authorization["task7_authorized"] is True
     assert authorization["execution_manifest_sealed"] is False
     assert authorization["execution_guard"] == (
         "deny_unless_approved_receipt_and_sealed_execution_manifest_match_contract"
     )
-    assert set(authorization["forbidden_while_draft"]) == {
-        "fresh_identity_resolution",
-        "source_access",
-        "planner_request",
-        "embedding_request",
-        "control_execution",
-        "treatment_execution",
-        "comparator_request",
-        "held_out_opening",
-        "release_decision",
-    }
-    assert set(authorization["zero_counters"].values()) == {0}
+    assert set(authorization["pre_execution_online_counters"].values()) == {0}
 
 
 def _mutate(path: tuple[str | int, ...], value: object) -> Callable[[dict[str, Any]], None]:
@@ -641,7 +633,7 @@ def test_contract_is_a_later_layer_without_self_hash_or_raw_evidence_dependency(
         assert len(reference["sha256"]) == 64
 
 
-def test_draft_contract_is_fail_closed_and_has_one_future_receipt() -> None:
+def test_authorized_contract_still_requires_one_external_receipt() -> None:
     contract = _load_contract()
     _assert_contract_semantics(contract)
 
@@ -661,8 +653,9 @@ def test_draft_contract_is_fail_closed_and_has_one_future_receipt() -> None:
     visit(contract)
     assert receipt_keys == [("approval_receipt",)]
     assert contract["approval_receipt"]["received"] is False
-    assert contract["execution_eligible"] is False
-    assert contract["authorization"]["task7_authorized"] is False
+    assert contract["execution_eligible"] is True
+    assert contract["authorization"]["task7_authorized"] is True
+    assert contract["authorization"]["execution_manifest_sealed"] is False
     assert contract["decisions"]["outcome"] == "NOT_RUN"
     assert contract["decisions"]["release"] == "NOT_EVALUATED"
 
@@ -740,13 +733,13 @@ def test_draft_contract_is_fail_closed_and_has_one_future_receipt() -> None:
             _delete(("approval_policy", "reapproval_triggers", 0)),
             id="reapproval-trigger",
         ),
-        pytest.param(_mutate(("status",), "APPROVED"), id="draft-status"),
+        pytest.param(_mutate(("status",), "DRAFT"), id="execution-status"),
         pytest.param(
-            _mutate(("execution_eligible",), True),
+            _mutate(("execution_eligible",), False),
             id="execution-eligible",
         ),
         pytest.param(
-            _mutate(("authorization", "task7_authorized"), True),
+            _mutate(("authorization", "task7_authorized"), False),
             id="task7-authorization",
         ),
         pytest.param(

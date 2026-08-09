@@ -2,28 +2,30 @@
 
 日期：2026-08-05
 
-状态：**DRAFT / NOT EXECUTION ELIGIBLE**。
+状态：**EXECUTION AUTHORIZED / PRE-EXECUTION**。
 
 修订：2026-08-09。`p15-v8-attempt-001` 在任何执行或在线访问前因 candidate
-绑定漂移而作废；当前静态合同使用 `p15-v8-attempt-002`，所有执行 counters 继续为零。
+绑定漂移而作废；`p15-v8-attempt-002` 因没有合同绑定的在线 runner 和 sealed execution
+manifest 而未执行。当前合同使用 `p15-v8-attempt-003`，绑定可执行 Task 7 runner；在线
+执行 counters 在 receipt 与 manifest 验证前保持为零。
 
 权威合同：
 `tests/fixtures/p15_v8_closure/attempt-contract.json`
 
-本设计只冻结一次未来验收所需的身份、行为、样本表、门和批准边界。它不授权
-Task 7，不授权访问 fresh/held-out 源码，也不授权 planner、embedding、
-fast-context、Ollama 或其他在线调用。当前顶层处置保持
-`local_efficacy_only`；本文不能被引用为执行、完整验收或发布结论。
+本设计冻结验收所需的身份、行为、样本表、门和批准边界。用户已授权 Task 7；实际
+planner、embedding、fast-context 与本地两臂执行仍必须在外部 approval receipt 和 sealed
+execution manifest 精确通过后开始。当前顶层处置保持 `local_efficacy_only`，直至闭合
+evaluator 产生新的最终结论。
 
 ## 1. 两提交身份
 
-P15-v8 attempt-002 使用两层提交：
+P15-v8 attempt-003 使用两层提交：
 
 1. 修复后 candidate 固定为 commit
-   `c21d4cc039f6298f89d3040a0a6879d6a82eeb32`、tree
-   `a159d5c4e025c82e12edab0f3343c0f4622a09ea`。它包含离线修复、闭合 evaluator
-   foundation，以及已批准的 P14 r2 exact-owner tie 修正。
-2. 本设计、闭合 schema、DRAFT 合同和合同测试位于后续合同提交。
+   `de81202f9c94a746c661d265a592be6c6ced317a`、tree
+   `6d965e2be37462a3014c63dd8d95ccc4b26aba00`。它包含离线修复、闭合 evaluator、冻结
+   Task 7 sealer/collector，以及已批准的 P14 r2 exact-owner tie 修正。
+2. 本设计、闭合 schema、可执行合同和合同测试位于后续合同提交。
 
 合同从 candidate commit 的 Git object 读取字节，不从脏 worktree 回填。它分别绑定
 product、behavior tests、tracked offline metric/closure evaluators、config/docs 和
@@ -100,7 +102,8 @@ denominator 固定为 8。
 
 held-out 有一个 repository slot、恰好四个 candidate-blind target-missing cases，使用
 相同 gold/query 规则。其 identity、public seal、payload digest、query 和 gold 在 fresh
-outcome 通过前保持 unopened。当前 DRAFT 不选择 identity、不读取 seal/payload。
+outcome 通过前保持 unopened。attempt-003 在任何在线请求前以候选盲规则选择并 seal
+identity/query/gold；fresh outcome 通过前，fresh 执行路径不得读取 held-out payload。
 
 ### 4.3 Schedule
 
@@ -155,10 +158,10 @@ outcome 或 release 的预冻结门。
 
 ## 7. 单一批准边界
 
-当前合同只有一个未来 `approval_receipt`，且 `received=false`。一次未来批准可授权按
-冻结规则选择并 seal identity/corpus，再连续执行 fresh，以及仅在 fresh 通过后打开
-held-out 和评估 release。当前没有该批准，`execution_eligible=false`、
-`task7_authorized=false`，所有执行 counters 为零。
+合同只接受一个外部 `approval_receipt`；合同内 receipt 槽保持空值以避免循环自绑定。
+本次用户批准授权按冻结规则 seal identity/corpus，再连续执行 fresh，以及仅在 fresh
+通过后打开 held-out 和评估 release。`execution_eligible=true`、
+`task7_authorized=true`；runner 仍须在首个在线请求前验证 receipt 与 execution manifest。
 
 candidate、合同层、处理因子、mode/status/report、limits/witness、planner/embedding、
 prompt/schema、TopK/budget、privacy、corpus rule 或已 seal identity、schedule、gate、
@@ -166,8 +169,8 @@ comparator、runner/test/config/docs/CI、supported config 或 approval scope �
 receipt 失效并要求 reapproval/new attempt。初次按已批准规则填充 seal slots 不是
 post-hoc plan change；seal 后修改任何绑定则必须重新批准。
 
-## 8. 当前 stop point
+## 8. 当前执行点
 
-Task 5 到此只创建静态 DRAFT 合同并运行离线测试。Task 7 仍未授权。不得解析 fresh
-refs、读取 fresh/held-out source、打开 held-out、执行 acceptance runner、调用在线
-planner/embedding/comparator/Ollama，或把本合同描述为 release closure。
+attempt-003 可以生成外部 receipt、候选盲 corpus seal 和 execution manifest。只有三者
+精确匹配后才可执行 fresh；fresh 完整通过后才可打开 held-out。最终处置只能来自绑定的
+closure evaluator，不能由本文预先宣称。

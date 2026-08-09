@@ -1,12 +1,12 @@
 {
   "schema_version": "p15-v8-closure-attempt-v1",
-  "attempt_id": "p15-v8-attempt-002",
-  "status": "DRAFT",
-  "execution_eligible": false,
+  "attempt_id": "p15-v8-attempt-003",
+  "status": "EXECUTION_AUTHORIZED",
+  "execution_eligible": true,
   "disposition": "local_efficacy_only",
   "candidate": {
-    "commit": "c21d4cc039f6298f89d3040a0a6879d6a82eeb32",
-    "tree": "a159d5c4e025c82e12edab0f3343c0f4622a09ea",
+    "commit": "de81202f9c94a746c661d265a592be6c6ced317a",
+    "tree": "6d965e2be37462a3014c63dd8d95ccc4b26aba00",
     "projection_algorithm": "sha256_of_canonical_json_sorted_path_sha256_entries_compact_ascii",
     "projections": [
       {
@@ -18,7 +18,7 @@
           },
           {
             "path": "src/context_search_tool/dependency_replay.py",
-            "sha256": "fd46a2cc1ab8818ea82102c75a3bdee50b8903115fe13671f68d94cda23e20ed"
+            "sha256": "38fc3eef5b6386ce47be3b536d93a1a66229733101ac57c6b6dd7ccd68fcbb53"
           },
           {
             "path": "src/context_search_tool/formatters.py",
@@ -57,7 +57,7 @@
             "sha256": "86a48b049f92e821cd86a1d1f2acac7dbf0be1a00b65f251477b97f9ab5e686e"
           }
         ],
-        "sha256": "01ebc7ac52f0625ee2f88822cd0b4bf187a7df05e5c1085b685066f2b89665ab"
+        "sha256": "f1d594307817315d871c9bb1bca34bf65b460de66a1172bcad4d8e302ab7a3a2"
       },
       {
         "name": "behavior_tests",
@@ -68,7 +68,7 @@
           },
           {
             "path": "tests/test_dependency_replay.py",
-            "sha256": "84f9f0d0bcf09c9fd12b7b7359a2e7f149605144fe4185e09333ef425c9dadb9"
+            "sha256": "d0db569351b7481b9dffb2929d0a79ad8808c5d097445ee902c5421c85f9e6c8"
           },
           {
             "path": "tests/test_exact_imported_symbol_bonus.py",
@@ -95,7 +95,7 @@
             "sha256": "0e281cc3861ff5fb560c13f305c808bc1be6d78087542c5dfabd2699fc4b8ee9"
           }
         ],
-        "sha256": "2ca4621793a4dcae5879a6e8f91ed4408b5f454e7b94358bbeed7606bf4d134a"
+        "sha256": "78fb12d628eb934fefceef7d864f06aa8ac964cfa8d4c97f2298426e1232a4e4"
       },
       {
         "name": "runner",
@@ -106,14 +106,22 @@
           },
           {
             "path": "tests/p15_v8_closure_evaluator.py",
-            "sha256": "a56c857512eb319045af876dc14a71a27d882ecba2af32afb54f0bb051551aa6"
+            "sha256": "96fd86af50615e722313df7dc18628670bedf2f2d8f80f23fd8139785ac39a4b"
+          },
+          {
+            "path": "tests/p15_v8_task7_runner.py",
+            "sha256": "801191b97a991be03223a6f4b84561626a874c22dcdba067cbc9d568a3e49c0c"
           },
           {
             "path": "tests/test_p15_v8_closure_evaluator.py",
             "sha256": "f003c14f23c99b18eba476af3cf576889e736aeb2c8a7985c57bf58448524182"
+          },
+          {
+            "path": "tests/test_p15_v8_task7_runner.py",
+            "sha256": "180b6bfe0bbc8cbe2ce04bbde8f04d0d51c5fa85ccabb8febe521cba351d9935"
           }
         ],
-        "sha256": "cb6de7dd64307e67e8cc4251071d4114d1a87fcc25756405d0915a9efcacbbc6"
+        "sha256": "eca8b4160371816112992a314dee7a396b76abda70e92a706729df8b118acd25"
       },
       {
         "name": "config_docs",
@@ -176,15 +184,15 @@
     "artifacts": [
       {
         "path": "docs/superpowers/specs/2026-08-05-p15-v8-closure-acceptance-design.md",
-        "sha256": "a67b1c2ebca99a7d6a51d63233b7d550dba88b6d035c642b6c93768eb35e82e1"
+        "sha256": "ba04ff97af96fc288d72015de9f655925d62bf115ad12ceaa69ea9ac9400c914"
       },
       {
         "path": "tests/fixtures/p15_v8_closure/attempt-contract.schema.json",
-        "sha256": "bfedb1813913aaa4a60d8c5b71fd181ff292f5848c82b8d99eaa8e41cbf7537b"
+        "sha256": "bc651d89df830667963854fb5b685855d835f262919cbd7a1d55b7b534217765"
       },
       {
         "path": "tests/test_p15_v8_contract.py",
-        "sha256": "226b30e2be8b95b5d1289ef6ef193aa8da54a045039d75ba04746cd76ec66193"
+        "sha256": "8d2a4e81d2a09093dc19342fe9944989cd933d7dba4bac39aba940d4342a71cf"
       }
     ]
   },
@@ -320,7 +328,7 @@
   },
   "corpus": {
     "fresh": {
-      "identity_state": "UNSELECTED",
+      "identity_state": "SELECTED_CANDIDATE_BLIND_SEAL_PENDING",
       "repository_count": 2,
       "cases_per_repository": 6,
       "guard_ordinals": [
@@ -341,7 +349,7 @@
       "replacement_allowed": false
     },
     "held_out": {
-      "identity_state": "UNSELECTED_SEALED_INPUT_PENDING",
+      "identity_state": "SELECTED_CANDIDATE_BLIND_SEAL_PENDING",
       "repository_count": 1,
       "cases_per_repository": 4,
       "opened": false,
@@ -490,14 +498,15 @@
   },
   "verification": {
     "runner": {
-      "path": "tests/p15_v8_closure_evaluator.py",
-      "sha256": "a56c857512eb319045af876dc14a71a27d882ecba2af32afb54f0bb051551aa6",
-      "role": "tracked_offline_closure_evaluator_only",
-      "online_collection_authorized": false
+      "path": "tests/p15_v8_task7_runner.py",
+      "sha256": "801191b97a991be03223a6f4b84561626a874c22dcdba067cbc9d568a3e49c0c",
+      "role": "tracked_task7_sealer_collector_and_evaluator",
+      "online_collection_authorized": true
     },
     "contract_gate_files": [
       "tests/test_p15_v8_contract.py",
       "tests/test_p15_v8_closure_evaluator.py",
+      "tests/test_p15_v8_task7_runner.py",
       "tests/test_p15_post_acceptance_disposition.py",
       "tests/test_exact_imported_symbol_bonus.py",
       "tests/test_dependency_replay.py",
@@ -528,7 +537,7 @@
   "decisions": {
     "outcome": "NOT_RUN",
     "release": "NOT_EVALUATED",
-    "governance": "DRAFT_UNAPPROVED",
+    "governance": "APPROVED_PENDING_EXECUTION",
     "final_disposition": "local_efficacy_only",
     "allowed_final_dispositions": [
       "ship",
@@ -569,23 +578,10 @@
     ]
   },
   "authorization": {
-    "task7_authorized": false,
+    "task7_authorized": true,
     "execution_manifest_sealed": false,
     "execution_guard": "deny_unless_approved_receipt_and_sealed_execution_manifest_match_contract",
-    "forbidden_while_draft": [
-      "fresh_identity_resolution",
-      "source_access",
-      "planner_request",
-      "embedding_request",
-      "control_execution",
-      "treatment_execution",
-      "comparator_request",
-      "held_out_opening",
-      "release_decision"
-    ],
-    "zero_counters": {
-      "fresh_identity_resolutions": 0,
-      "source_accesses": 0,
+    "pre_execution_online_counters": {
       "planner_calls": 0,
       "embedding_calls": 0,
       "control_executions": 0,

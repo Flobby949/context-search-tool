@@ -32,13 +32,13 @@
       "const": "p15-v8-closure-attempt-v1"
     },
     "attempt_id": {
-      "const": "p15-v8-attempt-002"
+      "const": "p15-v8-attempt-003"
     },
     "status": {
-      "const": "DRAFT"
+      "const": "EXECUTION_AUTHORIZED"
     },
     "execution_eligible": {
-      "const": false
+      "const": true
     },
     "disposition": {
       "const": "local_efficacy_only"
@@ -847,17 +847,17 @@
           ],
           "properties": {
             "path": {
-              "const": "tests/p15_v8_closure_evaluator.py"
+              "const": "tests/p15_v8_task7_runner.py"
             },
             "sha256": {
               "type": "string",
               "pattern": "^[0-9a-f]{64}$"
             },
             "role": {
-              "const": "tracked_offline_closure_evaluator_only"
+              "const": "tracked_task7_sealer_collector_and_evaluator"
             },
             "online_collection_authorized": {
-              "const": false
+              "const": true
             }
           }
         },
@@ -867,8 +867,8 @@
             "type": "string",
             "minLength": 1
           },
-          "minItems": 6,
-          "maxItems": 6
+          "minItems": 7,
+          "maxItems": 7
         },
         "focused_gate_files": {
           "type": "array",
@@ -945,7 +945,7 @@
           "const": "NOT_EVALUATED"
         },
         "governance": {
-          "const": "DRAFT_UNAPPROVED"
+          "const": "APPROVED_PENDING_EXECUTION"
         },
         "final_disposition": {
           "const": "local_efficacy_only"
@@ -1026,12 +1026,11 @@
         "task7_authorized",
         "execution_manifest_sealed",
         "execution_guard",
-        "forbidden_while_draft",
-        "zero_counters"
+        "pre_execution_online_counters"
       ],
       "properties": {
         "task7_authorized": {
-          "const": false
+          "const": true
         },
         "execution_manifest_sealed": {
           "const": false
@@ -1039,21 +1038,10 @@
         "execution_guard": {
           "const": "deny_unless_approved_receipt_and_sealed_execution_manifest_match_contract"
         },
-        "forbidden_while_draft": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          },
-          "minItems": 9,
-          "maxItems": 9
-        },
-        "zero_counters": {
+        "pre_execution_online_counters": {
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "fresh_identity_resolutions",
-            "source_accesses",
             "planner_calls",
             "embedding_calls",
             "control_executions",
@@ -1063,12 +1051,6 @@
             "release_decisions"
           ],
           "properties": {
-            "fresh_identity_resolutions": {
-              "const": 0
-            },
-            "source_accesses": {
-              "const": 0
-            },
             "planner_calls": {
               "const": 0
             },
@@ -1246,7 +1228,7 @@
       ],
       "properties": {
         "identity_state": {
-          "const": "UNSELECTED"
+          "const": "SELECTED_CANDIDATE_BLIND_SEAL_PENDING"
         },
         "repository_count": {
           "const": 2
@@ -1308,7 +1290,7 @@
       ],
       "properties": {
         "identity_state": {
-          "const": "UNSELECTED_SEALED_INPUT_PENDING"
+          "const": "SELECTED_CANDIDATE_BLIND_SEAL_PENDING"
         },
         "repository_count": {
           "const": 1
