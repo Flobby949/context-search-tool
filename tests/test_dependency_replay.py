@@ -211,6 +211,51 @@ def test_capture_round_trip_replays_only_dependency_hint_factor() -> None:
     assert promoted["closed_exact_witness"]["relation_id"] == "relation-12"
 
 
+def test_replay_reports_the_existing_dependency_promotion_decision() -> None:
+    observations: list[dict[str, object]] = []
+
+    replay_dependency_state(
+        _artifact(),
+        consume_dependency_hints=True,
+        promotion_observer=observations.append,
+    )
+
+    assert observations == [
+        {
+            "status": "promoted",
+            "exact_source_hint_promoted": 1,
+            "exact_target_hint_promoted": 0,
+            "semantic_pair_fallback_promoted": 0,
+            "promoted_path_count": 1,
+        }
+    ]
+
+
+def test_control_replay_reports_disabled_without_changing_results() -> None:
+    artifact = _artifact()
+    observations: list[dict[str, object]] = []
+
+    observed = replay_dependency_state(
+        artifact,
+        consume_dependency_hints=False,
+        promotion_observer=observations.append,
+    )
+
+    assert observed == replay_dependency_state(
+        artifact,
+        consume_dependency_hints=False,
+    )
+    assert observations == [
+        {
+            "status": "disabled",
+            "exact_source_hint_promoted": 0,
+            "exact_target_hint_promoted": 0,
+            "semantic_pair_fallback_promoted": 0,
+            "promoted_path_count": 0,
+        }
+    ]
+
+
 def test_fallback_plan_replay_is_unchanged_and_tampering_fails_closed() -> None:
     fallback = QueryPlan(
         original_query="trace imports used by source_12",

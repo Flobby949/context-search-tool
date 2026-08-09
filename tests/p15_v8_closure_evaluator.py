@@ -629,12 +629,25 @@ def _validate_contract(contract: dict[str, Any]) -> None:
         {"path", "sha256", "role", "online_collection_authorized"},
         "contract runner",
     )
-    if runner.get("path") != "tests/p15_v8_closure_evaluator.py":
-        raise ValidationError("contract runner path mismatch")
-    if runner.get("role") != "tracked_offline_closure_evaluator_only":
-        raise ValidationError("contract runner role mismatch")
-    if runner.get("online_collection_authorized") is not False:
-        raise ValidationError("contract runner cannot authorize online collection")
+    allowed_runners = {
+        (
+            "tests/p15_v8_closure_evaluator.py",
+            "tracked_offline_closure_evaluator_only",
+            False,
+        ),
+        (
+            "tests/p15_v8_task7_runner.py",
+            "tracked_task7_sealer_collector_and_evaluator",
+            True,
+        ),
+    }
+    observed_runner = (
+        runner.get("path"),
+        runner.get("role"),
+        runner.get("online_collection_authorized"),
+    )
+    if observed_runner not in allowed_runners:
+        raise ValidationError("contract runner identity mismatch")
     _sha256_string(runner.get("sha256"), "contract runner sha256")
     contract_approval_projection(contract)
 
