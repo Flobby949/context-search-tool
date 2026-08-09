@@ -16,6 +16,9 @@ from context_search_tool.query_planner import (
 )
 
 
+pytestmark = pytest.mark.archival_acceptance
+
+
 SCHEDULE_ORDER_RULE = (
     "repository_rank_then_case_ordinal_then_sample_1_control_1_control_2_"
     "treatment_1_treatment_2_then_sample_2_treatment_1_treatment_2_"

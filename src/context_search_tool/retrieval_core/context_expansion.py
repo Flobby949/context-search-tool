@@ -455,7 +455,7 @@ def _merge_expanded_result(
         ("exact_imported_symbol", "exact imported symbol dependency"),
         (
             "planner_dependency_hint_promotion",
-            "planner exact dependency target",
+            "planner dependency target promotion",
         ),
     ):
         if merged_score_parts.get(score_key, 0.0) > 0.0 and fixed_reason not in reasons:

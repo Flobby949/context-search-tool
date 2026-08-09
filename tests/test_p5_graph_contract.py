@@ -112,6 +112,23 @@ def test_forbidden_edges_and_exact_module_test_invariants_are_closed(
         assert counts["graph_omitted_relation_count"] >= 0
 
 
+def test_generic_python_module_assignments_are_exact_variables() -> None:
+    projection = json.loads(
+        (EXPECTED_DIRECTORY / "p5_generic_tests.json").read_text(encoding="utf-8")
+    )
+
+    assert {
+        signal["qualified_name"]
+        for signal in projection["signals"]
+        if signal["kind"] == "variable"
+    } == {
+        "tests.generated.test_archive.__test__",
+        "tests.generated.test_archive.archive_subject",
+        "tests.test_payment.__test__",
+        "tests.test_payment.payment_subject",
+    }
+
+
 @pytest.mark.parametrize("repository_key", tuple(P5_REPOSITORIES))
 def test_incoming_rows_return_the_exact_source_side_of_each_resolved_edge(
     tmp_path: Path,

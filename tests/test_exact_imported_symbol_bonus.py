@@ -254,7 +254,7 @@ def test_context_overlap_preserves_planner_dependency_promotion_reason() -> None
             "planner_dependency_hint_promotion": 0.4,
             "rerank_score": 0.5,
         },
-        reasons=["planner exact dependency target"],
+        reasons=["planner dependency target promotion"],
         followup_keywords=[],
         rank_tier=0,
         rerank_score=0.5,
@@ -284,11 +284,13 @@ def test_context_overlap_preserves_planner_dependency_promotion_reason() -> None
     )
     assert merged.reasons == [
         "lexical match",
-        "planner exact dependency target",
+        "planner dependency target promotion",
     ]
 
 
 class _SignalLookup:
+    graph_fault = None
+
     def __init__(self, signals: dict[str, CodeSignal]) -> None:
         self.signals = signals
 
@@ -369,6 +371,74 @@ def _dependency_signals(*indices: int) -> dict[str, CodeSignal]:
     return {signal.signal_id: signal for signal in signals}
 
 
+def _promotion_observation(
+    status: str,
+    *,
+    exact_source: int = 0,
+    exact_target: int = 0,
+    semantic_pair: int = 0,
+    path_count: int = 0,
+) -> dict[str, object]:
+    return {
+        "status": status,
+        "exact_source_hint_promoted": exact_source,
+        "exact_target_hint_promoted": exact_target,
+        "semantic_pair_fallback_promoted": semantic_pair,
+        "promoted_path_count": path_count,
+    }
+
+
+_DEFAULT_GRAPH_SESSION = object()
+
+
+def _observe_dependency_promotion_no_op(
+    plan: QueryPlan,
+    *,
+    graph_session: object = _DEFAULT_GRAPH_SESSION,
+    final_top_k: int = 12,
+) -> dict[str, object]:
+    ranked = [_dependency_ranked(index) for index in range(13)]
+    observations: list[dict[str, object]] = []
+    resolved_graph_session = (
+        _SignalLookup(_dependency_signals(12))
+        if graph_session is _DEFAULT_GRAPH_SESSION
+        else graph_session
+    )
+
+    unchanged = ranking.apply_planner_dependency_hint_promotions(
+        ranked,
+        {"chunk-12": _dependency_candidate(12)},
+        plan,
+        "trace imports",
+        resolved_graph_session,
+        final_top_k=final_top_k,
+        observation_callback=observations.append,
+    )
+
+    assert unchanged == ranked
+    assert len(observations) == 1
+    return observations[0]
+
+
+def _single_source_dependency_promotion_inputs() -> tuple[
+    list[core_types._RankedChunk],
+    dict[str, RetrievalCandidate],
+    QueryPlan,
+    _SignalLookup,
+]:
+    return (
+        [_dependency_ranked(index) for index in range(13)],
+        {"chunk-12": _dependency_candidate(12)},
+        QueryPlan(
+            original_query="trace imports",
+            status="ok",
+            dependency_intent="follow_imports",
+            source_module_hints=["source_12"],
+        ),
+        _SignalLookup(_dependency_signals(12)),
+    )
+
+
 def test_source_hints_promote_at_most_two_actual_admissible_targets_into_top12() -> None:
     ranked = [_dependency_ranked(index) for index in range(16)]
     candidates = {
@@ -390,6 +460,7 @@ def test_source_hints_promote_at_most_two_actual_admissible_targets_into_top12()
         dependency_intent="follow_imports",
         source_symbol_hints=["source_12", "source_13", "source_14", "source_15"],
     )
+    observations: list[dict[str, object]] = []
 
     promoted = ranking.apply_planner_dependency_hint_promotions(
         list(reversed(ranked)),
@@ -398,6 +469,7 @@ def test_source_hints_promote_at_most_two_actual_admissible_targets_into_top12()
         "trace source modules",
         _SignalLookup(_dependency_signals(12, 13, 14, 15)),
         final_top_k=12,
+        observation_callback=observations.append,
     )
 
     promoted_paths = [item.chunk.file_path.as_posix() for item in promoted[:12]]
@@ -411,25 +483,26 @@ def test_source_hints_promote_at_most_two_actual_admissible_targets_into_top12()
     by_path = {item.chunk.file_path.as_posix(): item for item in promoted}
     for path in ("src/module_13.py", "src/module_14.py"):
         assert by_path[path].score_parts["planner_dependency_hint_promotion"] > 0
-        assert by_path[path].reasons.count("planner exact dependency target") == 1
+        assert by_path[path].reasons.count(
+            "planner dependency target promotion"
+        ) == 1
+    assert observations == [
+        _promotion_observation("promoted", exact_source=2, path_count=2)
+    ]
 
 
 def test_dedicated_source_module_hints_activate_dependency_promotion() -> None:
-    ranked = [_dependency_ranked(index) for index in range(13)]
-    plan = QueryPlan(
-        original_query="trace imports",
-        status="ok",
-        dependency_intent="follow_imports",
-        source_module_hints=["source_12"],
-    )
+    ranked, candidates, plan, signals = _single_source_dependency_promotion_inputs()
+    observations: list[dict[str, object]] = []
 
     promoted = ranking.apply_planner_dependency_hint_promotions(
         ranked,
-        {"chunk-12": _dependency_candidate(12)},
+        candidates,
         plan,
         "trace imports",
-        _SignalLookup(_dependency_signals(12)),
+        signals,
         final_top_k=12,
+        observation_callback=observations.append,
     )
 
     promoted_target = next(
@@ -437,28 +510,110 @@ def test_dedicated_source_module_hints_activate_dependency_promotion() -> None:
     )
     assert promoted_target in promoted[:12]
     assert promoted_target.score_parts["planner_dependency_hint_promotion"] > 0
+    assert observations == [
+        _promotion_observation("promoted", exact_source=1, path_count=1)
+    ]
 
 
-def test_generic_hints_do_not_activate_dependency_promotion() -> None:
-    ranked = [_dependency_ranked(index) for index in range(13)]
-    plan = QueryPlan(
-        original_query="trace imports",
-        status="ok",
-        dependency_intent="follow_imports",
-        symbol_hints=["source_12"],
-        grep_keywords=["src.source_12"],
-    )
-
-    unchanged = ranking.apply_planner_dependency_hint_promotions(
+def test_observation_callback_is_optional_and_failure_is_isolated() -> None:
+    ranked, candidates, plan, signals = _single_source_dependency_promotion_inputs()
+    unobserved = ranking.apply_planner_dependency_hint_promotions(
         ranked,
-        {"chunk-12": _dependency_candidate(12)},
+        candidates,
         plan,
         "trace imports",
-        _SignalLookup(_dependency_signals(12)),
+        signals,
         final_top_k=12,
     )
 
-    assert unchanged == ranked
+    def fail_observation(_observation: dict[str, object]) -> None:
+        raise RuntimeError("observer failed")
+
+    assert ranking.apply_planner_dependency_hint_promotions(
+        ranked,
+        candidates,
+        plan,
+        "trace imports",
+        signals,
+        final_top_k=12,
+        observation_callback=fail_observation,
+    ) == unobserved
+
+
+@pytest.mark.parametrize(
+    (
+        "plan_changes",
+        "graph_state",
+        "final_top_k",
+        "expected_status",
+    ),
+    [
+        pytest.param(
+            {
+                "source_module_hints": [],
+                "symbol_hints": ["source_12"],
+                "grep_keywords": ["src.source_12"],
+            },
+            "available",
+            12,
+            "missing_activation_hint",
+            id="generic-hints",
+        ),
+        pytest.param(
+            {
+                "source_module_hints": [],
+                "imported_module_hints": ["module_12"],
+            },
+            "available",
+            12,
+            "missing_activation_hint",
+            id="imported-module-only",
+        ),
+        pytest.param({}, "fault", 12, "graph_unavailable", id="graph-fault"),
+        pytest.param(
+            {"status": "fallback"},
+            "available",
+            12,
+            "planner_not_ok",
+            id="planner-fallback",
+        ),
+        pytest.param(
+            {"dependency_intent": "none"},
+            "available",
+            12,
+            "intent_mismatch",
+            id="intent-mismatch",
+        ),
+        pytest.param({}, "available", 0, "disabled", id="nonpositive-top-k"),
+    ],
+)
+def test_dependency_promotion_no_op_reports_status(
+    plan_changes: dict[str, object],
+    graph_state: str,
+    final_top_k: int,
+    expected_status: str,
+) -> None:
+    plan = replace(
+        QueryPlan(
+            original_query="trace imports",
+            status="ok",
+            dependency_intent="follow_imports",
+            source_module_hints=["source_12"],
+        ),
+        **plan_changes,
+    )
+    graph_session = _SignalLookup(_dependency_signals(12))
+    graph_session.graph_fault = (
+        "graph read failed" if graph_state == "fault" else None
+    )
+
+    observation = _observe_dependency_promotion_no_op(
+        plan,
+        graph_session=graph_session,
+        final_top_k=final_top_k,
+    )
+
+    assert observation == _promotion_observation(expected_status)
 
 
 def test_source_hint_matching_is_exact_and_does_not_use_substrings() -> None:
@@ -523,6 +678,7 @@ def test_corrupt_source_identity_fails_closed(source_signal: CodeSignal) -> None
         dependency_intent="follow_imports",
         source_symbol_hints=["source_12"],
     )
+    observations: list[dict[str, object]] = []
 
     unchanged = ranking.apply_planner_dependency_hint_promotions(
         ranked,
@@ -536,9 +692,13 @@ def test_corrupt_source_identity_fails_closed(source_signal: CodeSignal) -> None
             }
         ),
         final_top_k=12,
+        observation_callback=observations.append,
     )
 
     assert unchanged == ranked
+    assert observations == [
+        _promotion_observation("no_eligible_closed_candidate")
+    ]
 
 
 @pytest.mark.parametrize(
@@ -609,6 +769,7 @@ def test_exact_target_hint_recovers_from_misclassified_source_hint() -> None:
         source_module_hints=["wrong_source"],
         imported_symbol_hints=["Target12"],
     )
+    observations: list[dict[str, object]] = []
 
     promoted = ranking.apply_planner_dependency_hint_promotions(
         ranked,
@@ -617,22 +778,52 @@ def test_exact_target_hint_recovers_from_misclassified_source_hint() -> None:
         "trace exact imported target",
         _SignalLookup(_dependency_signals(12)),
         final_top_k=12,
+        observation_callback=observations.append,
     )
 
     target = next(item for item in promoted if item.chunk.chunk_id == "chunk-12")
     assert target in promoted[:12]
     assert target.score_parts["planner_dependency_hint_promotion"] > 0
+    assert observations == [
+        _promotion_observation("promoted", exact_target=1, path_count=1)
+    ]
 
 
-def test_semantic_import_hint_uses_strong_direct_source_target_pair_fallback() -> None:
+@pytest.mark.parametrize(
+    "imported_symbol_hints",
+    [
+        pytest.param(
+            [
+                "event_loop_entry_point",
+                "blocking_portal",
+                "worker_thread",
+                "async_portal",
+            ],
+            id="anyio-q06",
+        ),
+        pytest.param(
+            [
+                "unavailable_extension",
+                "convert_to_pure",
+                "import_fallback",
+                "accelerate_import",
+            ],
+            id="multidict-q01",
+        ),
+    ],
+)
+def test_semantic_import_hint_uses_strong_direct_source_target_pair_fallback(
+    imported_symbol_hints: list[str],
+) -> None:
     source = _ranked("source-chunk-12", "src/source_12.py", 0.80)
     ranked = [source, *[_dependency_ranked(index) for index in range(13)]]
     plan = QueryPlan(
         original_query="trace runtime fallback",
         status="ok",
         dependency_intent="follow_imports",
-        imported_symbol_hints=["runtime_fallback"],
+        imported_symbol_hints=imported_symbol_hints,
     )
+    observations: list[dict[str, object]] = []
 
     promoted = ranking.apply_planner_dependency_hint_promotions(
         ranked,
@@ -641,11 +832,15 @@ def test_semantic_import_hint_uses_strong_direct_source_target_pair_fallback() -
         "trace runtime fallback",
         _SignalLookup(_dependency_signals(12)),
         final_top_k=12,
+        observation_callback=observations.append,
     )
 
     target = next(item for item in promoted if item.chunk.chunk_id == "chunk-12")
     assert target in promoted[:12]
     assert target.score_parts["planner_dependency_hint_promotion"] > 0
+    assert observations == [
+        _promotion_observation("promoted", semantic_pair=1, path_count=1)
+    ]
 
 
 def test_semantic_import_hint_fallback_rejects_weak_source_target_pair() -> None:
@@ -657,6 +852,7 @@ def test_semantic_import_hint_fallback_rejects_weak_source_target_pair() -> None
         dependency_intent="follow_imports",
         imported_symbol_hints=["runtime_fallback"],
     )
+    observations: list[dict[str, object]] = []
 
     unchanged = ranking.apply_planner_dependency_hint_promotions(
         ranked,
@@ -665,9 +861,13 @@ def test_semantic_import_hint_fallback_rejects_weak_source_target_pair() -> None
         "trace runtime fallback",
         _SignalLookup(_dependency_signals(12)),
         final_top_k=12,
+        observation_callback=observations.append,
     )
 
     assert unchanged == sorted(ranked, key=ranking._ranked_chunk_sort_key)
+    assert observations == [
+        _promotion_observation("no_eligible_closed_candidate")
+    ]
 
 
 def test_source_hint_promotion_is_input_order_independent_and_idempotent() -> None:
@@ -684,6 +884,7 @@ def test_source_hint_promotion_is_input_order_independent_and_idempotent() -> No
         source_module_hints=["source_13", "source_15"],
     )
     signal_lookup = _SignalLookup(_dependency_signals(12, 13, 14, 15))
+    repeated_observations: list[dict[str, object]] = []
 
     canonical = ranking.apply_planner_dependency_hint_promotions(
         ranked,
@@ -708,11 +909,15 @@ def test_source_hint_promotion_is_input_order_independent_and_idempotent() -> No
         "trace imports",
         signal_lookup,
         final_top_k=12,
+        observation_callback=repeated_observations.append,
     )
 
     expected_paths = [item.chunk.file_path for item in canonical]
     assert [item.chunk.file_path for item in reversed_order] == expected_paths
     assert repeated == canonical
+    assert repeated_observations == [
+        _promotion_observation("no_eligible_closed_candidate")
+    ]
     promoted_paths = {
         item.chunk.file_path.as_posix()
         for item in canonical

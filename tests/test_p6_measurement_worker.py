@@ -20,6 +20,23 @@ def _load_harness() -> Any:
     return module
 
 
+def _freeze_valid_environment(module: Any, monkeypatch: Any) -> None:
+    environment = module._environment()
+    environment.update(
+        {
+            "cpu_count": max(8, environment["cpu_count"]),
+            "memory_bytes": max(16 * 1024**3, environment["memory_bytes"]),
+            "local_disk_class": "ssd",
+            "power_state": "external",
+            "governor_state": "not_applicable",
+            "swap_before_bytes": 0,
+            "swap_after_bytes": 0,
+            "background_cpu_percent": 0.0,
+        }
+    )
+    monkeypatch.setattr(module, "_environment", lambda: dict(environment))
+
+
 def _tiny_workload(module: Any, tmp_path: Path) -> tuple[Path, Path]:
     repo = tmp_path / "source-repo"
     generated = repo / "generated"
@@ -420,6 +437,7 @@ def test_query_worker_captures_private_numeric_production_trace(tmp_path: Path) 
         "candidate_merge",
         "ranking",
         "cohort_rerank",
+        "dependency_promotion",
         "context_expansion",
         "final_selection",
     ]
@@ -496,6 +514,7 @@ def test_one_file_refresh_measurement_reestablishes_one_dirty_file_per_run(
     monkeypatch: Any,
 ) -> None:
     module = _load_harness()
+    _freeze_valid_environment(module, monkeypatch)
     repo, manifest = _tiny_workload(module, tmp_path)
     contract = json.loads(manifest.read_text(encoding="utf-8"))
     contract["benchmark_registry"]["cases"].append(
@@ -802,6 +821,7 @@ def test_final_resident_benchmark_reuses_one_session(
     monkeypatch: Any,
 ) -> None:
     module = _load_harness()
+    _freeze_valid_environment(module, monkeypatch)
     assert hasattr(module, "_ResidentMeasurementSession"), (
         "resident measurement session is absent"
     )
@@ -938,22 +958,9 @@ def test_cli_cold_warmup_and_full_build_samples_use_isolated_clones(
     monkeypatch: Any,
 ) -> None:
     module = _load_harness()
+    _freeze_valid_environment(module, monkeypatch)
     repo, manifest = _tiny_workload(module, tmp_path)
     calls: list[Path] = []
-    environment = module._environment()
-    environment.update(
-        {
-            "cpu_count": max(8, environment["cpu_count"]),
-            "memory_bytes": max(16 * 1024**3, environment["memory_bytes"]),
-            "local_disk_class": "ssd",
-            "power_state": "external",
-            "governor_state": "not_applicable",
-            "swap_before_bytes": 0,
-            "swap_after_bytes": 0,
-            "background_cpu_percent": 0.0,
-        }
-    )
-    monkeypatch.setattr(module, "_environment", lambda: dict(environment))
     monkeypatch.setattr(
         module,
         "_calibration",
@@ -1020,6 +1027,7 @@ def test_read_only_measurements_prepare_one_ready_clone_and_reuse_it(
     monkeypatch: Any,
 ) -> None:
     module = _load_harness()
+    _freeze_valid_environment(module, monkeypatch)
     repo, manifest = _tiny_workload(module, tmp_path)
     calls: list[tuple[str, Path]] = []
 
@@ -1088,24 +1096,12 @@ def test_read_only_measurements_reuse_existing_ready_repo_without_clone(
     monkeypatch: Any,
 ) -> None:
     module = _load_harness()
+    _freeze_valid_environment(module, monkeypatch)
     repo, manifest = _tiny_workload(module, tmp_path)
     index = repo / ".context-search"
     index.mkdir()
     (index / "ready").write_text("ready", encoding="utf-8")
     calls: list[Path] = []
-    environment = module._environment()
-    environment.update(
-        {
-            "cpu_count": max(8, environment["cpu_count"]),
-            "memory_bytes": max(16 * 1024**3, environment["memory_bytes"]),
-            "local_disk_class": "ssd",
-            "power_state": "external",
-            "governor_state": "not_applicable",
-            "swap_before_bytes": 0,
-            "swap_after_bytes": 0,
-            "background_cpu_percent": 0.0,
-        }
-    )
 
     def fake_worker(operation: str, sample_repo: Path, case_id: str) -> dict[str, Any]:
         assert operation == "query"
@@ -1126,7 +1122,6 @@ def test_read_only_measurements_reuse_existing_ready_repo_without_clone(
             "product_subprocesses": 0,
         }
 
-    monkeypatch.setattr(module, "_environment", lambda: dict(environment))
     monkeypatch.setattr(module, "_run_measurement_worker", fake_worker)
     monkeypatch.setattr(
         module,
@@ -1164,6 +1159,7 @@ def test_unsupported_state_never_invokes_measurement_worker(
     monkeypatch: Any,
 ) -> None:
     module = _load_harness()
+    _freeze_valid_environment(module, monkeypatch)
     repo, manifest = _tiny_workload(module, tmp_path)
 
     def forbidden(*args: Any, **kwargs: Any) -> Any:
@@ -1211,6 +1207,7 @@ def test_interrupted_run_checkpoints_completed_samples_and_resumes_only_missing(
     capsys: Any,
 ) -> None:
     module = _load_harness()
+    _freeze_valid_environment(module, monkeypatch)
     monkeypatch.setattr(
         module,
         "_calibration",

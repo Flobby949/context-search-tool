@@ -9241,6 +9241,458 @@ def test_exact_identifier_definition_owner_preserves_cohort_cascade_under_revers
     )
 
 
+def _rank_exact_identifier_owner_peer_top_tie(
+    db_path: Path,
+    *,
+    reverse_candidate_order: bool,
+    alpha_owner_semantic: float = 0.40,
+    beta_owner_semantic: float = 0.40,
+) -> list[core_types._RankedChunk]:
+    chunks = [
+        DocumentChunk(
+            chunk_id=f"{project}-owner",
+            file_path=Path(f"{project}/src/{project.title()}Owner.py"),
+            start_line=1,
+            end_line=20,
+            content="status = INVOLVED_BY_ME",
+            chunk_type="symbol",
+            symbols=[
+                SymbolRef("INVOLVED_BY_ME", "constant", 5, 5, "python")
+            ],
+            lexical_tokens=["involved_by_me"],
+            metadata=_project_metadata(project),
+        )
+        for project in ("alpha", "beta")
+    ]
+    chunks.extend(
+        DocumentChunk(
+            chunk_id=f"{project}-peer",
+            file_path=Path(f"{project}/src/{project.title()}Peer.py"),
+            start_line=1,
+            end_line=20,
+            content="status = unrelated",
+            chunk_type="symbol",
+            lexical_tokens=[],
+            metadata=_project_metadata(project),
+        )
+        for project in ("alpha", "beta")
+    )
+    return _rank_exact_identifier_chunks(
+        db_path,
+        chunks,
+        reverse_candidate_order=reverse_candidate_order,
+        candidate_parts={
+            "alpha-owner": {
+                "semantic": alpha_owner_semantic,
+                "direct_text": 0.70,
+            },
+            "beta-owner": {
+                "semantic": beta_owner_semantic,
+                "direct_text": 0.70,
+            },
+            "alpha-peer": {"semantic": 0.30, "direct_text": 0.60},
+            "beta-peer": {"semantic": 0.30, "direct_text": 0.60},
+        },
+    )
+
+
+def test_exact_identifier_owner_top_tie_uses_final_sort_projection_for_cohort_anchor(
+    tmp_path: Path,
+) -> None:
+    ranked = _rank_exact_identifier_owner_peer_top_tie(
+        tmp_path / "owner-peer-top-tie.sqlite",
+        reverse_candidate_order=False,
+    )
+    reversed_ranked = _rank_exact_identifier_owner_peer_top_tie(
+        tmp_path / "owner-peer-top-tie-reversed.sqlite",
+        reverse_candidate_order=True,
+    )
+
+    assert _canonical_ranked_projection(ranked) == _canonical_ranked_projection(
+        reversed_ranked
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+    assert (
+        by_id["alpha-owner"].pre_ceiling_rerank_score
+        == by_id["beta-owner"].pre_ceiling_rerank_score
+    )
+    assert by_id["alpha-owner"].pre_ceiling_rerank_score > max(
+        by_id[chunk_id].pre_ceiling_rerank_score
+        for chunk_id in ("alpha-peer", "beta-peer")
+    )
+    assert ranked[0].chunk.chunk_id == "alpha-owner"
+    assert ranked[0].chunk.file_path == Path("alpha/src/AlphaOwner.py")
+    assert "cohort_mismatch_penalty" not in by_id["alpha-owner"].score_parts
+    assert "cohort_mismatch_penalty" not in by_id["alpha-peer"].score_parts
+    for chunk_id in ("beta-owner", "beta-peer"):
+        assert by_id[chunk_id].score_parts[
+            "cohort_mismatch_penalty"
+        ] == pytest.approx(-0.05)
+    for chunk_id in ("alpha-owner", "beta-owner"):
+        assert by_id[chunk_id].score_parts[
+            "identifier_definition_owner_boost"
+        ] == pytest.approx(0.50)
+
+
+def test_exact_identifier_owner_near_tie_does_not_enter_exact_tie_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    projection_calls = 0
+    original_projection = ranking._ranking_sort_projection
+
+    def counted_projection(**kwargs):
+        nonlocal projection_calls
+        projection_calls += 1
+        return original_projection(**kwargs)
+
+    monkeypatch.setattr(ranking, "_ranking_sort_projection", counted_projection)
+    ranked = _rank_exact_identifier_owner_peer_top_tie(
+        tmp_path / "owner-peer-near-tie.sqlite",
+        reverse_candidate_order=False,
+        alpha_owner_semantic=0.4001,
+        beta_owner_semantic=0.40,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+    alpha_score = by_id["alpha-owner"].pre_ceiling_rerank_score
+    beta_score = by_id["beta-owner"].pre_ceiling_rerank_score
+
+    assert alpha_score != beta_score
+    assert round(alpha_score, ordering.RERANK_SORT_DECIMALS) == round(
+        beta_score,
+        ordering.RERANK_SORT_DECIMALS,
+    )
+    assert projection_calls == len(ranked)
+
+
+def _rank_exact_identifier_owner_reference_top_tie(
+    db_path: Path,
+    *,
+    reverse_candidate_order: bool,
+) -> list[core_types._RankedChunk]:
+    chunks = [
+        DocumentChunk(
+            chunk_id="beta-owner",
+            file_path=Path("beta/src/BetaOwner.py"),
+            start_line=1,
+            end_line=20,
+            content="status = INVOLVED_BY_ME",
+            chunk_type="symbol",
+            symbols=[
+                SymbolRef("INVOLVED_BY_ME", "constant", 5, 5, "python")
+            ],
+            lexical_tokens=["involved_by_me"],
+            metadata=_project_metadata("beta"),
+        ),
+        DocumentChunk(
+            chunk_id="alpha-reference",
+            file_path=Path("alpha/src/AlphaReference.py"),
+            start_line=1,
+            end_line=20,
+            content="status = INVOLVED_BY_ME",
+            chunk_type="symbol",
+            lexical_tokens=["involved_by_me"],
+            metadata=_project_metadata("alpha"),
+        ),
+        DocumentChunk(
+            chunk_id="beta-peer",
+            file_path=Path("beta/src/BetaPeer.py"),
+            start_line=1,
+            end_line=20,
+            content="status = unrelated",
+            chunk_type="symbol",
+            lexical_tokens=[],
+            metadata=_project_metadata("beta"),
+        ),
+    ]
+    return _rank_exact_identifier_chunks(
+        db_path,
+        chunks,
+        reverse_candidate_order=reverse_candidate_order,
+        candidate_parts={
+            "beta-owner": {},
+            "alpha-reference": {"semantic": 0.6272727272727273},
+            "beta-peer": {},
+        },
+    )
+
+
+def test_exact_identifier_owner_reference_top_tie_has_no_owner_priority(
+    tmp_path: Path,
+) -> None:
+    ranked = _rank_exact_identifier_owner_reference_top_tie(
+        tmp_path / "owner-reference-top-tie.sqlite",
+        reverse_candidate_order=False,
+    )
+    reversed_ranked = _rank_exact_identifier_owner_reference_top_tie(
+        tmp_path / "owner-reference-top-tie-reversed.sqlite",
+        reverse_candidate_order=True,
+    )
+
+    assert _canonical_ranked_projection(ranked) == _canonical_ranked_projection(
+        reversed_ranked
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+    assert (
+        by_id["beta-owner"].pre_ceiling_rerank_score
+        == by_id["alpha-reference"].pre_ceiling_rerank_score
+    )
+    assert ranked[0].chunk.chunk_id == "alpha-reference"
+    assert ranked[0].chunk.file_path == Path("alpha/src/AlphaReference.py")
+    assert by_id["beta-owner"].score_parts[
+        "identifier_definition_owner_boost"
+    ] == pytest.approx(0.50)
+    assert (
+        "identifier_definition_owner_boost"
+        not in by_id["alpha-reference"].score_parts
+    )
+    assert "cohort_mismatch_penalty" not in by_id["alpha-reference"].score_parts
+    for chunk_id in ("beta-owner", "beta-peer"):
+        assert by_id[chunk_id].score_parts[
+            "cohort_mismatch_penalty"
+        ] == pytest.approx(-0.05)
+
+
+def _rank_exact_identifier_missing_anchor_unit_top_tie(
+    db_path: Path,
+    *,
+    reverse_candidate_order: bool,
+) -> list[core_types._RankedChunk]:
+    chunks = [
+        DocumentChunk(
+            chunk_id="unscoped-owner",
+            file_path=Path("z/UnscopedOwner.py"),
+            start_line=1,
+            end_line=20,
+            content="status = INVOLVED_BY_ME",
+            chunk_type="symbol",
+            symbols=[
+                SymbolRef("INVOLVED_BY_ME", "constant", 5, 5, "python")
+            ],
+            lexical_tokens=["involved_by_me"],
+            metadata={"language": "python"},
+        ),
+        DocumentChunk(
+            chunk_id="alpha-owner",
+            file_path=Path("alpha/src/AlphaOwner.py"),
+            start_line=1,
+            end_line=20,
+            content="status = INVOLVED_BY_ME",
+            chunk_type="symbol",
+            symbols=[
+                SymbolRef("INVOLVED_BY_ME", "constant", 5, 5, "python")
+            ],
+            lexical_tokens=["involved_by_me"],
+            metadata=_project_metadata("alpha"),
+        ),
+        DocumentChunk(
+            chunk_id="beta-peer",
+            file_path=Path("beta/src/BetaPeer.py"),
+            start_line=1,
+            end_line=20,
+            content="status = unrelated",
+            chunk_type="symbol",
+            lexical_tokens=[],
+            metadata=_project_metadata("beta"),
+        ),
+    ]
+    return _rank_exact_identifier_chunks(
+        db_path,
+        chunks,
+        reverse_candidate_order=reverse_candidate_order,
+        candidate_parts={
+            "unscoped-owner": {"semantic": 0.40, "direct_text": 0.70},
+            "alpha-owner": {"semantic": 0.40, "direct_text": 0.70},
+            "beta-peer": {},
+        },
+    )
+
+
+def test_exact_identifier_owner_top_tie_resolves_before_anchor_unit_gate(
+    tmp_path: Path,
+) -> None:
+    ranked = _rank_exact_identifier_missing_anchor_unit_top_tie(
+        tmp_path / "missing-anchor-unit.sqlite",
+        reverse_candidate_order=False,
+    )
+    reversed_ranked = _rank_exact_identifier_missing_anchor_unit_top_tie(
+        tmp_path / "missing-anchor-unit-reversed.sqlite",
+        reverse_candidate_order=True,
+    )
+
+    assert _canonical_ranked_projection(ranked) == _canonical_ranked_projection(
+        reversed_ranked
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+    assert (
+        by_id["unscoped-owner"].pre_ceiling_rerank_score
+        == by_id["alpha-owner"].pre_ceiling_rerank_score
+    )
+    assert ranked[0].chunk.chunk_id == "alpha-owner"
+    assert ranked[0].chunk.file_path == Path("alpha/src/AlphaOwner.py")
+    assert by_id["alpha-owner"].score_parts[
+        "identifier_definition_owner_boost"
+    ] == pytest.approx(0.50)
+    assert by_id["unscoped-owner"].score_parts[
+        "identifier_definition_owner_boost"
+    ] == pytest.approx(0.50)
+    assert "cohort_mismatch_penalty" not in by_id["alpha-owner"].score_parts
+    assert "cohort_mismatch_penalty" not in by_id["unscoped-owner"].score_parts
+    assert by_id["beta-peer"].score_parts[
+        "cohort_mismatch_penalty"
+    ] == pytest.approx(-0.05)
+
+
+def _rank_identifier_cohort_guard_off_case(
+    db_path: Path,
+    *,
+    case: str,
+    reverse_candidate_order: bool,
+) -> list[core_types._RankedChunk]:
+    query = "find INVOLVED_BY_ME" if case == "nonexact" else "INVOLVED_BY_ME"
+    if case == "scope-mismatch":
+        metadata_by_project = {
+            "alpha": {
+                **_project_metadata("involved_by_me"),
+                "project_root": "alpha",
+            },
+            "beta": _project_metadata("beta"),
+        }
+    elif case == "mixed-scope":
+        metadata_by_project = {
+            "alpha": {
+                **_project_metadata("involved_by_me"),
+                "project_root": "alpha",
+            },
+            "beta": {
+                **_project_metadata("beta"),
+                "project_kind": "involved_by_me",
+            },
+        }
+    else:
+        metadata_by_project = {
+            project: _project_metadata(project)
+            for project in ("alpha", "beta")
+        }
+
+    chunks = []
+    for project in ("alpha", "beta"):
+        has_owner = (
+            case not in {"exact-no-owner", "scope-mismatch"}
+            or (case == "scope-mismatch" and project == "beta")
+        )
+        chunks.append(
+            DocumentChunk(
+                chunk_id=f"{project}-candidate",
+                file_path=Path(f"{project}/src/{project.title()}Candidate.py"),
+                start_line=1,
+                end_line=20,
+                content="status = INVOLVED_BY_ME",
+                chunk_type="symbol",
+                symbols=(
+                    [
+                        SymbolRef(
+                            "INVOLVED_BY_ME",
+                            "constant",
+                            5,
+                            5,
+                            "python",
+                        )
+                    ]
+                    if has_owner
+                    else []
+                ),
+                lexical_tokens=["involved_by_me"],
+                metadata=metadata_by_project[project],
+            )
+        )
+
+    candidate_parts = {
+        "alpha-candidate": {"semantic": 0.40, "direct_text": 0.70},
+        "beta-candidate": {"semantic": 0.40, "direct_text": 0.70},
+    }
+    if case == "eligible-unique-max":
+        candidate_parts["alpha-candidate"]["semantic"] = 0.60
+
+    return _rank_exact_identifier_chunks(
+        db_path,
+        chunks,
+        query=query,
+        candidate_parts=candidate_parts,
+        reverse_candidate_order=reverse_candidate_order,
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "nonexact",
+        "exact-no-owner",
+        "scope-mismatch",
+        "mixed-scope",
+        "eligible-unique-max",
+    ),
+)
+def test_exact_identifier_definition_owner_top_tie_guard_off_preserves_r1_cohort_cascade(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    ranked = _rank_identifier_cohort_guard_off_case(
+        tmp_path / f"{case}.sqlite",
+        case=case,
+        reverse_candidate_order=False,
+    )
+    reversed_ranked = _rank_identifier_cohort_guard_off_case(
+        tmp_path / f"{case}-reversed.sqlite",
+        case=case,
+        reverse_candidate_order=True,
+    )
+    by_id = {item.chunk.chunk_id: item for item in ranked}
+    reversed_by_id = {
+        item.chunk.chunk_id: item
+        for item in reversed_ranked
+    }
+
+    if case in {"nonexact", "exact-no-owner"}:
+        assert ranked[0].chunk.chunk_id == "alpha-candidate"
+        assert reversed_ranked[0].chunk.chunk_id == "beta-candidate"
+        assert by_id["beta-candidate"].score_parts[
+            "cohort_mismatch_penalty"
+        ] == pytest.approx(-0.05)
+        assert reversed_by_id["alpha-candidate"].score_parts[
+            "cohort_mismatch_penalty"
+        ] == pytest.approx(-0.05)
+    elif case == "mixed-scope":
+        assert all(
+            "cohort_mismatch_penalty" not in item.score_parts
+            for item in (*ranked, *reversed_ranked)
+        )
+    else:
+        assert ranked[0].chunk.chunk_id == "alpha-candidate"
+        assert reversed_ranked[0].chunk.chunk_id == "alpha-candidate"
+        for result_by_id in (by_id, reversed_by_id):
+            assert result_by_id["beta-candidate"].score_parts[
+                "cohort_mismatch_penalty"
+            ] == pytest.approx(-0.05)
+
+    if case == "scope-mismatch":
+        for result_by_id in (by_id, reversed_by_id):
+            mismatch = result_by_id["beta-candidate"]
+            assert mismatch.score_parts["project_scope_mismatch_penalty"] < 0
+            assert (
+                "identifier_definition_owner_boost"
+                not in mismatch.score_parts
+            )
+    if case == "eligible-unique-max":
+        for result_by_id in (by_id, reversed_by_id):
+            assert result_by_id["alpha-candidate"].score_parts[
+                "identifier_definition_owner_boost"
+            ] == pytest.approx(0.50)
+            assert result_by_id["beta-candidate"].score_parts[
+                "identifier_definition_owner_boost"
+            ] == pytest.approx(0.50)
+
+
 def test_exact_identifier_duplicate_definition_owners_are_deterministic(
     tmp_path: Path,
 ) -> None:

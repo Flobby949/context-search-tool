@@ -346,6 +346,7 @@ def replay_dependency_state(
     artifact: dict[str, Any],
     *,
     consume_dependency_hints: bool,
+    promotion_observer: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, Any]:
     body = validate_replay_state(artifact)
     plan = QueryPlan(**body["plan"])
@@ -411,8 +412,19 @@ def replay_dependency_state(
             body["query"],
             signal_lookup,
             final_top_k=body["final_top_k"],
+            observation_callback=promotion_observer,
         )
     else:
+        if promotion_observer is not None:
+            promotion_observer(
+                {
+                    "status": "disabled",
+                    "exact_source_hint_promoted": 0,
+                    "exact_target_hint_promoted": 0,
+                    "semantic_pair_fallback_promoted": 0,
+                    "promoted_path_count": 0,
+                }
+            )
         signal_lookup = _CapturedSignalLookup({})
     downstream = body.get("downstream")
     if downstream is not None:

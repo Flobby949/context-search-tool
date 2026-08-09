@@ -18,6 +18,7 @@ from context_search_tool.models import (
 )
 from context_search_tool.retrieval import QueryBundle
 from context_search_tool.retrieval_trace import (
+    CANONICAL_TRACE_STAGES,
     SOURCE_COUNT_KEYS,
     ExplorationGoalRecord,
     ExplorationLimits,
@@ -30,6 +31,7 @@ from context_search_tool.retrieval_trace import (
     RetrievalTraceError,
     exploration_trace_payload,
     retrieval_trace_payload,
+    validate_dependency_promotion_decision_counts,
 )
 
 if TYPE_CHECKING:
@@ -190,6 +192,7 @@ def trace_payload(
 
 def format_trace_json(envelope: dict[str, Any]) -> str:
     try:
+        _validated_trace(envelope)
         return json.dumps(
             envelope,
             ensure_ascii=True,
@@ -324,6 +327,8 @@ def _validated_trace(envelope: dict[str, Any]) -> dict[str, Any]:
     for stage in trace["stages"]:
         if type(stage) is not dict or set(stage) != _TRACE_STAGE_KEYS:
             raise ValueError("invalid trace stage")
+        if stage["name"] not in CANONICAL_TRACE_STAGES:
+            raise ValueError("invalid trace stage name")
         if (
             type(stage["source_counts"]) is not dict
             or type(stage["decision_counts"]) is not dict
@@ -335,9 +340,19 @@ def _validated_trace(envelope: dict[str, Any]) -> dict[str, Any]:
             key for key in SOURCE_COUNT_KEYS if key in stage["source_counts"]
         ):
             raise ValueError("invalid trace stage source counts")
-        if tuple(stage["decision_counts"]) not in (
-            (),
-            _TRACE_DECISION_KEYS,
+        decision_keys = tuple(stage["decision_counts"])
+        if stage["name"] == "dependency_promotion":
+            validate_dependency_promotion_decision_counts(
+                tuple(stage["decision_counts"].items())
+            )
+        final_decisions_valid = (
+            stage["name"] == "final_selection"
+            and decision_keys == _TRACE_DECISION_KEYS
+        )
+        if (
+            stage["name"] != "dependency_promotion"
+            and decision_keys
+            and not final_decisions_valid
         ):
             raise ValueError("invalid trace decision counts")
         for candidate in stage["top_candidates"]:

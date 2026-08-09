@@ -29,6 +29,9 @@ from p15_attempt_007_governance import (
 )
 
 
+pytestmark = pytest.mark.archival_acceptance
+
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = (
     PROJECT_ROOT / "tests/fixtures/p15_v7_minimal_online_causal"

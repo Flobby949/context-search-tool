@@ -15,6 +15,9 @@ from typing import Any
 import pytest
 
 
+pytestmark = pytest.mark.archival_acceptance
+
+
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = ROOT / "tests" / "p13_bge_provider_measurement.py"
 PYTHON = Path(sys.executable)

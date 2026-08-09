@@ -1,3 +1,4 @@
+import tomllib
 from dataclasses import asdict
 from pathlib import Path
 
@@ -27,6 +28,9 @@ from context_search_tool.paths import (
 )
 
 
+README = Path(__file__).parents[1] / "README.md"
+
+
 def test_render_default_config_contains_version_one_values() -> None:
     rendered = render_default_config()
     assert "max_file_bytes = 500000" in rendered
@@ -49,6 +53,91 @@ def test_render_default_config_contains_query_planner_defaults() -> None:
     assert "max_keywords = 12" in rendered
     assert "max_symbol_hints = 8" in rendered
     assert DEFAULT_CONFIG.query_planner.enabled is False
+
+
+def test_readme_freezes_p15_as_experimental_opt_in_with_honest_boundaries() -> None:
+    text = README.read_text(encoding="utf-8")
+    section = text.split(
+        "### P15 Dependency Hint Promotion",
+        maxsplit=1,
+    )[1].split("\n## 检索流程", maxsplit=1)[0]
+    normalized = " ".join(section.split())
+
+    for statement in (
+        "experimental opt-in",
+        "p15-v8-attempt-003",
+        "disposition `reject`",
+        "query_planner.enabled=false",
+        "retrieval.consume_dependency_hints=false",
+        "embedding.model=hash-v1",
+        "query_planner.enabled=true",
+        "retrieval.consume_dependency_hints=true",
+        "planner_not_ok=1",
+        "graph_unavailable=1",
+        "dynamic、ambiguous、external、wildcard",
+        "local promotion overhead",
+        "end-to-end online latency",
+        "不是 release-ready",
+        "supported trial config",
+        "不是 attempt-005 收益配置",
+        "不是发布验证配置",
+        "online planner",
+        "每次 query",
+        "endpoint 可以是本机",
+        "remote embedding 支持 `api_key_env`",
+        "remote planner 当前没有 `api_key_env`",
+        "仓库外用户级 secret 配置继承 `api_key`",
+        "clean + reindex",
+    ):
+        assert statement in normalized
+    assert "api_key =" not in section
+    assert "Authorization" not in section
+    assert "sk-" not in section
+    assert DEFAULT_CONFIG.query_planner.enabled is False
+    assert DEFAULT_CONFIG.retrieval.consume_dependency_hints is False
+    assert DEFAULT_CONFIG.embedding.provider == "hash"
+    assert DEFAULT_CONFIG.embedding.model == "hash-v1"
+
+
+def test_readme_p15_trial_config_is_complete_parseable_and_secret_free() -> None:
+    text = README.read_text(encoding="utf-8")
+    section = text.split(
+        "### P15 Dependency Hint Promotion",
+        maxsplit=1,
+    )[1].split("\n## 检索流程", maxsplit=1)[0]
+    snippet = section.split("```toml", maxsplit=1)[1].split(
+        "```",
+        maxsplit=1,
+    )[0]
+
+    assert tomllib.loads(snippet) == {
+        "retrieval": {"consume_dependency_hints": True},
+        "embedding": {
+            "provider": "bge",
+            "model": "bge-m3",
+            "dimensions": 1024,
+            "base_url": "http://localhost:11434",
+        },
+        "query_planner": {
+            "enabled": True,
+            "provider": "ollama",
+            "model": "qwen3.5:4b-mlx",
+            "base_url": "http://localhost:11434",
+            "use_system_proxy": False,
+            "send_repo_profile": True,
+            "timeout_seconds": 8.0,
+            "max_rewritten_queries": 4,
+            "max_keywords": 12,
+            "max_symbol_hints": 8,
+        },
+    }
+    lowered = snippet.lower()
+    assert "api_key" not in lowered
+    assert "authorization" not in lowered
+    assert "secret" not in lowered
+    assert "sk-" not in lowered
+    assert "${" not in snippet
+    assert "<api" not in lowered
 
 
 def test_render_config_uses_passed_embedding_values() -> None:

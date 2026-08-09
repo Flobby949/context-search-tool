@@ -18,6 +18,9 @@ from retrieval_core_characterization import (
 )
 
 
+pytestmark = pytest.mark.runtime_pinned
+
+
 FIXTURE = (
     Path(__file__).parent
     / "fixtures"

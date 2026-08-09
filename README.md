@@ -28,7 +28,8 @@ Context Search Tool 是一个本地代码检索 CLI。它会在目标项目根�
 开发安装：
 
 ```bash
-python -m pip install -e ".[dev]"
+python -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
 ```
 
 安装后会得到 `cst` 命令：
@@ -606,6 +607,66 @@ OpenAI-compatible 服务。API Key 以明文保存在本机；`.context-search/`
 Git 忽略，因此不会出现在正常提交中，但不要使用 `git add -f` 强制添加该目录。
 用户级全局配置位于 Git 仓库之外，建议将文件权限设为 `600`。
 
+### P15 Dependency Hint Promotion（experimental opt-in）
+
+P15 当前是 **experimental opt-in**；`p15-v8-attempt-003` 已完成全部 fresh
+验收并得到顶层 disposition `reject`。它不是 release-ready，也不是发布承诺；按冻结
+stop rule，fresh outcome 失败后 held-out、release 和 governance 均未执行。内置默认仍为
+`query_planner.enabled=false`、`retrieval.consume_dependency_hints=false` 和
+`embedding.model=hash-v1`，因此默认查询不会走已观察到本地收益的路径，
+也不得为了试用 P15 而把这些默认值改为 `true`。
+
+受支持的试用配置必须同时满足 `query_planner.enabled=true`、受支持的 embedding
+和 `retrieval.consume_dependency_hints=true`。以下是不含 secret、可保存到仓库外
+用户级配置的当前
+**supported trial config**：
+
+```toml
+[retrieval]
+consume_dependency_hints = true
+
+[embedding]
+provider = "bge"
+model = "bge-m3"
+dimensions = 1024
+base_url = "http://localhost:11434"
+
+[query_planner]
+enabled = true
+provider = "ollama"
+model = "qwen3.5:4b-mlx"
+base_url = "http://localhost:11434"
+use_system_proxy = false
+send_repo_profile = true
+timeout_seconds = 8.0
+max_rewritten_queries = 4
+max_keywords = 12
+max_symbol_hints = 8
+```
+
+该组合要求 Ollama 正在运行，并已准备 `bge-m3` 和 `qwen3.5:4b-mlx`
+模型（分别执行 `ollama pull bge-m3` 和 `ollama pull qwen3.5:4b-mlx`）。它是
+supported trial config，不是 attempt-005 收益配置，也不是发布验证配置。这里的
+online planner 是指每次 query 都通过 HTTP 调用 planner；endpoint 可以是本机，
+因此 “online” 不等于 “remote”。从默认 hash embedding 切换后必须执行
+**clean + reindex**，例如依次运行 `cst clean /path/to/repo` 和
+`cst index /path/to/repo`，不能复用旧索引。
+
+credential 能力并不对称：remote embedding 支持 `api_key_env`；remote planner
+当前没有 `api_key_env`，只能从仓库外用户级 secret 配置继承 `api_key`。本小节的
+snippet 不写 literal key 或 authorization header，trace 也不记录 Key、认证头或原始
+provider exception。
+
+这条路径始终 fail closed：
+
+- planner timeout、无效响应或 fallback 会记录 `planner_not_ok=1`，不做 promotion，但保留基础检索结果。
+- graph fault 会记录 `graph_unavailable=1` 并 no-op；不会用不完整图证据提升候选。
+- Python `dynamic、ambiguous、external、wildcard` import 形态不产生可用的 closed exact witness，因此不会触发 promotion。
+
+已观察的 **local promotion overhead** 是固定本地 replay 的中位增量
+约 `+1.51 ms / +4.57%`；它不包含 online planner/embedding 的网络与服务时间。
+**end-to-end online latency** 必须在独立、获批准的配置验证中测量，当前尚未建立发布结论。
+
 ## 检索流程
 
 当前检索 pipeline 大致是：
@@ -768,16 +829,30 @@ cst query /path/to/repo "query" --full-file
 安装开发依赖：
 
 ```bash
-python -m pip install -e ".[dev]"
+python -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
 ```
 
-运行测试：
+运行当前产品发布门：
 
 ```bash
-pytest -v -m "not slow"
+.venv/bin/pytest -q \
+  -m "not slow and not archival_acceptance and not runtime_pinned"
 ```
 
-已启动本机 Ollama/BGE 服务时，可去掉 marker 过滤运行包括集成项在内的完整套件。
+固定运行时 characterization 与历史证据审计是两个独立门：
+
+```bash
+.venv/bin/pytest -q -m "runtime_pinned"
+
+.venv/bin/pytest -q -m "archival_acceptance" \
+  --archival-evidence-root "$PWD"
+```
+
+archival 门必须显式提供 `--archival-evidence-root`，当前只支持仓库根目录；
+仓库根之外的 evidence root 会被拒绝，仓库内相应的封存证据也必须完整。runtime
+身份不匹配会在执行前返回 `UsageError`。`--collect-only` 只绕过 evidence/runtime
+环境绑定，不会绕过双 marker 冲突。
 
 检索质量的标准 CI、真实仓库 smoke、planner、BGE A/B、报告比较和 MCP
 反馈流程见 [Retrieval Quality Workflow](docs/retrieval-quality.md)。快速本地门禁：

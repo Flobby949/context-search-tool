@@ -13,6 +13,9 @@ from textwrap import dedent
 import pytest
 
 
+pytestmark = pytest.mark.archival_acceptance
+
+
 SCRIPT = Path(__file__).with_name("p14_definition_owner_acceptance.py")
 P8_MANIFEST_PATH = (
     SCRIPT.parents[1] / "tests/fixtures/p8_python_graphs/input_manifest.json"
