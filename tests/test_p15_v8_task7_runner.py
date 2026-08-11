@@ -25,7 +25,7 @@ def _write_package(repo: Path) -> None:
     (package / "c.py").write_text("class Sea: pass\n", encoding="utf-8")
 
 
-def test_candidate_blind_pool_uses_source_owners_and_diversifies_targets(
+def test_candidate_blind_pool_emits_one_query_per_source_owner(
     tmp_path: Path,
 ) -> None:
     _write_package(tmp_path)
@@ -34,7 +34,6 @@ def test_candidate_blind_pool_uses_source_owners_and_diversifies_targets(
 
     assert [(case.source_symbol, case.target_path) for case in cases] == [
         ("Owner", "src/pkg/b.py"),
-        ("Owner", "src/pkg/c.py"),
     ]
     payload = runner._case_payload("fresh-r01", 1, cases[0])
     assert "Bee" not in payload["query"]
@@ -44,6 +43,35 @@ def test_candidate_blind_pool_uses_source_owners_and_diversifies_targets(
         "src/pkg/b.py",
         "src/pkg/c.py",
     ]
+
+
+def test_candidate_blind_pool_counts_conditional_module_imports_as_relevant(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "src/pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "a.py").write_text(
+        "from typing import TYPE_CHECKING\n"
+        "from .b import Bee\n"
+        "if TYPE_CHECKING:\n"
+        "    from .c import Sea\n\n"
+        "class Owner:\n"
+        "    def run(self):\n"
+        "        return Bee(), Sea()\n",
+        encoding="utf-8",
+    )
+    (package / "b.py").write_text("class Bee: pass\n", encoding="utf-8")
+    (package / "c.py").write_text("class Sea: pass\n", encoding="utf-8")
+
+    cases = runner.derive_eligible_cases(tmp_path)
+
+    assert len(cases) == 1
+    assert cases[0].relevant_paths == (
+        "src/pkg/a.py",
+        "src/pkg/b.py",
+        "src/pkg/c.py",
+    )
 
 
 def test_task7_config_freezes_online_identity_without_repo_profile(

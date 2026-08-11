@@ -495,6 +495,51 @@ def test_source_hints_promote_at_most_two_actual_admissible_targets_into_top12()
     ]
 
 
+def test_dependency_promotions_do_not_evict_the_matched_source_path() -> None:
+    ranked = [
+        *(_dependency_ranked(index) for index in range(10)),
+        _ranked("source-chunk-12", "src/source_12.py", 0.49),
+        _dependency_ranked(11),
+        _dependency_ranked(12),
+        _dependency_ranked(13),
+    ]
+    candidates = {
+        f"chunk-{index:02d}": _dependency_candidate(
+            index,
+            source_index=12,
+            source_owner_qualified_names=("Owner",),
+        )
+        for index in (12, 13)
+    }
+    plan = QueryPlan(
+        original_query="trace Owner imports",
+        status="ok",
+        dependency_intent="follow_imports",
+        source_symbol_hints=["Owner"],
+        source_module_hints=["source_12"],
+    )
+    observations: list[dict[str, object]] = []
+
+    promoted = ranking.apply_planner_dependency_hint_promotions(
+        ranked,
+        candidates,
+        plan,
+        "trace Owner imports",
+        _SignalLookup(_dependency_signals(12, 13)),
+        final_top_k=12,
+        observation_callback=observations.append,
+    )
+
+    promoted_paths = [item.chunk.file_path.as_posix() for item in promoted[:12]]
+    assert "src/source_12.py" in promoted_paths
+    assert "src/module_12.py" in promoted_paths
+    assert "src/module_13.py" not in promoted_paths
+    assert "src/module_11.py" not in promoted_paths
+    assert observations == [
+        _promotion_observation("promoted", exact_source=1, path_count=1)
+    ]
+
+
 def test_dedicated_source_module_hints_activate_dependency_promotion() -> None:
     ranked, candidates, plan, signals = _single_source_dependency_promotion_inputs()
     observations: list[dict[str, object]] = []

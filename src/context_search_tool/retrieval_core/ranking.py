@@ -746,6 +746,7 @@ def apply_planner_dependency_hint_promotions(
         / (10**ordering.RERANK_SORT_DECIMALS)
     )
     replacements: dict[str, core_types._RankedChunk] = {}
+    promotion_limit = _PLANNER_DEPENDENCY_MAX_PROMOTIONS
     promotion_modes = {
         "exact_source_hint": 0,
         "exact_target_hint": 0,
@@ -761,6 +762,7 @@ def apply_planner_dependency_hint_promotions(
         if candidate is None:
             continue
         matched = False
+        matched_source_path: Path | None = None
         for atom in candidate.exact_imported_symbol_provenance:
             if not _closed_exact_dependency_atom(ranked, atom):
                 continue
@@ -828,8 +830,18 @@ def apply_planner_dependency_hint_promotions(
                 ):
                     continue
             matched = True
+            matched_source_path = source_signal.file_path
             break
         if not matched:
+            continue
+        candidate_promotion_limit = promotion_limit
+        if matched_source_path in protected_paths:
+            source_position = top_paths.index(matched_source_path) + 1
+            candidate_promotion_limit = min(
+                candidate_promotion_limit,
+                final_top_k - source_position,
+            )
+        if len(replacements) >= candidate_promotion_limit:
             continue
         index = len(replacements) + 1
         target_score = top_bucket - (
@@ -852,10 +864,11 @@ def apply_planner_dependency_hint_promotions(
             score_parts=score_parts,
             reasons=_reasons(score_parts, query),
         )
+        promotion_limit = candidate_promotion_limit
         if promotion_mode is not None:
             promotion_modes[promotion_mode] += 1
         selected_paths.add(ranked.chunk.file_path)
-        if len(replacements) >= _PLANNER_DEPENDENCY_MAX_PROMOTIONS:
+        if len(replacements) >= promotion_limit:
             break
     if not replacements:
         _observe_dependency_hint_promotion(

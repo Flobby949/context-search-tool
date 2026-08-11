@@ -162,6 +162,20 @@ def _resolved_import_module(
     return ".".join(base)
 
 
+def _module_scope_import_from_nodes(tree: ast.Module) -> list[ast.ImportFrom]:
+    imports: list[ast.ImportFrom] = []
+    pending = list(tree.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.ImportFrom):
+            imports.append(node)
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        pending.extend(ast.iter_child_nodes(node))
+    return sorted(imports, key=lambda node: (node.lineno, node.col_offset))
+
+
 def derive_eligible_cases(repo: Path) -> list[EligibleCase]:
     modules = _module_map(repo)
     candidates: list[EligibleCase] = []
@@ -173,10 +187,8 @@ def derive_eligible_cases(repo: Path) -> list[EligibleCase]:
         except (SyntaxError, UnicodeDecodeError):
             continue
         imports: list[tuple[str, str, str, int]] = []
-        for node in tree.body:
-            if not isinstance(node, ast.ImportFrom) or any(
-                alias.name == "*" for alias in node.names
-            ):
+        for node in _module_scope_import_from_nodes(tree):
+            if any(alias.name == "*" for alias in node.names):
                 continue
             imported_module = _resolved_import_module(module, source_path, node)
             for alias in node.names:
@@ -218,7 +230,7 @@ def derive_eligible_cases(repo: Path) -> list[EligibleCase]:
                     )
                 )
     unique: list[EligibleCase] = []
-    seen_edges: set[tuple[str, str, str]] = set()
+    seen_owners: set[tuple[str, str]] = set()
     for item in sorted(
         candidates,
         key=lambda item: (
@@ -230,9 +242,9 @@ def derive_eligible_cases(repo: Path) -> list[EligibleCase]:
             item.imported_symbol,
         ),
     ):
-        key = (item.source_path, item.source_symbol, item.target_path)
-        if key not in seen_edges:
-            seen_edges.add(key)
+        key = (item.source_path, item.source_symbol)
+        if key not in seen_owners:
+            seen_owners.add(key)
             unique.append(item)
 
     selected: list[EligibleCase] = []
@@ -268,7 +280,7 @@ def _case_payload(slot: str, ordinal: int, item: EligibleCase) -> dict[str, Any]
         "candidate_blind_target_missing": slot.startswith("heldout-"),
         "replacement": False,
         "selection_proof": {
-            "algorithm": "stdlib_ast_direct_from_import_source_owner_v1",
+            "algorithm": "stdlib_ast_module_scope_import_unique_source_owner_v2",
             "source_path": item.source_path,
             "source_symbol": item.source_symbol,
             "source_line": item.source_line,
@@ -303,7 +315,7 @@ def seal_corpus(
         for ordinal, item in zip(ordinals, eligible, strict=False):
             cases.append(_case_payload(slot, ordinal, item))
     return {
-        "schema_version": "p15-v8-candidate-blind-corpus-v1",
+        "schema_version": "p15-v8-candidate-blind-corpus-v2",
         "corpus": name,
         "selection_before_online": True,
         "candidate_blind": True,
