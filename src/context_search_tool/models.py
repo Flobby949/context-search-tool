@@ -141,6 +141,7 @@ class ExactImportedSymbolProvenance:
     producer: str
     resolution_basis: str
     ordered_edge_position: int
+    source_owner_qualified_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

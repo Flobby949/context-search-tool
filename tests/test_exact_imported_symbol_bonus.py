@@ -30,6 +30,7 @@ def _atom(
     source_file_path: str = "src/source.py",
     source_chunk_id: str = "source-chunk",
     target_signal_id: str | None = None,
+    source_owner_qualified_names: tuple[str, ...] = (),
 ) -> ExactImportedSymbolProvenance:
     return ExactImportedSymbolProvenance(
         relation_id=relation_id,
@@ -44,6 +45,7 @@ def _atom(
         producer="python_ast",
         resolution_basis="exact_python_imported_symbol",
         ordered_edge_position=position,
+        source_owner_qualified_names=source_owner_qualified_names,
     )
 
 
@@ -311,6 +313,7 @@ def _dependency_candidate(
     *,
     source_index: int | None = None,
     source_signal_id: str | None = None,
+    source_owner_qualified_names: tuple[str, ...] = (),
 ) -> RetrievalCandidate:
     resolved_source_index = index if source_index is None else source_index
     return _candidate(
@@ -325,6 +328,7 @@ def _dependency_candidate(
                 or f"source-signal-{resolved_source_index:02d}",
                 source_file_path=f"src/source_{resolved_source_index:02d}.py",
                 source_chunk_id=f"source-chunk-{resolved_source_index:02d}",
+                source_owner_qualified_names=source_owner_qualified_names,
             ),
         ),
     )
@@ -458,7 +462,7 @@ def test_source_hints_promote_at_most_two_actual_admissible_targets_into_top12()
         original_query="trace source modules",
         status="ok",
         dependency_intent="follow_imports",
-        source_symbol_hints=["source_12", "source_13", "source_14", "source_15"],
+        source_module_hints=["source_12", "source_13", "source_14", "source_15"],
     )
     observations: list[dict[str, object]] = []
 
@@ -623,8 +627,7 @@ def test_source_hint_matching_is_exact_and_does_not_use_substrings() -> None:
         original_query="trace imports",
         status="ok",
         dependency_intent="follow_imports",
-        source_symbol_hints=["source_1"],
-        source_module_hints=["source_120"],
+        source_module_hints=["source_1", "source_120"],
     )
 
     unchanged = ranking.apply_planner_dependency_hint_promotions(
@@ -676,7 +679,7 @@ def test_corrupt_source_identity_fails_closed(source_signal: CodeSignal) -> None
         original_query="trace imports",
         status="ok",
         dependency_intent="follow_imports",
-        source_symbol_hints=["source_12"],
+        source_module_hints=["source_12"],
     )
     observations: list[dict[str, object]] = []
 
@@ -789,39 +792,15 @@ def test_exact_target_hint_recovers_from_misclassified_source_hint() -> None:
     ]
 
 
-@pytest.mark.parametrize(
-    "imported_symbol_hints",
-    [
-        pytest.param(
-            [
-                "event_loop_entry_point",
-                "blocking_portal",
-                "worker_thread",
-                "async_portal",
-            ],
-            id="anyio-q06",
-        ),
-        pytest.param(
-            [
-                "unavailable_extension",
-                "convert_to_pure",
-                "import_fallback",
-                "accelerate_import",
-            ],
-            id="multidict-q01",
-        ),
-    ],
-)
-def test_semantic_import_hint_uses_strong_direct_source_target_pair_fallback(
-    imported_symbol_hints: list[str],
-) -> None:
+def test_misclassified_source_module_hint_recovers_exact_source_identity() -> None:
     source = _ranked("source-chunk-12", "src/source_12.py", 0.80)
     ranked = [source, *[_dependency_ranked(index) for index in range(13)]]
     plan = QueryPlan(
         original_query="trace runtime fallback",
         status="ok",
         dependency_intent="follow_imports",
-        imported_symbol_hints=imported_symbol_hints,
+        imported_symbol_hints=["runtime_fallback"],
+        imported_module_hints=["source_12"],
     )
     observations: list[dict[str, object]] = []
 
@@ -839,12 +818,51 @@ def test_semantic_import_hint_uses_strong_direct_source_target_pair_fallback(
     assert target in promoted[:12]
     assert target.score_parts["planner_dependency_hint_promotion"] > 0
     assert observations == [
-        _promotion_observation("promoted", semantic_pair=1, path_count=1)
+        _promotion_observation("promoted", exact_source=1, path_count=1)
     ]
 
 
-def test_semantic_import_hint_fallback_rejects_weak_source_target_pair() -> None:
-    source = _ranked("source-chunk-12", "src/source_12.py", -0.25)
+def test_source_owner_hint_selects_only_edges_used_by_that_declaration() -> None:
+    source = _ranked("source-chunk-12", "src/source_12.py", 0.80)
+    ranked = [source, *[_dependency_ranked(index) for index in range(14)]]
+    candidates = {
+        "chunk-12": _dependency_candidate(
+            12,
+            source_owner_qualified_names=("unrelated",),
+        ),
+        "chunk-13": _dependency_candidate(
+            13,
+            source_index=12,
+            source_owner_qualified_names=("plain_traceback",),
+        ),
+    }
+    plan = QueryPlan(
+        original_query="trace plain_traceback imports",
+        status="ok",
+        dependency_intent="follow_imports",
+        source_symbol_hints=["plain_traceback"],
+        source_module_hints=["source_12"],
+    )
+
+    promoted = ranking.apply_planner_dependency_hint_promotions(
+        ranked,
+        candidates,
+        plan,
+        "trace plain_traceback imports",
+        _SignalLookup(_dependency_signals(12, 13)),
+        final_top_k=12,
+    )
+
+    promoted_paths = {
+        item.chunk.file_path.as_posix()
+        for item in promoted[:12]
+        if item.score_parts.get("planner_dependency_hint_promotion", 0.0) > 0
+    }
+    assert promoted_paths == {"src/module_13.py"}
+
+
+def test_semantic_import_hint_fallback_rejects_unanchored_source_identity() -> None:
+    source = _ranked("source-chunk-12", "src/source_12.py", 0.80)
     ranked = [source, *[_dependency_ranked(index) for index in range(13)]]
     plan = QueryPlan(
         original_query="trace runtime fallback",
@@ -880,8 +898,7 @@ def test_source_hint_promotion_is_input_order_independent_and_idempotent() -> No
         original_query="trace imports",
         status="ok",
         dependency_intent="follow_imports",
-        source_symbol_hints=["SOURCE_12", "source_14"],
-        source_module_hints=["source_13", "source_15"],
+        source_module_hints=["SOURCE_12", "source_13", "source_14", "source_15"],
     )
     signal_lookup = _SignalLookup(_dependency_signals(12, 13, 14, 15))
     repeated_observations: list[dict[str, object]] = []

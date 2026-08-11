@@ -1152,6 +1152,15 @@ def _exact_imported_symbol_provenance(
             producer=relation.producer,
             resolution_basis=str(relation.metadata["resolution_basis"]),
             ordered_edge_position=ordered_edge_position,
+            source_owner_qualified_names=tuple(
+                sorted(
+                    item
+                    for item in relation.metadata.get(
+                        "source_owner_qualified_names", []
+                    )
+                    if isinstance(item, str)
+                )
+            ),
         ),
     )
 

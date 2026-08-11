@@ -27,7 +27,7 @@ from context_search_tool.retrieval_core import (
 )
 
 
-REPLAY_SCHEMA_VERSION = "p15-v7-dependency-replay-v2"
+REPLAY_SCHEMA_VERSION = "p15-v9-dependency-replay-v3"
 _CHUNK_METADATA_FIELDS = {"cohort", "owner", "project_name", "project_unit_key"}
 
 
@@ -1003,6 +1003,12 @@ def _closed_witness(
         for value in (*plan.source_symbol_hints, *plan.source_module_hints)
         if (normalized := ranking._normalized_dependency_hint(value))
     }
+    if not source_hints:
+        source_hints = {
+            normalized
+            for value in plan.imported_module_hints
+            if (normalized := ranking._normalized_dependency_hint(value))
+        }
     target_hints = {
         normalized
         for value in (
@@ -1015,25 +1021,32 @@ def _closed_witness(
         )
         if (normalized := ranking._normalized_dependency_hint(value))
     }
-    semantic_pair_fallback = (
-        not source_hints and bool(plan.imported_symbol_hints)
-    )
+    semantic_pair_fallback = False
     for atom in candidate.exact_imported_symbol_provenance:
         source = signal_lookup.signal_for_id(atom.source_signal_id)
         target = signal_lookup.signal_for_id(atom.target_signal_id)
-        if (
+        if not (
             ranking._closed_exact_dependency_atom(ranked, atom)
             and source is not None
             and ranking._closed_dependency_source_signal(atom, source)
             and target is not None
             and ranking._closed_dependency_target_signal(atom, target)
-            and ranking._dependency_hint_identity_matches(
+        ):
+            continue
+        owner_matches = ranking._dependency_source_owner_matches(
+            atom,
+            source,
+            plan.source_symbol_hints,
+        )
+        identity_matches = ranking._dependency_hint_identity_matches(
                 source_signal=source,
                 target_signal=target,
                 source_hints=source_hints,
                 target_hints=target_hints,
                 semantic_pair_fallback=semantic_pair_fallback,
             )[0]
+        if owner_matches is not False and (
+            owner_matches is True or identity_matches
         ):
             return atom
     return None

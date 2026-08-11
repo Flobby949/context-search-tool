@@ -81,6 +81,7 @@ class PythonImportedSymbolFact:
     relative_level: int
     imported_name: str
     local_name: str
+    source_owner_qualified_names: tuple[str, ...]
     range: PythonSourceRange
 
 
@@ -252,6 +253,8 @@ def _collect_imported_symbols(
     tree: ast.AST,
     out: list[PythonImportedSymbolFact],
 ) -> None:
+    owner_loads: dict[str, set[str]] = {}
+    _collect_declaration_loads(tree, "", owner_loads)
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom) or not node.module:
             continue
@@ -265,9 +268,43 @@ def _collect_imported_symbols(
                     relative_level=node.level or 0,
                     imported_name=alias.name,
                     local_name=alias.asname or alias.name,
+                    source_owner_qualified_names=tuple(
+                        sorted(
+                            owner
+                            for owner, loaded_names in owner_loads.items()
+                            if (alias.asname or alias.name) in loaded_names
+                        )
+                    ),
                     range=location,
                 )
             )
+
+
+def _collect_declaration_loads(
+    node: ast.AST,
+    owner: str,
+    out: dict[str, set[str]],
+) -> None:
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, ast.ClassDef):
+            qualified = f"{owner}.{child.name}" if owner else child.name
+            out[qualified] = {
+                item.id
+                for item in ast.walk(child)
+                if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Load)
+            }
+            _collect_declaration_loads(child, qualified, out)
+        elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            qualified = f"{owner}.{child.name}" if owner else child.name
+            out[qualified] = {
+                item.id
+                for item in ast.walk(child)
+                if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Load)
+            }
+        elif isinstance(child, _FUNCTION_SCOPES):
+            continue
+        else:
+            _collect_declaration_loads(child, owner, out)
 
 
 def _declaration_sort_key(
@@ -300,7 +337,7 @@ def _import_sort_key(
 
 def _imported_symbol_sort_key(
     fact: PythonImportedSymbolFact,
-) -> tuple[int, int, int, int, str, int, str, str]:
+) -> tuple[int, int, int, int, str, int, str, str, tuple[str, ...]]:
     return (
         fact.range.start_line,
         fact.range.start_col,
@@ -310,6 +347,7 @@ def _imported_symbol_sort_key(
         fact.relative_level,
         fact.imported_name,
         fact.local_name,
+        fact.source_owner_qualified_names,
     )
 
 
@@ -871,6 +909,9 @@ def _python_imported_symbol_relation(
             "target_signal_kinds": ["type", "function", "variable"],
             "imported_name": fact.imported_name,
             "local_names": [fact.local_name],
+            "source_owner_qualified_names": list(
+                fact.source_owner_qualified_names
+            ),
             "relative_level": fact.relative_level,
             "first_source_line": fact.range.start_line,
             "first_source_column": fact.range.start_col,
@@ -937,6 +978,28 @@ def _merge_python_relation(
                 *(
                     item
                     for item in relation.metadata.get("local_names", [])
+                    if isinstance(item, str)
+                ),
+            }
+        )
+    if (
+        "source_owner_qualified_names" in existing.metadata
+        or "source_owner_qualified_names" in relation.metadata
+    ):
+        metadata["source_owner_qualified_names"] = sorted(
+            {
+                *(
+                    item
+                    for item in existing.metadata.get(
+                        "source_owner_qualified_names", []
+                    )
+                    if isinstance(item, str)
+                ),
+                *(
+                    item
+                    for item in relation.metadata.get(
+                        "source_owner_qualified_names", []
+                    )
                     if isinstance(item, str)
                 ),
             }

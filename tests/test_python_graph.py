@@ -819,6 +819,7 @@ def test_exact_imported_symbol_relation_is_materialized_beside_module_edge() -> 
         "target_signal_kinds": ["type", "function", "variable"],
         "imported_name": "build_service",
         "local_names": ["build"],
+        "source_owner_qualified_names": [],
         "relative_level": 1,
         "first_source_line": 1,
         "first_source_column": 0,
@@ -830,6 +831,33 @@ def test_exact_imported_symbol_relation_is_materialized_beside_module_edge() -> 
             "target_file_path": "app/service.py",
         },
     }
+
+
+def test_exact_imported_symbol_records_declaration_owners_that_load_alias() -> None:
+    producer = PythonGraphProducer()
+    context = _selector_context("app/api.py")
+    parsed = producer.parse(
+        context,
+        (
+            b"from .service import build_service as build\n\n"
+            b"def selected():\n    return build()\n\n"
+            b"def unrelated():\n    return None\n"
+        ),
+    )
+
+    graph = producer.materialize(
+        context,
+        parsed,
+        (_chunk_for("app/api.py", 1, 20, "chunk-all"),),
+        _module_signal("app/api.py"),
+    )
+
+    exact_relation = next(
+        relation
+        for relation in graph.relations
+        if relation.target_kind == "python_declaration"
+    )
+    assert exact_relation.metadata["source_owner_qualified_names"] == ["selected"]
 
 
 def test_repeated_exact_imported_symbols_merge_aliases_and_occurrences() -> None:

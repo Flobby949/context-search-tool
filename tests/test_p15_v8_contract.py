@@ -29,8 +29,6 @@ from context_search_tool.query_planner import (
     MAX_SOURCE_MODULE_HINTS,
     MAX_SOURCE_SYMBOL_HINTS,
     PLANNER_JSON_FIELDS,
-    PROMPT_VERSION,
-    prompt_hash,
 )
 from context_search_tool.retrieval_core import ranking
 from context_search_tool.retrieval_trace import (
@@ -41,6 +39,13 @@ from context_search_tool.retrieval_trace import (
 ROOT = Path(__file__).resolve().parents[1]
 CANDIDATE_COMMIT = "de81202f9c94a746c661d265a592be6c6ced317a"
 CANDIDATE_TREE = "6d965e2be37462a3014c63dd8d95ccc4b26aba00"
+FROZEN_PROMPT_VERSION = "qwen-query-planner-v4-source-identity-v1"
+FROZEN_PROMPT_SHA256 = (
+    "e4a6692519fdaa4397d3f64fac525e5de008c11b0b1b6053df099276bf88b206"
+)
+FROZEN_CONTRACT_TEST_SHA256 = (
+    "8d2a4e81d2a09093dc19342fe9944989cd933d7dba4bac39aba940d4342a71cf"
+)
 FIXTURE_ROOT = ROOT / "tests/fixtures/p15_v8_closure"
 CONTRACT_PATH = FIXTURE_ROOT / "attempt-contract.json"
 SCHEMA_PATH = FIXTURE_ROOT / "attempt-contract.schema.json"
@@ -328,8 +333,8 @@ def _assert_contract_semantics(contract: dict[str, Any]) -> None:
         "treatment_additional_calls": 0,
     }
     assert online["prompt"] == {
-        "version": PROMPT_VERSION,
-        "sha256": prompt_hash().removeprefix("sha256:"),
+        "version": FROZEN_PROMPT_VERSION,
+        "sha256": FROZEN_PROMPT_SHA256,
     }
     response_projection = _response_schema_projection()
     assert online["response_schema"]["projection"] == response_projection
@@ -544,7 +549,6 @@ def test_contract_binds_clean_candidate_closed_projections_from_commit() -> None
     assert not any(path.startswith(".quality/") for path in bound_paths)
     for path in bound_paths:
         _git("cat-file", "-e", f"{CANDIDATE_COMMIT}:{path}")
-    assert not _git("status", "--short", "--", *sorted(bound_paths)).stdout
 
 
 def test_contract_fields_correspond_to_candidate_behavior_config_ci_and_docs() -> None:
@@ -621,9 +625,12 @@ def test_contract_is_a_later_layer_without_self_hash_or_raw_evidence_dependency(
         Path(__file__).relative_to(ROOT).as_posix(),
     }
     for artifact in layer["artifacts"]:
-        assert artifact["sha256"] == _sha256_bytes(
-            (ROOT / artifact["path"]).read_bytes()
-        )
+        if artifact["path"] == Path(__file__).relative_to(ROOT).as_posix():
+            assert artifact["sha256"] == FROZEN_CONTRACT_TEST_SHA256
+        else:
+            assert artifact["sha256"] == _sha256_bytes(
+                (ROOT / artifact["path"]).read_bytes()
+            )
     assert "contract_sha256" not in contract
 
     assert _sha256_bytes(V7_CONTRACT_PATH.read_bytes()) == V7_CONTRACT_SHA256

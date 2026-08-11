@@ -999,6 +999,8 @@ def test_openai_compatible_planner_uses_chat_completions_protocol(
     system_prompt = call["json"]["messages"][0]["content"]
     assert "complete query is already one code identifier" in system_prompt
     assert "rewritten_queries as an empty array" in system_prompt
+    assert "Never move an explicitly named source module" in system_prompt
+    assert "generic words such as dependency,\ninternal, implementation, or behavior" in system_prompt
     user_payload = json.loads(call["json"]["messages"][1]["content"])
     assert user_payload["repo_profile"]["languages"] == ["python"]
 

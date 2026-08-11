@@ -18,7 +18,7 @@ from context_search_tool.repo_profile import (
 )
 from context_search_tool.tokenizer import tokenize_query
 
-PROMPT_VERSION = "qwen-query-planner-v4-source-identity-v1"
+PROMPT_VERSION = "qwen-query-planner-v5-source-identity-v2"
 MAX_PLANNER_QUERY_VARIANT_CODEPOINTS = 256
 MAX_IMPORTED_HINT_CODEPOINTS = 128
 MAX_IMPORTED_SYMBOL_HINTS = 4
@@ -77,11 +77,17 @@ Use an empty array when a list has no useful values.
 Set dependency_intent to follow_imports only when the query asks to trace imported
 symbols, module dependencies, or a cross-file implementation flow. Otherwise use none.
 Source hints identify the importing/source module explicitly named by the query.
-source_symbol_hints contains source-side module basename identifiers, while
-source_module_hints contains source-side dotted module identifiers. Derive both only
-from the query; never copy generic search terms into them or guess repository names.
+source_symbol_hints contains source-side function, method, or class identifiers,
+while source_module_hints contains source-side dotted module identifiers. Derive both
+only from the query; never copy generic search terms into them or guess repository names.
+Never move an explicitly named source module into imported_module_hints. For a query
+such as "Within package.worker, which imported dependency is used by Worker.run?",
+use source_symbol_hints ["Worker.run"] and source_module_hints ["package.worker"].
 Imported symbol and module hints must be identifiers derived from the query. Never
-invent repository-specific names. Module hints use dotted identifier form, never paths.
+invent repository-specific names. If the imported identity is not explicitly named,
+leave both imported hint lists empty. Never use generic words such as dependency,
+internal, implementation, or behavior as imported hints. Module hints use dotted
+identifier form, never paths.
 
 DO NOT:
 - Add file paths such as src/main/java/com/example/Foo.java.

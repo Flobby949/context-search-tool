@@ -60,7 +60,6 @@ def _replay_inputs(
         rewritten_queries=["trace source_12 dependencies"],
         grep_keywords=["source_12"],
         symbol_hints=["source_12"],
-        source_symbol_hints=["source_12"],
         source_module_hints=["source_12"],
         dependency_intent="follow_imports",
         imported_symbol_hints=["Target12"],

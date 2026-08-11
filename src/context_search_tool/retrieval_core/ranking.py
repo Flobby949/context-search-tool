@@ -714,6 +714,12 @@ def apply_planner_dependency_hint_promotions(
         for value in (*plan.source_symbol_hints, *plan.source_module_hints)
         if (normalized := _normalized_dependency_hint(value))
     }
+    if not source_hints:
+        source_hints = {
+            normalized
+            for value in plan.imported_module_hints
+            if (normalized := _normalized_dependency_hint(value))
+        }
     target_hints = {
         normalized
         for value in (
@@ -726,9 +732,7 @@ def apply_planner_dependency_hint_promotions(
         )
         if (normalized := _normalized_dependency_hint(value))
     }
-    semantic_pair_fallback = (
-        not source_hints and bool(plan.imported_symbol_hints)
-    )
+    semantic_pair_fallback = False
     ranked_by_chunk_id = {ranked.chunk.chunk_id: ranked for ranked in ordered}
 
     source_signal_cache: dict[str, CodeSignal | None] = {}
@@ -786,6 +790,13 @@ def apply_planner_dependency_hint_promotions(
                 target_signal,
             ):
                 continue
+            owner_matches = _dependency_source_owner_matches(
+                atom,
+                source_signal,
+                plan.source_symbol_hints,
+            )
+            if owner_matches is False:
+                continue
             source_ranked = ranked_by_chunk_id.get(atom.source_chunk_id)
             source_is_direct = (
                 source_ranked is not None and source_ranked.evidence_priority == 0
@@ -799,6 +810,10 @@ def apply_planner_dependency_hint_promotions(
                     semantic_pair_fallback=semantic_pair_fallback,
                 )
             )
+            if owner_matches is True:
+                identity_matches = True
+                pair_evidence_required = False
+                promotion_mode = "exact_source_hint"
             if not identity_matches:
                 continue
             if pair_evidence_required:
@@ -978,6 +993,38 @@ def _dependency_target_signal_matches(
     return bool(target_hints.intersection(identities))
 
 
+def _dependency_source_owner_matches(
+    atom: object,
+    source_signal: CodeSignal,
+    source_symbol_hints: list[str],
+) -> bool | None:
+    normalized_hints = {
+        normalized
+        for value in source_symbol_hints
+        if (normalized := _normalized_dependency_hint(value))
+    }
+    if not normalized_hints or _dependency_source_signal_matches(
+        source_signal,
+        normalized_hints,
+    ):
+        return None
+    owner_hints = normalized_hints
+    owners = getattr(atom, "source_owner_qualified_names", ())
+    if not isinstance(owners, (list, tuple)):
+        return False
+    owner_identities = {
+        identity
+        for owner in owners
+        if isinstance(owner, str)
+        for identity in (
+            _normalized_dependency_hint(owner),
+            _normalized_dependency_hint(owner.rsplit(".", 1)[-1]),
+        )
+        if identity
+    }
+    return bool(owner_hints.intersection(owner_identities))
+
+
 def _dependency_hint_identity_matches(
     *,
     source_signal: CodeSignal,
@@ -990,18 +1037,12 @@ def _dependency_hint_identity_matches(
         source_signal,
         source_hints,
     )
+    if source_matches:
+        return True, False, "exact_source_hint"
     if not target_hints:
-        return (
-            source_matches,
-            False,
-            "exact_source_hint" if source_matches else None,
-        )
+        return False, False, None
     if _dependency_target_signal_matches(target_signal, target_hints):
-        return (
-            True,
-            not source_matches,
-            "exact_source_hint" if source_matches else "exact_target_hint",
-        )
+        return True, True, "exact_target_hint"
     if semantic_pair_fallback:
         return True, True, "semantic_pair_fallback"
     return False, False, None
