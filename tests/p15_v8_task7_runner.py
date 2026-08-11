@@ -176,9 +176,50 @@ def _module_scope_import_from_nodes(tree: ast.Module) -> list[ast.ImportFrom]:
     return sorted(imports, key=lambda node: (node.lineno, node.col_offset))
 
 
+def _module_scope_declared_names(tree: ast.Module) -> set[str]:
+    names: set[str] = set()
+    pending = list(tree.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.add(node.name)
+            continue
+        target: ast.expr | None = None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            target = node.target
+        if isinstance(target, ast.Name):
+            names.add(target.id)
+            continue
+        if isinstance(
+            node,
+            (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp),
+        ):
+            continue
+        pending.extend(ast.iter_child_nodes(node))
+    return names
+
+
 def derive_eligible_cases(repo: Path) -> list[EligibleCase]:
     modules = _module_map(repo)
     candidates: list[EligibleCase] = []
+    declaration_cache: dict[str, set[str]] = {}
+
+    def target_declares(target_path: str, imported_symbol: str) -> bool:
+        if target_path not in declaration_cache:
+            try:
+                target_tree = ast.parse(
+                    (repo / target_path).read_text(encoding="utf-8")
+                )
+            except (SyntaxError, UnicodeDecodeError):
+                declaration_cache[target_path] = set()
+            else:
+                declaration_cache[target_path] = _module_scope_declared_names(
+                    target_tree
+                )
+        return imported_symbol in declaration_cache[target_path]
+
     for module, source_path in sorted(modules.items(), key=lambda item: item[1]):
         if "tests" in Path(source_path).parts:
             continue
@@ -188,6 +229,8 @@ def derive_eligible_cases(repo: Path) -> list[EligibleCase]:
             continue
         def resolve_imports(
             nodes: list[ast.ImportFrom],
+            *,
+            require_target_declaration: bool,
         ) -> list[tuple[str, str, str, int]]:
             resolved: list[tuple[str, str, str, int]] = []
             for node in nodes:
@@ -198,7 +241,14 @@ def derive_eligible_cases(repo: Path) -> list[EligibleCase]:
                     target_path = modules.get(f"{imported_module}.{alias.name}")
                     if target_path is None:
                         target_path = modules.get(imported_module)
-                    if target_path is not None and target_path != source_path:
+                    if (
+                        target_path is not None
+                        and target_path != source_path
+                        and (
+                            not require_target_declaration
+                            or target_declares(target_path, alias.name)
+                        )
+                    ):
                         resolved.append(
                             (
                                 alias.asname or alias.name,
@@ -209,7 +259,10 @@ def derive_eligible_cases(repo: Path) -> list[EligibleCase]:
                         )
             return resolved
 
-        imports = resolve_imports(_module_scope_import_from_nodes(tree))
+        imports = resolve_imports(
+            _module_scope_import_from_nodes(tree),
+            require_target_declaration=True,
+        )
         all_imports = resolve_imports(
             sorted(
                 (
@@ -218,7 +271,8 @@ def derive_eligible_cases(repo: Path) -> list[EligibleCase]:
                     if isinstance(node, ast.ImportFrom)
                 ),
                 key=lambda node: (node.lineno, node.col_offset),
-            )
+            ),
+            require_target_declaration=False,
         )
         for owner in tree.body:
             if not isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -297,7 +351,7 @@ def _case_payload(slot: str, ordinal: int, item: EligibleCase) -> dict[str, Any]
         "candidate_blind_target_missing": slot.startswith("heldout-"),
         "replacement": False,
         "selection_proof": {
-            "algorithm": "stdlib_ast_module_gold_all_import_relevance_unique_owner_v3",
+            "algorithm": "stdlib_ast_closed_target_gold_all_import_relevance_owner_v4",
             "source_path": item.source_path,
             "source_symbol": item.source_symbol,
             "source_line": item.source_line,
@@ -332,7 +386,7 @@ def seal_corpus(
         for ordinal, item in zip(ordinals, eligible, strict=False):
             cases.append(_case_payload(slot, ordinal, item))
     return {
-        "schema_version": "p15-v8-candidate-blind-corpus-v3",
+        "schema_version": "p15-v8-candidate-blind-corpus-v4",
         "corpus": name,
         "selection_before_online": True,
         "candidate_blind": True,
