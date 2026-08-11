@@ -186,24 +186,40 @@ def derive_eligible_cases(repo: Path) -> list[EligibleCase]:
             tree = ast.parse((repo / source_path).read_text(encoding="utf-8"))
         except (SyntaxError, UnicodeDecodeError):
             continue
-        imports: list[tuple[str, str, str, int]] = []
-        for node in _module_scope_import_from_nodes(tree):
-            if any(alias.name == "*" for alias in node.names):
-                continue
-            imported_module = _resolved_import_module(module, source_path, node)
-            for alias in node.names:
-                target_path = modules.get(f"{imported_module}.{alias.name}")
-                if target_path is None:
-                    target_path = modules.get(imported_module)
-                if target_path is not None and target_path != source_path:
-                    imports.append(
-                        (
-                            alias.asname or alias.name,
-                            alias.name,
-                            target_path,
-                            node.lineno,
+        def resolve_imports(
+            nodes: list[ast.ImportFrom],
+        ) -> list[tuple[str, str, str, int]]:
+            resolved: list[tuple[str, str, str, int]] = []
+            for node in nodes:
+                if any(alias.name == "*" for alias in node.names):
+                    continue
+                imported_module = _resolved_import_module(module, source_path, node)
+                for alias in node.names:
+                    target_path = modules.get(f"{imported_module}.{alias.name}")
+                    if target_path is None:
+                        target_path = modules.get(imported_module)
+                    if target_path is not None and target_path != source_path:
+                        resolved.append(
+                            (
+                                alias.asname or alias.name,
+                                alias.name,
+                                target_path,
+                                node.lineno,
+                            )
                         )
-                    )
+            return resolved
+
+        imports = resolve_imports(_module_scope_import_from_nodes(tree))
+        all_imports = resolve_imports(
+            sorted(
+                (
+                    node
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom)
+                ),
+                key=lambda node: (node.lineno, node.col_offset),
+            )
+        )
         for owner in tree.body:
             if not isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 continue
@@ -213,8 +229,9 @@ def derive_eligible_cases(repo: Path) -> list[EligibleCase]:
                 if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
             }
             used = [item for item in imports if item[0] in loaded_names]
+            all_used = [item for item in all_imports if item[0] in loaded_names]
             relevant = tuple(
-                sorted({source_path, *(item[2] for item in used)})
+                sorted({source_path, *(item[2] for item in all_used)})
             )
             for _bound, imported_symbol, target_path, import_line in used:
                 candidates.append(
@@ -280,7 +297,7 @@ def _case_payload(slot: str, ordinal: int, item: EligibleCase) -> dict[str, Any]
         "candidate_blind_target_missing": slot.startswith("heldout-"),
         "replacement": False,
         "selection_proof": {
-            "algorithm": "stdlib_ast_module_scope_import_unique_source_owner_v2",
+            "algorithm": "stdlib_ast_module_gold_all_import_relevance_unique_owner_v3",
             "source_path": item.source_path,
             "source_symbol": item.source_symbol,
             "source_line": item.source_line,
@@ -315,7 +332,7 @@ def seal_corpus(
         for ordinal, item in zip(ordinals, eligible, strict=False):
             cases.append(_case_payload(slot, ordinal, item))
     return {
-        "schema_version": "p15-v8-candidate-blind-corpus-v2",
+        "schema_version": "p15-v8-candidate-blind-corpus-v3",
         "corpus": name,
         "selection_before_online": True,
         "candidate_blind": True,

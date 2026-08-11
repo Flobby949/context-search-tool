@@ -45,7 +45,7 @@ def test_candidate_blind_pool_emits_one_query_per_source_owner(
     ]
 
 
-def test_candidate_blind_pool_counts_conditional_module_imports_as_relevant(
+def test_candidate_blind_pool_counts_conditional_and_owner_local_imports_as_relevant(
     tmp_path: Path,
 ) -> None:
     package = tmp_path / "src/pkg"
@@ -58,11 +58,13 @@ def test_candidate_blind_pool_counts_conditional_module_imports_as_relevant(
         "    from .c import Sea\n\n"
         "class Owner:\n"
         "    def run(self):\n"
-        "        return Bee(), Sea()\n",
+        "        from .d import Dee\n"
+        "        return Bee(), Sea(), Dee()\n",
         encoding="utf-8",
     )
     (package / "b.py").write_text("class Bee: pass\n", encoding="utf-8")
     (package / "c.py").write_text("class Sea: pass\n", encoding="utf-8")
+    (package / "d.py").write_text("class Dee: pass\n", encoding="utf-8")
 
     cases = runner.derive_eligible_cases(tmp_path)
 
@@ -71,6 +73,7 @@ def test_candidate_blind_pool_counts_conditional_module_imports_as_relevant(
         "src/pkg/a.py",
         "src/pkg/b.py",
         "src/pkg/c.py",
+        "src/pkg/d.py",
     )
 
 

@@ -906,6 +906,96 @@ def test_source_owner_hint_selects_only_edges_used_by_that_declaration() -> None
     assert promoted_paths == {"src/module_13.py"}
 
 
+def test_source_owner_hint_does_not_degrade_to_same_named_module() -> None:
+    source_signal = replace(
+        _dependency_source_signal(12),
+        file_path=Path("src/code.py"),
+        name="src/code.py",
+        qualified_name="src/code.py",
+    )
+    source = _ranked("source-chunk-12", "src/code.py", 0.80)
+    ranked = [source, *[_dependency_ranked(index) for index in range(13)]]
+    candidate = _dependency_candidate(
+        12,
+        source_owner_qualified_names=("ExceptionInfo",),
+    )
+    candidate = _candidate(
+        "chunk-12",
+        (
+            replace(
+                candidate.exact_imported_symbol_provenance[0],
+                source_file_path="src/code.py",
+            ),
+        ),
+    )
+    plan = QueryPlan(
+        original_query="trace Code imports",
+        status="ok",
+        dependency_intent="follow_imports",
+        source_symbol_hints=["Code"],
+        source_module_hints=["code"],
+    )
+    observations: list[dict[str, object]] = []
+
+    unchanged = ranking.apply_planner_dependency_hint_promotions(
+        ranked,
+        {"chunk-12": candidate},
+        plan,
+        "trace Code imports",
+        _SignalLookup(
+            {
+                source_signal.signal_id: source_signal,
+                _dependency_signal(12).signal_id: _dependency_signal(12),
+            }
+        ),
+        final_top_k=12,
+        observation_callback=observations.append,
+    )
+
+    assert unchanged == sorted(ranked, key=ranking._ranked_chunk_sort_key)
+    assert observations == [
+        _promotion_observation("no_eligible_closed_candidate")
+    ]
+
+
+def test_source_owner_hint_is_anchored_to_the_source_module() -> None:
+    sources = [
+        _ranked("source-chunk-12", "src/source_12.py", 0.82),
+        _ranked("source-chunk-13", "src/source_13.py", 0.81),
+    ]
+    ranked = [*sources, *[_dependency_ranked(index) for index in range(14)]]
+    candidates = {
+        f"chunk-{index:02d}": _dependency_candidate(
+            index,
+            source_owner_qualified_names=("pytest_addoption",),
+        )
+        for index in (12, 13)
+    }
+    plan = QueryPlan(
+        original_query="trace pytest_addoption imports",
+        status="ok",
+        dependency_intent="follow_imports",
+        source_symbol_hints=["pytest_addoption"],
+        source_module_hints=["source_12"],
+    )
+
+    promoted = ranking.apply_planner_dependency_hint_promotions(
+        ranked,
+        candidates,
+        plan,
+        "trace pytest_addoption imports",
+        _SignalLookup(_dependency_signals(12, 13)),
+        final_top_k=12,
+    )
+
+    promoted_paths = {
+        item.chunk.file_path.as_posix()
+        for item in promoted[:12]
+        if item.score_parts.get("planner_dependency_hint_promotion", 0.0) > 0
+    }
+    assert promoted_paths == {"src/module_12.py"}
+
+
 def test_semantic_import_hint_fallback_rejects_unanchored_source_identity() -> None:
     source = _ranked("source-chunk-12", "src/source_12.py", 0.80)
     ranked = [source, *[_dependency_ranked(index) for index in range(13)]]

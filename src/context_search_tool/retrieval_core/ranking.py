@@ -714,6 +714,11 @@ def apply_planner_dependency_hint_promotions(
         for value in (*plan.source_symbol_hints, *plan.source_module_hints)
         if (normalized := _normalized_dependency_hint(value))
     }
+    source_module_hints = {
+        normalized
+        for value in plan.source_module_hints
+        if (normalized := _normalized_dependency_hint(value))
+    }
     if not source_hints:
         source_hints = {
             normalized
@@ -798,6 +803,15 @@ def apply_planner_dependency_hint_promotions(
                 plan.source_symbol_hints,
             )
             if owner_matches is False:
+                continue
+            if (
+                owner_matches is True
+                and source_module_hints
+                and not _dependency_source_signal_matches(
+                    source_signal,
+                    source_module_hints,
+                )
+            ):
                 continue
             source_ranked = ranked_by_chunk_id.get(atom.source_chunk_id)
             source_is_direct = (
@@ -1016,10 +1030,7 @@ def _dependency_source_owner_matches(
         for value in source_symbol_hints
         if (normalized := _normalized_dependency_hint(value))
     }
-    if not normalized_hints or _dependency_source_signal_matches(
-        source_signal,
-        normalized_hints,
-    ):
+    if not normalized_hints:
         return None
     owner_hints = normalized_hints
     owners = getattr(atom, "source_owner_qualified_names", ())
