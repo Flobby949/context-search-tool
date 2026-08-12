@@ -26,12 +26,14 @@ EXPECTED_SIGNATURES = {
         "(repo: 'Path', query: 'str', config: 'ToolConfig', "
         "context_lines: 'int | None' = None, full_file: 'bool' = False, "
         "planner: 'QueryPlanner | None' = None, *, "
-        "trace_collector: 'RetrievalTraceCollector | None' = None) -> 'QueryBundle'"
+        "trace_collector: 'RetrievalTraceCollector | None' = None, "
+        "scope: 'retrieval_scope.RetrievalScope | None' = None) -> 'QueryBundle'"
     ),
     "trace_repository": (
         "(repo: 'Path', query: 'str', config: 'ToolConfig', "
         "context_lines: 'int | None' = None, full_file: 'bool' = False, "
-        "planner: 'QueryPlanner | None' = None, *, clock_ns=None) "
+        "planner: 'QueryPlanner | None' = None, *, clock_ns=None, "
+        "scope: 'retrieval_scope.RetrievalScope | None' = None) "
         "-> 'TracedQueryBundle'"
     ),
     "evidence_anchor_top_k": "(max_results: 'int') -> 'int'",
@@ -256,6 +258,12 @@ P15_ACTIVATION_DIAGNOSTICS_REVIEWED_PRODUCTION_CHANGES = {
     "src/context_search_tool/retrieval_trace/models.py",
 }
 
+P0_CONTEXT_SEARCH_REVIEWED_PRODUCTION_CHANGES = {
+    "src/context_search_tool/context_pack/serialization.py",
+    "src/context_search_tool/repo_profile.py",
+    "src/context_search_tool/retrieval_scope.py",
+}
+
 P14_DIRECT_REFERENCE_COUNT_DELTAS = {
     (
         "trace_repository",
@@ -293,6 +301,7 @@ REVIEWED_PRODUCTION_CHANGES = (
     | OPENAI_COMPATIBLE_PLANNER_REVIEWED_PRODUCTION_CHANGES
     | P15_DEPENDENCY_REPLAY_REVIEWED_PRODUCTION_CHANGES
     | P15_ACTIVATION_DIAGNOSTICS_REVIEWED_PRODUCTION_CHANGES
+    | P0_CONTEXT_SEARCH_REVIEWED_PRODUCTION_CHANGES
 )
 
 P4_IMPLEMENTATION_BASELINE = "b827707325d0ee4e9c6b2bcb3dee39955c263822"
@@ -387,6 +396,7 @@ def _is_p4_public_facade_reference(reference: dict[str, object]) -> bool:
         or path == "tests/test_incremental_refresh.py"
         or path == "tests/generate_p4_exploration_manifest.py"
         or path == "tests/test_p5_protected_direct.py"
+        or path == "tests/test_retrieval_scope.py"
         or path == "tests/test_quality_p5.py"
         or path == "scripts/p6_benchmark.py"
         or path.startswith("tests/test_p8_")
@@ -403,6 +413,7 @@ def _normalize_current_test_reference(
 ) -> dict[str, object]:
     if reference["file"] not in {
         THIS_TEST_PATH,
+        "tests/test_quality_metrics.py",
         "tests/test_retrieval_pipeline.py",
         "tests/test_retrieval_trace_pipeline.py",
     }:
@@ -1139,7 +1150,6 @@ def test_protected_production_diff_is_scoped_to_reviewed_files() -> None:
                 "src/context_search_tool/context_pack/__init__.py",
                 "src/context_search_tool/context_pack/excerpts.py",
                 "src/context_search_tool/context_pack/models.py",
-                "src/context_search_tool/context_pack/serialization.py",
             "src/context_search_tool/retrieval_trace/serialization.py",
             "src/context_search_tool/chunker.py",
         ),

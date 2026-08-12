@@ -12,6 +12,7 @@ from context_search_tool import (
     manifest,
     query_intent,
     query_planner,
+    retrieval_scope,
     sqlite_store,
     tokenizer,
 )
@@ -75,6 +76,7 @@ def trace_repository(
     planner: QueryPlanner | None = None,
     *,
     clock_ns=None,
+    scope: retrieval_scope.RetrievalScope | None = None,
 ) -> TracedQueryBundle:
     collector_kwargs = {} if clock_ns is None else {"clock_ns": clock_ns}
     collector = retrieval_trace.RetrievalTraceCollector(**collector_kwargs)
@@ -86,6 +88,7 @@ def trace_repository(
         full_file=full_file,
         planner=planner,
         trace_collector=collector,
+        scope=scope,
     )
     return TracedQueryBundle(
         bundle=bundle,
@@ -102,6 +105,7 @@ def query_repository(
     planner: QueryPlanner | None = None,
     *,
     trace_collector: RetrievalTraceCollector | None = None,
+    scope: retrieval_scope.RetrievalScope | None = None,
 ) -> QueryBundle:
     return _query_repository_v5(
         repo,
@@ -111,6 +115,7 @@ def query_repository(
         full_file=full_file,
         planner=planner,
         trace_collector=trace_collector,
+        scope=scope,
     )
 
 
@@ -123,6 +128,7 @@ def _query_repository_v5(
     planner: QueryPlanner | None = None,
     *,
     trace_collector: RetrievalTraceCollector | None = None,
+    scope: retrieval_scope.RetrievalScope | None = None,
     graph_session_factory=None,
     vector_snapshot_loader=None,
     dependency_replay_collector: dependency_replay.DependencyReplayCollector
@@ -140,6 +146,7 @@ def _query_repository_v5(
             full_file=full_file,
             planner=planner,
             trace_collector=trace_collector,
+            scope=scope,
             index_exists=False,
             dependency_replay_collector=dependency_replay_collector,
         )
@@ -162,6 +169,7 @@ def _query_repository_v5(
                 full_file=full_file,
                 planner=planner,
                 trace_collector=trace_collector,
+                scope=scope,
                 dependency_replay_collector=dependency_replay_collector,
             )
         graph_session.validate_ready_targets()
@@ -212,6 +220,7 @@ def _query_repository_v5(
                 full_file=full_file,
                 planner=planner,
                 trace_collector=trace_collector,
+                scope=scope,
                 graph_session=graph_session,
                 vector_snapshot=vector_snapshot,
                 dependency_replay_collector=dependency_replay_collector,
@@ -241,6 +250,7 @@ def _query_repository_impl(
     planner: QueryPlanner | None = None,
     *,
     trace_collector: RetrievalTraceCollector | None = None,
+    scope: retrieval_scope.RetrievalScope | None = None,
     graph_session: sqlite_store.GraphReadSession | None = None,
     vector_snapshot: candidates.NumpyVectorStore | None = None,
     index_exists: bool | None = None,
@@ -287,6 +297,7 @@ def _query_repository_impl(
             if graph_session is not None
             else store.deleted_chunk_ids()
         )
+        scope_snapshot = retrieval_scope.snapshot_retrieval_scope(store, scope)
     except sqlite3.Error:
         bundle = QueryBundle(
             query=query,
@@ -324,7 +335,15 @@ def _query_repository_impl(
     else:
         planner_instance = query_planner.planner_from_config(config.query_planner)
     repo_profile = (
-        build_repo_profile(store)
+        build_repo_profile(
+            store,
+            query=query,
+            scope_rows=(
+                scope_snapshot.allowed_rows
+                if scope_snapshot.is_active
+                else None
+            ),
+        )
         if config.query_planner.send_repo_profile
         and (planner is not None or config.query_planner.enabled)
         else None
@@ -333,6 +352,17 @@ def _query_repository_impl(
         dependency_replay_collector.plan(planner_instance, query, repo_profile)
         if dependency_replay_collector is not None
         else planner_instance.plan(query, repo_profile=repo_profile)
+    )
+    plan = query_planner.restore_locally_supported_hints(
+        plan,
+        config.query_planner,
+        lambda bucket, value: retrieval_scope.locally_supported_planner_hint(
+            store,
+            scope_snapshot,
+            bucket,
+            value,
+            config,
+        ),
     )
     query_variants, discarded_variants = query_planner.build_query_variants(
         query,
@@ -378,7 +408,7 @@ def _query_repository_impl(
             index_dir,
             query_variants,
             config,
-            deleted_ids,
+            deleted_ids | scope_snapshot.excluded_chunk_ids,
             embedding_observer=(
                 dependency_replay_collector.observe_embedding
                 if dependency_replay_collector is not None
@@ -395,13 +425,14 @@ def _query_repository_impl(
             vector_snapshot,
             query_variants,
             config,
-            deleted_ids,
+            deleted_ids | scope_snapshot.excluded_chunk_ids,
             embedding_observer=(
                 dependency_replay_collector.observe_embedding
                 if dependency_replay_collector is not None
                 else None
             ),
         )
+    semantic_candidates = scope_snapshot.filter_candidates(semantic_candidates)
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_candidate_stage(
         trace_collector,
@@ -420,8 +451,9 @@ def _query_repository_impl(
     lexical_candidates = candidates.lexical_candidates(
         store,
         original_tokens,
-        config.retrieval.lexical_top_k,
+        scope_snapshot.recall_limit(config.retrieval.lexical_top_k),
     )
+    lexical_candidates = scope_snapshot.filter_candidates(lexical_candidates)
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_candidate_stage(
         trace_collector,
@@ -440,7 +472,10 @@ def _query_repository_impl(
     path_symbol_candidates = candidates.path_symbol_candidates(
         store,
         original_tokens,
-        config.retrieval.lexical_top_k,
+        scope_snapshot.recall_limit(config.retrieval.lexical_top_k),
+    )
+    path_symbol_candidates = scope_snapshot.filter_candidates(
+        path_symbol_candidates
     )
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_candidate_stage(
@@ -462,6 +497,15 @@ def _query_repository_impl(
         store,
         probes,
         config,
+        limit=scope_snapshot.recall_limit(
+            max(
+                config.retrieval.lexical_top_k,
+                config.retrieval.final_top_k * 3,
+            )
+        ),
+    )
+    direct_text_candidates = scope_snapshot.filter_candidates(
+        direct_text_candidates
     )
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_candidate_stage(
@@ -490,7 +534,15 @@ def _query_repository_impl(
         original_tokens,
         config,
         graph_session=graph_session,
+        limit=scope_snapshot.recall_limit(
+            max(
+                config.retrieval.semantic_top_k,
+                config.retrieval.lexical_top_k,
+                config.retrieval.final_top_k,
+            )
+        ),
     )
+    signal_candidates = scope_snapshot.filter_candidates(signal_candidates)
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_candidate_stage(
         trace_collector,
@@ -511,7 +563,9 @@ def _query_repository_impl(
         hint_tokens,
         config,
         graph_session=graph_session,
+        limit=scope_snapshot.recall_limit(config.retrieval.lexical_top_k),
     )
+    planner_candidates = scope_snapshot.filter_candidates(planner_candidates)
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_candidate_stage(
         trace_collector,
@@ -554,6 +608,7 @@ def _query_repository_impl(
         query=query,
         tokens=original_tokens,
     )
+    anchor_candidates = scope_snapshot.filter_candidates(anchor_candidates)
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_candidate_stage(
         trace_collector,
@@ -599,6 +654,7 @@ def _query_repository_impl(
         protected_chunk_ids=protected_chunk_ids,
         exact_imported_symbol_provenance=exact_imported_symbol_provenance,
     )
+    relation_candidates = scope_snapshot.filter_candidates(relation_candidates)
     if graph_session is not None and graph_session.graph_fault is not None:
         planner_candidates = [
             candidate
@@ -791,6 +847,11 @@ def _query_repository_impl(
         protect_direct_graph=graph_session is not None,
         **expansion_capture,
     )
+    expanded = [
+        item
+        for item in expanded
+        if scope_snapshot.contains_chunk_ids(item.chunk_ids)
+    ]
     stopped = tracing.stop_stage(trace_collector, token)
     tracing.finish_expanded_stage(
         trace_collector,
@@ -882,8 +943,6 @@ def evidence_anchor_top_k(max_results: int) -> int:
     if max_results <= 0:
         return 0
     return max(1, min(5, max_results // 3))
-
-
 
 
 def relation_slot_similarities(

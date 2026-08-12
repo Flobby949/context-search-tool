@@ -5702,6 +5702,77 @@ def test_query_repository_passes_repo_profile_to_planner(tmp_path: Path) -> None
     assert bundle.planner.repo_profile_hash == planner.repo_profile.profile_hash
 
 
+def test_query_repository_restores_repo_grounded_planner_hint_to_original_bucket(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "LocalBridge.py").write_text(
+        "class LocalBridge:\n    pass\n",
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=10,
+            final_top_k=1,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    index_repository(repo, config)
+    plan = QueryPlan(
+        original_query="这个功能在哪里",
+        discarded_hints=["LocalBridge", "LocalBridge MissingType"],
+        status="ok",
+    )
+    object.__setattr__(
+        plan,
+        "_discarded_hint_sources",
+        (
+            ("grep_keywords", "LocalBridge"),
+            ("grep_keywords", "LocalBridge MissingType"),
+        ),
+    )
+
+    bundle = query_repository(
+        repo,
+        "这个功能在哪里",
+        config,
+        planner=FakePlanner(plan),
+    )
+
+    assert bundle.planner.grep_keywords == ["LocalBridge"]
+    assert bundle.planner.discarded_hints == ["LocalBridge MissingType"]
+    assert bundle.results[0].file_path == Path("LocalBridge.py")
+
+
+def test_planner_hint_grounding_is_independent_of_lexical_recall_limit(
+    tmp_path: Path,
+) -> None:
+    repo, config, _ids = _controlled_semantic_repo(tmp_path)
+    plan = QueryPlan(
+        original_query="原始问题",
+        discarded_hints=["PlannerTarget"],
+        status="ok",
+    )
+    object.__setattr__(
+        plan,
+        "_discarded_hint_sources",
+        (("grep_keywords", "PlannerTarget"),),
+    )
+
+    bundle = query_repository(
+        repo,
+        "原始问题",
+        config,
+        planner=FakePlanner(plan),
+    )
+
+    assert config.retrieval.lexical_top_k == 0
+    assert bundle.planner.grep_keywords == ["PlannerTarget"]
+
+
 def test_planner_disabled_skips_repository_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5717,10 +5788,14 @@ def test_planner_disabled_skips_repository_profile(
     received_profiles: list[object | None] = []
     real_build_repo_profile = build_repo_profile
 
-    def counted_build_repo_profile(store: SQLiteStore):
+    def counted_build_repo_profile(
+        store: SQLiteStore,
+        *,
+        query: str | None = None,
+    ):
         nonlocal profile_builds
         profile_builds += 1
-        return real_build_repo_profile(store)
+        return real_build_repo_profile(store, query=query)
 
     class RecordingDisabledPlanner:
         def plan(self, query: str, repo_profile: object | None = None) -> QueryPlan:

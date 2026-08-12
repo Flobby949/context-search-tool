@@ -2589,6 +2589,22 @@ class SQLiteStore:
             ).fetchall()
         return {row["chunk_id"] for row in rows}
 
+    def active_chunk_scope(self) -> list[tuple[str, Path, str]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT chunks.chunk_id, chunks.file_path, source_files.language
+                FROM chunks
+                JOIN source_files ON source_files.path = chunks.file_path
+                WHERE chunks.deleted_at IS NULL
+                ORDER BY chunks.chunk_id
+                """
+            ).fetchall()
+        return [
+            (str(row["chunk_id"]), Path(row["file_path"]), str(row["language"]))
+            for row in rows
+        ]
+
     def active_embedding_ids(self) -> set[str]:
         with self._connect() as connection:
             rows = connection.execute(

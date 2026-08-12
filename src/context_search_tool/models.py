@@ -109,6 +109,11 @@ class QueryPlan:
     repo_profile_truncated: bool = False
     discarded_hints: list[str] = field(default_factory=list)
 
+    @property
+    def discarded_hint_sources(self) -> tuple[tuple[str, str], ...]:
+        """Repo-profile rejections kept outside serialized plan fields."""
+        return getattr(self, "_discarded_hint_sources", ())
+
     @staticmethod
     def disabled_default() -> QueryPlan:
         return QueryPlan(original_query="", status="disabled")

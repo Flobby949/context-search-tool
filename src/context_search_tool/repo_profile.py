@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import hashlib
 import json
 from dataclasses import asdict, dataclass
@@ -53,6 +54,8 @@ _PROFILE_STOP_TOKENS = {
     "with",
 }
 
+_MAX_QUERY_PROFILE_CHUNKS = 24
+
 
 @dataclass(frozen=True)
 class RepoProfileLimits:
@@ -66,22 +69,157 @@ class RepoProfileLimits:
 def build_repo_profile(
     store: SQLiteStore,
     limits: RepoProfileLimits = RepoProfileLimits(),
+    *,
+    query: str | None = None,
+    scope_rows: tuple[tuple[str, Path, str], ...] | None = None,
 ) -> RepoProfile:
-    languages = [language for language, _ in store.language_counts()[: limits.max_languages]]
-    files = [path.as_posix() for path in store.source_files_for_profile(limits.max_files)]
+    if scope_rows is not None:
+        return _build_scoped_repo_profile(store, limits, query, scope_rows)
+    languages = [
+        language for language, _ in store.language_counts()[: limits.max_languages]
+    ]
+    related_files, related_symbols, related_tokens, _ = _query_related_profile_values(
+        store,
+        query,
+    )
+    files = _merge_profile_values(
+        related_files,
+        [path.as_posix() for path in store.source_files_for_profile(limits.max_files)],
+        limits.max_files,
+    )
+    symbols = _merge_profile_values(
+        related_symbols,
+        store.symbol_names_for_profile(limits.max_symbols),
+        limits.max_symbols,
+    )
+    global_tokens = [
+        token
+        for token in store.token_counts_for_profile(
+            max(limits.max_tokens * 4, limits.max_tokens)
+        )
+        if _useful_profile_token(token)
+    ]
+    tokens = _merge_profile_values(
+        [token for token in related_tokens if _useful_profile_token(token)],
+        global_tokens,
+        limits.max_tokens,
+    )
+    profile = RepoProfile(
+        languages=languages,
+        source_roots=_source_roots(files),
+        important_files=files,
+        symbols=symbols,
+        tokens=tokens,
+    )
+    return _fit_budget(profile, limits.max_chars)
+
+
+def _query_related_profile_values(
+    store: SQLiteStore,
+    query: str | None,
+    *,
+    allowed_chunk_ids: frozenset[str] | None = None,
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    query_tokens = [
+        token
+        for token in _dedupe(tokenize_query(query or ""))
+        if _useful_profile_token(token)
+    ]
+    if not query_tokens:
+        return [], [], [], []
+
+    candidates = [
+        *store.path_symbol_search(query_tokens, _MAX_QUERY_PROFILE_CHUNKS),
+        *store.lexical_search(query_tokens, _MAX_QUERY_PROFILE_CHUNKS),
+    ]
+    if allowed_chunk_ids is not None:
+        candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.chunk_id in allowed_chunk_ids
+        ]
+    chunk_ids = _dedupe([candidate.chunk_id for candidate in candidates])[
+        :_MAX_QUERY_PROFILE_CHUNKS
+    ]
+    chunks = store.chunks_for_ids(chunk_ids)
+    ordered_chunks = [chunks[chunk_id] for chunk_id in chunk_ids if chunk_id in chunks]
+    files = _dedupe([chunk.file_path.as_posix() for chunk in ordered_chunks])
+    symbols = _dedupe(
+        [symbol.name for chunk in ordered_chunks for symbol in chunk.symbols]
+    )
+    local_tokens = _dedupe(
+        [token for chunk in ordered_chunks for token in chunk.lexical_tokens]
+    )
+    query_vocabulary = {token.casefold() for token in query_tokens}
+    tokens = [
+        *[token for token in local_tokens if token.casefold() in query_vocabulary],
+        *[token for token in local_tokens if token.casefold() not in query_vocabulary],
+    ]
+    return files, symbols, tokens, chunk_ids
+
+
+def _build_scoped_repo_profile(
+    store: SQLiteStore,
+    limits: RepoProfileLimits,
+    query: str | None,
+    scope_rows: tuple[tuple[str, Path, str], ...],
+) -> RepoProfile:
+    allowed_chunk_ids = frozenset(row[0] for row in scope_rows)
+    related_files, _, _, related_chunk_ids = _query_related_profile_values(
+        store,
+        query,
+        allowed_chunk_ids=allowed_chunk_ids,
+    )
+    chunk_counts = Counter(path.as_posix() for _, path, _ in scope_rows)
+    fallback_files = sorted(chunk_counts, key=lambda path: (-chunk_counts[path], path))
+    files = _merge_profile_values(
+        related_files,
+        fallback_files,
+        limits.max_files,
+    )
+
+    language_by_path = {
+        path.as_posix(): language for _, path, language in scope_rows
+    }
+    language_counts = Counter(language_by_path.values())
+    languages = sorted(
+        language_counts,
+        key=lambda language: (-language_counts[language], language),
+    )[: limits.max_languages]
+
+    sampled_ids = _dedupe(
+        [*related_chunk_ids, *(chunk_id for chunk_id, _, _ in scope_rows)]
+    )[:_MAX_QUERY_PROFILE_CHUNKS]
+    sampled = store.chunks_for_ids(sampled_ids)
+    chunks = [sampled[chunk_id] for chunk_id in sampled_ids if chunk_id in sampled]
+    symbols = _dedupe(
+        [symbol.name for chunk in chunks for symbol in chunk.symbols]
+    )[: limits.max_symbols]
     tokens = [
         token
-        for token in store.token_counts_for_profile(max(limits.max_tokens * 4, limits.max_tokens))
+        for token in _dedupe(
+            [token for chunk in chunks for token in chunk.lexical_tokens]
+        )
         if _useful_profile_token(token)
     ][: limits.max_tokens]
     profile = RepoProfile(
         languages=languages,
         source_roots=_source_roots(files),
         important_files=files,
-        symbols=store.symbol_names_for_profile(limits.max_symbols),
+        symbols=symbols,
         tokens=tokens,
     )
     return _fit_budget(profile, limits.max_chars)
+
+
+def _merge_profile_values(
+    preferred: list[str],
+    fallback: list[str],
+    limit: int,
+) -> list[str]:
+    if limit <= 0:
+        return []
+    return _dedupe([*preferred, *fallback])[:limit]
 
 
 def profile_vocabulary(profile: RepoProfile) -> set[str]:

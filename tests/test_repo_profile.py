@@ -185,6 +185,69 @@ def test_build_repo_profile_prefers_source_files_and_useful_tokens(
     assert "is" not in profile.tokens
 
 
+def test_build_repo_profile_prioritizes_query_related_local_vocabulary(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    store.upsert_source_file(_source("src/pkg/core.py"))
+    store.upsert_source_file(_source("src/pkg/index_health.py"))
+    store.replace_chunks(
+        Path("src/pkg/core.py"),
+        [
+            _chunk_with_tokens(f"core-{index}", "src/pkg/core.py", ["common"])
+            for index in range(3)
+        ],
+    )
+    store.replace_chunks(
+        Path("src/pkg/index_health.py"),
+        [
+            DocumentChunk(
+                chunk_id="health",
+                file_path=Path("src/pkg/index_health.py"),
+                start_line=1,
+                end_line=20,
+                content="def check_index_health(): pass",
+                chunk_type="code",
+                symbols=[
+                    SymbolRef(
+                        name="check_index_health",
+                        kind="function",
+                        start_line=1,
+                        end_line=5,
+                        language="python",
+                    )
+                ],
+                lexical_tokens=["index", "health", "stale", "manifest"],
+            )
+        ],
+    )
+
+    baseline = build_repo_profile(
+        store,
+        limits=RepoProfileLimits(
+            max_files=1,
+            max_symbols=1,
+            max_tokens=4,
+            max_chars=1000,
+        ),
+    )
+    conditioned = build_repo_profile(
+        store,
+        limits=RepoProfileLimits(
+            max_files=1,
+            max_symbols=1,
+            max_tokens=4,
+            max_chars=1000,
+        ),
+        query="index health stale source changes",
+    )
+
+    assert baseline.important_files == ["src/pkg/core.py"]
+    assert conditioned.important_files == ["src/pkg/index_health.py"]
+    assert conditioned.symbols == ["check_index_health"]
+    assert conditioned.tokens[:2] == ["index", "health"]
+
+
 def test_profile_respects_character_budget(tmp_path: Path) -> None:
     store = _store(tmp_path)
     for index in range(20):

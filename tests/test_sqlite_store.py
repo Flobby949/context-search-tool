@@ -416,6 +416,25 @@ def test_chunks_for_ids_batches_existing_chunks(tmp_path: Path) -> None:
     assert chunks["first"].file_path == first.file_path
 
 
+def test_active_chunk_scope_returns_path_and_indexed_language(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    source = SourceFile(
+        path=Path("src/service.py"),
+        language="python",
+        sha256="a" * 64,
+        size=10,
+        mtime_ns=1,
+    )
+    chunk = _chunk("service", "src/service.py", ["service"])
+    store.upsert_source_file(source)
+    store.replace_chunks(source.path, [chunk])
+
+    assert store.active_chunk_scope() == [
+        ("service", Path("src/service.py"), "python")
+    ]
+
+
 def test_chunks_matching_signal_or_symbols_batches_by_target(tmp_path: Path) -> None:
     store = SQLiteStore(tmp_path / "index.sqlite")
     store.initialize()

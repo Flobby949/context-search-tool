@@ -1,5 +1,6 @@
 import hashlib
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from context_search_tool.query_planner import (
     MAX_IMPORTED_HINT_CODEPOINTS,
     MAX_IMPORTED_MODULE_HINTS,
     MAX_IMPORTED_SYMBOL_HINTS,
+    MAX_LOCAL_SUPPORT_VALIDATIONS,
     MAX_SOURCE_HINT_CODEPOINTS,
     MAX_SOURCE_MODULE_HINTS,
     MAX_SOURCE_SYMBOL_HINTS,
@@ -36,6 +38,7 @@ from context_search_tool.query_planner import (
     planner_hint_tokens,
     planner_from_config,
     prompt_hash,
+    restore_locally_supported_hints,
 )
 from context_search_tool.retrieval_core import ordering, ranking
 from context_search_tool.tokenizer import tokenize_query
@@ -517,6 +520,7 @@ def test_clean_planner_payload_discards_overlong_rewrite_before_count_limit() ->
     assert plan.status == "ok"
     assert plan.rewritten_queries == ["first valid", "second valid"]
     assert plan.discarded_hints == [overlong]
+    assert plan.discarded_hint_sources == ()
 
 
 def test_clean_planner_payload_falls_back_on_wrong_field_types() -> None:
@@ -719,6 +723,163 @@ def test_clean_planner_payload_drops_terms_without_repo_overlap() -> None:
     assert "HttpSession" in plan.discarded_hints
     assert "RestTemplate" in plan.discarded_hints
     assert plan.repo_profile_hash == "sha256:test"
+
+
+def test_restore_locally_supported_hints_returns_terms_to_their_original_buckets() -> (
+    None
+):
+    config = QueryPlannerConfig(
+        max_rewritten_queries=2,
+        max_keywords=2,
+        max_symbol_hints=2,
+    )
+    plan = clean_planner_payload(
+        original_query="索引健康检查如何检测源码变更",
+        payload={
+            "rewritten_queries": [
+                "index health stale detection",
+                "Spring session lifecycle",
+            ],
+            "grep_keywords": ["index_health", "HttpSession"],
+            "symbol_hints": ["check_index_health", "RestTemplate"],
+        },
+        config=config,
+        provider="ollama",
+        model="qwen3.5:4b-mlx",
+        latency_ms=10,
+        repo_profile=RepoProfile(tokens=["unrelated"]),
+    )
+    calls: list[tuple[str, str]] = []
+
+    def locally_supported(bucket: str, value: str) -> bool:
+        calls.append((bucket, value))
+        return value in {
+            "index health stale detection",
+            "index_health",
+            "check_index_health",
+        }
+
+    restored = restore_locally_supported_hints(plan, config, locally_supported)
+
+    assert restored.rewritten_queries == ["index health stale detection"]
+    assert restored.grep_keywords == ["index_health"]
+    assert restored.symbol_hints == ["check_index_health"]
+    assert restored.discarded_hints == [
+        "Spring session lifecycle",
+        "HttpSession",
+        "RestTemplate",
+    ]
+    assert restored.discarded_hint_sources == (
+        ("rewritten_queries", "Spring session lifecycle"),
+        ("grep_keywords", "HttpSession"),
+        ("symbol_hints", "RestTemplate"),
+    )
+    assert calls == [
+        ("rewritten_queries", "index health stale detection"),
+        ("rewritten_queries", "Spring session lifecycle"),
+        ("grep_keywords", "index_health"),
+        ("grep_keywords", "HttpSession"),
+        ("symbol_hints", "check_index_health"),
+        ("symbol_hints", "RestTemplate"),
+    ]
+    assert "discarded_hint_sources" not in asdict(restored)
+
+
+def test_partially_filtered_rewrite_can_replace_its_cleaned_fallback() -> None:
+    profile = RepoProfile(
+        languages=["python"],
+        source_roots=["src"],
+        important_files=["src/query.py"],
+        symbols=["QueryPlanner"],
+        tokens=["query", "planner"],
+        profile_hash="sha256:test",
+    )
+    config = QueryPlannerConfig(max_rewritten_queries=1)
+    plan = clean_planner_payload(
+        original_query="query behavior",
+        payload=_complete_planner_payload(
+            rewritten_queries=["query planner LocalBridge"],
+        ),
+        config=config,
+        provider="ollama",
+        model="test",
+        latency_ms=1,
+        repo_profile=profile,
+    )
+
+    assert plan.rewritten_queries == ["query planner"]
+    assert plan.discarded_hint_sources == (
+        ("rewritten_queries", "query planner LocalBridge"),
+    )
+
+    restored = restore_locally_supported_hints(
+        plan,
+        config,
+        lambda bucket, value: (
+            bucket == "rewritten_queries"
+            and value == "query planner LocalBridge"
+        ),
+    )
+
+    assert restored.rewritten_queries == ["query planner LocalBridge"]
+    assert restored.discarded_hints == []
+
+
+def test_restore_locally_supported_hints_preserves_exact_identifier_protection() -> (
+    None
+):
+    config = QueryPlannerConfig(max_keywords=2, max_symbol_hints=2)
+    plan = clean_planner_payload(
+        original_query="AuditStatus",
+        payload={
+            "rewritten_queries": ["audit status behavior"],
+            "grep_keywords": ["CanApply"],
+            "symbol_hints": ["RestTemplate"],
+        },
+        config=config,
+        provider="ollama",
+        model="qwen3.5:4b-mlx",
+        latency_ms=10,
+        repo_profile=RepoProfile(tokens=["unrelated"]),
+    )
+    calls: list[tuple[str, str]] = []
+
+    restored = restore_locally_supported_hints(
+        plan,
+        config,
+        lambda bucket, value: calls.append((bucket, value)) or True,
+    )
+
+    assert restored is plan
+    assert restored.rewritten_queries == []
+    assert restored.grep_keywords == ["AuditStatus"]
+    assert restored.symbol_hints == ["AuditStatus"]
+    assert calls == []
+
+
+def test_restore_locally_supported_hints_bounds_local_validation_work() -> None:
+    config = QueryPlannerConfig(max_keywords=MAX_LOCAL_SUPPORT_VALIDATIONS + 6)
+    raw_hints = [f"local_hint_{index}" for index in range(30)]
+    plan = clean_planner_payload(
+        original_query="查找本地实现",
+        payload={"grep_keywords": raw_hints},
+        config=config,
+        provider="ollama",
+        model="qwen3.5:4b-mlx",
+        latency_ms=10,
+        repo_profile=RepoProfile(),
+    )
+    calls: list[str] = []
+
+    restored = restore_locally_supported_hints(
+        plan,
+        config,
+        lambda _bucket, value: calls.append(value) or True,
+    )
+
+    assert calls == raw_hints[:MAX_LOCAL_SUPPORT_VALIDATIONS]
+    assert restored.grep_keywords == raw_hints[:MAX_LOCAL_SUPPORT_VALIDATIONS]
+    assert restored.discarded_hints == raw_hints[MAX_LOCAL_SUPPORT_VALIDATIONS:]
 
 
 def test_ollama_planner_parses_valid_json_and_bypasses_proxy() -> None:

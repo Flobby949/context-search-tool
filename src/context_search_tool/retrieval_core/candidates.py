@@ -286,12 +286,18 @@ def direct_text_candidates(
     store: sqlite_store.SQLiteStore,
     probes: list[str],
     config: ToolConfig,
+    *,
+    limit: int | None = None,
 ) -> list[RetrievalCandidate]:
-    limit = max(
-        config.retrieval.lexical_top_k,
-        config.retrieval.final_top_k * _DIRECT_TEXT_TOP_K_MULTIPLIER,
+    resolved_limit = (
+        max(
+            config.retrieval.lexical_top_k,
+            config.retrieval.final_top_k * _DIRECT_TEXT_TOP_K_MULTIPLIER,
+        )
+        if limit is None
+        else limit
     )
-    return store.direct_text_search(probes, limit)
+    return store.direct_text_search(probes, resolved_limit)
 
 
 def signal_candidates(
@@ -301,19 +307,24 @@ def signal_candidates(
     planner_hint: bool = False,
     *,
     graph_session: sqlite_store.GraphReadSession | None = None,
+    limit: int | None = None,
 ) -> list[RetrievalCandidate]:
-    limit = max(
-        config.retrieval.semantic_top_k,
-        config.retrieval.lexical_top_k,
-        config.retrieval.final_top_k,
+    resolved_limit = (
+        max(
+            config.retrieval.semantic_top_k,
+            config.retrieval.lexical_top_k,
+            config.retrieval.final_top_k,
+        )
+        if limit is None
+        else limit
     )
     source = "planner_signal" if planner_hint else "signal"
     score_key = "planner_signal" if planner_hint else "signal"
     candidates: list[RetrievalCandidate] = []
     signals = (
-        graph_session.signal_search(tokens, limit)
+        graph_session.signal_search(tokens, resolved_limit)
         if graph_session is not None
-        else store.signal_search(tokens, limit)
+        else store.signal_search(tokens, resolved_limit)
     )
     for signal in signals:
         score = _signal_score(signal.name, signal.tokens, signal.metadata, tokens)
@@ -385,9 +396,11 @@ def planner_hint_candidates(
     config: ToolConfig,
     *,
     graph_session: sqlite_store.GraphReadSession | None = None,
+    limit: int | None = None,
 ) -> list[RetrievalCandidate]:
     if not hint_tokens:
         return []
+    resolved_limit = config.retrieval.lexical_top_k if limit is None else limit
     path_symbol = [
         RetrievalCandidate(
             chunk_id=item.chunk_id,
@@ -397,7 +410,7 @@ def planner_hint_candidates(
         )
         for item in store.path_symbol_search(
             hint_tokens,
-            config.retrieval.lexical_top_k,
+            resolved_limit,
         )
     ]
     lexical = [
@@ -410,7 +423,7 @@ def planner_hint_candidates(
         for item in lexical_candidates(
             store,
             hint_tokens,
-            config.retrieval.lexical_top_k,
+            resolved_limit,
         )
     ]
     signals = signal_candidates(
@@ -419,6 +432,7 @@ def planner_hint_candidates(
         config,
         planner_hint=True,
         graph_session=graph_session,
+        limit=resolved_limit,
     )
     return [*lexical, *path_symbol, *signals]
 

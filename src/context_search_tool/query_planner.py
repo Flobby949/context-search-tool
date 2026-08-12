@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import time
+from dataclasses import replace
 from typing import Any, Callable, Protocol
 
 import requests
@@ -26,6 +27,8 @@ MAX_IMPORTED_MODULE_HINTS = 4
 MAX_SOURCE_HINT_CODEPOINTS = 128
 MAX_SOURCE_SYMBOL_HINTS = 4
 MAX_SOURCE_MODULE_HINTS = 4
+MAX_LOCAL_SUPPORT_VALIDATIONS = 24
+LocalSupportValidator = Callable[[str, str], bool]
 _EXACT_CODE_IDENTIFIER_RE = re.compile(
     r"(?:"
     r"[A-Z]{2,}(?=[A-Z][a-z])[A-Za-z0-9]*"
@@ -358,6 +361,77 @@ def build_query_variants(
     return variants, discarded
 
 
+def restore_locally_supported_hints(
+    plan: QueryPlan,
+    config: QueryPlannerConfig,
+    validator: LocalSupportValidator,
+) -> QueryPlan:
+    """Restore repo-profile rejections that a bounded local check can prove.
+
+    The validator receives the original plan field name and rejected value.
+    """
+    sources = plan.discarded_hint_sources
+    if (
+        plan.status != "ok"
+        or not sources
+        or _EXACT_CODE_IDENTIFIER_RE.fullmatch(plan.original_query.strip())
+    ):
+        return plan
+
+    values_by_bucket = {
+        "rewritten_queries": list(plan.rewritten_queries),
+        "grep_keywords": list(plan.grep_keywords),
+        "symbol_hints": list(plan.symbol_hints),
+    }
+    limits_by_bucket = {
+        "rewritten_queries": max(0, config.max_rewritten_queries),
+        "grep_keywords": max(0, config.max_keywords),
+        "symbol_hints": max(0, config.max_symbol_hints),
+    }
+    remaining_discarded = list(plan.discarded_hints)
+    pending_sources: list[tuple[str, str]] = []
+    validation_count = 0
+
+    for bucket, value in sources:
+        values = values_by_bucket.get(bucket)
+        limit = limits_by_bucket.get(bucket, 0)
+        replacement_index = (
+            _partial_rewrite_fallback_index(values or [], value)
+            if bucket == "rewritten_queries"
+            else None
+        )
+        if (
+            values is None
+            or (len(values) >= limit and replacement_index is None)
+            or validation_count >= MAX_LOCAL_SUPPORT_VALIDATIONS
+        ):
+            pending_sources.append((bucket, value))
+            continue
+        validation_count += 1
+        if not validator(bucket, value):
+            pending_sources.append((bucket, value))
+            continue
+        if replacement_index is not None:
+            values[replacement_index] = value
+        elif not any(item.casefold() == value.casefold() for item in values):
+            values.append(value)
+        _remove_first_casefold(remaining_discarded, value)
+
+    restored = replace(
+        plan,
+        rewritten_queries=values_by_bucket["rewritten_queries"],
+        grep_keywords=values_by_bucket["grep_keywords"],
+        symbol_hints=values_by_bucket["symbol_hints"],
+        discarded_hints=remaining_discarded,
+    )
+    object.__setattr__(
+        restored,
+        "_discarded_hint_sources",
+        tuple(pending_sources),
+    )
+    return restored
+
+
 def clean_planner_payload(
     original_query: str,
     payload: dict[str, Any],
@@ -433,6 +507,7 @@ def clean_planner_payload(
         )
 
     discarded_hints: list[str] = list(discarded_rewrites)
+    discarded_hint_sources: list[tuple[str, str]] = []
     if repo_profile is not None:
         vocabulary = profile_vocabulary(repo_profile)
         original_tokens = tokenize_query(original_query)
@@ -442,10 +517,15 @@ def clean_planner_payload(
             original_tokens,
         )
         discarded_hints.extend(dropped)
+        discarded_hint_sources.extend(
+            ("rewritten_queries", value) for value in dropped
+        )
         grep_keywords, dropped = _filter_identifier_hints(grep_keywords, vocabulary)
         discarded_hints.extend(dropped)
+        discarded_hint_sources.extend(("grep_keywords", value) for value in dropped)
         symbol_hints, dropped = _filter_identifier_hints(symbol_hints, vocabulary)
         discarded_hints.extend(dropped)
+        discarded_hint_sources.extend(("symbol_hints", value) for value in dropped)
 
     exact_identifier = original_query.strip()
     if _EXACT_CODE_IDENTIFIER_RE.fullmatch(exact_identifier):
@@ -473,7 +553,7 @@ def clean_planner_payload(
         source_module_hints = []
         imported_symbol_hints = []
         imported_module_hints = []
-    return QueryPlan(
+    plan = QueryPlan(
         original_query=original_query,
         rewritten_queries=rewritten_queries,
         grep_keywords=grep_keywords,
@@ -496,6 +576,12 @@ def clean_planner_payload(
         else False,
         discarded_hints=discarded_hints,
     )
+    object.__setattr__(
+        plan,
+        "_discarded_hint_sources",
+        tuple(discarded_hint_sources),
+    )
+    return plan
 
 
 def _prepend_bounded(value: str, values: list[str], limit: int) -> list[str]:
@@ -696,6 +782,8 @@ def _filter_rewritten_queries(
             dropped.append(term)
             continue
         kept.append(cleaned)
+        if cleaned.casefold() != _normalize_query_variant_text(term).casefold():
+            dropped.append(term)
     return _dedupe_strings(kept), dropped
 
 
@@ -722,6 +810,28 @@ def _dedupe_strings(items: list[str]) -> list[str]:
             seen.add(key)
             result.append(item)
     return result
+
+
+def _remove_first_casefold(items: list[str], value: str) -> None:
+    key = value.casefold()
+    for index, item in enumerate(items):
+        if item.casefold() == key:
+            items.pop(index)
+            return
+
+
+def _partial_rewrite_fallback_index(values: list[str], original: str) -> int | None:
+    original_tokens = {
+        token.casefold() for token in tokenize_query(original) if len(token) >= 2
+    }
+    matches: list[tuple[int, int]] = []
+    for index, value in enumerate(values):
+        value_tokens = {
+            token.casefold() for token in tokenize_query(value) if len(token) >= 2
+        }
+        if value_tokens and value_tokens < original_tokens:
+            matches.append((-len(value_tokens), index))
+    return min(matches)[1] if matches else None
 
 
 def _dedupe(tokens: list[str]) -> list[str]:
