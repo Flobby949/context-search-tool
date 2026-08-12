@@ -37,6 +37,10 @@ def context_search_query(
     context_lines: int | None = None,
     full_file: bool = False,
     final_top_k: int | None = None,
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+    languages: list[str] | None = None,
+    code_only: bool = False,
 ) -> dict[str, Any]:
     """Return raw ranked search results from a local repository index."""
     return context_search_query_tool(
@@ -45,6 +49,10 @@ def context_search_query(
         context_lines=context_lines,
         full_file=full_file,
         final_top_k=final_top_k,
+        include_paths=include_paths,
+        exclude_paths=exclude_paths,
+        languages=languages,
+        code_only=code_only,
     )
 
 
@@ -55,6 +63,10 @@ def context_search_trace(
     context_lines: int | None = None,
     full_file: bool = False,
     final_top_k: int | None = None,
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+    languages: list[str] | None = None,
+    code_only: bool = False,
 ) -> dict[str, Any]:
     """Return bounded retrieval diagnostics without source content."""
     return context_search_trace_tool(
@@ -63,6 +75,10 @@ def context_search_trace(
         context_lines=context_lines,
         full_file=full_file,
         final_top_k=final_top_k,
+        include_paths=include_paths,
+        exclude_paths=exclude_paths,
+        languages=languages,
+        code_only=code_only,
     )
 
 
@@ -75,6 +91,10 @@ def context_search_context(
     final_top_k: int | None = None,
     max_items: int | None = None,
     max_context_bytes: int | None = None,
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+    languages: list[str] | None = None,
+    code_only: bool = False,
 ) -> dict[str, Any]:
     """Return an agent-oriented ContextPack from one bounded retrieval pass."""
     return context_search_context_tool(
@@ -85,6 +105,10 @@ def context_search_context(
         final_top_k=final_top_k,
         max_items=max_items,
         max_context_bytes=max_context_bytes,
+        include_paths=include_paths,
+        exclude_paths=exclude_paths,
+        languages=languages,
+        code_only=code_only,
     )
 
 
@@ -97,6 +121,10 @@ def context_search_explore(
     final_top_k: int | None = None,
     max_items: int | None = None,
     max_context_bytes: int | None = None,
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+    languages: list[str] | None = None,
+    code_only: bool = False,
 ) -> dict[str, Any]:
     """Return a bounded controlled exploration and final ContextPack."""
     return context_search_explore_tool(
@@ -107,6 +135,10 @@ def context_search_explore(
         final_top_k=final_top_k,
         max_items=max_items,
         max_context_bytes=max_context_bytes,
+        include_paths=include_paths,
+        exclude_paths=exclude_paths,
+        languages=languages,
+        code_only=code_only,
     )
 
 

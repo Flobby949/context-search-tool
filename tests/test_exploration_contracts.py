@@ -639,6 +639,10 @@ def test_mcp_explore_registration_and_forwarding_are_exact(
         "final_top_k",
         "max_items",
         "max_context_bytes",
+        "include_paths",
+        "exclude_paths",
+        "languages",
+        "code_only",
     )
     captured: dict[str, object] = {}
 
@@ -666,4 +670,8 @@ def test_mcp_explore_registration_and_forwarding_are_exact(
         "final_top_k": 9,
         "max_items": 4,
         "max_context_bytes": 5000,
+        "include_paths": None,
+        "exclude_paths": None,
+        "languages": None,
+        "code_only": False,
     }

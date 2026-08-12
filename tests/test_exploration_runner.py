@@ -32,6 +32,7 @@ from context_search_tool.models import (
 )
 from context_search_tool.query_planner import DisabledQueryPlanner
 from context_search_tool.retrieval import QueryBundle, TracedQueryBundle
+from context_search_tool.retrieval_scope import RetrievalScope
 from context_search_tool.retrieval_trace import (
     SOURCE_COUNT_KEYS,
     ExplorationTrace,
@@ -255,6 +256,7 @@ def _install_calls(
         planner=None,
         *,
         clock_ns=None,
+        scope=None,
     ) -> TracedQueryBundle:
         nonlocal active
         active += 1
@@ -268,6 +270,7 @@ def _install_calls(
                 "full_file": full_file,
                 "planner": planner,
                 "clock_ns": clock_ns,
+                "scope": scope,
             }
         )
         try:
@@ -288,6 +291,7 @@ def _run(
     *,
     pack_options: ContextPackOptions | None = None,
     clock_ns=None,
+    scope: RetrievalScope | None = None,
 ) -> ExploredContext:
     return exploration.explore_repository(
         tmp_path,
@@ -295,6 +299,7 @@ def _run(
         config,
         pack_options or _options(config),
         clock_ns=clock_ns or (lambda: 0),
+        scope=scope,
     )
 
 
@@ -567,6 +572,33 @@ def test_successful_probe_satisfies_goal_disables_planner_and_preserves_snapshot
     )
     assert result.initial_pack is not result.final_pack
     assert result.initial_pack.groups is not result.final_pack.groups
+
+
+def test_scope_is_preserved_for_initial_and_followup_retrieval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from context_search_tool.exploration import runner
+
+    goal = _goal("goal-test", "tests")
+    initial_bundle = _bundle(_result("src/OwnerController.java", "owner"))
+    follow_bundle = _bundle(_result("tests/test_owner.py", "owner test"))
+    calls = _install_calls(
+        monkeypatch,
+        (_traced(initial_bundle), _traced(follow_bundle)),
+    )
+    monkeypatch.setattr(runner, "freeze_goals", lambda *args: _frozen(goal))
+    monkeypatch.setattr(runner, "exact_satisfied", lambda *args: False)
+    monkeypatch.setattr(
+        runner,
+        "plan_probes",
+        lambda *args, **kwargs: (_candidate("OwnerTest test", goal),),
+    )
+    scope = RetrievalScope(include_paths=("src/",))
+
+    _run(tmp_path, _config(), scope=scope)
+
+    assert [call["scope"] for call in calls] == [scope, scope]
 
 
 def test_followup_satisfaction_requires_and_accepts_all_required_goals() -> None:
@@ -853,7 +885,7 @@ def test_public_surface_and_signature_are_exact() -> None:
         "(repo: 'Path', query: 'str', config: 'ToolConfig', "
         "pack_options: 'ContextPackOptions', context_lines: 'int | None' = None, "
         "full_file: 'bool' = False, planner: 'QueryPlanner | None' = None, *, "
-        "clock_ns=None) -> 'ExploredContext'"
+        "clock_ns=None, scope: 'RetrievalScope | None' = None) -> 'ExploredContext'"
     )
     assert not hasattr(QueryBundle, "trace")
     assert not hasattr(RetrievalResult, "exploration")

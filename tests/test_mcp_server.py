@@ -22,7 +22,7 @@ def test_mcp_server_imports() -> None:
     ).lower()
 
 
-def test_context_tool_adds_only_nullable_v2_budget_overrides() -> None:
+def test_query_family_exposes_shared_scope_and_context_budget_overrides() -> None:
     from context_search_tool import mcp_server
 
     query_parameters = inspect.signature(
@@ -41,15 +41,31 @@ def test_context_tool_adds_only_nullable_v2_budget_overrides() -> None:
         "context_lines",
         "full_file",
         "final_top_k",
+        "include_paths",
+        "exclude_paths",
+        "languages",
+        "code_only",
     )
     assert tuple(trace_parameters) == tuple(query_parameters)
     assert tuple(context_parameters) == (
-        *query_parameters,
+        "repo",
+        "query",
+        "context_lines",
+        "full_file",
+        "final_top_k",
         "max_items",
         "max_context_bytes",
+        "include_paths",
+        "exclude_paths",
+        "languages",
+        "code_only",
     )
     assert context_parameters["max_items"].default is None
     assert context_parameters["max_context_bytes"].default is None
+    assert query_parameters["include_paths"].default is None
+    assert query_parameters["exclude_paths"].default is None
+    assert query_parameters["languages"].default is None
+    assert query_parameters["code_only"].default is False
 
 
 def test_trace_tool_matches_query_arguments_exactly() -> None:

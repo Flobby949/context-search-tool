@@ -59,6 +59,7 @@ from context_search_tool.retrieval import (
     trace_repository,
 )
 from context_search_tool.retrieval_trace import RetrievalTraceError
+from context_search_tool.retrieval_scope import RetrievalScope
 from context_search_tool.sqlite_store import (
     IncompatibleStorageLayoutError,
     SQLiteStore,
@@ -74,6 +75,24 @@ _CONTEXT_FAILED_MESSAGE = "Context pack construction failed"
 from context_search_tool.quality.__main__ import quality_app
 
 app.add_typer(quality_app, name="quality")
+
+
+def _retrieval_scope(
+    include_paths: Optional[list[str]],
+    exclude_paths: Optional[list[str]],
+    languages: Optional[list[str]],
+    code_only: bool,
+) -> RetrievalScope:
+    return RetrievalScope(
+        include_paths=tuple(include_paths or ()),
+        exclude_paths=tuple(exclude_paths or ()),
+        languages=tuple(languages or ()),
+        code_only=code_only,
+    )
+
+
+def _scope_kwargs(scope: RetrievalScope) -> dict[str, RetrievalScope]:
+    return {"scope": scope} if scope.is_active else {}
 
 
 @app.callback()
@@ -128,6 +147,26 @@ def query(
         "--full-file",
         help="Return full files when they are below the configured size limit.",
     ),
+    include_paths: Optional[list[str]] = typer.Option(
+        None,
+        "--include-path",
+        help="Limit results to a repeatable repository-relative path pattern.",
+    ),
+    exclude_paths: Optional[list[str]] = typer.Option(
+        None,
+        "--exclude-path",
+        help="Exclude a repeatable repository-relative path pattern.",
+    ),
+    languages: Optional[list[str]] = typer.Option(
+        None,
+        "--language",
+        help="Limit results to a repeatable indexed language name.",
+    ),
+    code_only: bool = typer.Option(
+        False,
+        "--code-only",
+        help="Exclude indexed documentation, configuration, and lock files.",
+    ),
     planner: bool = typer.Option(False, "--planner", help="Force query planner on."),
     no_planner: bool = typer.Option(
         False,
@@ -143,12 +182,19 @@ def query(
         no_planner=no_planner,
     )
     try:
+        scope = _retrieval_scope(
+            include_paths,
+            exclude_paths,
+            languages,
+            code_only,
+        )
         bundle = query_repository(
             repo,
             query_text,
             config,
             context_lines=context_lines,
             full_file=full_file,
+            **_scope_kwargs(scope),
         )
     except (
         IncompatibleStorageLayoutError,
@@ -178,6 +224,26 @@ def trace(
         "--full-file",
         help="Trace full-file result expansion when configured limits allow it.",
     ),
+    include_paths: Optional[list[str]] = typer.Option(
+        None,
+        "--include-path",
+        help="Limit results to a repeatable repository-relative path pattern.",
+    ),
+    exclude_paths: Optional[list[str]] = typer.Option(
+        None,
+        "--exclude-path",
+        help="Exclude a repeatable repository-relative path pattern.",
+    ),
+    languages: Optional[list[str]] = typer.Option(
+        None,
+        "--language",
+        help="Limit results to a repeatable indexed language name.",
+    ),
+    code_only: bool = typer.Option(
+        False,
+        "--code-only",
+        help="Exclude indexed documentation, configuration, and lock files.",
+    ),
     planner: bool = typer.Option(False, "--planner", help="Force query planner on."),
     no_planner: bool = typer.Option(
         False,
@@ -194,12 +260,19 @@ def trace(
         no_planner=no_planner,
     )
     try:
+        scope = _retrieval_scope(
+            include_paths,
+            exclude_paths,
+            languages,
+            code_only,
+        )
         traced = trace_repository(
             repo,
             query_text,
             config,
             context_lines=context_lines,
             full_file=full_file,
+            **_scope_kwargs(scope),
         )
         envelope = trace_payload(repo, query_text, traced.trace)
         output = (
@@ -236,6 +309,26 @@ def context(
         False,
         "--full-file",
         help="Return full files when they are below the configured size limit.",
+    ),
+    include_paths: Optional[list[str]] = typer.Option(
+        None,
+        "--include-path",
+        help="Limit results to a repeatable repository-relative path pattern.",
+    ),
+    exclude_paths: Optional[list[str]] = typer.Option(
+        None,
+        "--exclude-path",
+        help="Exclude a repeatable repository-relative path pattern.",
+    ),
+    languages: Optional[list[str]] = typer.Option(
+        None,
+        "--language",
+        help="Limit results to a repeatable indexed language name.",
+    ),
+    code_only: bool = typer.Option(
+        False,
+        "--code-only",
+        help="Exclude indexed documentation, configuration, and lock files.",
     ),
     max_items: Optional[int] = typer.Option(
         None,
@@ -274,12 +367,19 @@ def context(
         _exit_context_error(exc.code, exc.message)
 
     try:
+        scope = _retrieval_scope(
+            include_paths,
+            exclude_paths,
+            languages,
+            code_only,
+        )
         bundle = query_repository(
             repo,
             query_text,
             config,
             context_lines=context_lines,
             full_file=full_file,
+            **_scope_kwargs(scope),
         )
     except (
         IncompatibleStorageLayoutError,
@@ -318,6 +418,26 @@ def explore(
         "--full-file",
         help="Return full files when they are below the configured size limit.",
     ),
+    include_paths: Optional[list[str]] = typer.Option(
+        None,
+        "--include-path",
+        help="Limit results to a repeatable repository-relative path pattern.",
+    ),
+    exclude_paths: Optional[list[str]] = typer.Option(
+        None,
+        "--exclude-path",
+        help="Exclude a repeatable repository-relative path pattern.",
+    ),
+    languages: Optional[list[str]] = typer.Option(
+        None,
+        "--language",
+        help="Limit results to a repeatable indexed language name.",
+    ),
+    code_only: bool = typer.Option(
+        False,
+        "--code-only",
+        help="Exclude indexed documentation, configuration, and lock files.",
+    ),
     max_items: Optional[int] = typer.Option(
         None,
         "--max-items",
@@ -350,6 +470,12 @@ def explore(
         no_planner=no_planner,
     )
     try:
+        scope = _retrieval_scope(
+            include_paths,
+            exclude_paths,
+            languages,
+            code_only,
+        )
         explore_config, _, effective_initial_top_k = resolve_explore_config(
             config,
             final_top_k=None,
@@ -375,6 +501,7 @@ def explore(
             pack_options,
             context_lines=context_lines,
             full_file=full_file,
+            **_scope_kwargs(scope),
         )
     except (
         IncompatibleStorageLayoutError,

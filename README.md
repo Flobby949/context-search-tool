@@ -83,6 +83,17 @@ cst query /path/to/repo "canApply filter" --json
 cst query /path/to/repo "targetToken" --full-file
 ```
 
+查询时可以施加不修改索引的硬范围约束；路径参数可重复，使用仓库相对的
+gitignore-style pattern：
+
+```bash
+cst query /path/to/repo "session refresh" \
+  --include-path "src/" \
+  --exclude-path "src/generated/" \
+  --language python \
+  --code-only
+```
+
 ## CLI 命令
 
 ### `index`
@@ -120,6 +131,13 @@ cst query "question or code clue"
 - `--json`：输出结构化 JSON。
 - `--context-lines N`：覆盖默认上下文行数。
 - `--full-file`：在文件小于 `max_full_file_bytes` 时返回全文。
+- `--include-path PATTERN`：只保留匹配路径，可重复。
+- `--exclude-path PATTERN`：排除匹配路径，可重复，且优先于 include。
+- `--language NAME`：只保留指定的索引语言，可重复。
+- `--code-only`：排除文档、配置和 lockfile；测试代码仍视为代码。
+
+同一组范围参数也适用于 `trace`、`context` 和 `explore`；`explore` 的初始
+检索及所有 follow-up 共用同一硬边界。省略这些参数时行为不变。
 
 Markdown 输出会包含：
 
@@ -191,6 +209,8 @@ missing_evidence, next_queries, omissions, confidence, budget
 - `evidence_needs` 记录具体、带 subject scope 的 required/recommended 需求及
   匹配 item；`missing_evidence`、`status`（`empty`/`partial`/`ready`）和
   `confidence` 据此如实反映当前证据，而不是把“某组非空”当作完整。
+- 若有候选证据却无法从 query 派生任何 `evidence_needs`，状态固定为
+  `partial/low`；只有候选与 needs 都为空时才是 `empty/none`。
 - `next_queries` 只由原查询或已落地 subject 生成；`omissions` 说明预算下未选
   证据。两者均有界且顺序稳定。
 
@@ -269,10 +289,21 @@ cst clean /path/to/repo
 Available tools:
 
 - `context_search_index(repo)` creates or updates `.context-search/`.
-- `context_search_query(repo, query, context_lines, full_file, final_top_k)` returns summary, ranked results, score parts, reasons, and follow-up keywords.
-- `context_search_trace(repo, query, context_lines, full_file, final_top_k)` returns bounded RetrievalTrace schema version 1 diagnostics without source content.
-- `context_search_context(repo, query, context_lines, full_file, final_top_k, max_items, max_context_bytes)` returns a self-contained ContextPack schema version 2 from one raw retrieval pass while preserving the raw query string and bounded retrieval counts.
-- `context_search_explore(repo, query, context_lines, full_file, final_top_k, max_items, max_context_bytes)` explicitly runs bounded controlled exploration and returns the same final ContextPack v2 plus ExplorationTrace v2.
+- `context_search_query(repo, query, context_lines, full_file, final_top_k,`
+  `include_paths, exclude_paths, languages, code_only)` returns summary, ranked
+  results, score parts, reasons, and follow-up keywords.
+- `context_search_trace(repo, query, context_lines, full_file, final_top_k,`
+  `include_paths, exclude_paths, languages, code_only)` returns bounded
+  RetrievalTrace schema version 1 diagnostics without source content.
+- `context_search_context(repo, query, context_lines, full_file, final_top_k,`
+  `max_items, max_context_bytes, include_paths, exclude_paths, languages,`
+  `code_only)` returns a self-contained ContextPack schema version 2
+  from one raw retrieval pass while preserving the raw query string and bounded
+  retrieval counts.
+- `context_search_explore(repo, query, context_lines, full_file, final_top_k,`
+  `max_items, max_context_bytes, include_paths, exclude_paths, languages,`
+  `code_only)` explicitly runs bounded controlled exploration and
+  returns the same final ContextPack v2 plus ExplorationTrace v2.
 - `context_search_stats(repo)` returns index counts and embedding configuration.
 - `context_search_explain(repo, location)` returns the indexed chunk covering a `file:line` location plus a bounded graph projection with graph status/schema, signals, incoming/outgoing relations, and omission counts.
 
@@ -602,7 +633,10 @@ cst query /path/to/repo "question or code clue" --planner
 `stream`、`max_tokens`、`response_format` 和 `temperature` 字段，不依赖
 Ollama 或硅基流动私有参数。远程 planner 会收到查询文本
 和派生的 repo profile（语言、源码根目录、重要文件、符号与 token），但不会收到
-源码 chunk。未配置 `api_key` 时不会发送认证头，以兼容不需要认证的本地
+源码 chunk。profile 会先用当前 query 做一次有界本地召回，将相关路径、符号和
+token 前置；planner 被静态 profile 过滤的 rewrite/grep/symbol hint 只有在本地
+索引再次验证命中后才会按原类别恢复，精确代码标识符查询仍禁止 rewrite。未配置
+`api_key` 时不会发送认证头，以兼容不需要认证的本地
 OpenAI-compatible 服务。API Key 以明文保存在本机；`.context-search/` 默认被
 Git 忽略，因此不会出现在正常提交中，但不要使用 `git add -f` 强制添加该目录。
 用户级全局配置位于 Git 仓库之外，建议将文件权限设为 `600`。

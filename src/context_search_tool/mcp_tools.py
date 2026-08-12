@@ -62,6 +62,7 @@ from context_search_tool.retrieval import (
     trace_repository,
 )
 from context_search_tool.retrieval_trace import RetrievalTraceError
+from context_search_tool.retrieval_scope import RetrievalScope
 from context_search_tool.sqlite_store import SQLiteStore
 
 _FEEDBACK_LOG_MAX_BYTES = 10 * 1024 * 1024
@@ -112,6 +113,10 @@ def context_search_query_tool(
     context_lines: int | None = None,
     full_file: bool = False,
     final_top_k: int | None = None,
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+    languages: list[str] | None = None,
+    code_only: bool = False,
 ) -> dict[str, Any]:
     try:
         resolved_repo = find_repo_root(Path(repo))
@@ -124,12 +129,19 @@ def context_search_query_tool(
 
     try:
         config = _load_query_config(resolved_repo, final_top_k)
+        scope = _resolve_retrieval_scope(
+            include_paths,
+            exclude_paths,
+            languages,
+            code_only,
+        )
         bundle = query_repository(
             resolved_repo,
             query,
             config,
             context_lines=context_lines,
             full_file=full_file,
+            **_scope_kwargs(scope),
         )
         payload = _query_payload(bundle)
         payload["ok"] = True
@@ -169,6 +181,10 @@ def context_search_trace_tool(
     context_lines: int | None = None,
     full_file: bool = False,
     final_top_k: int | None = None,
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+    languages: list[str] | None = None,
+    code_only: bool = False,
 ) -> dict[str, Any]:
     try:
         resolved_repo = find_repo_root(Path(repo))
@@ -181,12 +197,19 @@ def context_search_trace_tool(
 
     try:
         config = _load_query_config(resolved_repo, final_top_k)
+        scope = _resolve_retrieval_scope(
+            include_paths,
+            exclude_paths,
+            languages,
+            code_only,
+        )
         traced = trace_repository(
             resolved_repo,
             query,
             config,
             context_lines=context_lines,
             full_file=full_file,
+            **_scope_kwargs(scope),
         )
         return trace_payload(resolved_repo, query, traced.trace)
     except (
@@ -211,6 +234,10 @@ def context_search_context_tool(
     final_top_k: int | None = None,
     max_items: int | None = None,
     max_context_bytes: int | None = None,
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+    languages: list[str] | None = None,
+    code_only: bool = False,
 ) -> dict[str, Any]:
     try:
         resolved_repo = find_repo_root(Path(repo))
@@ -223,6 +250,12 @@ def context_search_context_tool(
 
     try:
         config = _load_query_config(resolved_repo, final_top_k)
+        scope = _resolve_retrieval_scope(
+            include_paths,
+            exclude_paths,
+            languages,
+            code_only,
+        )
     except (
         IncompatibleManifestSchemaError,
         IncompatibleOperationalSchemaError,
@@ -270,6 +303,7 @@ def context_search_context_tool(
             config,
             context_lines=context_lines,
             full_file=full_file,
+            **_scope_kwargs(scope),
         )
     except IncompatibleSignalSchemaError as exc:
         return _error(exc.code, str(exc))
@@ -314,6 +348,10 @@ def context_search_explore_tool(
     final_top_k: int | None = None,
     max_items: int | None = None,
     max_context_bytes: int | None = None,
+    include_paths: list[str] | None = None,
+    exclude_paths: list[str] | None = None,
+    languages: list[str] | None = None,
+    code_only: bool = False,
 ) -> dict[str, Any]:
     try:
         resolved_repo = find_repo_root(Path(repo))
@@ -349,6 +387,12 @@ def context_search_explore_tool(
             full_file=full_file,
             max_items=max_items,
             max_context_bytes=max_context_bytes,
+        )
+        scope = _resolve_retrieval_scope(
+            include_paths,
+            exclude_paths,
+            languages,
+            code_only,
         )
     except ValueError as exc:
         payload = _error("query_failed", str(exc))
@@ -433,6 +477,7 @@ def context_search_explore_tool(
             pack_options,
             context_lines=context_lines,
             full_file=full_file,
+            **_scope_kwargs(scope),
         )
     except (ValueError, requests.HTTPError) as exc:
         payload = _error("query_failed", str(exc))
@@ -638,6 +683,24 @@ def _load_query_config(repo: Path, final_top_k: int | None) -> ToolConfig:
         config,
         retrieval=replace(config.retrieval, final_top_k=final_top_k),
     )
+
+
+def _resolve_retrieval_scope(
+    include_paths: list[str] | None,
+    exclude_paths: list[str] | None,
+    languages: list[str] | None,
+    code_only: bool,
+) -> RetrievalScope:
+    return RetrievalScope(
+        include_paths=tuple(include_paths or ()),
+        exclude_paths=tuple(exclude_paths or ()),
+        languages=tuple(languages or ()),
+        code_only=code_only,
+    )
+
+
+def _scope_kwargs(scope: RetrievalScope) -> dict[str, RetrievalScope]:
+    return {"scope": scope} if scope.is_active else {}
 
 
 def _consumer_preflight_error(

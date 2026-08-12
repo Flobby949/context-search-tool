@@ -42,6 +42,7 @@ from context_search_tool.exploration.probes import (
 )
 from context_search_tool.query_planner import DisabledQueryPlanner
 from context_search_tool.retrieval import QueryBundle, trace_repository
+from context_search_tool.retrieval_scope import RetrievalScope
 from context_search_tool.retrieval_trace import (
     SOURCE_COUNT_KEYS,
     ExplorationGoalRecord,
@@ -63,6 +64,12 @@ _Clock = Callable[[], int]
 plan_probes = _plan_probes_v5
 
 
+def _scope_kwargs(scope: RetrievalScope | None) -> dict[str, RetrievalScope]:
+    if scope is None or not scope.is_active:
+        return {}
+    return {"scope": scope}
+
+
 def explore_repository(
     repo: Path,
     query: str,
@@ -73,6 +80,7 @@ def explore_repository(
     planner: QueryPlanner | None = None,
     *,
     clock_ns=None,
+    scope: RetrievalScope | None = None,
 ) -> ExploredContext:
     validate_library_explore_options(
         config,
@@ -95,6 +103,7 @@ def explore_repository(
         full_file=full_file,
         planner=planner,
         clock_ns=clock,
+        **_scope_kwargs(scope),
     )
     try:
         return _explore_after_initial(
@@ -109,6 +118,7 @@ def explore_repository(
             initial_trace=initial_traced.trace,
             clock=clock,
             started_ns=started_ns,
+            scope=scope,
         )
     except (KeyboardInterrupt, SystemExit):
         raise
@@ -131,6 +141,7 @@ def _explore_after_initial(
     initial_trace: RetrievalTrace,
     clock: _Clock,
     started_ns: int,
+    scope: RetrievalScope | None,
 ) -> ExploredContext:
     initial_bundle_snapshot = copy.deepcopy(initial_bundle)
     initial_pack = copy.deepcopy(
@@ -266,6 +277,7 @@ def _explore_after_initial(
                 full_file=full_file,
                 planner=disabled_planner,
                 clock_ns=clock,
+                **_scope_kwargs(scope),
             )
         except ValueError:
             probe_records.append(
