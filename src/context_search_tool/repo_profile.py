@@ -128,16 +128,23 @@ def _query_related_profile_values(
     if not query_tokens:
         return [], [], [], []
 
+    scope_kwargs = (
+        {}
+        if allowed_chunk_ids is None
+        else {"allowed_chunk_ids": allowed_chunk_ids}
+    )
     candidates = [
-        *store.path_symbol_search(query_tokens, _MAX_QUERY_PROFILE_CHUNKS),
-        *store.lexical_search(query_tokens, _MAX_QUERY_PROFILE_CHUNKS),
+        *store.path_symbol_search(
+            query_tokens,
+            _MAX_QUERY_PROFILE_CHUNKS,
+            **scope_kwargs,
+        ),
+        *store.lexical_search(
+            query_tokens,
+            _MAX_QUERY_PROFILE_CHUNKS,
+            **scope_kwargs,
+        ),
     ]
-    if allowed_chunk_ids is not None:
-        candidates = [
-            candidate
-            for candidate in candidates
-            if candidate.chunk_id in allowed_chunk_ids
-        ]
     chunk_ids = _dedupe([candidate.chunk_id for candidate in candidates])[
         :_MAX_QUERY_PROFILE_CHUNKS
     ]

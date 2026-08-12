@@ -4,12 +4,14 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from context_search_tool import sqlite_store as sqlite_store_module
 from context_search_tool.cli import app
-from context_search_tool.config import load_config
+from context_search_tool.config import RetrievalConfig, ToolConfig, load_config
 from context_search_tool.indexer import index_repository
 from context_search_tool.mcp_tools import context_search_query_tool
 from context_search_tool.retrieval import query_repository
 from context_search_tool.retrieval_scope import RetrievalScope
+from context_search_tool.sqlite_store import SQLiteStore
 
 
 def test_retrieval_scope_defaults_are_inactive_and_match_everything() -> None:
@@ -128,6 +130,76 @@ def test_inactive_scope_preserves_default_query_behavior(tmp_path: Path) -> None
     )
 
     assert scoped == baseline
+
+
+def test_scoped_local_recall_limits_do_not_expand_with_repository_size(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    target = repo / "src/target.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "def bounded_scope_needle():\n    return True\n",
+        encoding="utf-8",
+    )
+    for index in range(40):
+        noise = repo / "noise" / f"noise_{index:02d}.py"
+        noise.parent.mkdir(parents=True, exist_ok=True)
+        noise.write_text(
+            f"def bounded_scope_needle_{index:02d}():\n    return False\n",
+            encoding="utf-8",
+        )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=3,
+            final_top_k=2,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    index_repository(repo, config)
+
+    calls: list[tuple[str, int, frozenset[str]]] = []
+
+    def patch_search(owner: type, name: str) -> None:
+        original = getattr(owner, name)
+
+        def capture(self, values, limit, **kwargs):
+            allowed = kwargs.get("allowed_chunk_ids")
+            if allowed is not None:
+                calls.append((name, limit, frozenset(allowed)))
+            return original(self, values, limit, **kwargs)
+
+        monkeypatch.setattr(owner, name, capture)
+
+    for method_name in (
+        "lexical_search",
+        "path_symbol_search",
+        "direct_text_search",
+    ):
+        patch_search(SQLiteStore, method_name)
+    patch_search(sqlite_store_module.GraphReadSession, "signal_search")
+
+    bundle = query_repository(
+        repo,
+        "bounded_scope_needle",
+        config,
+        scope=RetrievalScope(include_paths=("src/",)),
+    )
+
+    assert {result.file_path for result in bundle.results} == {
+        Path("src/target.py")
+    }
+    by_source = {name: (limit, allowed) for name, limit, allowed in calls}
+    assert {name: value[0] for name, value in by_source.items()} == {
+        "lexical_search": 3,
+        "path_symbol_search": 3,
+        "direct_text_search": 6,
+        "signal_search": 3,
+    }
+    assert all(len(allowed) == 1 for _, allowed in by_source.values())
 
 
 def test_scope_filters_graph_expansion_targets_outside_allowed_paths(

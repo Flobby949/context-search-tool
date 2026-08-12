@@ -7,7 +7,7 @@ import re
 import sqlite3
 import stat
 import time
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -2027,7 +2027,13 @@ class SQLiteStore:
             grouped[row["chunk_id"]].append(_signal_from_row(row))
         return grouped
 
-    def signal_search(self, tokens: list[str], limit: int) -> list[CodeSignal]:
+    def signal_search(
+        self,
+        tokens: list[str],
+        limit: int,
+        *,
+        allowed_chunk_ids: Collection[str] | None = None,
+    ) -> list[CodeSignal]:
         normalized = [token.lower() for token in tokens if token]
         if not normalized or limit <= 0:
             return []
@@ -2040,6 +2046,10 @@ class SQLiteStore:
                 else ""
             )
             row_filter, row_filter_values = _signal_row_prefilter(normalized)
+            scope_filter, scope_filter_values = _chunk_scope_filter(
+                "code_signals.chunk_id",
+                allowed_chunk_ids,
+            )
             rows = connection.execute(
                 f"""
                 SELECT *
@@ -2047,8 +2057,9 @@ class SQLiteStore:
                 WHERE deleted_at IS NULL
                   {legacy_filter}
                   {row_filter}
+                  {scope_filter}
                 """,
-                row_filter_values,
+                (*row_filter_values, *scope_filter_values),
             ).fetchall()
 
         for row in rows:
@@ -2304,22 +2315,33 @@ class SQLiteStore:
             ).fetchall()
         return {row["chunk_id"] for row in rows}
 
-    def lexical_search(self, tokens: list[str], limit: int) -> list[RetrievalCandidate]:
+    def lexical_search(
+        self,
+        tokens: list[str],
+        limit: int,
+        *,
+        allowed_chunk_ids: Collection[str] | None = None,
+    ) -> list[RetrievalCandidate]:
         query = _fts_query(tokens)
         if not query or limit <= 0:
             return []
         with self._connect() as connection:
+            scope_filter, scope_filter_values = _chunk_scope_filter(
+                "chunks.chunk_id",
+                allowed_chunk_ids,
+            )
             rows = connection.execute(
-                """
+                f"""
                 SELECT chunks.chunk_id, bm25(chunks_fts) AS rank
                 FROM chunks_fts
                 JOIN chunks ON chunks.chunk_id = chunks_fts.chunk_id
                 WHERE chunks_fts MATCH ?
                   AND chunks.deleted_at IS NULL
+                  {scope_filter}
                 ORDER BY rank
                 LIMIT ?
                 """,
-                (query, limit),
+                (query, *scope_filter_values, limit),
             ).fetchall()
 
         return [
@@ -2333,7 +2355,11 @@ class SQLiteStore:
         ]
 
     def path_symbol_search(
-        self, tokens: list[str], limit: int
+        self,
+        tokens: list[str],
+        limit: int,
+        *,
+        allowed_chunk_ids: Collection[str] | None = None,
     ) -> list[RetrievalCandidate]:
         normalized = [token.lower() for token in tokens if token]
         if not normalized or limit <= 0:
@@ -2345,12 +2371,18 @@ class SQLiteStore:
             chunk_scores[token] = max(chunk_scores.get(token, 0.0), score)
 
         with self._connect() as connection:
+            scope_filter, scope_filter_values = _chunk_scope_filter(
+                "chunks.chunk_id",
+                allowed_chunk_ids,
+            )
             rows = connection.execute(
-                """
+                f"""
                 SELECT chunk_id, file_path
                 FROM chunks
                 WHERE deleted_at IS NULL
-                """
+                  {scope_filter}
+                """,
+                scope_filter_values,
             ).fetchall()
             for row in rows:
                 path = row["file_path"].lower()
@@ -2366,10 +2398,11 @@ class SQLiteStore:
                 JOIN chunks ON chunks.chunk_ref = chunk_tokens.chunk_ref
                 WHERE chunks.deleted_at IS NULL
                   AND chunk_tokens.token IN ({placeholders})
-                """,
+                """
+                    + scope_filter,
                     normalized,
                 ),
-                normalized,
+                [*normalized, *scope_filter_values],
             ).fetchall()
             for row in token_rows:
                 token = row["token"].lower()
@@ -2377,13 +2410,15 @@ class SQLiteStore:
                     add_token_score(row["chunk_id"], token, 0.25)
 
             symbol_rows = connection.execute(
-                """
+                f"""
                 SELECT chunk_symbols.chunk_id, symbols.name
                 FROM chunk_symbols
                 JOIN symbols ON symbols.symbol_id = chunk_symbols.symbol_id
                 JOIN chunks ON chunks.chunk_id = chunk_symbols.chunk_id
                 WHERE chunks.deleted_at IS NULL
-                """
+                  {scope_filter}
+                """,
+                scope_filter_values,
             ).fetchall()
             for row in symbol_rows:
                 name = row["name"].lower()
@@ -2413,6 +2448,8 @@ class SQLiteStore:
         self,
         probes: list[str],
         limit: int,
+        *,
+        allowed_chunk_ids: Collection[str] | None = None,
     ) -> list[RetrievalCandidate]:
         normalized = _dedupe_search_probes(probes)
         if not normalized or limit <= 0:
@@ -2423,12 +2460,18 @@ class SQLiteStore:
 
         scanned_rows = 0
         with self._connect() as connection:
+            scope_filter, scope_filter_values = _chunk_scope_filter(
+                "chunks.chunk_id",
+                allowed_chunk_ids,
+            )
             rows = connection.execute(
-                """
+                f"""
                 SELECT chunk_id, file_path, content
                 FROM chunks
                 WHERE deleted_at IS NULL
-                """
+                  {scope_filter}
+                """,
+                scope_filter_values,
             )
 
             for row in rows:
@@ -3311,7 +3354,13 @@ class GraphReadSession:
         ).fetchone()
         return _source_file_from_row(row) if row is not None else None
 
-    def signal_search(self, tokens: list[str], limit: int) -> list[CodeSignal]:
+    def signal_search(
+        self,
+        tokens: list[str],
+        limit: int,
+        *,
+        allowed_chunk_ids: Collection[str] | None = None,
+    ) -> list[CodeSignal]:
         normalized = [token.lower() for token in tokens if token]
         if (
             not normalized
@@ -3328,6 +3377,10 @@ class GraphReadSession:
         else:
             legal_filter = ""
         row_filter, row_filter_values = _signal_row_prefilter(normalized)
+        scope_filter, scope_filter_values = _chunk_scope_filter(
+            "code_signals.chunk_id",
+            allowed_chunk_ids,
+        )
         rows = connection.execute(
             f"""
             SELECT *
@@ -3335,8 +3388,9 @@ class GraphReadSession:
             WHERE deleted_at IS NULL
               {legal_filter}
               {row_filter}
+              {scope_filter}
             """,
-            row_filter_values,
+            (*row_filter_values, *scope_filter_values),
         ).fetchall()
         matches: list[tuple[CodeSignal, float]] = []
         for row in rows:
@@ -6491,3 +6545,22 @@ def _maintenance_counts(connection: sqlite3.Connection) -> dict[str, int]:
 def _in_query(sql: str, values: list[Any]) -> str:
     placeholders = ", ".join("?" for _ in values)
     return sql.format(placeholders=placeholders)
+
+
+def _chunk_scope_filter(
+    column: str,
+    allowed_chunk_ids: Collection[str] | None,
+) -> tuple[str, tuple[str, ...]]:
+    if allowed_chunk_ids is None:
+        return "", ()
+    if not allowed_chunk_ids:
+        return "AND 0", ()
+    payload = json.dumps(
+        sorted(set(allowed_chunk_ids)),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    return (
+        f"AND {column} IN (SELECT value FROM json_each(?))",
+        (payload,),
+    )

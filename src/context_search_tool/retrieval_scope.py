@@ -94,7 +94,6 @@ class RetrievalScopeSnapshot:
     scope: RetrievalScope
     allowed_chunk_ids: frozenset[str] | None = None
     excluded_chunk_ids: frozenset[str] = frozenset()
-    active_chunk_count: int = 0
     allowed_rows: tuple[tuple[str, Path, str], ...] = ()
 
     @property
@@ -107,11 +106,6 @@ class RetrievalScopeSnapshot:
         return [
             value for value in values if value.chunk_id in self.allowed_chunk_ids
         ]
-
-    def recall_limit(self, default: int) -> int:
-        if not self.is_active:
-            return default
-        return max(default, self.active_chunk_count)
 
     def contains_chunk_ids(self, chunk_ids: list[str]) -> bool:
         return self.allowed_chunk_ids is None or any(
@@ -138,7 +132,6 @@ def snapshot_retrieval_scope(
         scope=resolved,
         allowed_chunk_ids=allowed,
         excluded_chunk_ids=all_chunk_ids - allowed,
-        active_chunk_count=len(rows),
         allowed_rows=tuple(row for row in rows if row[0] in allowed),
     )
 
@@ -156,21 +149,26 @@ def locally_supported_planner_hint(
     tokens = ordering.dedupe_lowered(tokenizer.tokenize_query(value))
     if not tokens:
         return False
-    limit = snapshot.recall_limit(max(1, config.retrieval.lexical_top_k))
+    limit = max(1, config.retrieval.lexical_top_k)
+    scope_kwargs = (
+        {}
+        if snapshot.allowed_chunk_ids is None
+        else {"allowed_chunk_ids": snapshot.allowed_chunk_ids}
+    )
     if bucket == "rewritten_queries":
         local_candidates = [
-            *store.direct_text_search([value], limit),
-            *store.lexical_search(tokens, limit),
+            *store.direct_text_search([value], limit, **scope_kwargs),
+            *store.lexical_search(tokens, limit, **scope_kwargs),
         ]
         return bool(snapshot.filter_candidates(local_candidates))
 
     direct_matches = snapshot.filter_candidates(
-        store.direct_text_search([value], limit)
+        store.direct_text_search([value], limit, **scope_kwargs)
     )
     if direct_matches:
         return True
     path_symbol_matches = snapshot.filter_candidates(
-        store.path_symbol_search(tokens, limit)
+        store.path_symbol_search(tokens, limit, **scope_kwargs)
     )
     return any(candidate.score >= len(tokens) for candidate in path_symbol_matches)
 

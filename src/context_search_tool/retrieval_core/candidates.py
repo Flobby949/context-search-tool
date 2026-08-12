@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any, Callable
 
@@ -220,14 +220,29 @@ def lexical_candidates(
     store: sqlite_store.SQLiteStore,
     tokens: list[str],
     limit: int,
+    *,
+    allowed_chunk_ids: Collection[str] | None = None,
 ) -> list[RetrievalCandidate]:
-    exact = store.lexical_search(tokens, limit)
+    scope_kwargs = (
+        {}
+        if allowed_chunk_ids is None
+        else {"allowed_chunk_ids": allowed_chunk_ids}
+    )
+    exact = store.lexical_search(
+        tokens,
+        limit,
+        **scope_kwargs,
+    )
     if exact or not tokens or limit <= 0:
         return exact
 
     scores: dict[str, float] = {}
     for token in tokens:
-        for candidate in store.lexical_search([token], limit):
+        for candidate in store.lexical_search(
+            [token],
+            limit,
+            **scope_kwargs,
+        ):
             scores[candidate.chunk_id] = (
                 scores.get(candidate.chunk_id, 0.0) + candidate.score
             )
@@ -248,8 +263,19 @@ def path_symbol_candidates(
     store: sqlite_store.SQLiteStore,
     tokens: list[str],
     limit: int,
+    *,
+    allowed_chunk_ids: Collection[str] | None = None,
 ) -> list[RetrievalCandidate]:
-    return store.path_symbol_search(tokens, limit)
+    scope_kwargs = (
+        {}
+        if allowed_chunk_ids is None
+        else {"allowed_chunk_ids": allowed_chunk_ids}
+    )
+    return store.path_symbol_search(
+        tokens,
+        limit,
+        **scope_kwargs,
+    )
 
 
 def direct_text_probes(query: str, original_tokens: list[str]) -> list[str]:
@@ -288,6 +314,7 @@ def direct_text_candidates(
     config: ToolConfig,
     *,
     limit: int | None = None,
+    allowed_chunk_ids: Collection[str] | None = None,
 ) -> list[RetrievalCandidate]:
     resolved_limit = (
         max(
@@ -297,7 +324,16 @@ def direct_text_candidates(
         if limit is None
         else limit
     )
-    return store.direct_text_search(probes, resolved_limit)
+    scope_kwargs = (
+        {}
+        if allowed_chunk_ids is None
+        else {"allowed_chunk_ids": allowed_chunk_ids}
+    )
+    return store.direct_text_search(
+        probes,
+        resolved_limit,
+        **scope_kwargs,
+    )
 
 
 def signal_candidates(
@@ -308,6 +344,7 @@ def signal_candidates(
     *,
     graph_session: sqlite_store.GraphReadSession | None = None,
     limit: int | None = None,
+    allowed_chunk_ids: Collection[str] | None = None,
 ) -> list[RetrievalCandidate]:
     resolved_limit = (
         max(
@@ -321,10 +358,23 @@ def signal_candidates(
     source = "planner_signal" if planner_hint else "signal"
     score_key = "planner_signal" if planner_hint else "signal"
     candidates: list[RetrievalCandidate] = []
+    scope_kwargs = (
+        {}
+        if allowed_chunk_ids is None
+        else {"allowed_chunk_ids": allowed_chunk_ids}
+    )
     signals = (
-        graph_session.signal_search(tokens, resolved_limit)
+        graph_session.signal_search(
+            tokens,
+            resolved_limit,
+            **scope_kwargs,
+        )
         if graph_session is not None
-        else store.signal_search(tokens, resolved_limit)
+        else store.signal_search(
+            tokens,
+            resolved_limit,
+            **scope_kwargs,
+        )
     )
     for signal in signals:
         score = _signal_score(signal.name, signal.tokens, signal.metadata, tokens)
@@ -397,10 +447,16 @@ def planner_hint_candidates(
     *,
     graph_session: sqlite_store.GraphReadSession | None = None,
     limit: int | None = None,
+    allowed_chunk_ids: Collection[str] | None = None,
 ) -> list[RetrievalCandidate]:
     if not hint_tokens:
         return []
     resolved_limit = config.retrieval.lexical_top_k if limit is None else limit
+    scope_kwargs = (
+        {}
+        if allowed_chunk_ids is None
+        else {"allowed_chunk_ids": allowed_chunk_ids}
+    )
     path_symbol = [
         RetrievalCandidate(
             chunk_id=item.chunk_id,
@@ -411,6 +467,7 @@ def planner_hint_candidates(
         for item in store.path_symbol_search(
             hint_tokens,
             resolved_limit,
+            **scope_kwargs,
         )
     ]
     lexical = [
@@ -424,6 +481,7 @@ def planner_hint_candidates(
             store,
             hint_tokens,
             resolved_limit,
+            allowed_chunk_ids=allowed_chunk_ids,
         )
     ]
     signals = signal_candidates(
@@ -433,6 +491,7 @@ def planner_hint_candidates(
         planner_hint=True,
         graph_session=graph_session,
         limit=resolved_limit,
+        allowed_chunk_ids=allowed_chunk_ids,
     )
     return [*lexical, *path_symbol, *signals]
 

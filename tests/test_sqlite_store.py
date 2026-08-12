@@ -14,6 +14,7 @@ from context_search_tool.models import (
     generate_relation_id,
     generate_signal_id,
 )
+from context_search_tool.retrieval_core import candidates as retrieval_candidates
 from context_search_tool.sqlite_store import SQLiteStore
 
 
@@ -435,6 +436,159 @@ def test_active_chunk_scope_returns_path_and_indexed_language(tmp_path: Path) ->
     ]
 
 
+def test_local_search_scope_matches_exhaustive_filtering_and_graph_snapshot(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    chunks = [
+        _chunk(
+            "allowed",
+            "src/NeedleAllowed.py",
+            ["needle"],
+            [SymbolRef("NeedleAllowed", "class", 1, 2, "python")],
+        ),
+        _chunk(
+            "blocked",
+            "generated/NeedleBlocked.py",
+            ["needle"],
+            [SymbolRef("NeedleBlocked", "class", 1, 2, "python")],
+        ),
+        _chunk("irrelevant", "src/Irrelevant.py", ["other"]),
+    ]
+    for chunk in chunks:
+        store.replace_chunks(chunk.file_path, [chunk])
+        store.replace_signals(
+            chunk.file_path,
+            [
+                CodeSignal(
+                    signal_id=f"signal-{chunk.chunk_id}",
+                    chunk_id=chunk.chunk_id,
+                    file_path=chunk.file_path,
+                    kind="method",
+                    name=f"Needle.{chunk.chunk_id}",
+                    start_line=1,
+                    end_line=1,
+                    language="python",
+                    tokens=["needle"],
+                )
+            ],
+        )
+
+    allowed_ids = frozenset(
+        {"allowed", *(f"missing-{index}" for index in range(1_100))}
+    )
+    candidate_searches = (
+        lambda: store.lexical_search(["needle"], limit=10),
+        lambda: store.path_symbol_search(["needle"], limit=10),
+        lambda: store.direct_text_search(["Needle"], limit=10),
+    )
+    scoped_candidate_searches = (
+        lambda: store.lexical_search(
+            ["needle"],
+            limit=10,
+            allowed_chunk_ids=allowed_ids,
+        ),
+        lambda: store.path_symbol_search(
+            ["needle"],
+            limit=10,
+            allowed_chunk_ids=allowed_ids,
+        ),
+        lambda: store.direct_text_search(
+            ["Needle"],
+            limit=10,
+            allowed_chunk_ids=allowed_ids,
+        ),
+    )
+
+    for exhaustive, scoped in zip(
+        candidate_searches,
+        scoped_candidate_searches,
+        strict=True,
+    ):
+        assert scoped() == [
+            candidate
+            for candidate in exhaustive()
+            if candidate.chunk_id in allowed_ids
+        ]
+
+    exhaustive_signals = store.signal_search(["needle"], limit=10)
+    scoped_signals = store.signal_search(
+        ["needle"],
+        limit=10,
+        allowed_chunk_ids=allowed_ids,
+    )
+    assert scoped_signals == [
+        signal for signal in exhaustive_signals if signal.chunk_id in allowed_ids
+    ]
+    with store.graph_read_session() as session:
+        assert session.signal_search(
+            ["needle"],
+            limit=10,
+            allowed_chunk_ids=allowed_ids,
+        ) == scoped_signals
+
+
+def test_empty_local_search_scope_returns_no_candidates(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    chunk = _chunk("needle", "src/Needle.py", ["needle"])
+    store.replace_chunks(chunk.file_path, [chunk])
+    store.replace_signals(
+        chunk.file_path,
+        [
+            CodeSignal(
+                "signal-needle",
+                chunk.chunk_id,
+                chunk.file_path,
+                "method",
+                "Needle.run",
+                1,
+                1,
+                "python",
+                ["needle"],
+            )
+        ],
+    )
+
+    assert store.lexical_search(
+        ["needle"], limit=10, allowed_chunk_ids=frozenset()
+    ) == []
+    assert store.path_symbol_search(
+        ["needle"], limit=10, allowed_chunk_ids=frozenset()
+    ) == []
+    assert store.direct_text_search(
+        ["Needle"], limit=10, allowed_chunk_ids=frozenset()
+    ) == []
+    assert store.signal_search(
+        ["needle"], limit=10, allowed_chunk_ids=frozenset()
+    ) == []
+    with store.graph_read_session() as session:
+        assert session.signal_search(
+            ["needle"], limit=10, allowed_chunk_ids=frozenset()
+        ) == []
+
+
+def test_scoped_lexical_fallback_is_not_blocked_by_out_of_scope_exact_match(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    allowed = _chunk("allowed", "src/Allowed.py", ["alpha"])
+    blocked = _chunk("blocked", "generated/Blocked.py", ["alpha", "beta"])
+    store.replace_chunks(allowed.file_path, [allowed])
+    store.replace_chunks(blocked.file_path, [blocked])
+
+    results = retrieval_candidates.lexical_candidates(
+        store,
+        ["alpha", "beta"],
+        limit=10,
+        allowed_chunk_ids=frozenset({"allowed"}),
+    )
+
+    assert [candidate.chunk_id for candidate in results] == ["allowed"]
+
+
 def test_chunks_matching_signal_or_symbols_batches_by_target(tmp_path: Path) -> None:
     store = SQLiteStore(tmp_path / "index.sqlite")
     store.initialize()
@@ -787,6 +941,18 @@ def test_direct_text_search_reads_each_active_chunk_once(
     assert len(results) == 10
     assert all(result.source == "direct_text" for result in results)
     assert decoded_rows == 1000
+
+    decoded_rows = 0
+    scoped_results = store.direct_text_search(
+        probes,
+        limit=10,
+        allowed_chunk_ids=frozenset(
+            {"chunk-7", *(f"missing-{index}" for index in range(1_100))}
+        ),
+    )
+
+    assert [result.chunk_id for result in scoped_results] == ["chunk-7"]
+    assert decoded_rows == 1
 
 
 def test_lexical_tokens_round_trip_preserves_order_in_layout_v2(

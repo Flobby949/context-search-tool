@@ -298,6 +298,11 @@ def _query_repository_impl(
             else store.deleted_chunk_ids()
         )
         scope_snapshot = retrieval_scope.snapshot_retrieval_scope(store, scope)
+        local_scope_kwargs = (
+            {}
+            if scope_snapshot.allowed_chunk_ids is None
+            else {"allowed_chunk_ids": scope_snapshot.allowed_chunk_ids}
+        )
     except sqlite3.Error:
         bundle = QueryBundle(
             query=query,
@@ -451,7 +456,8 @@ def _query_repository_impl(
     lexical_candidates = candidates.lexical_candidates(
         store,
         original_tokens,
-        scope_snapshot.recall_limit(config.retrieval.lexical_top_k),
+        config.retrieval.lexical_top_k,
+        **local_scope_kwargs,
     )
     lexical_candidates = scope_snapshot.filter_candidates(lexical_candidates)
     stopped = tracing.stop_stage(trace_collector, token)
@@ -472,7 +478,8 @@ def _query_repository_impl(
     path_symbol_candidates = candidates.path_symbol_candidates(
         store,
         original_tokens,
-        scope_snapshot.recall_limit(config.retrieval.lexical_top_k),
+        config.retrieval.lexical_top_k,
+        **local_scope_kwargs,
     )
     path_symbol_candidates = scope_snapshot.filter_candidates(
         path_symbol_candidates
@@ -497,12 +504,11 @@ def _query_repository_impl(
         store,
         probes,
         config,
-        limit=scope_snapshot.recall_limit(
-            max(
-                config.retrieval.lexical_top_k,
-                config.retrieval.final_top_k * 3,
-            )
+        limit=max(
+            config.retrieval.lexical_top_k,
+            config.retrieval.final_top_k * 3,
         ),
+        **local_scope_kwargs,
     )
     direct_text_candidates = scope_snapshot.filter_candidates(
         direct_text_candidates
@@ -534,13 +540,12 @@ def _query_repository_impl(
         original_tokens,
         config,
         graph_session=graph_session,
-        limit=scope_snapshot.recall_limit(
-            max(
-                config.retrieval.semantic_top_k,
-                config.retrieval.lexical_top_k,
-                config.retrieval.final_top_k,
-            )
+        limit=max(
+            config.retrieval.semantic_top_k,
+            config.retrieval.lexical_top_k,
+            config.retrieval.final_top_k,
         ),
+        **local_scope_kwargs,
     )
     signal_candidates = scope_snapshot.filter_candidates(signal_candidates)
     stopped = tracing.stop_stage(trace_collector, token)
@@ -563,7 +568,8 @@ def _query_repository_impl(
         hint_tokens,
         config,
         graph_session=graph_session,
-        limit=scope_snapshot.recall_limit(config.retrieval.lexical_top_k),
+        limit=config.retrieval.lexical_top_k,
+        **local_scope_kwargs,
     )
     planner_candidates = scope_snapshot.filter_candidates(planner_candidates)
     stopped = tracing.stop_stage(trace_collector, token)

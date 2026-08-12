@@ -248,6 +248,57 @@ def test_build_repo_profile_prioritizes_query_related_local_vocabulary(
     assert conditioned.tokens[:2] == ["index", "health"]
 
 
+def test_scoped_profile_ranks_query_matches_inside_scope_before_sampling(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    for index in range(30):
+        path = f"excluded/NeedleTargetBlocked{index:02d}.py"
+        store.replace_chunks(
+            Path(path),
+            [
+                _chunk(
+                    f"000-blocked-{index:02d}",
+                    path,
+                    "blocked",
+                    [f"NeedleTargetBlocked{index:02d}"],
+                )
+            ],
+        )
+
+    scope_rows: list[tuple[str, Path, str]] = []
+    for index in range(24):
+        path = f"src/Noise{index:02d}.py"
+        chunk_id = f"100-noise-{index:02d}"
+        store.replace_chunks(
+            Path(path),
+            [_chunk(chunk_id, path, "noise", [f"Noise{index:02d}"])],
+        )
+        scope_rows.append((chunk_id, Path(path), "python"))
+    target_path = Path("src/Target.py")
+    store.replace_chunks(
+        target_path,
+        [_chunk("zzz-target", target_path.as_posix(), "target", ["NeedleTarget"])],
+    )
+    scope_rows.append(("zzz-target", target_path, "python"))
+
+    profile = build_repo_profile(
+        store,
+        limits=RepoProfileLimits(
+            max_files=2,
+            max_symbols=2,
+            max_tokens=4,
+            max_chars=1000,
+        ),
+        query="NeedleTarget",
+        scope_rows=tuple(scope_rows),
+    )
+
+    assert profile.important_files[0] == "src/Target.py"
+    assert profile.symbols[0] == "NeedleTarget"
+    assert all("blocked" not in value.lower() for value in profile.symbols)
+
+
 def test_profile_respects_character_budget(tmp_path: Path) -> None:
     store = _store(tmp_path)
     for index in range(20):
