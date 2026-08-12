@@ -27,9 +27,15 @@ from context_search_tool.graph_contract import (
     MAX_EDGES_PER_SIGNAL_DIRECTION,
     effective_relation_confidence,
 )
+from context_search_tool.identifier_intent import infer_identifier_intent
 from context_search_tool.paths import index_dir_for
 from context_search_tool.query_intent import infer_query_intent
 from context_search_tool.retrieval_core import relation_policy
+from context_search_tool.retrieval_scope import (
+    RetrievalScope,
+    RetrievalScopeSnapshot,
+    snapshot_retrieval_scope,
+)
 from context_search_tool.sqlite_store import GraphReadSession, SQLiteStore
 from context_search_tool.tokenizer import tokenize_query
 
@@ -83,6 +89,48 @@ _VIEW_CONSTANT_NAME_PARTS = {
     "VIEW",
     "VIEWS",
 }
+_STRUCTURED_NEED_SUFFIXES = {
+    "entrypoints": "controller route template view",
+    "implementations": "repository service implementation",
+    "related_types": "entity model DTO type",
+    "tests": "integration test",
+    "configs_docs": "profile config properties yaml",
+    "supporting": "service component store utility type",
+}
+_STRUCTURAL_TERM_RE = re.compile(r"[^a-z0-9]+")
+_STRUCTURAL_DISCOVERY_LIMIT = 8
+_STRUCTURAL_DISCOVERY_SCAN_LIMIT = _STRUCTURAL_DISCOVERY_LIMIT * 8
+_STRUCTURAL_SUBJECT_ALIASES = {
+    "postgresql": ("postgresql", "postgres"),
+    "postgres": ("postgres", "postgresql"),
+}
+_CONFIG_SUFFIXES = {
+    ".env",
+    ".ini",
+    ".json",
+    ".properties",
+    ".toml",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+_VIEW_SUFFIXES = {".astro", ".html", ".htm", ".svelte", ".vue"}
+_CATEGORY_MARKERS = {
+    "entrypoints": ("controller", "route", "router", "template", "view", "form", "page"),
+    "implementations": (
+        "repository",
+        "service",
+        "implementation",
+        "handler",
+        "storage",
+        "utility",
+        "utils",
+    ),
+    "related_types": ("dto", "entity", "model", "record", "type", "types"),
+    "tests": ("test", "tests", "spec", "specs"),
+    "configs_docs": ("application", "config", "configuration", "profile", "readme", "docs"),
+    "supporting": ("component", "store", "utility", "utils"),
+}
 
 
 @dataclass(frozen=True)
@@ -93,6 +141,7 @@ class _Seed:
     seed_paths: tuple[str, ...]
     complete_query: bool = False
     graph_test: bool = False
+    supported_categories: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -111,16 +160,21 @@ def plan_probes(
     frozen: FrozenGoals,
     *,
     store: SQLiteStore | None = None,
+    scope: RetrievalScope | None = None,
 ) -> tuple[ProbeCandidate, ...]:
     goals = unsatisfied_goals(frozen)
     if not goals or initial_trace.outcome != "complete":
         return ()
     if initial_trace.final_selection_omitted_count != 0:
         return ()
+    if _exact_target_query(initial_bundle.query):
+        return ()
 
     repo = repo.resolve()
     active_store = store or SQLiteStore(index_dir_for(repo) / "index.sqlite")
+    missing_goal_ids = _missing_need_goal_ids(initial_pack)
     try:
+        scope_snapshot = snapshot_retrieval_scope(active_store, scope)
         origins = _load_origins(active_store, initial_trace, initial_pack)
         if origins is None:
             return ()
@@ -135,19 +189,50 @@ def plan_probes(
                 for goal in goals
             ),
         )
+        seeds = (
+            *seeds,
+            *_discover_structured_need_seeds(
+                active_store,
+                goals,
+                missing_goal_ids,
+                scope_snapshot,
+            ),
+        )
+        seeds = _seeds_within_scope(seeds, scope_snapshot)
     except (KeyError, OSError, sqlite3.Error, UnicodeError, ValueError):
+        return ()
+    if not seeds:
         return ()
 
     raw: list[ProbeCandidate] = []
     goal_order = {goal.id: index for index, goal in enumerate(frozen.goals)}
-    composite = _required_goal_composite(initial_bundle, frozen)
+    composite = (
+        None
+        if any(goal.id in missing_goal_ids for goal in goals)
+        else _required_goal_composite(initial_bundle, frozen)
+    )
     if composite is not None:
         raw.append(composite)
     raw.extend(_single_required_view_composites(seeds, frozen))
     for goal in goals:
+        if goal.kind == "need":
+            if goal.id not in missing_goal_ids:
+                continue
+            for seed in seeds:
+                candidate = _structured_missing_need_candidate(
+                    goal,
+                    goal_order[goal.id],
+                    seed,
+                )
+                if candidate is not None:
+                    raw.append(candidate)
+            continue
         suffix = _goal_suffix(goal)
         for seed in seeds:
-            if not _seed_supports_goal(seed, goal):
+            if (
+                not _seed_supports_goal(seed, goal)
+                or not _seed_is_subject_compatible(seed, goal)
+            ):
                 continue
             candidate = _candidate_from_seed(
                 goal,
@@ -157,16 +242,18 @@ def plan_probes(
             )
             if candidate is not None:
                 raw.append(candidate)
-        raw.extend(
-            _next_query_candidates(
-                initial_bundle,
-                initial_pack,
-                frozen,
-                goal,
-                goal_order[goal.id],
-                suffix,
+        if _safe_structural_subjects(goal.subject_terms) is not None:
+            raw.extend(
+                _next_query_candidates(
+                    initial_bundle,
+                    initial_pack,
+                    frozen,
+                    goal,
+                    goal_order[goal.id],
+                    suffix,
+                )
             )
-        )
+    raw.extend(_grounded_required_goal_composites(tuple(raw), frozen))
     return order_probe_candidates(tuple(raw), frozen)
 
 
@@ -179,15 +266,29 @@ def _plan_probes_v5(
     *,
     store: SQLiteStore | None = None,
     graph_session_factory=None,
+    scope: RetrievalScope | None = None,
 ) -> tuple[ProbeCandidate, ...]:
     goals = unsatisfied_goals(frozen)
     if not goals or initial_trace.outcome != "complete":
         return ()
     if initial_trace.final_selection_omitted_count != 0:
         return ()
+    if _exact_target_query(initial_bundle.query):
+        return ()
 
     repo = repo.resolve()
     active_store = store or SQLiteStore(index_dir_for(repo) / "index.sqlite")
+    missing_goal_ids = _missing_need_goal_ids(initial_pack)
+    try:
+        scope_snapshot = snapshot_retrieval_scope(active_store, scope)
+        discovered_seeds = _discover_structured_need_seeds(
+            active_store,
+            goals,
+            missing_goal_ids,
+            scope_snapshot,
+        )
+    except (KeyError, OSError, sqlite3.Error, UnicodeError, ValueError):
+        return ()
     session_context = (
         graph_session_factory()
         if graph_session_factory is not None
@@ -251,9 +352,9 @@ def _plan_probes_v5(
                 graph_session.capability.status == "ready"
                 and graph_fault is None
             )
+            seeds = (*seeds, *discovered_seeds)
     except (KeyError, OSError, sqlite3.Error, UnicodeError, ValueError):
         return ()
-
     if graph_fault is not None:
         try:
             active_store.mark_graph_stale(graph_fault)
@@ -262,22 +363,44 @@ def _plan_probes_v5(
                 "graph snapshot fault could not be persisted: %s",
                 graph_fault,
             )
+    seeds = _seeds_within_scope(seeds, scope_snapshot)
+    if not seeds:
+        return ()
 
     raw: list[ProbeCandidate] = []
     goal_order = {goal.id: index for index, goal in enumerate(frozen.goals)}
-    composite = _required_goal_composite_v5(
-        initial_bundle,
-        frozen,
-        seeds,
-        ready_graph=ready_graph,
+    composite = (
+        None
+        if any(goal.id in missing_goal_ids for goal in goals)
+        else _required_goal_composite_v5(
+            initial_bundle,
+            frozen,
+            seeds,
+            ready_graph=ready_graph,
+        )
     )
     if composite is not None:
         raw.append(composite)
     raw.extend(_single_required_view_composites(seeds, frozen))
     for goal in goals:
+        if goal.kind == "need":
+            if goal.id not in missing_goal_ids:
+                continue
+            for seed in seeds:
+                candidate = _structured_missing_need_candidate(
+                    goal,
+                    goal_order[goal.id],
+                    seed,
+                )
+                if candidate is not None:
+                    raw.append(candidate)
+            continue
         suffix = _goal_suffix(goal)
         for seed in seeds:
-            if not _seed_supports_goal(seed, goal):
+            if (
+                not _seed_supports_goal(seed, goal)
+                or not _seed_is_subject_compatible(seed, goal)
+            ):
                 continue
             candidate = _candidate_from_seed(
                 goal,
@@ -287,17 +410,460 @@ def _plan_probes_v5(
             )
             if candidate is not None:
                 raw.append(candidate)
-        raw.extend(
-            _next_query_candidates(
-                initial_bundle,
-                initial_pack,
-                frozen,
-                goal,
-                goal_order[goal.id],
+        if _safe_structural_subjects(goal.subject_terms) is not None:
+            raw.extend(
+                _next_query_candidates(
+                    initial_bundle,
+                    initial_pack,
+                    frozen,
+                    goal,
+                    goal_order[goal.id],
+                    suffix,
+                )
+            )
+    raw.extend(_grounded_required_goal_composites(tuple(raw), frozen))
+    return order_probe_candidates(tuple(raw), frozen)
+
+
+def _missing_need_goal_ids(pack: ContextPack) -> frozenset[str]:
+    missing = {
+        (item.need_id, item.category, item.required)
+        for item in pack.missing_evidence
+    }
+    return frozenset(
+        f"goal-need-{need.category}-{index}"
+        for index, need in enumerate(pack.evidence_needs)
+        if not need.matched_item_ids
+        and (need.id, need.category, need.required) in missing
+    )
+
+
+def _discover_structured_need_seeds(
+    store: SQLiteStore,
+    goals: tuple[ExplorationGoal, ...],
+    missing_goal_ids: frozenset[str],
+    scope: RetrievalScopeSnapshot,
+) -> tuple[_Seed, ...]:
+    seeds: list[_Seed] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    scope_kwargs = (
+        {}
+        if scope.allowed_chunk_ids is None
+        else {"allowed_chunk_ids": scope.allowed_chunk_ids}
+    )
+    for goal in goals:
+        subjects = _safe_structural_subjects(goal.subject_terms)
+        if not _goal_is_structurally_discoverable(
+            goal,
+            missing_goal_ids,
+        ) or subjects is None:
+            continue
+        tokens = _structural_subject_tokens(subjects)
+        if not tokens:
+            continue
+        matches = store.path_symbol_search(
+            list(tokens),
+            _STRUCTURAL_DISCOVERY_SCAN_LIMIT,
+            **scope_kwargs,
+        )
+        chunks = store.chunks_for_ids([match.chunk_id for match in matches])
+        ranked_chunks: list[
+            tuple[int, float, str, str, tuple[_Seed, ...]]
+        ] = []
+        for match in matches:
+            chunk = chunks.get(match.chunk_id)
+            if chunk is None:
+                continue
+            path = chunk.file_path.as_posix()
+            if not _relative_path(path):
+                continue
+            path_seed = _safe_seed(chunk.file_path.stem)
+            chunk_seeds: list[_Seed] = []
+            if (
+                path_seed is not None
+                and _path_or_symbol_supports_category(goal.category, path, None)
+            ):
+                seed = _Seed(
+                    path_seed,
+                    "path_stem",
+                    0,
+                    (path,),
+                    supported_categories=(goal.category,),
+                )
+                if _seed_supports_subjects(seed, subjects):
+                    chunk_seeds.append(seed)
+            for symbol in chunk.symbols:
+                symbol_seed = _safe_seed(symbol.name)
+                if symbol_seed is None or not _path_or_symbol_supports_category(
+                    goal.category,
+                    path,
+                    symbol.kind,
+                    symbol_name=symbol.name,
+                ):
+                    continue
+                seed = _Seed(
+                    symbol_seed,
+                    "indexed_symbol",
+                    0,
+                    (path,),
+                    supported_categories=(goal.category,),
+                )
+                if _seed_supports_subjects(seed, subjects):
+                    chunk_seeds.append(seed)
+                    break
+            if chunk_seeds:
+                ranked_chunks.append(
+                    (
+                        -_category_match_score(goal.category, path, chunk_seeds),
+                        -match.score,
+                        path.casefold(),
+                        match.chunk_id,
+                        tuple(chunk_seeds),
+                    )
+                )
+        for source_rank, ranked_chunk in enumerate(
+            sorted(ranked_chunks)[:_STRUCTURAL_DISCOVERY_LIMIT],
+            start=1,
+        ):
+            chunk_seeds = ranked_chunk[-1]
+            for seed in chunk_seeds:
+                _append_discovered_seed(
+                    seeds,
+                    seen,
+                    replace(seed, source_rank=source_rank),
+                    subjects,
+                )
+    return tuple(seeds)
+
+
+def _goal_is_structurally_discoverable(
+    goal: ExplorationGoal,
+    missing_goal_ids: frozenset[str],
+) -> bool:
+    if goal.kind == "need":
+        return goal.id in missing_goal_ids
+    return (
+        goal.kind == "role_gap"
+        and goal.required
+        and bool(set(goal.accepted_roles).intersection(_VIEW_ROLES))
+    )
+
+
+def _structural_subject_tokens(subjects: tuple[str, ...]) -> tuple[str, ...]:
+    tokens: list[str] = []
+    for subject in subjects:
+        key = _structural_key(subject)
+        aliases = _STRUCTURAL_SUBJECT_ALIASES.get(key, (subject,))
+        for alias in aliases:
+            for token in tokenize_query(alias):
+                normalized = token.casefold()
+                if normalized and normalized not in tokens:
+                    tokens.append(normalized)
+    return tuple(tokens)
+
+
+def _path_or_symbol_supports_category(
+    category: str,
+    path: str,
+    symbol_kind: str | None,
+    *,
+    symbol_name: str = "",
+) -> bool:
+    pure_path = PurePosixPath(path)
+    structural_tokens = set(tokenize_query(" ".join((path, symbol_name))))
+    if category != "tests" and structural_tokens.intersection(
+        _CATEGORY_MARKERS["tests"]
+    ):
+        return False
+    if category == "configs_docs":
+        return (
+            pure_path.suffix.casefold() in _CONFIG_SUFFIXES
+            or bool(structural_tokens.intersection(_CATEGORY_MARKERS[category]))
+        )
+    if category == "entrypoints":
+        return (
+            pure_path.suffix.casefold() in _VIEW_SUFFIXES
+            or bool(structural_tokens.intersection(_CATEGORY_MARKERS[category]))
+        )
+    if category == "related_types":
+        return (
+            path.casefold().endswith(".d.ts")
+            or symbol_kind is not None
+            and symbol_kind.casefold()
+            in {"class", "data_type", "enum", "interface", "record", "struct", "type"}
+        ) or bool(
+            structural_tokens.intersection(_CATEGORY_MARKERS[category])
+        )
+    markers = _CATEGORY_MARKERS.get(category)
+    return bool(markers) and bool(structural_tokens.intersection(markers))
+
+
+def _category_match_score(
+    category: str,
+    path: str,
+    seeds: list[_Seed],
+) -> int:
+    markers = _CATEGORY_MARKERS.get(category, ())
+    tokens = set(
+        tokenize_query(" ".join((path, *(seed.text for seed in seeds))))
+    )
+    return len(tokens.intersection(markers))
+
+
+def _append_discovered_seed(
+    seeds: list[_Seed],
+    seen: set[tuple[str, str, str, str]],
+    seed: _Seed,
+    subjects: tuple[str, ...],
+) -> bool:
+    if not _seed_supports_subjects(seed, subjects):
+        return False
+    key = (
+        seed.text.casefold(),
+        seed.source,
+        seed.seed_paths[0],
+        seed.supported_categories[0],
+    )
+    if key in seen:
+        return False
+    seen.add(key)
+    seeds.append(seed)
+    return True
+
+
+def _structured_missing_need_candidate(
+    goal: ExplorationGoal,
+    goal_order: int,
+    seed: _Seed,
+) -> ProbeCandidate | None:
+    subjects = _safe_structural_subjects(goal.subject_terms)
+    suffix = _STRUCTURED_NEED_SUFFIXES.get(goal.category)
+    if (
+        goal.kind != "need"
+        or subjects is None
+        or suffix is None
+        or seed.source == "next_query"
+        or not _seed_supports_goal(seed, goal)
+        or not _grounded_seed_supports_need(seed, goal)
+        or not _seed_supports_subjects(seed, subjects)
+    ):
+        return None
+
+    seed_text = _safe_seed(seed.text)
+    if seed_text is None:
+        return None
+    seed_key = _structural_key(seed_text)
+    subject_prefix = tuple(
+        subject
+        for subject in subjects
+        if _structural_key(subject) not in seed_key
+    )
+    query = normalize_probe_text(
+        " ".join(
+            (
+                *subject_prefix,
+                seed_text,
                 suffix,
             )
         )
-    return order_probe_candidates(tuple(raw), frozen)
+    )
+    if query is None:
+        return None
+    return ProbeCandidate(
+        query=query,
+        source=seed.source,
+        purpose=goal.category,
+        goal_ids=(goal.id,),
+        seed_paths=tuple(
+            path for path in seed.seed_paths if _relative_path(path)
+        )[:MAX_PROBE_SEED_PATHS],
+        required=goal.required,
+        goal_order=goal_order,
+        source_rank=seed.source_rank,
+    )
+
+
+def _grounded_required_goal_composites(
+    candidates: tuple[ProbeCandidate, ...],
+    frozen: FrozenGoals,
+) -> tuple[ProbeCandidate, ...]:
+    required_ids = {
+        goal.id
+        for goal in frozen.goals
+        if goal.required and not goal.initially_satisfied
+    }
+    if len(required_ids) < 2:
+        return ()
+    grounded = tuple(
+        candidate
+        for candidate in order_probe_candidates(candidates, frozen)
+        if candidate.source != "next_query"
+        and candidate.seed_paths
+        and required_ids.intersection(candidate.goal_ids)
+    )
+    composites: list[ProbeCandidate] = []
+    for left_index, left in enumerate(grounded):
+        for right in grounded[left_index + 1 :]:
+            if (
+                {left.purpose, right.purpose}
+                != {"entrypoints", "implementations"}
+                or not set(left.seed_paths).intersection(right.seed_paths)
+            ):
+                continue
+            merged_goal_ids = set((*left.goal_ids, *right.goal_ids))
+            goal_ids = tuple(
+                goal.id
+                for goal in frozen.goals
+                if goal.id in merged_goal_ids
+            )
+            if len(required_ids.intersection(goal_ids)) < 2:
+                continue
+            query = normalize_probe_text(" ".join((left.query, right.query)))
+            if query is None:
+                continue
+            primary = min((left, right), key=_candidate_priority)
+            composites.append(
+                ProbeCandidate(
+                    query=query,
+                    source=primary.source,
+                    purpose=primary.purpose,
+                    goal_ids=goal_ids,
+                    seed_paths=_ordered_union(
+                        left.seed_paths,
+                        right.seed_paths,
+                        limit=MAX_PROBE_SEED_PATHS,
+                    ),
+                    required=True,
+                    goal_order=min(left.goal_order, right.goal_order),
+                    source_rank=min(left.source_rank, right.source_rank),
+                )
+            )
+    return tuple(composites)
+
+
+def _safe_structural_subjects(
+    subject_terms: tuple[str, ...],
+) -> tuple[str, ...] | None:
+    if not subject_terms:
+        return None
+    subjects: list[str] = []
+    for value in subject_terms:
+        subject = _safe_seed(value)
+        if subject is None or not subject.isascii():
+            return None
+        if not _structural_key(subject):
+            return None
+        subjects.append(subject)
+    return tuple(subjects) if subjects else None
+
+
+def _seed_is_subject_compatible(seed: _Seed, goal: ExplorationGoal) -> bool:
+    if goal.kind != "need" and not set(goal.accepted_roles).intersection(
+        _VIEW_ROLES
+    ):
+        return True
+    subjects = _safe_structural_subjects(goal.subject_terms)
+    return subjects is not None and _seed_supports_subjects(seed, subjects)
+
+
+def _grounded_seed_supports_need(seed: _Seed, goal: ExplorationGoal) -> bool:
+    if seed.supported_categories:
+        return goal.category in seed.supported_categories
+    if seed.graph_test:
+        return goal.category == "tests"
+    if seed.source in {"relation_target", "static_import"}:
+        if goal.category in {"implementations", "supporting"}:
+            return True
+        return any(
+            _path_or_symbol_supports_category(
+                goal.category,
+                path,
+                None,
+                symbol_name=seed.text,
+            )
+            for path in seed.seed_paths
+        )
+    if seed.source == "endpoint_or_route":
+        return goal.category == "entrypoints"
+    return any(
+        _path_or_symbol_supports_category(
+            goal.category,
+            path,
+            None,
+            symbol_name=seed.text,
+        )
+        for path in seed.seed_paths
+    )
+
+
+def _seed_supports_subjects(seed: _Seed, subjects: tuple[str, ...]) -> bool:
+    fields = tuple(
+        segments
+        for value in (
+            seed.text,
+            *(PurePosixPath(path).stem for path in seed.seed_paths),
+        )
+        if (segments := _identifier_segments(value))
+    )
+    return bool(fields) and all(
+        any(
+            _structural_key(alias) in field
+            for alias in _STRUCTURAL_SUBJECT_ALIASES.get(subject_key, (subject_key,))
+            for field in fields
+        )
+        for subject in subjects
+        if (subject_key := _structural_key(subject))
+    )
+
+
+def _identifier_segments(value: str) -> frozenset[str]:
+    tokens = tokenize_query(value)
+    return frozenset(
+        "".join(tokens[start:end])
+        for start in range(len(tokens))
+        for end in range(start + 1, len(tokens) + 1)
+    )
+
+
+def _seeds_within_scope(
+    seeds: Iterable[_Seed],
+    scope: RetrievalScopeSnapshot,
+) -> tuple[_Seed, ...]:
+    retained = tuple(seeds)
+    if not scope.is_active:
+        return retained
+    allowed_paths = {
+        file_path.as_posix()
+        for _, file_path, _ in scope.allowed_rows
+    }
+    return tuple(
+        seed
+        for seed in retained
+        if seed.seed_paths
+        and all(path in allowed_paths for path in seed.seed_paths)
+        and (
+            seed.source not in {"relation_target", "static_import"}
+            or len(set(seed.seed_paths)) >= 2
+        )
+    )
+
+
+def _structural_key(value: str) -> str:
+    return _STRUCTURAL_TERM_RE.sub("", value.casefold())
+
+
+def _exact_target_query(query: str) -> bool:
+    intent = infer_identifier_intent(query, tokenize_query(query))
+    if intent.exact_identifier is not None:
+        return True
+    trimmed = query.strip()
+    if not intent.file_hints or any(character.isspace() for character in trimmed):
+        return False
+    normalized = trimmed.replace("\\", "/").casefold()
+    return any(
+        normalized == hint or normalized.endswith(f"/{hint}")
+        for hint in intent.file_hints
+    )
 
 
 def normalize_probe_text(value: str) -> str | None:
@@ -491,14 +1057,39 @@ def _single_required_view_composites(
         for index, goal in enumerate(frozen.goals)
         if goal.id == required_goal.id
     )
+    retained_seeds = tuple(seeds)
+    view_path_seeds = tuple(
+        seed
+        for seed in retained_seeds
+        if seed.source == "path_stem"
+        and "entrypoints" in seed.supported_categories
+        and any(
+            PurePosixPath(path).suffix.casefold() in _VIEW_SUFFIXES
+            for path in seed.seed_paths
+        )
+    )
     candidates: list[ProbeCandidate] = []
-    for seed in seeds:
-        if seed.source != "indexed_symbol" or seed.complete_query:
+    for seed in view_path_seeds or retained_seeds:
+        if (
+            seed.source not in {"indexed_symbol", "path_stem"}
+            or seed.complete_query
+            or seed.source == "path_stem"
+            and "entrypoints" not in seed.supported_categories
+        ):
             continue
-        if not _seed_supports_goal(seed, required_goal):
+        if (
+            not _seed_supports_goal(seed, required_goal)
+            or not _seed_is_subject_compatible(seed, required_goal)
+        ):
             continue
         supported = tuple(
-            goal for goal in recommended if _seed_supports_goal(seed, goal)
+            goal
+            for goal in recommended
+            if _seed_supports_goal(seed, goal)
+            or (
+                goal.category == "tests"
+                and _seed_is_subject_compatible(seed, goal)
+            )
         )
         if not supported:
             continue
@@ -1082,6 +1673,11 @@ def _candidate_from_seed(
 
 
 def _seed_supports_goal(seed: _Seed, goal: ExplorationGoal) -> bool:
+    if (
+        seed.supported_categories
+        and goal.category not in seed.supported_categories
+    ):
+        return False
     if seed.graph_test:
         return goal.category == "tests" or "test" in goal.accepted_roles
     if seed.source == "relation_target":

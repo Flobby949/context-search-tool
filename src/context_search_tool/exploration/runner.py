@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import copy
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Iterator
 
 import requests
 
@@ -59,9 +61,29 @@ if TYPE_CHECKING:
 
 
 _Clock = Callable[[], int]
+_BundleObserver = Callable[[QueryBundle], None]
+_BUNDLE_OBSERVER: ContextVar[_BundleObserver | None] = ContextVar(
+    "cst_exploration_bundle_observer",
+    default=None,
+)
 
 # Kept as an injected seam for runner tests; public exploration is v5-only.
 plan_probes = _plan_probes_v5
+
+
+@contextmanager
+def _observe_retrieved_bundles(observer: _BundleObserver) -> Iterator[None]:
+    token = _BUNDLE_OBSERVER.set(observer)
+    try:
+        yield
+    finally:
+        _BUNDLE_OBSERVER.reset(token)
+
+
+def _notify_bundle_observer(bundle: QueryBundle) -> None:
+    observer = _BUNDLE_OBSERVER.get()
+    if observer is not None:
+        observer(bundle)
 
 
 def _scope_kwargs(scope: RetrievalScope | None) -> dict[str, RetrievalScope]:
@@ -105,6 +127,7 @@ def explore_repository(
         clock_ns=clock,
         **_scope_kwargs(scope),
     )
+    _notify_bundle_observer(initial_traced.bundle)
     try:
         return _explore_after_initial(
             repo=repo,
@@ -230,6 +253,7 @@ def _explore_after_initial(
         initial_trace,
         initial_pack,
         frozen,
+        scope=scope,
     )
     if not planned:
         return _finish(
@@ -304,9 +328,8 @@ def _explore_after_initial(
             termination_reason = "followup_query_failed"
             break
 
-        returned_paths = _bundle_paths(traced.bundle)
-        duplicate_count = len(returned_paths.intersection(before_paths))
-        novel_count = len(returned_paths.difference(before_paths))
+        _notify_bundle_observer(traced.bundle)
+
         failed_normally = traced.trace.outcome == "partial" or (
             traced.trace.outcome == "empty"
             and traced.trace.termination_reason == "missing_index"
@@ -353,16 +376,7 @@ def _explore_after_initial(
         if _satisfied(frozen, state, final_pack):
             termination_reason = "satisfied"
             break
-        duplicate_ratio = (
-            None
-            if not returned_paths
-            else duplicate_count / len(returned_paths)
-        )
-        if not newly_satisfied and (
-            novel_count == 0
-            or duplicate_ratio is not None
-            and duplicate_ratio >= 0.80
-        ):
+        if not newly_satisfied:
             termination_reason = "no_marginal_gain"
             break
 

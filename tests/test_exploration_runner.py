@@ -574,6 +574,91 @@ def test_successful_probe_satisfies_goal_disables_planner_and_preserves_snapshot
     assert result.initial_pack.groups is not result.final_pack.groups
 
 
+def test_followup_fuses_only_paths_that_increase_frozen_goal_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from context_search_tool.exploration import runner
+
+    goal = _goal("goal-implementation", "implementations")
+    initial_bundle = _bundle(
+        _result("src/OwnerController.java", "class OwnerController")
+    )
+    follow_bundle = _bundle(
+        _result(
+            "src/CacheConfiguration.java",
+            "class CacheConfiguration owner cache",
+        ),
+        _result(
+            "src/OwnerRepository.java",
+            "interface OwnerRepository owner repository",
+        ),
+    )
+    _install_calls(
+        monkeypatch,
+        (_traced(initial_bundle), _traced(follow_bundle)),
+    )
+    monkeypatch.setattr(runner, "freeze_goals", lambda *args: _frozen(goal))
+    monkeypatch.setattr(runner, "exact_satisfied", lambda *args: False)
+    monkeypatch.setattr(
+        runner,
+        "plan_probes",
+        lambda *args, **kwargs: (
+            _candidate("OwnerRepository repository service implementation", goal),
+        ),
+    )
+
+    result = _run(tmp_path, _config())
+
+    final_paths = {item.file_path for item in result.final_pack.items}
+    assert "src/OwnerRepository.java" in final_paths
+    assert "src/CacheConfiguration.java" not in final_paths
+    assert result.trace.termination_reason == "satisfied"
+    assert result.trace.rounds[1].probes[0].newly_satisfied_goal_ids == (
+        goal.id,
+    )
+
+
+def test_followup_with_only_unrelated_novel_paths_keeps_initial_pack(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from context_search_tool.exploration import runner
+
+    goal = _goal("goal-implementation", "implementations")
+    initial_bundle = _bundle(
+        _result("src/OwnerController.java", "class OwnerController")
+    )
+    follow_bundle = _bundle(
+        _result(
+            "src/CacheConfiguration.java",
+            "class CacheConfiguration owner cache",
+        )
+    )
+    _install_calls(
+        monkeypatch,
+        (_traced(initial_bundle), _traced(follow_bundle)),
+    )
+    monkeypatch.setattr(runner, "freeze_goals", lambda *args: _frozen(goal))
+    monkeypatch.setattr(runner, "exact_satisfied", lambda *args: False)
+    monkeypatch.setattr(
+        runner,
+        "plan_probes",
+        lambda *args, **kwargs: (
+            _candidate("OwnerRepository repository service implementation", goal),
+        ),
+    )
+
+    result = _run(tmp_path, _config())
+
+    assert [item.file_path for item in result.final_pack.items] == [
+        item.file_path for item in result.initial_pack.items
+    ]
+    assert result.trace.termination_reason == "no_marginal_gain"
+    assert result.trace.rounds[1].probes[0].novel_path_count == 1
+    assert result.trace.rounds[1].probes[0].newly_satisfied_goal_ids == ()
+
+
 def test_scope_is_preserved_for_initial_and_followup_retrieval(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

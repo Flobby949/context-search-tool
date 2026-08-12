@@ -7,11 +7,13 @@ import pytest
 
 from context_search_tool import exploration
 from context_search_tool.context_pack import (
+    CONTEXT_GROUPS,
     ContextBudget,
     ContextExcerpt,
     ContextItem,
     ContextPack,
     EvidenceNeed,
+    MissingEvidence,
     NextQuery,
     ReadinessConfidence,
 )
@@ -34,6 +36,7 @@ from context_search_tool.models import (
     SymbolRef,
 )
 from context_search_tool.retrieval import QueryBundle
+from context_search_tool.retrieval_scope import RetrievalScope, RetrievalScopeSnapshot
 from context_search_tool.retrieval_trace import (
     SOURCE_COUNT_KEYS,
     RetrievalTrace,
@@ -157,6 +160,24 @@ def _goal(
 
 def _frozen(*goals: ExplorationGoal) -> FrozenGoals:
     return FrozenGoals(0, len(goals), tuple(goals), 0)
+
+
+def _need_goal(
+    category: str,
+    subject_terms: tuple[str, ...],
+    *,
+    ordinal: int = 0,
+) -> ExplorationGoal:
+    return ExplorationGoal(
+        id=f"goal-need-{category}-{ordinal}",
+        kind="need",
+        category=category,
+        accepted_roles=(),
+        subject_terms=subject_terms,
+        required=True,
+        provenance="context_need",
+        initially_satisfied=False,
+    )
 
 
 def _selection(
@@ -566,6 +587,113 @@ def test_private_v5_probe_seeds_use_one_resolved_hop_and_reverse_tests(
     }
 
 
+def test_private_v5_scope_filters_excluded_graph_seed_names_and_paths(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    store = SQLiteStore(repo / ".context-search/index.sqlite")
+    store.initialize_v5()
+
+    def chunk(chunk_id: str, path: str) -> DocumentChunk:
+        return DocumentChunk(
+            chunk_id,
+            Path(path),
+            1,
+            1,
+            f"class {Path(path).stem}",
+            "symbol",
+            embedding_id=chunk_id,
+        )
+
+    def module(chunk_value: DocumentChunk) -> CodeSignal:
+        return CodeSignal(
+            f"signal-{chunk_value.chunk_id}",
+            chunk_value.chunk_id,
+            chunk_value.file_path,
+            "module",
+            chunk_value.file_path.stem,
+            1,
+            1,
+            "java",
+            qualified_name=chunk_value.file_path.as_posix(),
+            producer="core_module",
+        )
+
+    origin = chunk("origin", "src/allowed/Owner.java")
+    allowed = chunk("allowed", "src/allowed/AllowedService.java")
+    blocked = chunk("blocked", "src/excluded/BlockedService.java")
+    origin_signal = module(origin)
+    allowed_signal = module(allowed)
+    blocked_signal = module(blocked)
+
+    def relation(target: CodeSignal) -> CodeRelation:
+        return CodeRelation(
+            f"relation-{target.signal_id}",
+            origin_signal.signal_id,
+            target.name,
+            "imports",
+            0.9,
+            target_kind=target.kind,
+            target_qualified_name=target.qualified_name,
+            target_signal_id=target.signal_id,
+            resolution="resolved_exact",
+            producer="test_graph",
+            producer_confidence=0.9,
+            resolution_confidence=1.0,
+        )
+
+    store.replace_chunks(origin.file_path, [origin])
+    store.replace_graph_facts(
+        origin.file_path,
+        [origin_signal],
+        [relation(allowed_signal), relation(blocked_signal)],
+    )
+    for target, signal_value in (
+        (allowed, allowed_signal),
+        (blocked, blocked_signal),
+    ):
+        store.replace_chunks(target.file_path, [target])
+        store.replace_graph_facts(target.file_path, [signal_value], [])
+    for value in (origin, allowed, blocked):
+        store.upsert_source_file(
+            _source_file(
+                value.file_path.as_posix(),
+                language="java",
+                metadata={},
+            )
+        )
+    store.mark_graph_ready(topology_fingerprint="a" * 64)
+    bundle = QueryBundle("owner service flow", ["owner", "service"], [_result(origin.file_path.as_posix())], [])
+    pack = _pack((_item(origin.file_path.as_posix()),))
+    frozen = _frozen(
+        _goal(
+            "goal-implementation",
+            category="implementations",
+            roles=("service", "service_impl"),
+        )
+    )
+
+    planned = probes._plan_probes_v5(
+        repo,
+        bundle,
+        _trace(_selection(1, origin.file_path.as_posix(), origin.chunk_id)),
+        pack,
+        frozen,
+        store=store,
+        scope=RetrievalScope(include_paths=("src/allowed/**",)),
+    )
+
+    serialized = "\n".join(candidate.query for candidate in planned)
+    assert "AllowedService" in serialized
+    assert "BlockedService" not in serialized
+    assert all(
+        path.startswith("src/allowed/")
+        for candidate in planned
+        for path in candidate.seed_paths
+    )
+
+
 def test_private_v5_stale_probe_fallback_stays_in_one_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -672,6 +800,497 @@ def test_relation_symbol_route_import_path_and_next_query_priority_is_fixed(
         "path_stem",
         "next_query",
     ]
+
+
+@pytest.mark.parametrize(
+    ("category", "seed", "expected"),
+    [
+        (
+            "implementations",
+            probes._Seed(
+                "OwnerRepository",
+                "relation_target",
+                1,
+                ("src/OwnerController.java", "src/OwnerRepository.java"),
+            ),
+            "OwnerRepository repository service implementation",
+        ),
+        (
+            "related_types",
+            probes._Seed(
+                "Owner",
+                "static_import",
+                1,
+                ("src/OwnerController.java", "src/Owner.java"),
+                supported_categories=("related_types",),
+            ),
+            "Owner entity model DTO type",
+        ),
+        (
+            "tests",
+            probes._Seed(
+                "OwnerControllerTests",
+                "relation_target",
+                1,
+                ("src/OwnerController.java", "tests/OwnerControllerTests.java"),
+                graph_test=True,
+            ),
+            "OwnerControllerTests integration test",
+        ),
+        (
+            "configs_docs",
+            probes._Seed(
+                "application-mysql",
+                "path_stem",
+                1,
+                ("src/main/resources/application-mysql.properties",),
+            ),
+            "application-mysql profile config properties yaml",
+        ),
+    ],
+)
+def test_missing_need_probe_combines_subject_with_typed_grounded_structure(
+    category: str,
+    seed: probes._Seed,
+    expected: str,
+) -> None:
+    subject = "mysql" if category == "configs_docs" else "owner"
+
+    candidate = probes._structured_missing_need_candidate(
+        _need_goal(category, (subject,)),
+        0,
+        seed,
+    )
+
+    assert candidate is not None
+    assert candidate.query == expected
+    assert candidate.source == seed.source
+    assert candidate.seed_paths == seed.seed_paths
+
+
+def test_missing_need_discovery_is_bounded_path_symbol_backed_across_categories(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    chunks = (
+        DocumentChunk(
+            "owner-repository",
+            Path("src/OwnerRepository.java"),
+            1,
+            1,
+            "interface OwnerRepository",
+            "symbol",
+            symbols=[SymbolRef("OwnerRepository", "interface", 1, 1, "java")],
+            lexical_tokens=["owner", "repository"],
+        ),
+        DocumentChunk(
+            "owner-tests",
+            Path("src/test/OwnerControllerTests.java"),
+            1,
+            1,
+            "class OwnerControllerTests",
+            "symbol",
+            symbols=[SymbolRef("OwnerControllerTests", "class", 1, 1, "java")],
+            lexical_tokens=["owner", "test"],
+        ),
+        DocumentChunk(
+            "owner-type",
+            Path("src/Owner.java"),
+            1,
+            1,
+            "class Owner",
+            "symbol",
+            symbols=[SymbolRef("Owner", "class", 1, 1, "java")],
+            lexical_tokens=["owner"],
+        ),
+        DocumentChunk(
+            "mysql-config",
+            Path("src/main/resources/application-mysql.properties"),
+            1,
+            1,
+            "spring.datasource.url=jdbc:mysql",
+            "config",
+            lexical_tokens=["mysql", "datasource"],
+        ),
+    )
+    for chunk in chunks:
+        store.replace_chunks(chunk.file_path, [chunk])
+    goals = (
+        _need_goal("implementations", ("owner",), ordinal=0),
+        _need_goal("tests", ("owner",), ordinal=1),
+        _need_goal("related_types", ("owner",), ordinal=2),
+        _need_goal("configs_docs", ("mysql",), ordinal=3),
+    )
+
+    seeds = probes._discover_structured_need_seeds(
+        store,
+        goals,
+        frozenset(goal.id for goal in goals),
+        RetrievalScopeSnapshot(scope=RetrievalScope()),
+    )
+
+    assert {seed.seed_paths[0] for seed in seeds} >= {
+        "src/OwnerRepository.java",
+        "src/test/OwnerControllerTests.java",
+        "src/Owner.java",
+        "src/main/resources/application-mysql.properties",
+    }
+    assert all(seed.source in {"indexed_symbol", "path_stem"} for seed in seeds)
+    assert len(seeds) <= len(goals) * probes._STRUCTURAL_DISCOVERY_LIMIT * 2
+
+
+def test_structural_discovery_filters_by_subject_before_bounded_category_scan(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    for index in range(probes._STRUCTURAL_DISCOVERY_SCAN_LIMIT + 1):
+        chunk = DocumentChunk(
+            f"noise-{index:02d}",
+            Path(f"src/noise/ServiceImplementation{index}.java"),
+            1,
+            1,
+            f"class ServiceImplementation{index}",
+            "symbol",
+            symbols=[
+                SymbolRef(
+                    f"ServiceImplementation{index}",
+                    "class",
+                    1,
+                    1,
+                    "java",
+                )
+            ],
+            lexical_tokens=["service", "implementation"],
+        )
+        store.replace_chunks(chunk.file_path, [chunk])
+    owner = DocumentChunk(
+        "zz-owner-repository",
+        Path("src/owner/OwnerRepository.java"),
+        1,
+        1,
+        "interface OwnerRepository",
+        "symbol",
+        symbols=[SymbolRef("OwnerRepository", "interface", 1, 1, "java")],
+        lexical_tokens=["owner", "repository"],
+    )
+    store.replace_chunks(owner.file_path, [owner])
+    goal = _need_goal("implementations", ("owner",))
+
+    seeds = probes._discover_structured_need_seeds(
+        store,
+        (goal,),
+        frozenset((goal.id,)),
+        RetrievalScopeSnapshot(scope=RetrievalScope()),
+    )
+
+    assert {seed.seed_paths[0] for seed in seeds} == {
+        "src/owner/OwnerRepository.java"
+    }
+
+
+def test_structural_discovery_uses_category_only_to_rank_subject_matches(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    for chunk_id, path in (
+        ("owner-details", "templates/owners/ownerDetails.html"),
+        ("owner-form", "templates/owners/createOrUpdateOwnerForm.html"),
+    ):
+        chunk = DocumentChunk(
+            chunk_id,
+            Path(path),
+            1,
+            1,
+            "<form></form>",
+            "document",
+            lexical_tokens=["owner", "form"],
+        )
+        store.replace_chunks(chunk.file_path, [chunk])
+    goal = _goal(
+        "goal-owner-view",
+        category="entrypoints",
+        roles=("view",),
+    )
+
+    seeds = probes._discover_structured_need_seeds(
+        store,
+        (goal,),
+        frozenset(),
+        RetrievalScopeSnapshot(scope=RetrievalScope()),
+    )
+
+    assert [seed.text for seed in seeds] == [
+        "createOrUpdateOwnerForm",
+        "ownerDetails",
+    ]
+
+
+def test_structural_discovery_rejects_test_files_for_implementation_need(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "index.sqlite")
+    store.initialize()
+    test_chunk = DocumentChunk(
+        "owner-service-tests",
+        Path("src/test/OwnerServiceTests.java"),
+        1,
+        1,
+        "class OwnerServiceTests",
+        "symbol",
+        symbols=[SymbolRef("OwnerServiceTests", "class", 1, 1, "java")],
+        lexical_tokens=["owner", "service", "tests"],
+    )
+    store.replace_chunks(test_chunk.file_path, [test_chunk])
+    goal = _need_goal("implementations", ("owner",))
+
+    seeds = probes._discover_structured_need_seeds(
+        store,
+        (goal,),
+        frozenset((goal.id,)),
+        RetrievalScopeSnapshot(scope=RetrievalScope()),
+    )
+
+    assert seeds == ()
+
+
+@pytest.mark.parametrize(
+    ("category", "path", "symbol_name"),
+    [
+        ("tests", "src/Contest.java", "Contest"),
+        ("implementations", "src/Serviceability.java", "Serviceability"),
+        ("supporting", "src/Componentized.java", "Componentized"),
+    ],
+)
+def test_structural_category_markers_require_identifier_boundaries(
+    category: str,
+    path: str,
+    symbol_name: str,
+) -> None:
+    assert not probes._path_or_symbol_supports_category(
+        category,
+        path,
+        None,
+        symbol_name=symbol_name,
+    )
+
+
+def test_typescript_declaration_path_is_grounded_related_type() -> None:
+    assert probes._path_or_symbol_supports_category(
+        "related_types",
+        "src/types/qrcode-reader.d.ts",
+        None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("subjects", "seed"),
+    [
+        ((), probes._Seed("Owner", "path_stem", 1, ("src/Owner.java",))),
+        (("所有者",), probes._Seed("Owner", "path_stem", 1, ("src/Owner.java",))),
+        (("owner",), probes._Seed("Visit", "path_stem", 1, ("src/Visit.java",))),
+        (("owner",), probes._Seed("owner test", "next_query", 1, ())),
+    ],
+    ids=(
+        "no-subject",
+        "non-ascii-subject",
+        "unrelated-grounding",
+        "user-facing-next-query",
+    ),
+)
+def test_missing_need_probe_fails_closed_without_safe_subject_grounding(
+    subjects: tuple[str, ...],
+    seed: probes._Seed,
+) -> None:
+    assert probes._structured_missing_need_candidate(
+        _need_goal("implementations", subjects),
+        0,
+        seed,
+    ) is None
+
+
+@pytest.mark.parametrize("noise", ("HomeownerRepository", "OwnershipRepository"))
+def test_subject_grounding_requires_identifier_token_boundaries(noise: str) -> None:
+    goal = _need_goal("implementations", ("owner",))
+    assert probes._structured_missing_need_candidate(
+        goal,
+        0,
+        probes._Seed(
+            noise,
+            "path_stem",
+            1,
+            (f"src/{noise}.java",),
+        ),
+    ) is None
+    assert probes._structured_missing_need_candidate(
+        goal,
+        0,
+        probes._Seed(
+            "OwnerRepository",
+            "path_stem",
+            1,
+            ("src/OwnerRepository.java",),
+        ),
+    ) is not None
+
+
+def test_subject_grounding_preserves_explicit_postgres_aliases() -> None:
+    for seed_text in ("PostgresConfiguration", "PostgreSQLConfiguration"):
+        assert probes._seed_supports_subjects(
+            probes._Seed(
+                seed_text,
+                "path_stem",
+                1,
+                (f"config/{seed_text}.yaml",),
+            ),
+            ("postgresql",),
+        )
+
+
+def test_structured_need_suffixes_cover_context_group_closed_set() -> None:
+    assert set(probes._STRUCTURED_NEED_SUFFIXES) == set(CONTEXT_GROUPS)
+    supporting = probes._structured_missing_need_candidate(
+        _need_goal("supporting", ("owner",)),
+        0,
+        probes._Seed(
+            "OwnerStore",
+            "relation_target",
+            1,
+            ("src/OwnerStore.java",),
+        ),
+    )
+
+    assert supporting is not None
+    assert supporting.query == "OwnerStore service component store utility type"
+    assert probes._structured_missing_need_candidate(
+        _need_goal("unknown", ("owner",)),
+        0,
+        probes._Seed(
+            "OwnerUnknown",
+            "path_stem",
+            1,
+            ("src/OwnerUnknown.java",),
+            supported_categories=("unknown",),
+        ),
+    ) is None
+
+
+def test_overlapping_grounded_paths_combine_required_cross_category_gaps() -> None:
+    implementation = _need_goal("implementations", ("QRCode",), ordinal=0)
+    route = _goal(
+        "goal-route",
+        category="entrypoints",
+        roles=("router", "route_config"),
+    )
+    frozen = _frozen(implementation, route)
+    implementation_probe = ProbeCandidate(
+        "qrcodeUtils repository service implementation",
+        "static_import",
+        "implementations",
+        (implementation.id,),
+        ("src/views/QRCodeTool.vue", "src/utils/qrcodeUtils.ts"),
+        True,
+        0,
+        1,
+    )
+    route_probe = ProbeCandidate(
+        "QRCodeTool route controller endpoint",
+        "path_stem",
+        "entrypoints",
+        (route.id,),
+        ("src/views/QRCodeTool.vue",),
+        True,
+        1,
+        1,
+    )
+
+    composites = probes._grounded_required_goal_composites(
+        (implementation_probe, route_probe),
+        frozen,
+    )
+
+    assert len(composites) == 1
+    assert composites[0].query == (
+        "qrcodeUtils repository service implementation "
+        "QRCodeTool route controller endpoint"
+    )
+    assert composites[0].goal_ids == (implementation.id, route.id)
+    assert composites[0].seed_paths == (
+        "src/views/QRCodeTool.vue",
+        "src/utils/qrcodeUtils.ts",
+    )
+
+
+def test_need_planning_requires_consistent_missing_ledger_and_rejects_exact_query(
+    tmp_path: Path,
+) -> None:
+    repo, store, bundle, pack, _, trace = _java_setup(tmp_path)
+    need = EvidenceNeed(
+        "need-owner-implementation",
+        "implementations",
+        ("owner",),
+        True,
+        "explicit_query",
+        (),
+    )
+    goal = _need_goal("implementations", ("owner",))
+    pack_with_need = replace(
+        pack,
+        evidence_needs=(need,),
+        missing_evidence=(
+            MissingEvidence(
+                need.id,
+                need.category,
+                need.required,
+                "required owner implementation evidence is missing from the bounded context",
+            ),
+        ),
+    )
+
+    planned = probes.plan_probes(
+        repo,
+        bundle,
+        trace,
+        pack_with_need,
+        _frozen(goal),
+        store=store,
+    )
+
+    assert planned
+    assert planned[0].query == (
+        "OwnerService.save repository service implementation"
+    )
+    assert all(candidate.source != "next_query" for candidate in planned)
+    assert probes.plan_probes(
+        repo,
+        bundle,
+        trace,
+        replace(pack_with_need, missing_evidence=()),
+        _frozen(goal),
+        store=store,
+    ) == ()
+    assert probes.plan_probes(
+        repo,
+        replace(bundle, query="OwnerController"),
+        trace,
+        pack_with_need,
+        _frozen(goal),
+        store=store,
+    ) == ()
+    for exact_file_query in (
+        "OwnerController.java",
+        "src/main/java/com/example/owner/OwnerController.java",
+    ):
+        assert probes.plan_probes(
+            repo,
+            replace(bundle, query=exact_file_query),
+            trace,
+            pack_with_need,
+            _frozen(goal),
+            store=store,
+        ) == ()
 
 
 def test_multi_required_goal_composite_precedes_single_goal_candidates() -> None:
@@ -896,6 +1515,43 @@ def test_single_required_view_goal_uses_grounded_composite_before_narrow_probe(
     assert probes.order_probe_candidates((*composites, narrow), frozen)[0] == (
         composites[0]
     )
+
+
+def test_single_required_view_prefers_subject_compatible_template_path() -> None:
+    form = _goal(
+        "goal-form",
+        category="entrypoints",
+        roles=("view",),
+    )
+    test = _goal(
+        "goal-test",
+        category="tests",
+        roles=("test",),
+        required=False,
+    )
+    frozen = _frozen(form, test)
+    method = probes._Seed(
+        "initCreationForm",
+        "indexed_symbol",
+        1,
+        ("src/OwnerController.java",),
+    )
+    template = probes._Seed(
+        "createOrUpdateOwnerForm",
+        "path_stem",
+        2,
+        ("src/main/resources/templates/owners/createOrUpdateOwnerForm.html",),
+        supported_categories=("entrypoints",),
+    )
+
+    composites = probes._single_required_view_composites(
+        (method, template),
+        frozen,
+    )
+
+    assert [candidate.query for candidate in composites] == [
+        "createOrUpdateOwnerForm form template view test"
+    ]
 
 
 def test_planning_fails_closed_on_omitted_or_missing_origin_provenance(

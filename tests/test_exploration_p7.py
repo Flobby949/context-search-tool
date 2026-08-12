@@ -6,6 +6,7 @@ from context_search_tool.context_pack import build_context_pack
 from context_search_tool.formatters import format_json
 from context_search_tool.indexer import index_repository
 from context_search_tool.retrieval import query_repository, trace_repository
+from context_search_tool.retrieval_scope import RetrievalScope
 
 
 def test_public_surfaces_share_path_diverse_final_results(tmp_path: Path) -> None:
@@ -89,3 +90,58 @@ def test_public_surfaces_share_path_diverse_final_results(tmp_path: Path) -> Non
         options,
     )
     assert [item.file_path for item in explored.initial_bundle.results] == first_paths
+
+
+def test_controlled_followup_keeps_hard_scope_boundary(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    allowed = repo / "allowed"
+    excluded = repo / "excluded"
+    allowed.mkdir(parents=True)
+    excluded.mkdir(parents=True)
+    (allowed / "OwnerController.java").write_text(
+        "class OwnerController { void registerOwner() {} }\n",
+        encoding="utf-8",
+    )
+    (excluded / "OwnerControllerTests.java").write_text(
+        "class OwnerControllerTests { void ownerRegistrationTest() {} }\n",
+        encoding="utf-8",
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=20,
+            final_top_k=1,
+            context_before_lines=0,
+            context_after_lines=0,
+        )
+    )
+    index_repository(repo, config)
+    options = exploration.resolve_explore_pack_options(
+        config,
+        context_lines=None,
+    )
+
+    explored = exploration.explore_repository(
+        repo,
+        "OwnerController test",
+        config,
+        options,
+        scope=RetrievalScope(include_paths=("allowed/",)),
+    )
+
+    assert explored.trace.retrieval_call_count == 2
+    assert explored.trace.termination_reason == "no_marginal_gain"
+    assert {
+        result.file_path.as_posix()
+        for result in explored.fused_bundle.results
+    } == {"allowed/OwnerController.java"}
+    assert all(
+        item.file_path.startswith("allowed/")
+        for item in explored.final_pack.items
+    )
+    assert all(
+        seed_path.startswith("allowed/")
+        for round_record in explored.trace.rounds
+        for probe in round_record.probes
+        for seed_path in probe.seed_paths
+    )

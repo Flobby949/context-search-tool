@@ -93,6 +93,7 @@ def add_probe_evidence(
     prior_satisfied = tuple(state.satisfied_goal_ids)
     current_satisfied = prior_satisfied
     current_pack: ContextPack | None = None
+    require_goal_gain = bool(frozen.goals)
 
     result_entries = _unique_entries(probe_bundle.results, MAX_FUSED_RESULTS)
     result_paths = {entry.file_path.as_posix() for entry, _ in result_entries}
@@ -118,6 +119,10 @@ def add_probe_evidence(
             source_kind,
             frozen,
         )
+        if require_goal_gain and not (
+            set(proposed_goal_ids) - set(current_satisfied)
+        ):
+            continue
         proposed = _propose_bundle(
             current_bundle,
             origins,
@@ -135,6 +140,10 @@ def add_probe_evidence(
         proposed_pack = build_context_pack(proposed_bundle, pack_options)
         proposed_satisfied = satisfied_goal_ids(frozen, proposed_pack)
         if not set(current_satisfied).issubset(proposed_satisfied):
+            continue
+        if require_goal_gain and not (
+            set(proposed_satisfied) - set(current_satisfied)
+        ):
             continue
         current_bundle = proposed_bundle
         origins = proposed_origins
