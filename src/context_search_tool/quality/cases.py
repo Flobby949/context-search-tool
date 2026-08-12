@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 from context_search_tool.config import DEFAULT_CONFIG, EmbeddingConfig, ToolConfig
 from context_search_tool.context_pack import CONTEXT_GROUPS
+from context_search_tool.retrieval_scope import RetrievalScope
 
 
 class Gate(str, Enum):
@@ -44,6 +45,7 @@ _CONTEXT_ONLY_FIELDS = {
     "expected_pack_status",
     "minimum_context_confidence",
     "expected_need_matches",
+    "expected_evidence_need_count",
     "maximum_pack_bytes",
     "maximum_truncated_items",
     "forbidden_next_query_patterns",
@@ -76,6 +78,7 @@ _EXPLORATION_TERMINATION_REASONS = {
 _KNOWN_EXPLORATION_CASE_FIELDS = _CONTEXT_ONLY_FIELDS | _EXPLORATION_ONLY_FIELDS | {
     "id",
     "query",
+    "scope",
     "profiles",
     "tags",
     "mode",
@@ -283,6 +286,8 @@ class QualityCase:
     maximum_retrieval_call_count: int | None = None
     minimum_goal_gain: int | None = None
     maximum_final_noise_items: int | None = None
+    scope: RetrievalScope | None = None
+    expected_evidence_need_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -418,6 +423,22 @@ def validate_profile_compatible(
             raise ValueError("ci profile requires the query planner disabled")
         if _has_remote_embedding_settings(config.embedding):
             raise ValueError("ci profile does not allow remote embedding settings")
+        return
+    if profile == "p0_effects":
+        if (
+            config.embedding.provider != "hash"
+            or config.embedding.model != "hash-v1"
+            or config.embedding.dimensions != 384
+        ):
+            raise ValueError(
+                "p0_effects profile requires hash-v1 embeddings at 384 dimensions"
+            )
+        if config.query_planner.enabled:
+            raise ValueError("p0_effects profile requires the query planner disabled")
+        if _has_remote_embedding_settings(config.embedding):
+            raise ValueError(
+                "p0_effects profile does not allow remote embedding settings"
+            )
         return
     if profile in {"ci", "smoke", "ab_hash"}:
         if config.embedding.provider != "hash":
@@ -797,6 +818,7 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
     raw = _require_dict(raw, "query")
     case_id = _require_non_empty_str(raw.get("id", ""), "id")
     query = _require_non_empty_str(raw.get("query", ""), "query")
+    scope = _parse_retrieval_scope(raw["scope"]) if "scope" in raw else None
     mode = _require_str(raw.get("mode", "results"), "mode")
     if mode not in _QUALITY_MODES:
         raise ValueError("mode must be results, context_pack, or exploration")
@@ -817,6 +839,7 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         expected_pack_status = None
         minimum_context_confidence = None
         expected_need_matches: tuple[ExpectedNeedMatch, ...] = ()
+        expected_evidence_need_count = None
         maximum_pack_bytes = None
         maximum_truncated_items = None
         forbidden_next_query_patterns: tuple[str, ...] = ()
@@ -836,6 +859,14 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         )
         expected_need_matches = _parse_expected_need_matches(
             raw.get("expected_need_matches", ())
+        )
+        expected_evidence_need_count = (
+            _require_non_negative_int(
+                raw["expected_evidence_need_count"],
+                "expected_evidence_need_count",
+            )
+            if "expected_evidence_need_count" in raw
+            else None
         )
         maximum_pack_bytes = (
             _require_positive_int(
@@ -995,6 +1026,7 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
     return QualityCase(
         case_id=case_id,
         query=query,
+        scope=scope,
         profiles=profiles,
         tags=_require_str_tuple(raw.get("tags", ()), "tags"),
         mode=mode,
@@ -1025,6 +1057,7 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         expected_pack_status=expected_pack_status,
         minimum_context_confidence=minimum_context_confidence,
         expected_need_matches=expected_need_matches,
+        expected_evidence_need_count=expected_evidence_need_count,
         maximum_pack_bytes=maximum_pack_bytes,
         maximum_truncated_items=maximum_truncated_items,
         forbidden_next_query_patterns=forbidden_next_query_patterns,
@@ -1039,6 +1072,28 @@ def _parse_case(raw: dict[str, Any]) -> QualityCase:
         minimum_goal_gain=minimum_goal_gain,
         maximum_final_noise_items=maximum_final_noise_items,
     )
+
+
+def _parse_retrieval_scope(raw: Any) -> RetrievalScope:
+    value = _require_dict(raw, "scope")
+    allowed = {"include_paths", "exclude_paths", "languages", "code_only"}
+    unknown = set(value) - allowed
+    if unknown:
+        raise ValueError(f"unknown scope field: {sorted(unknown)[0]}")
+
+    entries: dict[str, tuple[str, ...]] = {}
+    for field_name in ("include_paths", "exclude_paths", "languages"):
+        raw_entries = _require_sequence(
+            value.get(field_name, ()),
+            f"scope.{field_name}",
+        )
+        if any(type(item) is not str for item in raw_entries):
+            raise ValueError(f"scope.{field_name} entries must be strings")
+        entries[field_name] = tuple(raw_entries)
+    code_only = value.get("code_only", False)
+    if type(code_only) is not bool:
+        raise ValueError("scope.code_only must be a bool")
+    return RetrievalScope(**entries, code_only=code_only)
 
 
 def _parse_unique_matchers(raw: Any, field_name: str) -> tuple[Matcher, ...]:

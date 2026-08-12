@@ -21,6 +21,7 @@ from context_search_tool.config import (
     QueryPlannerConfig,
     RetrievalConfig,
     ToolConfig,
+    global_config_path,
 )
 from context_search_tool.context_pack import (
     ContextPack,
@@ -54,6 +55,7 @@ from context_search_tool.quality.runner import (
     run_quality_fixture,
 )
 from context_search_tool.retrieval import QueryBundle, evidence_anchor_top_k
+from context_search_tool.retrieval_scope import RetrievalScope
 from context_search_tool.exploration.models import MAX_RETRIEVAL_CALLS
 from context_search_tool.exploration.options import resolve_explore_pack_options
 from types import SimpleNamespace
@@ -830,6 +832,7 @@ def test_runner_builds_and_evaluates_pack_only_for_context_cases(
     ) == {
         "context_completeness",
         "evidence_need_count",
+        "false_ready_count",
         "required_need_count",
         "matched_required_need_count",
         "evidence_need_completeness",
@@ -1166,6 +1169,176 @@ def test_quality_runner_copies_repo_without_mutating_source(tmp_path: Path) -> N
     assert workspace.exists()
     assert not (workspace / ".git").exists()
     assert not (workspace / ".context-search" / "old.txt").exists()
+
+
+def test_quality_runner_isolates_user_global_config_and_restores_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_source_repo(tmp_path)
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {"ci": {}},
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "snapshot_path": str(source),
+                    "profiles": ["ci"],
+                    "queries": [{"id": "target", "query": "targetToken"}],
+                }
+            ],
+        },
+    )
+    secret = "quality-global-secret"
+    user_global_config = tmp_path / "user-global.toml"
+    user_global_config.write_text(
+        "\n".join(
+            (
+                "[embedding]",
+                'provider = "hash"',
+                'model = "hash-v1"',
+                "dimensions = 384",
+                f'base_url = "https://{secret}.invalid"',
+                f'api_key = "{secret}"',
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CST_GLOBAL_CONFIG_PATH", str(user_global_config))
+
+    report = run_quality_fixture(
+        fixture,
+        "ci",
+        None,
+        None,
+        keep_workspace=True,
+    )
+    workspace = Path(report["repos"][0]["workspace"]["path"])
+
+    try:
+        persisted_config = (
+            workspace / ".context-search" / "config.toml"
+        ).read_text(encoding="utf-8")
+        assert report["aggregate"]["passed"] == 1
+        assert report["repos"][0]["config"]["embedding"]["base_url"] is None
+        assert secret not in json.dumps(report)
+        assert secret not in persisted_config
+        assert os.environ["CST_GLOBAL_CONFIG_PATH"] == str(user_global_config)
+    finally:
+        shutil.rmtree(workspace.parent, ignore_errors=True)
+
+
+def test_quality_runner_restores_absent_global_config_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _write_successful_ci_fixture(tmp_path, monkeypatch)
+    monkeypatch.delenv("CST_GLOBAL_CONFIG_PATH", raising=False)
+
+    run_quality_fixture(fixture, "ci", None, None)
+
+    assert "CST_GLOBAL_CONFIG_PATH" not in os.environ
+
+
+def test_concurrent_quality_runs_isolate_global_config_by_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _write_successful_ci_fixture(tmp_path, monkeypatch)
+    user_global = tmp_path / "user-global.toml"
+    user_global.write_text("[embedding]\nprovider = \"hash\"\n", encoding="utf-8")
+    monkeypatch.setenv("CST_GLOBAL_CONFIG_PATH", str(user_global))
+    barrier = threading.Barrier(2)
+    seen_paths: list[Path] = []
+    errors: list[BaseException] = []
+
+    def synchronized_index(repo: Path, config: ToolConfig) -> IndexSummary:
+        isolated = global_config_path()
+        seen_paths.append(isolated)
+        assert isolated.name == ".quality-global-config.toml"
+        assert isolated.read_text(encoding="utf-8") == ""
+        barrier.wait(timeout=2)
+        return IndexSummary(
+            files_seen=1,
+            files_indexed=1,
+            files_skipped=0,
+            files_deleted=0,
+            chunks_indexed=1,
+        )
+
+    monkeypatch.setattr(quality_runner, "index_repository", synchronized_index)
+
+    def run() -> None:
+        try:
+            report = run_quality_fixture(fixture, "ci", None, None)
+            assert report["aggregate"]["passed"] == 1
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert len(seen_paths) == 2
+    assert seen_paths[0] != seen_paths[1]
+    assert os.environ["CST_GLOBAL_CONFIG_PATH"] == str(user_global)
+    assert global_config_path() == user_global
+
+
+def test_quality_runner_forwards_scope_and_records_zero_escape_metric(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_source_repo(tmp_path)
+    fixture = _write_fixture(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "profile_configs": {"ci": {}},
+            "repos": [
+                {
+                    "repo_key": "sample",
+                    "snapshot_path": str(source),
+                    "profiles": ["ci"],
+                    "queries": [
+                        {
+                            "id": "scoped",
+                            "query": "targetToken",
+                            "scope": {
+                                "include_paths": ["src/**"],
+                                "languages": ["java"],
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    expected_scope = RetrievalScope(
+        include_paths=("src/**",),
+        languages=("java",),
+    )
+    captured_scopes: list[RetrievalScope] = []
+
+    original_query = quality_runner.query_repository
+
+    def query_with_scope(repo, query, config, *, scope):
+        captured_scopes.append(scope)
+        return original_query(repo, query, config, scope=scope)
+
+    monkeypatch.setattr(quality_runner, "query_repository", query_with_scope)
+
+    report = run_quality_fixture(fixture, "ci", None, None)
+
+    assert captured_scopes == [expected_scope]
+    assert report["cases"][0]["status"] == "pass"
+    assert report["cases"][0]["metrics"]["scope_escape_count"] == 0
 
 
 def test_quality_runner_records_git_commit_from_worktree_gitdir_file(

@@ -6,9 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from context_search_tool.models import QueryPlan
+from context_search_tool.config import QueryPlannerConfig, RetrievalConfig, ToolConfig
+from context_search_tool.indexer import index_repository
+from context_search_tool.models import QueryPlan, RepoProfile
 from context_search_tool.quality.cases import load_quality_fixture
 from context_search_tool.quality.runner import run_quality_fixture
+from context_search_tool.query_planner import clean_planner_payload
+from context_search_tool.retrieval import query_repository
+from context_search_tool.retrieval_scope import RetrievalScope
 from context_search_tool.tokenizer import tokenize_query
 
 
@@ -79,6 +84,110 @@ def test_supported_non_noop_plan_contract() -> None:
         plan.original_query,
         ["数据看板统计图表功能", "dashboard", "statistics", "chart"],
     )
+
+
+def test_p0_grounding_restores_local_rare_and_mixed_hints_only(
+    tmp_path: Path,
+) -> None:
+    fixture_source = (
+        Path(__file__).parent
+        / "fixtures"
+        / "p0-effects-monorepo"
+        / "apps"
+        / "billing"
+        / "src"
+        / "billing_flow.py"
+    )
+    fixture_text = fixture_source.read_text(encoding="utf-8")
+    assert "class QuasarBridge" in fixture_text
+    repo = tmp_path / "repo"
+    included = repo / "apps" / "billing" / "src"
+    excluded = repo / "apps" / "shipping" / "src"
+    included.mkdir(parents=True)
+    excluded.mkdir(parents=True)
+    (included / "billing_flow.py").write_text(fixture_text, encoding="utf-8")
+    (excluded / "scope_only.py").write_text(
+        "class ScopeOnlyBridge:\n    pass\n",
+        encoding="utf-8",
+    )
+    planner_config = QueryPlannerConfig(
+        max_rewritten_queries=1,
+        max_keywords=4,
+        max_symbol_hints=4,
+    )
+    config = ToolConfig(
+        retrieval=RetrievalConfig(
+            semantic_top_k=0,
+            lexical_top_k=20,
+            final_top_k=5,
+            context_before_lines=0,
+            context_after_lines=0,
+        ),
+        query_planner=planner_config,
+    )
+    index_repository(repo, config)
+    plan = clean_planner_payload(
+        original_query="定位结算桥接逻辑",
+        payload={
+            "rewritten_queries": ["settlement flow QuasarBridge"],
+            "grep_keywords": [
+                "QuasarBridge",
+                "QuasarBridge InventedBridge",
+                "InventedBridge",
+                "ScopeOnlyBridge",
+            ],
+            "symbol_hints": [
+                "QuasarBridge",
+                "QuasarBridge InventedBridge",
+                "InventedBridge",
+                "ScopeOnlyBridge",
+            ],
+        },
+        config=planner_config,
+        provider="fixture",
+        model="fixture",
+        latency_ms=0,
+        repo_profile=RepoProfile(tokens=["settlement", "flow"]),
+    )
+
+    assert plan.rewritten_queries == ["settlement flow"]
+    assert plan.grep_keywords == []
+    assert plan.symbol_hints == []
+
+    class FixedPlanner:
+        def plan(self, query: str, repo_profile=None) -> QueryPlan:
+            assert query == plan.original_query
+            assert repo_profile is not None
+            return plan
+
+    bundle = query_repository(
+        repo,
+        plan.original_query,
+        config,
+        planner=FixedPlanner(),
+        scope=RetrievalScope(include_paths=("apps/billing/**",)),
+    )
+    restored = bundle.planner
+
+    assert restored.rewritten_queries == ["settlement flow QuasarBridge"]
+    assert restored.grep_keywords == ["QuasarBridge"]
+    assert restored.symbol_hints == ["QuasarBridge"]
+    assert "InventedBridge" in restored.discarded_hints
+    assert "ScopeOnlyBridge" in restored.discarded_hints
+    assert restored.discarded_hint_sources == (
+        ("grep_keywords", "QuasarBridge InventedBridge"),
+        ("grep_keywords", "InventedBridge"),
+        ("grep_keywords", "ScopeOnlyBridge"),
+        ("symbol_hints", "QuasarBridge InventedBridge"),
+        ("symbol_hints", "InventedBridge"),
+        ("symbol_hints", "ScopeOnlyBridge"),
+    )
+    consumed = _consumed_values(restored)
+    assert all("InventedBridge" not in value for value in consumed)
+    assert all("ScopeOnlyBridge" not in value for value in consumed)
+    assert {result.file_path.as_posix() for result in bundle.results} == {
+        "apps/billing/src/billing_flow.py"
+    }
 
 
 @pytest.mark.parametrize(

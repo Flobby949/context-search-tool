@@ -293,6 +293,7 @@ def test_evaluate_context_pack_adds_metrics_and_deterministic_failures() -> None
     assert set(evaluation.metrics) - set(raw.metrics) == {
         "context_completeness",
         "evidence_need_count",
+        "false_ready_count",
         "required_need_count",
         "matched_required_need_count",
         "evidence_need_completeness",
@@ -302,6 +303,7 @@ def test_evaluate_context_pack_adds_metrics_and_deterministic_failures() -> None
         "omitted_item_count",
     }
     assert evaluation.metrics["evidence_need_count"] == 3
+    assert evaluation.metrics["false_ready_count"] == 0
     assert evaluation.metrics["required_need_count"] == 0
     assert evaluation.metrics["matched_required_need_count"] == 0
     assert evaluation.metrics["evidence_need_completeness"] is None
@@ -421,6 +423,70 @@ def test_no_expected_context_pairs_records_null_completeness() -> None:
     )
 
     assert evaluation.metrics["context_completeness"] is None
+
+
+def test_no_need_context_pack_is_partial_and_never_false_ready() -> None:
+    options = resolve_context_pack_options(
+        DEFAULT_CONFIG,
+        context_lines=None,
+        max_evidence_anchors=evidence_anchor_top_k(
+            DEFAULT_CONFIG.retrieval.final_top_k
+        ),
+    )
+    pack = build_context_pack(
+        QueryBundle(
+            "quasar",
+            [],
+            [
+                replace(
+                    _result("src/quasar.py"),
+                    end_line=1,
+                    content="quasar marker",
+                )
+            ],
+            [],
+        ),
+        options,
+    )
+    case = QualityCase(
+        case_id="no-needs",
+        query="quasar",
+        mode="context_pack",
+        expected_pack_status="partial",
+        expected_evidence_need_count=0,
+    )
+
+    evaluation = quality_metrics.evaluate_context_pack(
+        case,
+        pack,
+        _raw_evaluation(),
+    )
+
+    assert pack.confidence.level == "low"
+    assert evaluation.status == "pass"
+    assert evaluation.metrics["evidence_need_count"] == 0
+    assert evaluation.metrics["false_ready_count"] == 0
+    assert evaluation.failures == []
+
+
+def test_expected_evidence_need_count_is_a_required_assertion() -> None:
+    case = QualityCase(
+        case_id="need-count",
+        query="config",
+        mode="context_pack",
+        expected_evidence_need_count=0,
+    )
+
+    evaluation = quality_metrics.evaluate_context_pack(
+        case,
+        _built_context_pack("postgresql config", matched=True),
+        _raw_evaluation(),
+    )
+
+    assert evaluation.status == "fail"
+    assert evaluation.failures == [
+        "expected_evidence_need_count expected 0, got 1"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -849,6 +915,27 @@ def test_expected_any_group_counts_as_one_relevance_target() -> None:
         "count": 1,
         "ratio": pytest.approx(1.0),
     }
+
+
+def test_evaluate_case_gates_nonzero_scope_escapes() -> None:
+    case = QualityCase(case_id="scope", query="billing")
+
+    passes = evaluate_case(case, [], latency_ms=1, scope_escape_count=0)
+    fails = evaluate_case(case, [], latency_ms=1, scope_escape_count=2)
+
+    assert passes.status == "pass"
+    assert passes.metrics["scope_escape_count"] == 0
+    assert passes.failures == []
+    assert fails.status == "fail"
+    assert fails.metrics["scope_escape_count"] == 2
+    assert fails.failures == ["query-time scope escaped to 2 path(s)"]
+
+
+def test_evaluate_case_rejects_invalid_scope_escape_count() -> None:
+    case = QualityCase(case_id="scope", query="billing")
+
+    with pytest.raises(ValueError, match="scope_escape_count"):
+        evaluate_case(case, [], latency_ms=1, scope_escape_count=-1)
 
 
 def test_at_least_group_gates_n_of_m_but_counts_each_relevance_target() -> None:

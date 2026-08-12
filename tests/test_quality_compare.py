@@ -803,6 +803,57 @@ def test_comparison_emits_nested_aggregate_metric_deltas() -> None:
     assert comparison["metric_deltas"]["overall"]["hit_at_5"]["delta"] == 0.5
 
 
+@pytest.mark.parametrize("metric", ["scope_escape_count", "false_ready_count"])
+def test_p0_safety_metric_increase_is_an_observed_decline(metric: str) -> None:
+    baseline = _report(
+        [
+            _case(
+                "sample",
+                "target",
+                "informational",
+                {metric: 0},
+                gate="informational",
+            )
+        ]
+    )
+    candidate = _report(
+        [
+            _case(
+                "sample",
+                "target",
+                "informational",
+                {metric: 1},
+                gate="informational",
+            )
+        ]
+    )
+
+    comparison = compare_reports(baseline, candidate)
+
+    assert comparison["cases"][0]["classification"] == "metric_decline"
+    assert comparison["cases"][0]["metric_deltas"][metric]["delta"] == 1
+
+
+@pytest.mark.parametrize(
+    "metric,value",
+    [
+        ("scope_escape_count", 0.5),
+        ("false_ready_count", 0.5),
+        ("false_ready_count", 2),
+    ],
+)
+def test_p0_safety_metrics_reject_non_count_values(
+    metric: str,
+    value: float | int,
+) -> None:
+    invalid = _report(
+        [_case("sample", "target", "pass", {metric: value})]
+    )
+
+    with pytest.raises(ValueError, match=metric):
+        compare_reports(invalid, _report([]))
+
+
 def test_comparison_preserves_latency_aggregate_leaves() -> None:
     baseline = _report([])
     candidate = _report([])

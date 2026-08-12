@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "profile_configs": {
+    "p0_effects": {
+      "embedding": {
+        "provider": "hash",
+        "model": "hash-v1",
+        "dimensions": 384
+      },
+      "query_planner": {
+        "enabled": false
+      }
+    }
+  },
+  "repos": [
+    {
+      "repo_key": "p0_effects_monorepo",
+      "snapshot_path": "tests/fixtures/p0-effects-monorepo",
+      "profiles": ["p0_effects"],
+      "queries": [
+        {
+          "id": "scoped-monorepo-noise",
+          "query": "BillingController create invoice service",
+          "profiles": ["p0_effects"],
+          "tags": ["p0_effects", "scope", "monorepo"],
+          "mode": "results",
+          "gate": "required",
+          "scope": {
+            "include_paths": ["apps/billing/**"],
+            "exclude_paths": ["apps/billing/generated/**"],
+            "languages": ["python"],
+            "code_only": true
+          },
+          "metric_k": 5,
+          "relevance_matchers": [
+            {"contains": "billing_controller.py"},
+            {"contains": "billing_service.py"}
+          ],
+          "noise_matchers": [
+            {"contains": "generated"},
+            {"contains": "shipping"},
+            {"contains": "docs"}
+          ],
+          "expected_top_k": [
+            {"path": "apps/billing/src/billing_controller.py", "top_k": 5},
+            {"path": "apps/billing/src/service/billing_service.py", "top_k": 5}
+          ],
+          "absent_top_k": [
+            {"path": "apps/billing/generated/billing_client.py", "top_k": 10},
+            {"path": "apps/shipping/src/shipping_flow.py", "top_k": 10},
+            {"path": "docs/billing.md", "top_k": 10}
+          ]
+        },
+        {
+          "id": "scoped-graph-boundary",
+          "query": "BillingController BillingService create invoice",
+          "profiles": ["p0_effects"],
+          "tags": ["p0_effects", "scope", "graph_boundary"],
+          "mode": "context_pack",
+          "gate": "required",
+          "scope": {
+            "include_paths": ["apps/billing/src/**"],
+            "languages": ["python"]
+          },
+          "expected_top_k": [
+            {"path": "apps/billing/src/billing_controller.py", "top_k": 5},
+            {"path": "apps/billing/src/service/billing_service.py", "top_k": 5}
+          ],
+          "expected_context_groups": {
+            "entrypoints": [{"path": "apps/billing/src/billing_controller.py"}],
+            "implementations": [{"path": "apps/billing/src/service/billing_service.py"}]
+          },
+          "maximum_pack_bytes": 65536,
+          "maximum_truncated_items": 0
+        },
+        {
+          "id": "no-needs-readiness",
+          "query": "quasar",
+          "profiles": ["p0_effects"],
+          "tags": ["p0_effects", "context_pack", "readiness"],
+          "mode": "context_pack",
+          "gate": "required",
+          "scope": {
+            "include_paths": ["apps/billing/src/**"],
+            "languages": ["python"]
+          },
+          "expected_top_k": [
+            {"path": "apps/billing/src/billing_flow.py", "top_k": 5}
+          ],
+          "expected_pack_status": "partial",
+          "expected_evidence_need_count": 0,
+          "maximum_pack_bytes": 65536,
+          "maximum_truncated_items": 0
+        }
+      ]
+    }
+  ]
+}

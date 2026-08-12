@@ -391,6 +391,7 @@ def _is_p4_public_facade_reference(reference: dict[str, object]) -> bool:
     return isinstance(path, str) and (
         path.startswith("tests/test_exploration_")
         or path == "tests/test_quality_p4.py"
+        or path == "tests/test_quality_planner.py"
         or path == "tests/test_p5_privacy.py"
         or path == "tests/test_graph_lifecycle.py"
         or path == "tests/test_incremental_refresh.py"
@@ -414,6 +415,7 @@ def _normalize_current_test_reference(
     if reference["file"] not in {
         THIS_TEST_PATH,
         "tests/test_quality_metrics.py",
+        "tests/test_quality_runner.py",
         "tests/test_retrieval_pipeline.py",
         "tests/test_retrieval_trace_pipeline.py",
     }:

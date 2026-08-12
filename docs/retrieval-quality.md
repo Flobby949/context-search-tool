@@ -4,6 +4,7 @@
 
 | profile | dependency | purpose |
 | --- | --- | --- |
+| `p0_effects` | committed monorepo snapshot and offline `hash-v1` | deterministic query scope, ContextPack readiness, and P0 effect gates |
 | `ci` | committed snapshots | deterministic frontend, Java, exact, and noise gates |
 | `smoke` | real generic repositories | all 22 generic cases |
 | `planner` | Ollama and requests checkout | repo-aware planner and genuine cross-language cases |
@@ -50,11 +51,73 @@ cst quality run tests/fixtures/retrieval_quality/queries.json \
   --profile ci --output .quality/ci.json --markdown .quality/ci.md
 ```
 
+## P0 Effects Acceptance
+
+The committed `p0_effects` profile is the repeatable acceptance gate for the
+three retrieval P0s. Run it from the current checkout:
+
+```bash
+PYTHONPATH="$PWD/src" python -m context_search_tool.quality run \
+  tests/fixtures/retrieval_quality/p0_effects.json \
+  --profile p0_effects \
+  --output .quality/p0-effects.json \
+  --markdown .quality/p0-effects.md
+```
+
+Every quality case may declare one optional query-time scope. The same scope is
+strictly validated and forwarded through `results`, `context_pack`, and
+`exploration` execution, including exploration follow-ups:
+
+```json
+{
+  "scope": {
+    "include_paths": ["apps/billing/**"],
+    "exclude_paths": ["apps/billing/generated/**"],
+    "languages": ["python"],
+    "code_only": true
+  }
+}
+```
+
+The required success criteria are:
+
+- all selected cases pass with zero errors;
+- aggregate `scope_escape_count.mean` is exactly `0`;
+- aggregate `false_ready_count.mean` is exactly `0`;
+- the no-needs case reports `partial/low`, `evidence_need_count=0`, and
+  `false_ready_count=0`;
+- scoped monorepo noise remains absent while existing Recall@K, MRR, noise, and
+  latency metrics remain available for normal report comparison.
+
+`expected_evidence_need_count` is an optional non-negative ContextPack or
+exploration assertion. `false_ready_count` is always emitted for evaluated
+packs and gates any `ready` pack with zero derived needs. `scope_escape_count`
+is emitted only for active scopes and covers ranked results plus evidence
+anchors. Exploration additionally covers every raw retrieval bundle, the fused
+bundle, the final pack, and every probe seed path recorded in its trace.
+
+Planner grounding cannot be expressed honestly as a generic retrieval metric
+without fixing a model response. Its deterministic P0 fixture is therefore the
+focused test below: it sends a fixed plan through a real temporary index and
+the production validator, then proves that rare/mixed local hints are restored
+while partial, invented, and scope-excluded hints remain discarded.
+
+```bash
+PYTHONPATH="$PWD/src" python -m pytest \
+  tests/test_quality_planner.py::test_p0_grounding_restores_local_rare_and_mixed_hints_only \
+  -q
+```
+
+Quality execution uses an empty context-local global config for each run
+without changing `CST_GLOBAL_CONFIG_PATH`. This prevents user embedding
+endpoints and credentials from changing a committed fixture's vector identity
+or leaking into reports, including during concurrent in-process runs.
+
 ## Phase 2 Context Pack Acceptance
 
-Quality cases accept exactly two `mode` values: `results` (the default raw-result
-evaluation) and `context_pack`. The following fields are valid only for
-`context_pack` cases:
+Quality cases accept three `mode` values: `results` (the default raw-result
+evaluation), `context_pack`, and `exploration`. The following fields are valid
+for ContextPack-producing cases:
 
 ```json
 {
@@ -65,6 +128,7 @@ evaluation) and `context_pack`. The following fields are valid only for
     "related_types": [{"contains": "Dto"}]
   },
   "expected_pack_status": "ready",
+  "expected_evidence_need_count": 3,
   "minimum_context_confidence": "medium",
   "expected_need_matches": [
     {
@@ -96,6 +160,7 @@ Context metrics have these meanings:
 | --- | --- |
 | `context_completeness` | Matched pairs divided by expected pairs. With no expected pairs it is `null`, and that case is excluded from aggregate means. |
 | `evidence_need_count` | All derived evidence needs. |
+| `false_ready_count` | `1` only for the invalid state `ready` with zero needs; such a case fails. |
 | `required_need_count` | Needs marked required. |
 | `matched_required_need_count` | Required needs with at least one selected matching item. |
 | `evidence_need_completeness` | Matched required needs divided by required needs; `null` when no required needs exist. |
@@ -531,19 +596,17 @@ PYTHONPATH="$PWD/src" conda run -n base python -m context_search_tool.quality ru
   --markdown /tmp/cst-p4-final.md
 ```
 
-Verified on 2026-07-17:
+Verified on 2026-08-12:
 
 | case | stop | initial → final coverage | gain | probes / calls | final noise | trace coverage |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `owner-registration-form-test` | `satisfied` | 0.1667 → 0.6667 | 3 | 1 / 2 | 0 | 1.0 |
+| `owner-registration-form-test` | `satisfied` | 0.1667 → 0.8333 | 4 | 1 / 2 | 0 | 1.0 |
 | `owner-controller-exact` | `exact_satisfied` | 0.25 → 0.25 | 0 | 0 / 1 | 0 | 1.0 |
-| `qrcode-route-service-type` | `satisfied` | 0.125 → 0.875 | 6 | 1 / 2 | 0 | 1.0 |
+| `qrcode-route-service-type` | `satisfied` | 0.125 → 0.875 | 6 | 2 / 3 | 0 | 1.0 |
 | `solo-controller-no-gain` | `no_marginal_gain` | 0.20 → 0.20 | 0 | 1 / 2 | 0 | 1.0 |
 
-The profile selected/executed/passed `4/4/4`, with zero failures/errors; report
-SHA-256 is
-`81ff1c53dab0af00d59adc71be6ab8a9aacb15c72e0ae34109fd17759cc031f9`.
-The P4 catalog SHA-256 is
+The profile selected/executed/passed `4/4/4`, with zero failures/errors. The P4
+catalog SHA-256 is
 `110e806dead64b4270d579a955abc8f56d7ec23d1b1f61a7951e5e4309a9c683`;
 the frozen input-manifest SHA-256 is
 `78e81f1c08c8216dc3355519cb89f07577ed61706e8150c9575e8395141c0b40`.
@@ -573,18 +636,11 @@ For `owner registration form validation flow`, round 0 ranked
 `createOrUpdateOwnerForm form template view test` added the owner form and
 `OwnerControllerTests.java`; the final pack also retained `Owner.java` and the
 controller. It stopped `satisfied` after 2 calls, gained 2 goals, reached goal
-coverage 0.5 → 1.0, used 40,139 pack bytes, had zero configured noise, and had
+coverage 0.25 → 0.75, used 34,697 pack bytes, had zero configured noise, and had
 ExplorationTraceCoverage 1.0.
 
-Two production-profile runs each passed `1/1`; their timing-bearing report
-SHA-256 values are
-`599de075e6ccc5db8d7edb0bf7bb09c92ddd543682c74c75cc4e2ec32dd950e7`
-and
-`d838db9568b988215749dca617e684812f53ed7e8237220e4d0a3f60dac1b915`.
-The two independently generated acceptance projections were byte-identical to
-the committed baseline, SHA-256
-`a0f21574ba933ae9ab6f55bdfe080755f2c6cd333c0935d108f002089074df7e`;
-only approved timing fields are normalized.
+The 2026-08-12 production-profile verification passed `1/1` with zero
+failures or errors.
 
 The requested fresh fast-context comparison was attempted against this same
 pinned checkout after explicit user authorization, but the configured service

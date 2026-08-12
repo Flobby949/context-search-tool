@@ -79,6 +79,7 @@ def evaluate_case(
     latency_ms: int,
     top_result_limit: int = 10,
     anchor_paths: list[str] | None = None,
+    scope_escape_count: int | None = None,
 ) -> CaseEvaluation:
     normalized = normalize_results(results)
     failures: list[str] = []
@@ -153,6 +154,13 @@ def evaluate_case(
                     "anchor_expected must remain outside ranked results: "
                     f"{expected_path}"
                 )
+    if scope_escape_count is not None:
+        if type(scope_escape_count) is not int or scope_escape_count < 0:
+            raise ValueError("scope_escape_count must be a non-negative integer")
+        if scope_escape_count:
+            failures.append(
+                f"query-time scope escaped to {scope_escape_count} path(s)"
+            )
 
     metrics = _metrics(
         case=case,
@@ -163,6 +171,8 @@ def evaluate_case(
         entrypoint_rank=entrypoint_rank,
         latency_ms=latency_ms,
     )
+    if scope_escape_count is not None:
+        metrics["scope_escape_count"] = scope_escape_count
 
     return CaseEvaluation(
         case_id=case.case_id,
@@ -287,6 +297,15 @@ def evaluate_context_pack(
             )
 
     needs = payload["evidence_needs"]
+    expected_need_count = case.expected_evidence_need_count
+    if expected_need_count is not None and len(needs) != expected_need_count:
+        failures.append(
+            "expected_evidence_need_count expected "
+            f"{expected_need_count}, got {len(needs)}"
+        )
+    false_ready_count = int(payload["status"] == "ready" and not needs)
+    if false_ready_count:
+        failures.append("context pack is ready without any evidence needs")
     required_need_count = sum(need["required"] for need in needs)
     matched_required_need_count = sum(
         need["required"] and bool(need["matched_item_ids"])
@@ -300,6 +319,7 @@ def evaluate_context_pack(
                 matched_count / expected_count if expected_count else None
             ),
             "evidence_need_count": len(needs),
+            "false_ready_count": false_ready_count,
             "required_need_count": required_need_count,
             "matched_required_need_count": matched_required_need_count,
             "evidence_need_completeness": (

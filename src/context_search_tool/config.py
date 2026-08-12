@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -12,6 +15,12 @@ except ModuleNotFoundError:  # pragma: no cover - compatibility for the task ven
     tomllib = None  # type: ignore[assignment]
 
 from context_search_tool.paths import ensure_index_layout, index_dir_for
+
+
+_GLOBAL_CONFIG_PATH_OVERRIDE: ContextVar[Path | None] = ContextVar(
+    "cst_global_config_path_override",
+    default=None,
+)
 
 
 @dataclass(frozen=True)
@@ -191,12 +200,26 @@ def read_config(repo: Path) -> ToolConfig:
 
 
 def global_config_path() -> Path:
+    contextual_override = _GLOBAL_CONFIG_PATH_OVERRIDE.get()
+    if contextual_override is not None:
+        return contextual_override
     override = os.environ.get("CST_GLOBAL_CONFIG_PATH")
     if override:
         return Path(override).expanduser()
     config_home = os.environ.get("XDG_CONFIG_HOME")
     root = Path(config_home).expanduser() if config_home else Path.home() / ".config"
     return root / "context-search" / "config.toml"
+
+
+@contextmanager
+def _override_global_config_path(path: Path) -> Iterator[None]:
+    """Override the global config path only in the current execution context."""
+
+    token = _GLOBAL_CONFIG_PATH_OVERRIDE.set(path)
+    try:
+        yield
+    finally:
+        _GLOBAL_CONFIG_PATH_OVERRIDE.reset(token)
 
 
 def _build_tool_config(

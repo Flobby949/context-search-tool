@@ -26,6 +26,7 @@ from context_search_tool.quality.cases import (
     normalize_result_path,
     validate_profile_compatible,
 )
+from context_search_tool.retrieval_scope import RetrievalScope
 
 
 _VALID_BGE_EMBEDDING = EmbeddingConfig(
@@ -188,6 +189,47 @@ def test_load_quality_fixture_parses_v1_schema(tmp_path: Path) -> None:
     )
 
 
+def test_quality_case_parses_normalized_query_time_scope(tmp_path: Path) -> None:
+    case = _load_canonical_case(
+        tmp_path,
+        {
+            "scope": {
+                "include_paths": ["apps/billing/**", "apps/billing/**"],
+                "exclude_paths": ["apps/billing/generated/**"],
+                "languages": ["Python", "python"],
+                "code_only": True,
+            }
+        },
+    )
+
+    assert case.scope == RetrievalScope(
+        include_paths=("apps/billing/**",),
+        exclude_paths=("apps/billing/generated/**",),
+        languages=("python",),
+        code_only=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "scope,error",
+    [
+        (None, "scope must be an object"),
+        ({"unknown": []}, "unknown scope field"),
+        ({"include_paths": "src/**"}, "scope.include_paths must be a list"),
+        ({"languages": [1]}, "scope.languages entries must be strings"),
+        ({"code_only": 1}, "scope.code_only must be a bool"),
+        ({"exclude_paths": ["../secret/**"]}, "safe repository-relative"),
+    ],
+)
+def test_quality_case_rejects_invalid_query_time_scope(
+    tmp_path: Path,
+    scope: object,
+    error: str,
+) -> None:
+    with pytest.raises(ValueError, match=error):
+        _load_canonical_case(tmp_path, {"scope": scope})
+
+
 def test_context_pack_case_parses_typed_expectations(tmp_path: Path) -> None:
     case = _load_canonical_case(
         tmp_path,
@@ -210,6 +252,7 @@ def test_context_pack_case_parses_typed_expectations(tmp_path: Path) -> None:
                     "matched": False,
                 }
             ],
+            "expected_evidence_need_count": 1,
             "maximum_pack_bytes": 65536,
             "maximum_truncated_items": 4,
             "forbidden_next_query_patterns": ["/oups", "GET /owners dto"],
@@ -234,6 +277,7 @@ def test_context_pack_case_parses_typed_expectations(tmp_path: Path) -> None:
             matched=False,
         ),
     )
+    assert case.expected_evidence_need_count == 1
     assert case.maximum_pack_bytes == 65536
     assert case.maximum_truncated_items == 4
     assert case.forbidden_next_query_patterns == (
@@ -1696,6 +1740,26 @@ def test_p2_context_pack_profile_accepts_offline_deterministic_config() -> None:
         ),
         canonical=True,
     )
+
+
+def test_p0_effects_profile_requires_offline_deterministic_config() -> None:
+    validate_profile_compatible("p0_effects", DEFAULT_CONFIG, canonical=True)
+
+    with pytest.raises(ValueError, match="p0_effects.*hash-v1"):
+        validate_profile_compatible(
+            "p0_effects",
+            replace(DEFAULT_CONFIG, embedding=_VALID_BGE_EMBEDDING),
+            canonical=True,
+        )
+    with pytest.raises(ValueError, match="p0_effects.*planner disabled"):
+        validate_profile_compatible(
+            "p0_effects",
+            replace(
+                DEFAULT_CONFIG,
+                query_planner=QueryPlannerConfig(enabled=True),
+            ),
+            canonical=True,
+        )
 
 
 @pytest.mark.parametrize(

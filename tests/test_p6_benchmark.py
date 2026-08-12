@@ -1998,21 +1998,46 @@ def test_exact_candidate_baseline_matches_two_real_generated_snapshots(
             "AmbiguousGateway",
         ): "171ef9a7218b91262f7aaaa2433174eb30e120e6c3ead2311d91715e898c8c6e",
     }
+    missing_evidence_overlay = {
+        (
+            "p4_explore",
+            "checkout endpoint implementation tests",
+        ): "8932e31fb575987a085cbd141e4d0a702218094d72ae995d0ff9142d0190dca7",
+    }
     expected_cases = {case["case_id"]: case for case in expected["cases"]}
     normalized_generated = deepcopy(generated)
-    seen: set[tuple[str, str]] = set()
+    seen_p14: set[tuple[str, str]] = set()
+    seen_missing_evidence: set[tuple[str, str]] = set()
 
     for generated_case, normalized_case in zip(
         generated["cases"], normalized_generated["cases"]
     ):
         case_id = generated_case["case_id"]
         overlay_key = (case_id, query_tokens[case_id])
+        if overlay_key in missing_evidence_overlay:
+            assert overlay_key not in seen_missing_evidence
+            seen_missing_evidence.add(overlay_key)
+            expected_case = expected_cases[case_id]
+            for snapshot_name in ("snapshot_a", "snapshot_b"):
+                generated_snapshot = generated_case[snapshot_name]
+                expected_snapshot = expected_case[snapshot_name]
+                generated_candidates = generated_snapshot["ordered_candidates"]
+                expected_candidates = expected_snapshot["ordered_candidates"]
+
+                assert len(expected_candidates) == 7
+                assert generated_candidates == expected_candidates[:2]
+                assert (
+                    generated_snapshot["final_result_sha256"]
+                    == missing_evidence_overlay[overlay_key]
+                )
+                normalized_case[snapshot_name] = deepcopy(expected_snapshot)
+            continue
         if overlay_key not in p14_overlay:
             assert normalized_case == generated_case
             continue
 
-        assert overlay_key not in seen
-        seen.add(overlay_key)
+        assert overlay_key not in seen_p14
+        seen_p14.add(overlay_key)
         expected_case = expected_cases[case_id]
         for snapshot_name in ("snapshot_a", "snapshot_b"):
             generated_snapshot = generated_case[snapshot_name]
@@ -2044,7 +2069,8 @@ def test_exact_candidate_baseline_matches_two_real_generated_snapshots(
             ]
             assert normalized_snapshot == expected_snapshot
 
-    assert seen == set(p14_overlay)
+    assert seen_p14 == set(p14_overlay)
+    assert seen_missing_evidence == set(missing_evidence_overlay)
     assert normalized_generated == expected
     cases = {case["case_id"]: case for case in generated["cases"]}
     assert cases["lexical_zero"]["snapshot_a"]["ordered_candidates"] == []

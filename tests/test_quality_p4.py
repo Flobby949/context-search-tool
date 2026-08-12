@@ -547,6 +547,108 @@ def test_quality_exploration_runner_calls_explore_once(
     assert calls == [(tmp_path, "owner flow")]
 
 
+def test_quality_exploration_runner_forwards_query_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import context_search_tool.exploration as exploration
+    from context_search_tool.retrieval_scope import RetrievalScope
+
+    explored = _explored_fixture()
+    scope = RetrievalScope(include_paths=("src/main/**",), languages=("java",))
+    captured: list[RetrievalScope] = []
+
+    def fake_explore(repo, query, config, options, *, scope):
+        from context_search_tool.exploration.runner import _notify_bundle_observer
+
+        captured.append(scope)
+        _notify_bundle_observer(_bundle("src/main/Owner.java"))
+        _notify_bundle_observer(_bundle("src/test/BlockedOwnerTest.java"))
+        return explored
+
+    monkeypatch.setattr(exploration, "explore_repository", fake_explore)
+    monkeypatch.setattr(
+        exploration,
+        "resolve_explore_pack_options",
+        lambda config, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        quality_runner,
+        "_exploration_scope_escape_count",
+        lambda workspace, case, value, observed_paths: (
+            1
+            if observed_paths
+            == {"src/main/Owner.java", "src/test/BlockedOwnerTest.java"}
+            else pytest.fail(f"unexpected observed paths: {observed_paths!r}")
+        ),
+    )
+    sentinel = CaseEvaluation("flow", "pass", {}, [], [])
+    monkeypatch.setattr(
+        quality_runner,
+        "_evaluate_explored_case",
+        lambda case, profile, value, *, scope_escape_count: sentinel,
+    )
+
+    returned_explored, returned_evaluation = quality_runner._run_exploration_case(
+        tmp_path,
+        QualityCase("flow", "owner flow", scope=scope, mode="exploration"),
+        "p4_exploration",
+        ToolConfig(),
+    )
+
+    assert returned_explored is explored
+    assert returned_evaluation is sentinel
+    assert captured == [scope]
+
+
+def test_exploration_scope_metric_counts_raw_probe_paths_rejected_by_fusion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from context_search_tool.retrieval_scope import RetrievalScope
+    from context_search_tool.sqlite_store import SQLiteStore
+
+    case = QualityCase(
+        "flow",
+        "owner flow",
+        scope=RetrievalScope(include_paths=("src/main/**",)),
+        mode="exploration",
+    )
+    explored = SimpleNamespace(
+        initial_bundle=_bundle("src/main/Owner.java"),
+        fused_bundle=_bundle("src/main/Owner.java"),
+        final_pack=_pack("src/main/Owner.java"),
+        trace=SimpleNamespace(
+            rounds=(
+                SimpleNamespace(
+                    probes=(
+                        SimpleNamespace(
+                            seed_paths=("src/test/BlockedOwnerTest.java",),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        SQLiteStore,
+        "active_chunk_scope",
+        lambda self: [
+            ("main", Path("src/main/Owner.java"), "java"),
+            ("test", Path("src/test/BlockedOwnerTest.java"), "java"),
+        ],
+    )
+
+    count = quality_runner._exploration_scope_escape_count(
+        tmp_path,
+        case,
+        explored,
+        {"src/main/Owner.java"},
+    )
+
+    assert count == 1
+
+
 def _exploration_metric_payload(
     *,
     latency: int,

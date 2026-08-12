@@ -32,8 +32,10 @@ _EXPLORATION_METRICS = (
 _RATE_METRICS = {"mrr"} | _EXPLORATION_RATIO_METRICS
 _NONNEGATIVE_METRICS = {
     "entrypoint_rank",
+    "false_ready_count",
     "latency_ms",
     "result_count",
+    "scope_escape_count",
 } | _EXPLORATION_INTEGER_METRICS
 _UNBOUNDED_NUMERIC_METRICS = {"top_score"}
 _AGGREGATE_LEAVES = {"count", "mean", "p50", "p95", "rate", "successes", "total"}
@@ -66,7 +68,11 @@ _HIGHER_IS_BETTER = {
     "preferred_rank_pass",
 }
 _LOWER_IS_BETTER_PREFIXES = ("noise_top",)
-_LOWER_IS_BETTER = {"entrypoint_rank"}
+_LOWER_IS_BETTER = {
+    "entrypoint_rank",
+    "false_ready_count",
+    "scope_escape_count",
+}
 _NEUTRAL = {
     "latency_ms",
     "result_count",
@@ -278,9 +284,18 @@ def _validate_case_metrics(
             if value is not None and (type(value) is not int or value <= 0):
                 raise ValueError(f"{owner} must be a positive integer or null")
         elif schema == 2 and (
-            name in {"latency_ms", "result_count"} or name.startswith("noise_top")
+            name
+            in {
+                "false_ready_count",
+                "latency_ms",
+                "result_count",
+                "scope_escape_count",
+            }
+            or name.startswith("noise_top")
         ):
             _require_nonnegative_integer(value, owner)
+            if name == "false_ready_count" and value not in {0, 1}:
+                raise ValueError(f"{owner} must be 0 or 1")
         elif _is_known_numeric_metric(name):
             if value is not None:
                 number = _finite_number(value, owner)

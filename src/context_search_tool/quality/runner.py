@@ -13,7 +13,7 @@ import threading
 import time
 import unicodedata
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -29,6 +29,7 @@ except ImportError:  # pragma: no cover - POSIX quality runs use fcntl.
 from context_search_tool.config import (
     DEFAULT_CONFIG,
     ToolConfig,
+    _override_global_config_path,
     replace_embedding_config,
     replace_query_planner_config,
 )
@@ -40,6 +41,7 @@ from context_search_tool.context_pack import (
 from context_search_tool.indexer import index_repository
 from context_search_tool.manifest import load_manifest
 from context_search_tool.models import QueryPlan
+from context_search_tool.paths import index_dir_for
 from context_search_tool.quality.aggregate import aggregate_cases
 from context_search_tool.quality.cases import (
     Gate,
@@ -47,6 +49,7 @@ from context_search_tool.quality.cases import (
     QualityFixture,
     QualityRepo,
     load_quality_fixture,
+    normalize_result_path,
     validate_profile_compatible,
 )
 from context_search_tool.quality.metrics import (
@@ -61,6 +64,7 @@ from context_search_tool.retrieval import (
     evidence_anchor_top_k,
     query_repository,
 )
+from context_search_tool.sqlite_store import SQLiteStore
 
 
 _COPY_EXCLUDES = {
@@ -93,6 +97,7 @@ _P5_GRAPH_PROFILES = frozenset(
 _SNAPSHOT_ONLY_PROFILES = frozenset(
     {
         "ci",
+        "p0_effects",
         "p1_vector_bge",
         "p1_hybrid_bge",
         "p2_context_pack",
@@ -164,6 +169,17 @@ def run_quality_fixture(
     )
 
     temp_root = Path(tempfile.mkdtemp(prefix="cst-quality-")).resolve()
+    isolated_global_config = temp_root / ".quality-global-config.toml"
+    config_context = ExitStack()
+    try:
+        isolated_global_config.write_text("", encoding="utf-8")
+        config_context.enter_context(
+            _override_global_config_path(isolated_global_config)
+        )
+    except BaseException:
+        config_context.close()
+        _remove_tree(temp_root, "temporary workspace")
+        raise
     repos: list[dict[str, Any]] = []
     cases: list[dict[str, Any]] = []
     workspace_identities: set[str] = set()
@@ -306,8 +322,18 @@ def run_quality_fixture(
                         continue
 
                     started = time.perf_counter()
-                    bundle = query_repository(workspace, case.query, repo_config)
+                    bundle = query_repository(
+                        workspace,
+                        case.query,
+                        repo_config,
+                        **_case_scope_kwargs(case),
+                    )
                     latency_ms = int((time.perf_counter() - started) * 1000)
+                    scope_escape_count = _bundle_scope_escape_count(
+                        workspace,
+                        case,
+                        bundle,
+                    )
                     evaluation = evaluate_case(
                         case,
                         bundle.results,
@@ -319,6 +345,7 @@ def run_quality_fixture(
                             anchor.file_path.as_posix()
                             for anchor in bundle.evidence_anchors
                         ],
+                        scope_escape_count=scope_escape_count,
                     )
                     evaluation = _apply_profile_expectations(
                         case,
@@ -378,6 +405,7 @@ def run_quality_fixture(
         primary_error = exc
         raise
     finally:
+        config_context.close()
         if not keep_workspace and not temp_root_removed:
             try:
                 _remove_tree(temp_root, "temporary workspace")
@@ -397,24 +425,52 @@ def _run_exploration_case(
     repo_config: ToolConfig,
 ) -> tuple[Any, CaseEvaluation]:
     exploration = importlib.import_module("context_search_tool.exploration")
+    exploration_runner = importlib.import_module(
+        "context_search_tool.exploration.runner"
+    )
+    observed_scope_paths: set[str] = set()
+
+    def observe_bundle(bundle: QueryBundle) -> None:
+        observed_scope_paths.update(_bundle_paths(bundle))
 
     pack_options = exploration.resolve_explore_pack_options(
         repo_config,
         context_lines=None,
     )
-    explored = exploration.explore_repository(
-        workspace,
-        case.query,
-        repo_config,
-        pack_options,
+    observer_context = (
+        exploration_runner._observe_retrieved_bundles(observe_bundle)
+        if case.scope is not None and case.scope.is_active
+        else ExitStack()
     )
-    return explored, _evaluate_explored_case(case, profile, explored)
+    with observer_context:
+        explored = exploration.explore_repository(
+            workspace,
+            case.query,
+            repo_config,
+            pack_options,
+            **_case_scope_kwargs(case),
+        )
+    scope_escape_count = _exploration_scope_escape_count(
+        workspace,
+        case,
+        explored,
+        observed_scope_paths,
+    )
+    if scope_escape_count is None:
+        return explored, _evaluate_explored_case(case, profile, explored)
+    return explored, _evaluate_explored_case(
+        case,
+        profile,
+        explored,
+        scope_escape_count=scope_escape_count,
+    )
 
 
 def _evaluate_explored_case(
     case: QualityCase,
     profile: str,
     explored: Any,
+    scope_escape_count: int | None = None,
 ) -> CaseEvaluation:
     initial_probe = explored.trace.rounds[0].probes[0]
     evaluation = evaluate_case(
@@ -426,6 +482,7 @@ def _evaluate_explored_case(
             anchor.file_path.as_posix()
             for anchor in explored.initial_bundle.evidence_anchors
         ],
+        scope_escape_count=scope_escape_count,
     )
     evaluation = _apply_profile_expectations(
         case,
@@ -439,6 +496,73 @@ def _evaluate_explored_case(
         evaluation,
     )
     return evaluate_exploration(case, explored, evaluation)
+
+
+def _case_scope_kwargs(case: QualityCase) -> dict[str, Any]:
+    scope = case.scope
+    if scope is None or not scope.is_active:
+        return {}
+    return {"scope": scope}
+
+
+def _bundle_scope_escape_count(
+    workspace: Path,
+    case: QualityCase,
+    bundle: QueryBundle,
+) -> int | None:
+    return _scope_escape_count(
+        workspace,
+        case,
+        _bundle_paths(bundle),
+    )
+
+
+def _bundle_paths(bundle: QueryBundle) -> set[str]:
+    return {
+        normalize_result_path(item.file_path.as_posix())
+        for item in (*bundle.results, *bundle.evidence_anchors)
+    }
+
+
+def _exploration_scope_escape_count(
+    workspace: Path,
+    case: QualityCase,
+    explored: Any,
+    observed_paths: set[str],
+) -> int | None:
+    if case.scope is None or not case.scope.is_active:
+        return None
+    all_paths = set(observed_paths)
+    for bundle in (explored.initial_bundle, explored.fused_bundle):
+        all_paths.update(_bundle_paths(bundle))
+    all_paths.update(
+        normalize_result_path(item.file_path)
+        for item in explored.final_pack.items
+    )
+    all_paths.update(
+        normalize_result_path(seed_path)
+        for round_record in explored.trace.rounds
+        for probe in round_record.probes
+        for seed_path in probe.seed_paths
+    )
+    return _scope_escape_count(workspace, case, all_paths)
+
+
+def _scope_escape_count(
+    workspace: Path,
+    case: QualityCase,
+    observed_paths: set[str],
+) -> int | None:
+    scope = case.scope
+    if scope is None or not scope.is_active:
+        return None
+    rows = SQLiteStore(index_dir_for(workspace) / "index.sqlite").active_chunk_scope()
+    allowed_paths = {
+        normalize_result_path(file_path.as_posix())
+        for _, file_path, language in rows
+        if scope.matches(file_path, language)
+    }
+    return len(observed_paths - allowed_paths)
 
 
 def _apply_config_sections(
