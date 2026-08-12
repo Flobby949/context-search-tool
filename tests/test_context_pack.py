@@ -1520,6 +1520,24 @@ def test_v2_protected_present_confidence_requires_a_selected_result() -> None:
     )
 
 
+def test_v2_serialization_rejects_ready_without_derived_needs() -> None:
+    models, _, serialization = _v2_modules()
+    pack = _v2_ready_pack()
+    malformed = replace(
+        pack,
+        items=(replace(pack.items[0], matched_need_ids=()),),
+        evidence_needs=(),
+    )
+
+    with pytest.raises(models.ContextPackError) as exc_info:
+        serialization.context_pack_payload(malformed)
+
+    assert (exc_info.value.code, exc_info.value.message) == (
+        "context_failed",
+        "Context pack construction failed",
+    )
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

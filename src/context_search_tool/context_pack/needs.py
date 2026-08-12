@@ -197,6 +197,7 @@ _RECOMMENDED_CONFIDENCE_REASONS = {
 _CONFIDENCE_REASON_EMPTY = "no usable retrieval evidence"
 _CONFIDENCE_REASON_PARTIAL = "required evidence is missing"
 _CONFIDENCE_REASON_NO_ITEM = "no evidence item fits the context budget"
+_CONFIDENCE_REASON_NO_NEEDS = "no evidence needs were derived for the query"
 _CONFIDENCE_REASON_READY = "all required evidence is selected"
 _CONFIDENCE_REASON_TRUNCATED = "selected required evidence is truncated"
 _CONFIDENCE_REASON_PLANNER = (
@@ -213,6 +214,7 @@ _CONFIDENCE_REASONS = frozenset(
         _CONFIDENCE_REASON_EMPTY,
         _CONFIDENCE_REASON_PARTIAL,
         _CONFIDENCE_REASON_NO_ITEM,
+        _CONFIDENCE_REASON_NO_NEEDS,
         _CONFIDENCE_REASON_READY,
         _CONFIDENCE_REASON_TRUNCATED,
         _CONFIDENCE_REASON_PLANNER,
@@ -381,6 +383,11 @@ def derive_readiness_confidence(
         return ReadinessConfidence(
             level="none",
             reasons=(_CONFIDENCE_REASON_EMPTY,),
+        )
+    if not evidence_needs:
+        return ReadinessConfidence(
+            level="low",
+            reasons=(_CONFIDENCE_REASON_NO_NEEDS,),
         )
     if status == "partial":
         reason = (

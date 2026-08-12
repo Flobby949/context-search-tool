@@ -1566,6 +1566,85 @@ def test_empty_pack_keeps_original_query_needs_without_inventing_results() -> No
     assert all(item.category != "results" for item in pack.missing_evidence)
 
 
+def test_empty_pack_without_derived_needs_stays_empty_with_no_confidence() -> None:
+    pack = builder.build_context_pack(_bundle("opaque", []), _options())
+
+    assert pack.items == ()
+    assert pack.evidence_needs == ()
+    assert pack.status == "empty"
+    assert pack.confidence == models.ReadinessConfidence(
+        level="none",
+        reasons=("no usable retrieval evidence",),
+    )
+
+
+def test_serialization_rejects_empty_pack_forged_as_unmodeled_partial() -> None:
+    pack = builder.build_context_pack(_bundle("opaque", []), _options())
+    malformed = replace(
+        pack,
+        status="partial",
+        confidence=models.ReadinessConfidence(
+            level="low",
+            reasons=("no evidence needs were derived for the query",),
+        ),
+        budget=replace(pack.budget, pack_bytes=0),
+    )
+
+    with pytest.raises(models.ContextPackError):
+        serialization.context_pack_payload(malformed)
+
+
+def test_candidates_without_derived_needs_are_partial_with_low_confidence() -> None:
+    pack = builder.build_context_pack(
+        _bundle("opaque", [_result("src/plain.py", "source")]),
+        _options(),
+    )
+
+    assert pack.items
+    assert pack.evidence_needs == ()
+    assert pack.status == "partial"
+    assert pack.confidence == models.ReadinessConfidence(
+        level="low",
+        reasons=("no evidence needs were derived for the query",),
+    )
+
+
+def test_budgeted_out_candidates_without_derived_needs_keep_unmodeled_reason() -> None:
+    pack = builder.build_context_pack(
+        _bundle("opaque", [_result("src/plain.py", "source")]),
+        _options(max_items=0),
+    )
+
+    assert pack.items == ()
+    assert pack.evidence_needs == ()
+    assert pack.status == "partial"
+    assert pack.confidence == models.ReadinessConfidence(
+        level="low",
+        reasons=("no evidence needs were derived for the query",),
+    )
+    assert pack.budget.omitted_item_count == 1
+
+
+def test_nonempty_derived_needs_still_produce_ready_high_confidence() -> None:
+    pack = builder.build_context_pack(
+        _bundle(
+            "PostgreSQL configuration",
+            [_result("config/application.properties", "PostgreSQL")],
+        ),
+        _options(),
+    )
+
+    assert pack.evidence_needs
+    assert pack.status == "ready"
+    assert pack.confidence == models.ReadinessConfidence(
+        level="high",
+        reasons=(
+            "all required evidence is selected",
+            "protected original-direct evidence is present",
+        ),
+    )
+
+
 def test_budget_omission_of_every_required_provider_is_partial() -> None:
     pack = builder.build_context_pack(
         _bundle(

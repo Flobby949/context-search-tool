@@ -645,7 +645,7 @@ def _derive_final_outputs(
     linked_needs = _link_needs(needs, pack.items)
     if not candidates:
         status = "empty"
-    elif not pack.items or any(
+    elif not linked_needs or not pack.items or any(
         need.required and not need.matched_item_ids for need in linked_needs
     ):
         status = "partial"

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import context_search_tool.context_pack as context_pack_models
 import context_search_tool.quality.cases as quality_cases
 import context_search_tool.quality.metrics as quality_metrics
 from context_search_tool.config import DEFAULT_CONFIG
@@ -135,7 +136,7 @@ def _context_pack(
         confidence = "medium" if items else "none"
     reasons = {
         "none": ("no usable retrieval evidence",),
-        "low": ("no evidence item fits the context budget",),
+        "low": ("no evidence needs were derived for the query",),
         "medium": (
             "all required evidence is selected",
             "protected original-direct evidence is absent",
@@ -148,6 +149,29 @@ def _context_pack(
     content_bytes = sum(
         excerpt.content_bytes for item in items for excerpt in item.excerpts
     )
+    present_groups = tuple(
+        group for group in CONTEXT_GROUPS if any(item.group == group for item in items)
+    )
+    need_id_by_group = {
+        group: f"need:{index}" for index, group in enumerate(present_groups)
+    }
+    items = tuple(
+        replace(item, matched_need_ids=(need_id_by_group[item.group],))
+        for item in items
+    )
+    evidence_needs = tuple(
+        context_pack_models.EvidenceNeed(
+            id=need_id_by_group[group],
+            category=group,
+            subject_terms=(),
+            required=False,
+            provenance="structural_recommendation",
+            matched_item_ids=tuple(
+                item.id for item in items if item.group == group
+            ),
+        )
+        for group in present_groups
+    )
     groups = {
         group: tuple(item.id for item in items if item.group == group)
         for group in CONTEXT_GROUPS
@@ -158,7 +182,7 @@ def _context_pack(
         items=items,
         groups=groups,
         reading_order=tuple(item.id for item in items),
-        evidence_needs=(),
+        evidence_needs=evidence_needs,
         missing_evidence=(),
         next_queries=(),
         omissions=omissions,
@@ -277,7 +301,7 @@ def test_evaluate_context_pack_adds_metrics_and_deterministic_failures() -> None
         "truncated_item_count",
         "omitted_item_count",
     }
-    assert evaluation.metrics["evidence_need_count"] == 0
+    assert evaluation.metrics["evidence_need_count"] == 3
     assert evaluation.metrics["required_need_count"] == 0
     assert evaluation.metrics["matched_required_need_count"] == 0
     assert evaluation.metrics["evidence_need_completeness"] is None

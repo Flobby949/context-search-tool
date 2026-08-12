@@ -956,3 +956,32 @@ def test_unrelated_truncated_excerpt_does_not_lower_ready_confidence() -> None:
         "all required evidence is selected",
         "protected original-direct evidence is present",
     )
+
+
+def test_readiness_confidence_never_claims_ready_without_derived_needs() -> None:
+    candidate = make_candidate(path="src/main/controller/OwnerController.java")
+    item = ContextItem(
+        id="item:0",
+        file_path=candidate.file_path,
+        group=candidate.group,
+        role=candidate.role,
+        classification_basis=candidate.classification_basis,
+        source_kind=candidate.source_kind,
+        retrieval_rank=candidate.retrieval_rank,
+        relevance_score=candidate.relevance_score,
+        reasons=candidate.reasons,
+        matched_need_ids=(),
+        excerpts=(),
+    )
+
+    confidence = context_needs.derive_readiness_confidence(
+        "ready",
+        (),
+        (item,),
+        {candidate.file_path: candidate},
+    )
+
+    assert confidence.level == "low"
+    assert confidence.reasons == (
+        "no evidence needs were derived for the query",
+    )

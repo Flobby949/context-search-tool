@@ -796,14 +796,27 @@ def _validate_contract(payload: dict[str, Any]) -> None:
             _fail()
     elif status == "partial":
         expected_reason = (
-            "required evidence is missing"
-            if required_missing
-            else "no evidence item fits the context budget"
+            "no evidence needs were derived for the query"
+            if not needs
+            else (
+                "required evidence is missing"
+                if required_missing
+                else "no evidence item fits the context budget"
+            )
         )
         if (
-            not required_missing
-            and not (not items and budget["omitted_item_count"] > 0)
-        ) or confidence != {"level": "low", "reasons": [expected_reason]}:
+            (
+                not needs
+                and not items
+                and budget["omitted_item_count"] == 0
+            )
+            or (
+                needs
+                and not required_missing
+                and not (not items and budget["omitted_item_count"] > 0)
+            )
+            or confidence != {"level": "low", "reasons": [expected_reason]}
+        ):
             _fail()
     else:
         protected_present = protected_confidence_claim(confidence["reasons"])
@@ -811,6 +824,7 @@ def _validate_contract(payload: dict[str, Any]) -> None:
         # public result-backed claim; the builder owns evidence_priority truth.
         if (
             not items
+            or not needs
             or required_missing
             or protected_present is None
             or (
