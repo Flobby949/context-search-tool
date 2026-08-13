@@ -714,7 +714,7 @@ def test_context_query_phase_value_error_keeps_existing_error_contract(
 def test_context_help_has_query_output_and_budget_controls() -> None:
     runner = CliRunner()
 
-    result = runner.invoke(app, ["context", "--help"])
+    result = runner.invoke(app, ["context", "--help"], env={"TERM": "dumb"})
 
     assert result.exit_code == 0
     for option in (

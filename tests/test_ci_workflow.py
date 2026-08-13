@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import re
 
 import yaml
 
@@ -12,15 +11,6 @@ README = ROOT / "README.md"
 PRODUCT_EXPRESSION = (
     "not slow and not archival_acceptance and not runtime_pinned"
 )
-BASE_FOCUSED_P15_FILES = {
-    "tests/test_python_graph.py",
-    "tests/test_exact_imported_symbol_bonus.py",
-    "tests/test_dependency_replay.py",
-    "tests/test_p15_post_acceptance_disposition.py",
-    "tests/test_query_planner.py",
-    "tests/test_retrieval_trace.py",
-    "tests/test_retrieval_trace_pipeline.py",
-}
 OPTIONAL_V8_CONTRACT_TEST = "tests/test_p15_v8_contract.py"
 README_INSTALL_BLOCK = "\n".join(
     (
@@ -30,7 +20,7 @@ README_INSTALL_BLOCK = "\n".join(
 )
 
 
-def test_ci_workflow_is_offline_python313_product_and_focused_contract() -> None:
+def test_ci_workflow_is_offline_python313_single_product_contract() -> None:
     assert WORKFLOW.is_file(), "ordinary CI workflow is absent"
     text = WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.load(text, Loader=yaml.BaseLoader)
@@ -66,17 +56,8 @@ def test_ci_workflow_is_offline_python313_product_and_focused_contract() -> None
     assert "-rs" in product
     assert f'-m "{PRODUCT_EXPRESSION}"' in product
     assert "--junitxml=.quality/ci/product-junit.xml" in product
-
-    focused_step = named_steps["Run focused P15 gate"]
-    assert focused_step["if"] == "${{ !cancelled() }}"
-    focused = focused_step["run"]
-    assert "--strict-markers" in focused
-    assert "-rs" in focused
-    assert "--junitxml=.quality/ci/p15-focused-junit.xml" in focused
-    assert set(re.findall(r"tests/test_[a-z0-9_]+\.py", focused)) == (
-        BASE_FOCUSED_P15_FILES | {OPTIONAL_V8_CONTRACT_TEST}
-    )
-    assert all((ROOT / path).is_file() for path in BASE_FOCUSED_P15_FILES)
+    assert text.count(".venv/bin/pytest") == 1
+    assert "Run focused P15 gate" not in named_steps
 
     identity_step = named_steps["Write runtime identity"]
     assert identity_step["if"] == "${{ !cancelled() }}"
@@ -91,41 +72,35 @@ def test_ci_workflow_is_offline_python313_product_and_focused_contract() -> None
     assert "http://" not in text and "https://" not in text
 
 
-def test_focused_p15_gate_adds_v8_contract_once_introduced_and_fails_on_deletion() -> None:
+def test_product_gate_fails_if_introduced_v8_contract_is_deleted() -> None:
     workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     named_steps = {
         step["name"]: step
         for step in workflow["jobs"]["test"]["steps"]
         if "name" in step
     }
-    focused = named_steps["Run focused P15 gate"]["run"]
+    product = named_steps["Run product gate"]["run"]
 
-    assert focused.count(OPTIONAL_V8_CONTRACT_TEST) == 1
+    assert product.count(OPTIONAL_V8_CONTRACT_TEST) == 1
     assert (
-        f"P15_V8_CONTRACT_TEST={OPTIONAL_V8_CONTRACT_TEST}" in focused
+        f"P15_V8_CONTRACT_TEST={OPTIONAL_V8_CONTRACT_TEST}" in product
     )
     assert (
         'P15_V8_CONTRACT_HISTORY="$(git log -1 --format=%H HEAD -- '
-        '"$P15_V8_CONTRACT_TEST")"' in focused
+        '"$P15_V8_CONTRACT_TEST")"' in product
     )
-    assert 'if [[ -n "$P15_V8_CONTRACT_HISTORY" ]]; then' in focused
-    assert 'if [[ ! -f "$P15_V8_CONTRACT_TEST" ]]; then' in focused
-    assert 'echo "P15 v8 contract test existed in history but is missing"' in focused
-    assert "exit 1" in focused
-    assert 'P15_FOCUSED_TESTS+=("$P15_V8_CONTRACT_TEST")' in focused
-    assert '"${P15_FOCUSED_TESTS[@]}"' in focused
-    assert focused.rindex("fi") < focused.index(".venv/bin/pytest")
-    assert focused.rindex("fi") < focused.index(
-        "--junitxml=.quality/ci/p15-focused-junit.xml"
+    assert (
+        'if [[ -n "$P15_V8_CONTRACT_HISTORY" ]] && '
+        '[[ ! -f "$P15_V8_CONTRACT_TEST" ]]; then' in product
     )
+    assert 'echo "P15 v8 contract test existed in history but is missing"' in product
+    assert "exit 1" in product
+    assert product.index("fi") < product.index(".venv/bin/pytest")
 
     junit_upload = named_steps["Upload JUnit reports"]
     assert junit_upload["if"] == "${{ always() }}"
     assert junit_upload["with"]["if-no-files-found"] == "error"
-    assert junit_upload["with"]["path"].splitlines() == [
-        ".quality/ci/product-junit.xml",
-        ".quality/ci/p15-focused-junit.xml",
-    ]
+    assert junit_upload["with"]["path"] == ".quality/ci/product-junit.xml"
 
 
 def test_readme_and_ci_share_the_exact_product_gate_expression() -> None:
